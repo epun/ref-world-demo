@@ -131,12 +131,24 @@ function hash(n: number): number {
  */
 export function createEyes(analysis: ShapeAnalysis, meshScale: number): Eyes {
   const placement = computeEyePlacement(analysis);
-  const radius = placement.radius * meshScale;
+
+  // One eye, always (user ruling): a single cyclops mark centered on the
+  // head lobe — the CDG-Play-adjacent single-cutout read. Shape varies per
+  // character between circular and oval, seeded from the shape itself.
+  const shapeSeed = hash(
+    analysis.headLobe.x * 1.317 + analysis.headLobe.y * 0.577 + analysis.distance.max * 0.211,
+  );
+  // Half circular (aspect 1), half oval — ovals span 1.2..1.45 wide.
+  const aspect = shapeSeed < 0.5 ? 1 : 1.2 + (shapeSeed - 0.5) * 0.5;
+  // The single mark sits larger than one of the old pair — it carries the
+  // whole face. 1.5× the pair radius, capped by the head's local thickness.
+  const radius = Math.min(placement.radius * 1.5, placement.separation * 1.35) * meshScale;
 
   // The visible mark at size 1 spans MARK_R of the cap's uv disc, so the cap
   // itself is larger; everything outside the SDF discards.
   const capRadius = (radius / MARK_R) * CAP_HEADROOM;
-  const geometry = new CircleGeometry(capRadius, 32);
+  const geometry = new CircleGeometry(capRadius * aspect, 32);
+  geometry.scale(1, 1 / aspect, 1); // widen uv-space: mark stretches horizontally
 
   const shared: Record<string, IUniform> = {
     uColor: { value: new Color(CHARACTER.eye) },
@@ -146,27 +158,24 @@ export function createEyes(analysis: ShapeAnalysis, meshScale: number): Eyes {
     uSize: { value: EXPRESSIONS.neutral.size },
   };
 
-  const makeMaterial = (side: number): ShaderMaterial =>
-    new ShaderMaterial({
-      vertexShader: VERTEX,
-      fragmentShader: FRAGMENT,
-      uniforms: { ...shared, uSide: { value: side } },
-      transparent: true,
-      depthWrite: false,
-    });
-
   const group = new Group();
   const materials: ShaderMaterial[] = [];
-  for (const [at, side] of [
-    [placement.left, -1],
-    [placement.right, 1],
-  ] as const) {
-    const material = makeMaterial(side);
-    materials.push(material);
-    const cap = new Mesh(geometry, material);
-    cap.position.set(at.x * meshScale, at.y * meshScale, at.z * meshScale);
-    group.add(cap);
-  }
+  const material = new ShaderMaterial({
+    vertexShader: VERTEX,
+    fragmentShader: FRAGMENT,
+    // uSide 0: the wedge cut centers rather than mirroring — symmetric anger.
+    uniforms: { ...shared, uSide: { value: 0 } },
+    transparent: true,
+    depthWrite: false,
+  });
+  materials.push(material);
+  const cap = new Mesh(geometry, material);
+  // Centered between the old pair positions: the head-lobe axis.
+  const cx = (placement.left.x + placement.right.x) / 2;
+  const cy = (placement.left.y + placement.right.y) / 2;
+  const cz = Math.max(placement.left.z, placement.right.z);
+  cap.position.set(cx * meshScale, cy * meshScale, cz * meshScale);
+  group.add(cap);
 
   // One spring per SDF parameter — expressions glide, never snap.
   const settle = { settleMs: MOTION.tertiaryMs };
