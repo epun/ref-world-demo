@@ -267,6 +267,18 @@ export async function initDevPanel(
               ks('conifer', v);
             },
           });
+          folder.addSlider('rock density', {
+            min: 0,
+            max: 2.5,
+            value: 1,
+            onChange: (v) => kd('rock', v),
+          });
+          folder.addSlider('rock scale', {
+            min: 0.4,
+            max: 1.8,
+            value: 1,
+            onChange: (v) => ks('rock', v),
+          });
           folder.addSlider('grass density', {
             min: 0,
             max: 3,
