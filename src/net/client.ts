@@ -57,6 +57,7 @@ const utf8 = new TextEncoder();
 export function resolveRelayUrl(
   env?: { VITE_RELAY_URL?: string | undefined },
   loc?: { protocol: string; host: string } | null,
+  devMode = false,
 ): string | null {
   const configured = env?.VITE_RELAY_URL?.trim();
   if (configured !== undefined && configured !== '') {
@@ -65,7 +66,12 @@ export function resolveRelayUrl(
     if (/^https?:\/\//.test(noSlash)) return noSlash.replace(/^http/, 'ws');
     return `wss://${noSlash}`;
   }
-  if (loc && loc.host !== '') {
+  // Same-origin is only a plausible relay in dev (the local dev relay /
+  // vite proxy). A static production host (Vercel) serves no WebSockets —
+  // guessing it there left phone sessions waiting on a dead endpoint and
+  // eggs that never hatched (user report). Production requires an explicit
+  // VITE_RELAY_URL; without one the session degrades to same-device.
+  if (devMode && loc && loc.host !== '') {
     return `${loc.protocol === 'https:' ? 'wss' : 'ws'}://${loc.host}`;
   }
   return null;
@@ -73,9 +79,9 @@ export function resolveRelayUrl(
 
 /** The browser default: VITE_RELAY_URL, else same-origin, else null. */
 export function defaultRelayUrl(): string | null {
-  const env = import.meta.env as { VITE_RELAY_URL?: string | undefined };
+  const env = import.meta.env as { VITE_RELAY_URL?: string | undefined; DEV?: boolean };
   const loc = typeof location !== 'undefined' ? location : null;
-  return resolveRelayUrl(env, loc);
+  return resolveRelayUrl(env, loc, env.DEV === true);
 }
 
 export class RoomClient {

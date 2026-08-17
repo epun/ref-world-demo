@@ -444,8 +444,99 @@ export async function createSession(search?: string): Promise<NetLike> {
     const relayUrl = relayUrlFrom(mod);
     if (relayUrl === null) return new SameDeviceSession();
     const instance = instantiateClient(mod);
-    return adaptClient(instance, room, relayUrl);
+    return withOfflineFailover(adaptClient(instance, room, relayUrl));
   } catch {
     return new SameDeviceSession();
   }
+}
+
+/** How long a relay session may sit not-online before the phone gives up on
+ * it. Long enough for a slow handshake, short enough that the egg screen
+ * still feels responsive when the relay is unreachable. */
+export const RELAY_ONLINE_TIMEOUT_MS = 4000;
+
+/**
+ * Failover shell (user report: eggs never hatched on mobile): a relay
+ * session that never reaches 'online' — unreachable relay, dead same-origin
+ * guess, captive network — silently swaps to a SameDeviceSession, REPLAYING
+ * the drawing that was already sent so the local egg timer starts and the
+ * hatch lands. Listener registrations are mirrored to whichever session is
+ * live; once swapped, the relay client is disposed and stays gone.
+ */
+export function withOfflineFailover(
+  relay: NetLike,
+  timeoutMs = RELAY_ONLINE_TIMEOUT_MS,
+): NetLike {
+  let live: NetLike = relay;
+  let swapped = false;
+  let lastDrawing: StrokeList | null = null;
+  let hatchRequested = false;
+  const stateCbs: Cb<StateMsg>[] = [];
+  const poseCbs: Cb<PoseMsg>[] = [];
+  const rosterCbs: Cb<RosterMsg>[] = [];
+  const nameCbs: Cb<NameMsg>[] = [];
+
+  const wire = (target: NetLike): void => {
+    for (const cb of stateCbs) target.onState(cb);
+    for (const cb of poseCbs) target.onPose(cb);
+    for (const cb of rosterCbs) target.onRoster(cb);
+    for (const cb of nameCbs) target.onName(cb);
+  };
+  wire(relay);
+
+  const swap = (): void => {
+    if (swapped) return;
+    swapped = true;
+    try {
+      relay.dispose();
+    } catch {
+      // the dead client owes us nothing
+    }
+    const local = new SameDeviceSession();
+    wire(local);
+    live = local;
+    if (lastDrawing) local.sendDrawing(lastDrawing);
+    if (hatchRequested) local.sendHatch();
+  };
+
+  const timer = setTimeout(() => {
+    if (live.status() !== 'online') swap();
+  }, timeoutMs);
+
+  return {
+    sendDrawing(strokes): void {
+      lastDrawing = strokes;
+      live.sendDrawing(strokes);
+    },
+    sendEmote(emote): void {
+      live.sendEmote(emote);
+    },
+    sendHatch(): void {
+      hatchRequested = true;
+      live.sendHatch();
+    },
+    onState(cb): void {
+      stateCbs.push(cb);
+      live.onState(cb);
+    },
+    onPose(cb): void {
+      poseCbs.push(cb);
+      live.onPose(cb);
+    },
+    onRoster(cb): void {
+      rosterCbs.push(cb);
+      live.onRoster(cb);
+    },
+    onName(cb): void {
+      nameCbs.push(cb);
+      live.onName(cb);
+    },
+    status(): SessionStatus {
+      return live.status();
+    },
+    dispose(): void {
+      clearTimeout(timer);
+      live.dispose();
+    },
+  };
 }
