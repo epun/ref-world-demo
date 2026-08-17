@@ -21,6 +21,7 @@ import { IcosahedronGeometry, Mesh, MeshPhysicalMaterial, Vector3 } from 'three'
 import type { BufferGeometry, Group } from 'three';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { createCharacter, type Character } from './character/character';
+import { EMOTE_NAMES } from './net/protocol';
 import { mountDrawScreen } from './draw/ui';
 import { createEgg, type Egg } from './egg/egg';
 import { startHatch, type HatchHandle } from './egg/hatch';
@@ -281,6 +282,9 @@ function main(): void {
         character = next;
         pendingCharacter = null;
         characterRoot = root;
+        // The hint line moves on with the lifecycle: hatched → emote keys.
+        eggHint.textContent = 'press 1-7 to emote';
+        eggHint.classList.add('visible');
         // The character's shadow appears with the character; the egg's
         // smaller stamp retires with the shell.
         characterShadow = world.shadows.addShadow('character', next.radius);
@@ -386,6 +390,11 @@ function main(): void {
     }
     // Manual hatch — runs the identical sequence as the timer (PLAN §4).
     if (event.key === 'h' && !overlayOpen) beginHatch();
+    // Dev emote keys: 1–7 map onto the protocol's EMOTE_NAMES (PLAN §6.3).
+    if (!overlayOpen && character && event.key >= '1' && event.key <= '7') {
+      const name = EMOTE_NAMES[Number(event.key) - 1];
+      if (name) character.emote(name);
+    }
   });
 
   const drawScreen = mountDrawScreen(overlay, {
@@ -415,6 +424,7 @@ function main(): void {
       eggShadow = world.shadows.addShadow('egg', egg.radius * EGG_SHADOW_FIT);
       eggShadow.setPosition(EGG_SPOT.x, EGG_SPOT.z);
       world.cameraRig.frameAt(new Vector3(EGG_SPOT.x, 0, EGG_SPOT.z));
+      eggHint.textContent = 'press h to hatch';
       eggHint.classList.add('visible');
 
       drawScreen.capture.clear();

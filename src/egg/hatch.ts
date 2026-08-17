@@ -10,9 +10,9 @@
  *    and drift down/away while fading over t.primary (transparent material
  *    during exit only), and are disposed. The character rises from the egg
  *    position — scale 0.6→1 and a rise to rest, both on ζ≥1 springs over
- *    t.primary (scale-from-zero is forbidden). The one accent element on
- *    screen — a thin CHARACTER.accent ring — slides up from the hatch point
- *    and drifts out over t.primary (TASTE §6: at most one accent at a time).
+ *    t.primary (scale-from-zero is forbidden). A thin ink ring slides up
+ *    from the hatch point and drifts out over t.primary (the warm accent is
+ *    retired while the experience is black and white — TASTE §6).
  *
  * No particles, no flash, no texture swap. All durations from MOTION tokens;
  * every ease is a ζ≥1 Spring.
@@ -22,7 +22,7 @@ import { Group, Mesh, MeshBasicMaterial, MeshPhysicalMaterial, TorusGeometry } f
 import type { Scene } from 'three';
 import type { Character } from '../character/character';
 import { Spring } from '../motion/spring';
-import { CHARACTER, MOTION } from '../taste/tokens';
+import { MOTION, WORLD } from '../taste/tokens';
 import { applyCrackShader } from './crack';
 import { buildShellGeometry, EGG_HEIGHT, type Egg, type ShellSlice } from './egg';
 
@@ -165,7 +165,9 @@ export function startHatch(
     scene.remove(egg.group);
     scene.add(pieceRoot);
 
-    // The one accent element: a thin ring sliding up from the hatch point.
+    // A thin ink ring sliding up from the hatch point. (Formerly the one
+    // CHARACTER.accent element — the accent is retired while the experience
+    // is fully black and white; see TASTE §6.)
     const point = egg.hatchPoint();
     ringX = point.x;
     ringZ = point.z;
@@ -173,7 +175,7 @@ export function startHatch(
     const ringGeometry = new TorusGeometry(1.15, 0.03, 10, 72);
     ringGeometry.rotateX(Math.PI / 2);
     ringMaterial = new MeshBasicMaterial({
-      color: CHARACTER.accent,
+      color: WORLD.ink,
       transparent: true,
       depthWrite: false,
     });

@@ -1,0 +1,152 @@
+# ref-driven world generator — product spec
+
+> Source: user brief ("Build a Ref-Driven Chao-Inspired World Generator"). This is the
+> product-level spec sitting above [`PLAN.md`](./PLAN.md); where it names systems the plan
+> already defines, the plan's implementation stands. Behavioral inspiration is Chao Garden;
+> **no Sonic/Chao visual derivation** — no Chao head shapes, floating ornaments, Sonic
+> proportions, or derivative silhouettes.
+
+## The one-line goal
+
+ref taste brief → generated world rules → audience-created inhabitants → living shared
+ecosystem. From far away the landscape reads first; then you notice one creature wandering,
+another sleeping, two sitting together. Success is "that little one is mine" followed by
+"wait, what is it doing over there?"
+
+## What was already true (no change)
+
+- Palette, saturation 0.188, contrast 0.577, groundLuma 0.74, density 0.39 — the measured
+  tokens in `src/taste/tokens.ts`.
+- Motion law: no bounce/overshoot/snap/cut, drift settle, ~1823ms primary, ambient floor,
+  ζ≥1 springs (unrepresentable otherwise).
+- Egg lifecycle: slide-in spawn, paint-on, wobble→crack→unfold over the primary token,
+  no explosive pop. (The brief allows seed/stone/bulb/cocoon variants — shell shape becomes
+  a Ref-config value, current scribbled egg is the first entry.)
+- Scatter: repeated small handcrafted motifs, instanced, jittered organic-iso placement,
+  clusters over uniform coverage, exclusion radii, negative space dominant.
+- Grain, hard-even lighting, no bloom/volumetrics/photorealism.
+- Ref-as-config: every aesthetic number already flows from one token module; the brief's
+  `{ world, creatures }` JSON maps onto it (§ref-config below).
+
+## Rulings on the two real divergences [D]
+
+### 1. Drawing as silhouette vs. drawing as decal — hybrid, silhouette-led
+
+The brief describes a shared species anatomy (irregular blob torso, tiny legs/arms,
+optional appendages) with the participant drawing applied as **markings/decal**. The
+existing pipeline makes the drawing the **silhouette** (inflation), which is the repo's
+load-bearing insight and satisfies the brief's own requirements: "imperfect hand-drawn
+silhouette" and "preserve enough of the original mark that the participant can recognize
+their creature."
+
+**Ruling: the silhouette stays the genesis of the body.** The species reading comes from
+the interpretation pass (the `fidelity` dial): stance, grounded feet, proportion pull
+toward the species band, eye placement. On top of that, the drawing is **also** applied as
+a shell/back marking (same painted treatment as the egg), so recognition survives even
+heavy reinterpretation. The "same drawing, different Ref → different creature" core feature
+lives in the interpretation pass + material/palette layer, which are Ref-owned.
+
+### 2. Creature color — none. Black and white, by user decision
+
+The brief offered an audience primary color constrained by the Ref palette. **The user has
+since ruled: no color at all — the whole experience is black and white for now.**
+
+- The audience color input is dropped from the creation flow (the vendored draw page's
+  color swatches are ignored on ingest — strokes rasterize to a binary mask regardless).
+- The single warm accent `#fb5429` is retired with it: the hatch ring and the minimap
+  self-marker render in ink/light values instead. The token stays defined in
+  `tokens.ts` for when color returns; nothing may reference it until then.
+- Creature bodies are uniform dark ink (`CHARACTER.body`); identity comes from silhouette,
+  markings, name, and behavior — which is truer to the corpus (solid black birds
+  distinguished by posture alone) anyway.
+
+Under a future chromatic Ref collection, color re-enters through the ref-config layer,
+not through per-creature inputs.
+
+## New systems (wave 2)
+
+### Behavior (`src/behavior/`)
+
+Lightweight state machine per creature:
+`idle · wander · look-around · approach-creature · follow-creature · observe-object · sit ·
+sleep · play · explore`
+
+- **Stillness is a state, not an absence.** Creatures frequently stop; stopped creatures
+  keep the ambient floor + blink + occasional look-around. Movement is slow and measured;
+  no hyperactive hopping.
+- **Hidden personality** `{ energy, curiosity, social, playfulness, sleepiness } ∈ [0,1]`
+  biases transition probabilities only — never inspectable in UI, only experienced.
+  Derived from the audience personality answer:
+
+| answer | biases |
+|---|---|
+| friends | social↑, playfulness↗ |
+| snacks | curiosity↗, wander target = motifs |
+| sleep | sleepiness↑, energy↓ |
+| adventure | energy↑, curiosity↑, travels far |
+| chaos | playfulness↑, energy↗, transition noise↑ |
+
+- **Social**: notice nearby creatures → look / approach / walk together / follow / sit
+  beside / inspect / ignore. Subtle; the target emergent moment is two creatures
+  independently sitting beside each other.
+- **Environmental affordances**: scatter units advertise simple verbs (tree → sit beneath,
+  inspect; flower → look; pond → stare; rock → sit; artifact → investigate; house →
+  linger). No inventories, no quests.
+- Deterministic per-creature seeds; all steering through ζ≥1 heading springs.
+
+### Scale + camera
+
+- Creature ≈ 1–3% of viewport: frustum height 40 → ~90, creature height 3.5 → ~2.2.
+  The world stays the hero; never portrait-framed on the big screen.
+- Camera: slow drifting tour, easing near clusters, frequent wide compositions; never
+  locked to one creature.
+- **Hatch-all moment** (presentation): pull wide → many eggs scattered → simultaneous
+  hatch → hold while dozens begin moving → drift through the populated world.
+
+### Terrain
+
+Soft rolling elevation through the existing `Surface` seam (`RollingSurface`: low-frequency
+value-noise heightfield, gentle enough that locomotion needs no gait change). Large open
+fields; organic silhouettes; emptiness as material.
+
+### Ink rendering pass
+
+The corpus reads as linework. Add loose ink outlines (inverted-hull pass on creatures and
+props — slightly jittered so lines feel drawn, not extracted) and keep prop surfaces matte.
+The character keeps its *restrained* sheen — the briefs' muted-saturation+gloss pairing
+holds at low intensity — but no glossy game-art rendering anywhere else.
+
+### Audience inputs (phone)
+
+`name · drawing · primary color · personality` — the vendored draw page already carries
+name + color + drawing; add the one personality question ("what does your little creature
+want most?" — friends/snacks/sleep/adventure/chaos) and include it in the MQTT payload.
+Payload stays backward-compatible (missing personality → neutral defaults).
+
+### Presentation controls (Ghost Panel)
+
+`refworld.demo` skill: spawn pending · spawn fallback creatures · hatch selected · hatch
+all · pause ai · resume ai · clear creatures · reset world. Optional tuning: wander speed,
+interaction frequency, population density, camera mode.
+
+### Ref-config layer (`src/taste/refConfig.ts`)
+
+The brief's shape, mapped onto the token module:
+
+```jsonc
+{
+  "world":     { "palette": [], "materials": [], "lighting": {}, "environment": {},
+                 "shapeLanguage": [], "mood": [], "density": 0.39 },
+  "creatures": { "proportions": {}, "materials": [], "markingRules": [],
+                 "accessoryLanguage": [], "animationStyle": "", "behaviorBias": {} }
+}
+```
+
+One default export = the current collection. Everything downstream reads config, not
+constants, so a new Ref brief swaps the world without touching systems. (Already ~true via
+`tokens.ts`; this makes the seam explicit and creature-specific.)
+
+## Scale target
+
+`creature relative world scale ≈ 0.02` · creatures 1–3% of viewport · dozens of tiny
+inhabitants · the landscape reads first.

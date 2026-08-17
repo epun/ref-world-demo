@@ -8,6 +8,7 @@
 import { BufferAttribute, BufferGeometry, MeshPhysicalMaterial } from 'three';
 import type { InflatedMesh } from '../inflate/types';
 import { CHARACTER } from '../taste/tokens';
+import type { DeformFrame } from './deform';
 
 /**
  * Wrap inflate() output into a BufferGeometry. The typed arrays are adopted
@@ -23,6 +24,20 @@ export function toBufferGeometry(mesh: InflatedMesh): BufferGeometry {
   geometry.setIndex(new BufferAttribute(mesh.indices, 1));
   geometry.computeBoundingBox();
   return geometry;
+}
+
+/**
+ * Measure the vertical frame the body deformation bends around (deform.ts):
+ * geometry bottom and height, in object space. Lives here because this is
+ * the one module that already owns the inflate→BufferGeometry bridge.
+ */
+export function deformFrameOf(geometry: BufferGeometry): DeformFrame {
+  if (!geometry.boundingBox) geometry.computeBoundingBox();
+  const box = geometry.boundingBox!;
+  return {
+    baseY: box.min.y,
+    height: Math.max(box.max.y - box.min.y, 1e-6),
+  };
 }
 
 /**

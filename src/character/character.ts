@@ -11,14 +11,20 @@
  * (eyes anchor on headLobe, gait on archetype/features).
  */
 
-import { Group, Mesh } from 'three';
+import { Group, Mesh, Quaternion, Vector3 } from 'three';
 import { inflate } from '../inflate/inflate';
 import { sampleDrift } from '../motion/ambient';
+import { Spring } from '../motion/spring';
+import type { EmoteName } from '../net/protocol';
 import { analyze } from '../shape/analyze';
 import type { ShapeAnalysis, StrokeList } from '../shape/types';
+import { MOTION } from '../taste/tokens';
+import { applyDeform, deformPoint, heightFrac, type DeformState } from './deform';
+import { runEmote, type EmoteRun } from './emotes';
 import { createEyes } from './eyes';
 import type { Expression, ExpressionName } from './expressions';
-import { createCharacterMaterial, toBufferGeometry } from './mesh';
+import { createCharacterMaterial, deformFrameOf, toBufferGeometry } from './mesh';
+import { computeEyePlacement } from './placement';
 
 /** Target character height in world units. Characters render small —
  * "scale is the subject" (PLAN §7). */
@@ -36,6 +42,13 @@ export interface Character {
   analysis: ShapeAnalysis;
   /** Glide the eyes to an expression (springs retarget, never snap). */
   setExpression(e: ExpressionName | Expression): void;
+  /**
+   * Play an emote: whole-body deformation + matching eye expression. A new
+   * emote interrupts cleanly — the body springs retarget mid-flight, nothing
+   * snaps. After the last keypoint everything drifts back to neutral and
+   * settles into the ambient floor.
+   */
+  emote(name: EmoteName): void;
   /** Apply the ambient drift floor and advance the eyes. Call once per frame. */
   update(dt: number, nowMs: number): void;
   /** Release GPU resources. Remove the group from the scene first. */
@@ -80,10 +93,16 @@ export function createCharacter(strokes: StrokeList, worldScale = 1): Character 
   const scale = (CHARACTER_HEIGHT / height) * worldScale;
 
   const material = createCharacterMaterial();
+  // Whole-body deformation (PLAN §3.5): squash/lean/twist/reach uniforms
+  // injected into the vertex shader, bending the mesh about its base.
+  const frame = deformFrameOf(geometry);
+  const deform = applyDeform(material, frame);
+
   const mesh = new Mesh(geometry, material);
   mesh.scale.setScalar(scale);
   // Rest on the ground: bounding-box min.y lands exactly at y = 0.
   mesh.position.y = -box.min.y * scale;
+  const yOff = mesh.position.y;
 
   const group = new Group();
   group.add(mesh);
@@ -91,8 +110,65 @@ export function createCharacter(strokes: StrokeList, worldScale = 1): Character 
   // Eyes: computed in inflate-local space, scaled up to match the mesh, and
   // lifted by the same ground offset so they sit on the scaled body surface.
   const eyes = createEyes(analysis, scale);
-  eyes.group.position.y = mesh.position.y;
+  eyes.group.position.y = yOff;
   group.add(eyes.group);
+
+  // The eye pair rides the deformed body: its rest anchor (the pair midpoint,
+  // in the mesh's object space) is pushed through deformPoint each frame with
+  // the CURRENT uniform values, and the group is rotated by the deformation's
+  // pure rotations at the anchor height — so the caps track the head exactly
+  // where the vertex shader puts it.
+  const placement = computeEyePlacement(analysis);
+  const anchor = {
+    x: (placement.left.x + placement.right.x) / 2,
+    y: (placement.left.y + placement.right.y) / 2,
+    z: (placement.left.z + placement.right.z) / 2,
+  };
+  const anchorH = heightFrac(anchor.y, frame);
+  const X_AXIS = new Vector3(1, 0, 0);
+  const Y_AXIS = new Vector3(0, 1, 0);
+  const Z_AXIS = new Vector3(0, 0, 1);
+  const qx = new Quaternion();
+  const qy = new Quaternion();
+  const qz = new Quaternion();
+  const eyeRot = new Quaternion();
+  const anchorRest = new Vector3();
+
+  // One ζ≥1 spring per deform channel. Squash is the attack channel (the
+  // quick dip in happy/angry) and settles a step faster; the rest drift at
+  // the secondary settle. Emotes retarget these; nothing else touches them.
+  const springs = {
+    squash: new Spring(1, { settleMs: MOTION.tertiaryMs }),
+    leanX: new Spring(0, { settleMs: MOTION.secondaryMs }),
+    leanZ: new Spring(0, { settleMs: MOTION.secondaryMs }),
+    twist: new Spring(0, { settleMs: MOTION.secondaryMs }),
+    reach: new Spring(0, { settleMs: MOTION.secondaryMs }),
+  };
+  let emoteRun: EmoteRun | null = null;
+
+  /** Push spring state to the GPU and carry the eye caps along with it. */
+  function applyBodyState(state: DeformState): void {
+    deform.set(state);
+
+    // Rigid head frame anchored at the pair midpoint: rotation = the
+    // deformation's twist∘leanX∘leanZ at the anchor's height (same order as
+    // deformPoint), position solved so the anchor lands exactly on its
+    // deformed image. Approximate for the individual caps — and fine (the
+    // eyes track the deformed head; PLAN §3.4 keeps them proud of the body).
+    qy.setFromAxisAngle(Y_AXIS, state.twist * anchorH);
+    qx.setFromAxisAngle(X_AXIS, state.leanX * anchorH);
+    qz.setFromAxisAngle(Z_AXIS, state.leanZ * anchorH);
+    eyeRot.copy(qz).multiply(qx).multiply(qy);
+    eyes.group.quaternion.copy(eyeRot);
+
+    const d = deformPoint(anchor, state, frame);
+    anchorRest.set(anchor.x, anchor.y, anchor.z).multiplyScalar(scale).applyQuaternion(eyeRot);
+    eyes.group.position.set(
+      d.x * scale - anchorRest.x,
+      yOff + d.y * scale - anchorRest.y,
+      d.z * scale - anchorRest.z,
+    );
+  }
 
   const radius =
     (Math.max(box.max.x - box.min.x, box.max.z - box.min.z) / 2) * scale * SHADOW_FIT;
@@ -107,12 +183,32 @@ export function createCharacter(strokes: StrokeList, worldScale = 1): Character 
     setExpression(e: ExpressionName | Expression): void {
       eyes.setExpression(e);
     },
+    emote(name: EmoteName): void {
+      // Replacing the run IS the interruption: the new script retargets the
+      // same springs mid-flight, so position and velocity carry over.
+      emoteRun = runEmote(springs, name, {
+        onExpression: (e) => eyes.setExpression(e),
+      });
+    },
     update(dt: number, nowMs: number): void {
       // Ambient drift only — no idle bob, nothing that reads as bounce.
       // Nonzero motion over any 2s idle sample (stillness probe).
       const drift = sampleDrift(nowMs, seed, worldHeight);
       group.position.set(drift.x, 0, drift.y);
       group.rotation.y = drift.rot;
+
+      // Emote scheduler → spring retargets → uniforms + eye carry. The
+      // springs advance every frame regardless, so a finished emote keeps
+      // drifting home and then rests at neutral under the ambient floor.
+      if (emoteRun?.update(dt)) emoteRun = null;
+      applyBodyState({
+        squash: springs.squash.update(dt),
+        leanX: springs.leanX.update(dt),
+        leanZ: springs.leanZ.update(dt),
+        twist: springs.twist.update(dt),
+        reach: springs.reach.update(dt),
+      });
+
       eyes.update(dt);
     },
     dispose(): void {
@@ -121,6 +217,11 @@ export function createCharacter(strokes: StrokeList, worldScale = 1): Character 
       group.remove(mesh);
       geometry.dispose();
       material.dispose();
+      springs.squash.dispose();
+      springs.leanX.dispose();
+      springs.leanZ.dispose();
+      springs.twist.dispose();
+      springs.reach.dispose();
     },
   };
 }
