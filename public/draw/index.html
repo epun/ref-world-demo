@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>Draw → 3D</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    html, body { height: 100%; overscroll-behavior: none; }
+    body {
+      background: #0a0a0a; color: #fff;
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      display: flex; flex-direction: column; height: 100dvh; padding: 14px; gap: 12px;
+      user-select: none; -webkit-user-select: none;
+    }
+    header { display: flex; align-items: center; justify-content: space-between; }
+    .title { display: flex; align-items: center; gap: 9px; font-weight: 700; font-size: 17px; letter-spacing: -0.01em; }
+    .status { display: flex; align-items: center; gap: 6px; font-size: 12px; color: rgba(255,255,255,0.5); }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #f5a623; transition: background .3s; }
+    .dot.on { background: #34d058; } .dot.off { background: #e5484d; }
+
+    .stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; }
+    .pad {
+      position: relative; aspect-ratio: 1; max-width: 100%; max-height: 100%;
+      background: #fff; border-radius: 18px; overflow: hidden;
+      box-shadow: 0 20px 50px rgba(0,0,0,0.5); touch-action: none;
+    }
+    canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+    .hint { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+      color: #c7c7cc; font-size: 15px; font-weight: 500; pointer-events: none; transition: opacity .2s; }
+
+    .tools { display: flex; align-items: center; gap: 10px; justify-content: space-between; }
+    .swatches { display: flex; gap: 8px; }
+    .sw { width: 30px; height: 30px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.18); cursor: pointer; transition: transform .1s; }
+    .sw.sel { border-color: #fff; transform: scale(1.12); }
+    .sizes { display: flex; gap: 8px; }
+    .size { width: 30px; height: 30px; border-radius: 9px; background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.12);
+      display: flex; align-items: center; justify-content: center; cursor: pointer; }
+    .size.sel { background: rgba(255,255,255,0.16); border-color: #fff; }
+    .size i { display: block; border-radius: 50%; background: #fff; }
+
+    .actions { display: flex; gap: 10px; }
+    button { flex: 1; border: none; border-radius: 13px; padding: 15px; font-size: 16px; font-weight: 700;
+      font-family: inherit; cursor: pointer; letter-spacing: -0.01em; transition: transform .08s, opacity .2s; }
+    button:active { transform: scale(0.98); }
+    .clear { background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.85); flex: 0 0 96px; }
+    .send { background: #fff; color: #0a0a0a; }
+    .send:disabled { opacity: 0.4; }
+
+    .toast { position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%) translateY(20px);
+      background: #34d058; color: #04210e; font-weight: 700; padding: 12px 22px; border-radius: 999px;
+      opacity: 0; pointer-events: none; transition: all .3s; font-size: 15px; text-align: center; }
+    .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+    .namechip { font-size: 13px; color: rgba(255,255,255,0.55); text-align: center; }
+    .namechip b { color: #fff; }
+    .chip-change { color: #f5a623; text-decoration: underline; cursor: pointer; }
+
+    .sheet { position: fixed; inset: 0; z-index: 100; display: flex; align-items: flex-start; justify-content: center;
+      padding: 11vh 18px 0; background: rgba(0,0,0,0.55); opacity: 0; pointer-events: none; transition: opacity .2s; }
+    .sheet.show { opacity: 1; pointer-events: auto; }
+    .sheet-card { width: 100%; max-width: 380px; background: #18181b; border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 20px; padding: 22px; transform: translateY(-12px); transition: transform .2s; }
+    .sheet.show .sheet-card { transform: translateY(0); }
+    .sheet-title { font-size: 21px; font-weight: 800; letter-spacing: -0.01em; }
+    .sheet-sub { font-size: 13px; color: rgba(255,255,255,0.55); margin: 5px 0 16px; }
+    .name-input { width: 100%; font-size: 18px; font-weight: 600; padding: 15px 16px; border-radius: 13px;
+      background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.18); color: #fff; outline: none;
+      user-select: text; -webkit-user-select: text; }
+    .name-input:focus { border-color: #fff; }
+    .sheet-go { width: 100%; margin-top: 14px; background: #fff; color: #0a0a0a; }
+    .sheet-skip { width: 100%; margin-top: 6px; background: transparent; color: rgba(255,255,255,0.5);
+      font-weight: 600; font-size: 14px; padding: 11px; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="title"><span>✏️</span><span id="appTitle">Draw → 3D</span></div>
+    <div class="status"><span class="dot" id="dot"></span><span id="statusText">connecting…</span></div>
+  </header>
+
+  <div class="stage">
+    <div class="pad">
+      <canvas id="c"></canvas>
+      <div class="hint" id="hint">✏️ Draw something</div>
+    </div>
+  </div>
+
+  <div class="tools">
+    <div class="swatches" id="swatches"></div>
+    <div class="sizes" id="sizes"></div>
+  </div>
+  <div class="namechip" id="namechip" hidden></div>
+  <div class="actions">
+    <button class="clear" id="clear">Clear</button>
+    <button class="send" id="send" disabled>Send →</button>
+  </div>
+
+  <div class="toast" id="toast">✨ Sent!</div>
+
+  <div class="sheet" id="sheet">
+    <div class="sheet-card">
+      <div class="sheet-title">Sign your drawing ✍️</div>
+      <div class="sheet-sub">Your name shows in the scene. Asked once — then it remembers.</div>
+      <input id="nameInput" class="name-input" type="text" maxlength="16" placeholder="First name"
+             autocomplete="off" autocorrect="off" autocapitalize="words" enterkeyhint="go" />
+      <button class="sheet-go" id="sheetGo">Send</button>
+      <button class="sheet-skip" id="sheetSkip">Skip — send without a name</button>
+    </div>
+  </div>
+
+  <script src="./mqtt.min.js"></script>
+  <script>
+  (() => {
+    // ── Config (must match the receiver's broker + topicPrefix) ─────────────
+    const params = new URLSearchParams(location.search);
+    const BROKER = 'wss://broker.emqx.io:8084/mqtt';
+    const TOPIC_PREFIX = 'drawto3d/v1/';
+    // room from ?room= (or legacy ?topic=); everything sanitised
+    const room = (params.get('room') || params.get('topic') || 'demo').replace(/[^a-z0-9_-]/gi, '') || 'demo';
+    const TOPIC = TOPIC_PREFIX + room;
+    const UP_TOPIC = TOPIC + '/up';   // scene → phone (two-way back channel)
+    if (params.get('title')) { const t = params.get('title').slice(0, 40); document.getElementById('appTitle').textContent = t; document.title = t; }
+
+    const COLORS = ['#0a0a0a', '#e5484d', '#f5a623', '#34d058', '#3b82f6', '#a855f7', '#ec4899'];
+    const SIZES  = [4, 8, 16];
+
+    // ── Canvas (hi-dpi) ─────────────────────────────────────────────────────
+    const cv = document.getElementById('c');
+    const ctx = cv.getContext('2d');
+    let DPR = Math.min(window.devicePixelRatio || 1, 3), W = 0, H = 0;
+    function resize() {
+      const r = cv.getBoundingClientRect();
+      W = r.width; H = r.height;
+      cv.width = W * DPR; cv.height = H * DPR;
+      ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+      redraw();
+    }
+
+    // strokes stored NORMALISED (0..1) so the scene can redraw at any size
+    let strokes = [], cur = null;
+    let color = COLORS[0], size = SIZES[1];
+
+    function redraw() {
+      ctx.clearRect(0, 0, W, H);
+      ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      for (const s of strokes) drawStroke(s);
+      if (cur) drawStroke(cur);
+    }
+    function drawStroke(s) {
+      if (s.pts.length < 1) return;
+      ctx.strokeStyle = s.color; ctx.lineWidth = s.width;
+      ctx.beginPath();
+      ctx.moveTo(s.pts[0][0] * W, s.pts[0][1] * H);
+      for (let i = 1; i < s.pts.length; i++) ctx.lineTo(s.pts[i][0] * W, s.pts[i][1] * H);
+      if (s.pts.length === 1) ctx.lineTo(s.pts[0][0] * W + 0.01, s.pts[0][1] * H);
+      ctx.stroke();
+    }
+    const pt = (e) => {
+      const r = cv.getBoundingClientRect();
+      return [ (e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height ];
+    };
+    cv.addEventListener('pointerdown', (e) => {
+      cv.setPointerCapture(e.pointerId);
+      cur = { color, width: size, pts: [pt(e)] };
+      document.getElementById('hint').style.opacity = '0';
+      redraw();
+    });
+    cv.addEventListener('pointermove', (e) => { if (cur) { cur.pts.push(pt(e)); redraw(); } });
+    const endStroke = () => {
+      if (!cur) return;
+      strokes.push(cur); cur = null;
+      document.getElementById('send').disabled = strokes.length === 0 || !connected;
+      redraw();
+    };
+    cv.addEventListener('pointerup', endStroke);
+    cv.addEventListener('pointercancel', endStroke);
+
+    // ── Tool UI ─────────────────────────────────────────────────────────────
+    const swEl = document.getElementById('swatches');
+    COLORS.forEach((c, i) => {
+      const b = document.createElement('div');
+      b.className = 'sw' + (i === 0 ? ' sel' : ''); b.style.background = c;
+      b.onclick = () => { color = c; [...swEl.children].forEach(x => x.classList.remove('sel')); b.classList.add('sel'); };
+      swEl.appendChild(b);
+    });
+    const szEl = document.getElementById('sizes');
+    SIZES.forEach((s, i) => {
+      const b = document.createElement('div');
+      b.className = 'size' + (i === 1 ? ' sel' : '');
+      const dot = document.createElement('i'); dot.style.width = dot.style.height = (s + 4) + 'px';
+      b.appendChild(dot);
+      b.onclick = () => { size = s; [...szEl.children].forEach(x => x.classList.remove('sel')); b.classList.add('sel'); };
+      szEl.appendChild(b);
+    });
+    document.getElementById('clear').onclick = () => {
+      strokes = []; cur = null; redraw();
+      document.getElementById('hint').style.opacity = '1';
+      document.getElementById('send').disabled = true;
+    };
+
+    // ── MQTT ────────────────────────────────────────────────────────────────
+    let connected = false, client;
+    const dot = document.getElementById('dot'), st = document.getElementById('statusText');
+    const toast = document.getElementById('toast');
+    function setStatus(state, text) { dot.className = 'dot ' + state; st.textContent = text; }
+    function showToast(msg, ms = 1700) { toast.textContent = msg; toast.classList.add('show'); setTimeout(() => toast.classList.remove('show'), ms); }
+    try {
+      client = mqtt.connect(BROKER, { clientId: 'draw_' + Math.random().toString(16).slice(2, 10), keepalive: 30, reconnectPeriod: 2000 });
+      client.on('connect', () => { connected = true; setStatus('on', 'connected'); document.getElementById('send').disabled = strokes.length === 0; client.subscribe(UP_TOPIC); });
+      client.on('reconnect', () => setStatus('', 'reconnecting…'));
+      client.on('close',  () => { connected = false; setStatus('off', 'offline'); });
+      client.on('error',  () => setStatus('off', 'connection error'));
+      // two-way: the scene can push messages back to phones (e.g. an ack, a prompt)
+      client.on('message', (t, payload) => {
+        if (t !== UP_TOPIC) return;
+        try { const m = JSON.parse(payload.toString()); if (m && m.text) showToast(m.text); } catch {}
+      });
+    } catch (err) { setStatus('off', 'no realtime'); }
+
+    // ── Name ("sign") — asked once, then remembered ─────────────────────────
+    const NAME_KEY = 'drawto3d:name';
+    let signed   = localStorage.getItem(NAME_KEY) !== null;
+    let userName = (localStorage.getItem(NAME_KEY) || '').slice(0, 16);
+    const sheet = document.getElementById('sheet');
+    const nameInput = document.getElementById('nameInput');
+    const escapeHtml = (s) => s.replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+
+    function updateChip() {
+      const chip = document.getElementById('namechip');
+      if (!signed) { chip.hidden = true; return; }
+      chip.hidden = false;
+      chip.innerHTML = userName
+        ? `Sending as <b>${escapeHtml(userName)}</b> · <span class="chip-change">change</span>`
+        : `Sending anonymously · <span class="chip-change">add name</span>`;
+      chip.querySelector('.chip-change').onclick = openSheet;
+    }
+    function openSheet() { nameInput.value = userName; sheet.classList.add('show'); setTimeout(() => { nameInput.focus(); nameInput.select(); }, 60); }
+    function closeSheet() { sheet.classList.remove('show'); nameInput.blur(); }
+    function commitName(v) {
+      userName = (v || '').replace(/[<>&"]/g, '').trim().slice(0, 16);
+      signed = true; localStorage.setItem(NAME_KEY, userName); updateChip();
+    }
+
+    function publish() {
+      if (!strokes.length || !connected) return;
+      const msg = { id: Math.random().toString(36).slice(2, 9), name: userName, strokes, ts: Date.now() };
+      client.publish(TOPIC, JSON.stringify(msg), { qos: 0 });
+      strokes = []; cur = null; redraw();
+      document.getElementById('hint').style.opacity = '1';
+      document.getElementById('send').disabled = true;
+      showToast(userName ? `✨ ${userName}'s drawing is up!` : '✨ Sent!');
+    }
+
+    document.getElementById('send').onclick = () => {
+      if (!strokes.length || !connected) return;
+      if (!signed) { openSheet(); return; }   // first send → sign it; then remembered
+      publish();
+    };
+    document.getElementById('sheetGo').onclick = () => { commitName(nameInput.value); closeSheet(); publish(); };
+    document.getElementById('sheetSkip').onclick = () => { commitName(''); closeSheet(); publish(); };
+    nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); document.getElementById('sheetGo').click(); } });
+    sheet.addEventListener('click', (e) => { if (e.target === sheet) closeSheet(); });
+    updateChip();
+
+    window.addEventListener('resize', resize);
+    resize();
+  })();
+  </script>
+</body>
+</html>

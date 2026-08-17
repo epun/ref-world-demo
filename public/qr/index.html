@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Draw → 3D · QR maker</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: #0b0c10; color: #fff; font-family: ui-sans-serif, system-ui, sans-serif;
+      display: flex; flex-direction: column; align-items: center; gap: 18px; padding: 40px 20px; }
+    h1 { font-size: 20px; font-weight: 800; letter-spacing: -.01em; }
+    p { color: rgba(255,255,255,.6); font-size: 13px; max-width: 460px; text-align: center; line-height: 1.55; margin-top: -8px; }
+    .field { width: 100%; max-width: 460px; display: flex; flex-direction: column; gap: 6px; }
+    label { font-size: 12px; color: rgba(255,255,255,.5); }
+    input { width: 100%; font: inherit; font-size: 15px; padding: 12px 14px; border-radius: 11px;
+      background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.16); color: #fff; outline: none; }
+    input:focus { border-color: #fff; }
+    #qr { background: #fff; padding: 16px; border-radius: 16px; }
+    #qr svg { display: block; width: 260px; height: 260px; }
+    .actions { display: flex; gap: 10px; }
+    button { border: none; border-radius: 10px; padding: 11px 18px; font: inherit; font-weight: 700; font-size: 13px;
+      background: #fff; color: #0a0a0a; cursor: pointer; }
+    button.ghost { background: rgba(255,255,255,.1); color: #fff; }
+    .url { font-family: ui-monospace, monospace; font-size: 12px; color: rgba(255,255,255,.55); word-break: break-all; max-width: 460px; text-align: center; }
+  </style>
+</head>
+<body>
+  <h1>Scan-to-draw QR</h1>
+  <p>Point this at your deployed <code>phone/index.html</code>. People scan it, draw, and their drawing streams into your 3D scene. Edit the URL, then download the SVG and drop it into your app.</p>
+
+  <div class="field">
+    <label>Phone URL (include <code>?room=</code> to match your receiver)</label>
+    <input id="url" value="https://your-site.example/phone/index.html?room=demo" />
+  </div>
+
+  <div id="qr"></div>
+  <div class="url" id="urlEcho"></div>
+  <div class="actions">
+    <button id="dl">Download SVG</button>
+    <button id="dlpng" class="ghost">Download PNG</button>
+  </div>
+
+  <script src="./qrcode.js"></script>
+  <script>
+    const input = document.getElementById('url');
+    const box = document.getElementById('qr');
+    const echo = document.getElementById('urlEcho');
+    let currentSvg = '';
+
+    function render() {
+      const url = input.value.trim() || ' ';
+      const qr = qrcode(0, 'M');          // type 0 = auto-size, ECC level M
+      qr.addData(url);
+      qr.make();
+      currentSvg = qr.createSvgTag({ cellSize: 8, margin: 1, scalable: true });
+      box.innerHTML = currentSvg;
+      echo.textContent = url;
+    }
+    input.addEventListener('input', render);
+
+    document.getElementById('dl').onclick = () => {
+      const blob = new Blob([currentSvg], { type: 'image/svg+xml' });
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'draw-qr.svg'; a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    };
+    document.getElementById('dlpng').onclick = () => {
+      const svg = box.querySelector('svg'); const s = new XMLSerializer().serializeToString(svg);
+      const img = new Image();
+      img.onload = () => {
+        const S = 720, c = document.createElement('canvas'); c.width = c.height = S;
+        const x = c.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, S, S); x.drawImage(img, 0, 0, S, S);
+        const a = document.createElement('a'); a.href = c.toDataURL('image/png'); a.download = 'draw-qr.png'; a.click();
+      };
+      img.src = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(s)));
+    };
+
+    render();
+  </script>
+</body>
+</html>
