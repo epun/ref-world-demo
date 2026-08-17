@@ -137,6 +137,12 @@ post chain, with the edge line distorted by low-frequency noise for the hand wob
 procedural hatching keyed to face orientation; prop albedos at the light token so the
 outline carries the form. The character keeps its restrained sheen and near-black fill.
 
+**Toon quantization is required** *(user: "I really want the 3D world to feel like a toon
+shader hand-drawn illustration")*: surface shading quantizes into 2–3 flat cel bands —
+no smooth lambert gradients anywhere. The character's sheen reads as one stepped highlight
+band, not a smooth specular. Flat bands + rough contours + hatching + paper grain is the
+complete look.
+
 ### Audience inputs (phone)
 
 `name · drawing · primary color · personality` — the vendored draw page already carries
