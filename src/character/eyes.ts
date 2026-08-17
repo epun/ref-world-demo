@@ -63,6 +63,7 @@ uniform float uCurve;
 uniform float uWedge;
 uniform float uSize;
 uniform float uSide;
+uniform vec3 uPupil;
 varying vec2 vUv;
 
 void main() {
@@ -98,7 +99,14 @@ void main() {
   float aa = fwidth(d) * 1.5 + 1e-4;
   float alpha = 1.0 - smoothstep(-aa, aa, d);
   if (alpha < 0.01) discard;
-  gl_FragColor = vec4(uColor, alpha);
+
+  // The pupil (avatar spec: every eye has a single solid dark pupil, no
+  // highlight): a centered dark disc that squashes with the lid so it stays
+  // inside crescents and closed lines. Clipped by the mark's own SDF.
+  float dp = length(vec2(p.x, p.y / open)) - ${MARK_R} * 0.44;
+  float pupil = 1.0 - smoothstep(-aa, aa, max(dp, d));
+  vec3 shade = mix(uColor, uPupil, pupil);
+  gl_FragColor = vec4(shade, alpha);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
 }
@@ -152,6 +160,7 @@ export function createEyes(analysis: ShapeAnalysis, meshScale: number): Eyes {
 
   const shared: Record<string, IUniform> = {
     uColor: { value: new Color(CHARACTER.eye) },
+    uPupil: { value: new Color(CHARACTER.body) },
     uOpenness: { value: EXPRESSIONS.neutral.openness },
     uCurve: { value: EXPRESSIONS.neutral.curve },
     uWedge: { value: EXPRESSIONS.neutral.wedge },
