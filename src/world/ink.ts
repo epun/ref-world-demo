@@ -84,7 +84,10 @@ export interface InkParams {
 
 /** [D] Landed by screenshot iteration against the reference read. */
 const DEFAULTS: InkParams = {
-  edgeThreshold: 0.0009,
+  // 0.0009 produced spurious edge clipping at grazing view angles once the
+  // camera could orbit freely (user report); 0.004 keeps silhouettes inked
+  // without the depth-noise artifacts.
+  edgeThreshold: 0.004,
   lineWidth: 2.1,
   // 3.0 detached lines visibly from small silhouettes (user report);
   // 1.6 keeps the pen roughness with the line still riding the mesh.
