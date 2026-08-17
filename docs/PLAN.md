@@ -174,7 +174,8 @@ idle; they never hard-stop. Idle is not rest — the ambient drift floor keeps t
 
 ## 4. Egg and hatching
 
-- **Mesh**: ellipsoid, cream `#e9e5db`.
+- **Mesh**: ellipsoid, light `#e9ebe9` — the palette's *light / light-struck* role, which
+  is what makes the egg read as the one lit object in a mid-toned field.
 - **Pattern**: the drawing wrapped onto the shell — the mark centered on the front face plus
   a rotated, scaled repeat band around the sides, so it reads as a *painted* egg rather than
   a decal. Rendered from the stroke list, so it stays crisp at any scale.
@@ -225,8 +226,8 @@ each sliding into the next — never cutting.
 
 ### 6.1 ① draw
 
-Full-bleed canvas, cream ground, one black brush. Undo / clear / done. No chrome competing
-with the drawing surface.
+Full-bleed canvas, light `#e9ebe9` ground, one black brush. Undo / clear / done. Chrome is
+hairline rules and icon marks only (TASTE §4) — no filled panels.
 
 ### 6.2 ② wait
 
@@ -247,11 +248,15 @@ and labels would violate the no-uppercase rule anyway). Chao-inspired set: `happ
 `sleepy`, `angry`, `surprised`, `dance`, `wave`. Each is (eye SDF params + body deform curve
 + optional `#fb5429` glyph that **slides** in above the head and drifts).
 
-**Minimap** — top-down, cream ground, hand-drawn feel with jittered linework and `ruleLine`
-graphics. Scatter units render as tiny muted marks. Other players are `#8e908d`. **You** are
+**Minimap** — top-down on the mid-toned ground value, hand-drawn feel with jittered linework.
+Built strictly from the measured mark set: a **thin `border`**, a **single hairline
+`ruleLine`**, and **`icon`** marks (TASTE §4). No filled panel, no card, no drop shadow —
+those mark types don't exist in this taste.
+
+Scatter units render as tiny `#92928e` marks. Other players are `#666764`. **You** are
 `#080808` with the `#fb5429` ring — that ring is your one accent, so nothing else on the
-minimap may use it. Position updates throttled to ~10Hz and interpolated with a drift
-settle, so the marker never jitters or snaps.
+minimap may use it. Position updates throttled to ~10Hz and interpolated with a drift settle,
+so the marker never jitters or snaps.
 
 ---
 
@@ -260,14 +265,23 @@ settle, so the marker never jitters or snaps.
 - **Camera**: orthographic, true isometric (35.264° elevation / 45° azimuth), holding an
   imperceptibly slow **continuous drift**. It never locks, never shakes, never cuts. Reframes
   slide at `t.primary` and settle by drifting. Follow policy is in §7.1.
-- **Ground**: cream `#e9e5db`. Never pure white.
+- **Ground**: mid-toned neutral `#b6b6af`–`#c2c2bb`, targeting the measured `groundLuma
+  0.74`. **Not cream, not white** — see TASTE §2.2.
 - **Scatter**: repeated small hand-drawn units — trees, rocks, huts, birds, doodads —
   authored as silhouettes and run through the **same inflater** as the characters. Placement
   on the isometric grid with jitter; **grid governs placement, never form** (TASTE §2.5).
-  Muted values only, so frame contrast lands near 32.
-- **Density**: global ≈45. Each character carries a **negative-space exclusion radius** that
-  scatter won't enter, keeping local density ≈18 (TASTE §2.3). Both scores satisfied by a
-  placement rule.
+  Values stay inside `#92928e`–`#666764`, never darker than `#353534` — the near-black band
+  belongs to characters alone.
+- **Grain**: a subtle, uniform **full-frame grain pass** over the composited image. This is
+  the world brief's #2 defining signal (*"a steady grain sits over gloss finishes"*, 100% of
+  corpus). It is a post-process, never a material texture — it must not vary across a
+  character's fill or the silhouette stops reading as one solid shape (TASTE §2.7). Low
+  amplitude: the corpus reads *polished*, not tactile.
+- **Lighting**: hard key with sharp shadow edges, key-to-fill even and non-directional
+  (`softness 0.117`, `keyToFill 0.333`). Explicitly **not** diffuse or shadowless. Paired
+  with the gloss finish, per a defining pairing in both briefs.
+- **Density**: global ≈0.39 (measured). Each character carries a **negative-space exclusion
+  radius** that scatter won't enter (TASTE §2.3). Balanced overall, open around each subject.
 - **Shadows**: **hard-edged, flat-filled** — a single value cut sharp, no penumbra, no PCF,
   no AO smear (TASTE §2.4). Shadow as a stamped graphic shape. This is a custom pass, not
   Three.js's default shadow mapping.
@@ -378,7 +392,7 @@ scene. We extend it via `ui.skills.register`:
 | `refworld.eyes` | Eye SDF params, spacing, size, live emote preview |
 | `refworld.egg` | Hatch timer, wobble amplitude, **crack progress scrub**, force hatch |
 | `refworld.world` | Scatter density, exclusion radius, grid jitter, shadow hardness |
-| `refworld.taste` | **The verification gates from TASTE §8** — grayscale toggle, contrast histogram, damping audit, uppercase scan, stillness probe, density probe |
+| `refworld.taste` | **The verification gates from TASTE §7** — achromatic toggle, value histogram, damping audit, uppercase scan, stillness probe, density probe, mark-set lint, grain check |
 
 That last row is the important one: a taste constraint that isn't a button doesn't survive a
 build. Ghost Panel's graph editor authors the emote curves; we ship the exported data, not
@@ -406,13 +420,13 @@ API (§1); a spring library (§9); Three.js shadow mapping (§7).
 
 | Phase | Deliverable | Done when |
 |---|---|---|
-| **P0** Scaffold | Vite + TS + Three, iso camera, cream ground, motion tokens, Ghost Panel, taste gates | Empty world renders and passes the grayscale + damping gates |
+| **P0** Scaffold | Vite + TS + Three, iso camera, mid-toned ground, grain pass, motion tokens, Ghost Panel, taste gates | Empty world renders and passes the achromatic + value + damping gates |
 | **P1** Pipeline ⚠️ | Draw → mask → contour → DT → features → inflated glossy mesh, `fidelity` dial | Draw a blob, see it puffed and glossy in-world; dial tuned against ~15 real drawings |
 | **P2** Egg | Egg mesh, stroke-replay paint-on, wobble, crack shader, hatch sequence | Draw → egg paints itself → wobbles → cracks → character drifts out |
 | **P3** Life | Archetypes, gaits, waddle, idle behavior, eye SDF, emote set | Character walks the map, waddles, emotes on command, never fully stops |
 | **P4** Phone | Worker + DO, rooms, the three phone states, emote wheel, minimap | Two phones, one world, full loop end to end |
 | **P5** World | Scatter units, hard flat shadows, density gates, camera tour, dispersal AI, chunking + LOD, sphere `Surface` | Density and contrast probes pass; a busy room stays 60fps; planet variant swaps in |
-| **P6** Polish | QA, perf, mobile, safe areas | 60fps on a mid phone; every TASTE §8 gate green |
+| **P6** Polish | QA, perf, mobile, safe areas | 60fps on a mid phone; every TASTE §7 gate green |
 
 P5 absorbed the cost of the huge-map decision (§7.1) — chunking, LOD, dispersal, and the
 camera tour all land there. It's now the second-heaviest phase after P1 and should not be
@@ -427,24 +441,38 @@ set before committing to P2.
 
 ## 13. Open decisions
 
-1. **World brief token block is truncated** (TASTE §7). The pastel palette is currently
-   inferred from prose. Worth getting the real values before P5.
-2. **`fidelity` default.** Proposing 0.4 — recognizably your drawing, but standing and alive.
-   This is genuinely a taste call and should be made by looking at P1 output, not now.
-3. **Hatch pacing.** Needs a number. Tuned for a live demo, ~90s; unattended in front of an
+1. **`fidelity` default.** Proposing 0.4 — recognizably your drawing, but standing and alive.
+   A taste call to make by looking at P1 output, not now.
+2. **Hatch pacing.** Needs a number. Tuned for a live demo, ~90s; unattended in front of an
    audience, much shorter.
-4. **Camera dwell timing.** The tour (§7.1) needs a dwell duration per subject and a rule for
-   what makes a spot worth easing toward. Both want tuning against a populated world, not
-   guessing now.
-5. **Room lifetime.** Rooms persist as long as anyone's connected — but do characters survive
-   an empty room and a later rejoin, or does the world reset? Affects whether the DO needs
+3. **Camera dwell timing.** The tour (§7.1) needs a dwell duration per subject and a rule for
+   what makes a spot worth easing toward. Both want tuning against a populated world.
+4. **Room lifetime.** Rooms persist while anyone's connected — but do characters survive an
+   empty room and a later rejoin, or does the world reset? Decides whether the DO needs
    durable storage or just in-memory state.
+5. **Body type family.** The world brief's grotesque-sans read is marked *incidental*
+   (conf 0.38, "preserve: no"), so it's the one type decision genuinely open to us. The
+   wordmark is fixed: rounded slab serif, title case, bold.
+6. **1823ms.** Measured at confidence 0.06 from four references. The *constraints* around it
+   are confidence 1.00, but the number itself is a first guess to tune against.
 
 ### Decided
 
 - **Crowding** — huge map, no cap, characters roam free. Costs chunking, LOD, dispersal AI,
   and a touring camera; see §7.1.
 - **Topology** — flat map first, `SphereSurface` behind the `Surface` seam; see §7.2.
+- **World palette** — resolved. The full measured token block arrived; the ground is
+  **mid-toned neutral grey at `groundLuma 0.74`**, and there is **no pastel green or pink**
+  in this taste. The earlier inference from truncated prose was wrong and has been corrected
+  throughout (TASTE §2.2).
+
+### A caution carried from the brief
+
+The world brief marks `threeD` as **not observed** — there is no 3D evidence in its corpus at
+all, and it instructs: *"never invent a rule and attribute it to this taste."* This is a 3D
+project whose taste is silent on 3D. Rendering decisions are governed by the *observed* axes
+(color, lighting, composition, graphics, surface, motion) and otherwise are **ours**. TASTE
+tags every rule `[M]` measured or `[D]` derived so the line stays visible.
 
 ---
 

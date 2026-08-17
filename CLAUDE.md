@@ -6,22 +6,38 @@ phones emote and track their character on a minimap.
 ## Before any visual or motion work
 
 Read [`docs/TASTE.md`](docs/TASTE.md) — the arbitration between two briefs
-([character](docs/taste/character.md), [world](docs/taste/world.md)) that conflict in six
-places. **The arbitration wins over either brief.** The traps, in order of how easily they
-get violated:
+([character](docs/taste/character.md), [world](docs/taste/world.md)) that conflict in seven
+places. **The arbitration wins over either brief.**
 
-- **No overshoot, no bounce, no hard cuts, no abrupt stops.** Every spring runs at damping
-  ratio **ζ ≥ 1.0** — the solver clamps this at the API boundary so underdamped motion is
-  unrepresentable. Entrances **slide**; they never `scale: 0 → 1` or pop. Primary movements
-  are **1823ms**. Nothing ever fully arrests — an ambient drift floor runs under everything.
-  ⚠️ This directly contradicts the vendored `apple-design` skill. The arbitration wins.
-- **`#080808` belongs to characters only.** The character is the *only* high-contrast object
-  on screen (88); the world sits muted at 32. That differential is the composition, not an
-  inconsistency to smooth out.
+It tags every rule **[M]** measured (from a brief's tokens — not ours to negotiate) or
+**[D]** derived (our decision, consistent with the briefs but not attributable to them).
+Keep that discipline: the world brief explicitly says *"never invent a rule and attribute it
+to this taste."* It also marks **`threeD` as not observed** — this is a 3D project whose
+taste has no 3D evidence in it, so rendering choices follow the observed axes and are
+otherwise ours to make and to label.
+
+The traps, in order of how easily they get violated:
+
+- **No overshoot, no bounce, no hard cuts, no abrupt stops** — all confidence 1.00. Every
+  spring runs at damping ratio **ζ ≥ 1.0**; the solver clamps this at the API boundary so
+  underdamped motion is unrepresentable. Entrances **slide**; never `scale: 0 → 1`, never a
+  pop. Nothing fully arrests — an ambient drift floor runs under everything.
+  ⚠️ This contradicts the vendored `apple-design` skill. The arbitration wins.
+  ⚠️ But note **1823ms is confidence 0.06** — the constraints are certain, the number is a
+  starting point to tune.
+- **Near-black belongs to characters only.** Environment never goes below ~`#353534`. The
+  measured palette has near-black at just 0.09 prevalence — it's rare by nature, and it's
+  the character.
+- **The ground is mid-toned grey (`groundLuma 0.74`), not cream or white.** There is **no
+  pastel green or pink** in this taste; it is near-achromatic (`saturation 0.188`).
+- **Grain is a full-frame post-process, never a material.** It must not vary across a
+  character's fill or the silhouette stops reading as one solid shape.
+- **UI is `icon` + `ruleLine` + `border` only.** No filled panels, no cards, no shadows under
+  UI. That mark set is the world brief's #1 defining signal.
 - **Shadows are hard-edged and flat-filled.** Single value, cut sharp, no penumbra, no PCF,
   no AO. Not Three.js default shadow mapping.
 - **No rectilinear or engineered geometry.** The isometric grid governs *placement*, never
-  *form*. If a shape looks constructed from primitives, it's wrong.
+  *form*.
 - **No uppercase type. Anywhere.** Room codes render `xkcd`, not `XKCD`.
 
 ## Architecture
@@ -43,10 +59,10 @@ get violated:
 
 ## Taste gates
 
-TASTE §8 defines six verification gates (grayscale, contrast histogram, damping audit,
-uppercase scan, stillness probe, density probe). They ship as Ghost Panel controls and
-build-time checks, not as review checklists — a constraint that isn't a button doesn't
-survive a build. Keep them working.
+TASTE §7 defines eight verification gates (achromatic, value histogram, damping audit,
+uppercase scan, stillness probe, density probe, mark-set lint, grain check). They ship as
+Ghost Panel controls and build-time checks, not as review checklists — a constraint that
+isn't a button doesn't survive a build. Keep them working.
 
 ## Skills
 

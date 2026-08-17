@@ -21,7 +21,7 @@ tiny inside enormous soft hand-drawn environments.
 
 ## The loop
 
-1. **Draw.** One black brush on a cream canvas on your phone. Nothing else.
+1. **Draw.** One black brush on a light canvas on your phone. Nothing else.
 2. **An egg appears** in the shared world, painting itself with your strokes.
 3. **It wobbles, cracks, and hatches** — automatically after a while, or when you trigger it.
 4. **Your character walks out**, loosely derived from what you drew.
@@ -46,14 +46,16 @@ Details in [`docs/PLAN.md`](docs/PLAN.md) §1 and §3.
 
 ## The two-brief tension
 
-The character brief wants stark black marks at 88/100 contrast in near-empty frames. The
-world brief wants muted pastel environments at 32/100 contrast built from scattered
-hand-drawn units. Read together, that's exactly the image the world brief describes: *a tiny
-inhabitant lost in an enormous field.* The contrast differential **is** the composition.
+The character brief wants stark near-black marks at 88/100 contrast in near-empty frames. The
+world brief is near-achromatic and mid-toned, built from scattered hand-drawn units on a grey
+ground. Read together, that's exactly the image the world brief describes: *a tiny inhabitant
+lost in an enormous field.* The value differential **is** the composition — and the measured
+palette backs it up, with near-black appearing in only 9% of the corpus.
 
 The conflicts that don't resolve so neatly — motion especially, where the character brief
-calls the corpus static and the world brief forbids overshoot and bounce — are ruled on in
-[`docs/TASTE.md`](docs/TASTE.md).
+calls the corpus static and the world brief forbids overshoot and bounce at confidence 1.00 —
+are ruled on in [`docs/TASTE.md`](docs/TASTE.md), which tags every rule as *measured* or
+*derived* so invented rules never get attributed to the taste.
 
 ## Dev surface
 
