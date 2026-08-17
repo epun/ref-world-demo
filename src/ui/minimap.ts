@@ -114,8 +114,14 @@ export function groundLookTarget(
  * huge display and stays legible on a small one. The draw loop re-reads the
  * element's box every frame and re-derives the mark scale from it, so the
  * map redraws correctly at any size with no resize listener.
+ *
+ * The floor is deliberately low. At 132px the clamp engaged below a ~776px
+ * viewport — i.e. for most resized desktop windows — so shrinking the
+ * window stopped shrinking the map (user report). 96px keeps the vmin term
+ * live down to a ~565px viewport, and marks (mapMarkScale, floored at 0.5
+ * ≈ 120px) stay legible a little past it.
  */
-const MAP_SIZE_MIN_PX = 132;
+const MAP_SIZE_MIN_PX = 96;
 const MAP_SIZE_MAX_PX = 264;
 /** Share of the smaller viewport axis (vmin). */
 const MAP_SIZE_VMIN = 17;
