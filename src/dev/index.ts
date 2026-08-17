@@ -23,7 +23,17 @@ import type { CreatureManager } from '../creatures/manager';
 import type { InkParams } from '../world/ink';
 import { EMOTE_NAMES } from '../net/protocol';
 import { springRegistry } from '../motion/spring';
-import { achromaticGate, auditDampingGate, valueHistogramGate } from '../taste/gates';
+import {
+  achromaticGate,
+  auditDampingGate,
+  densityGate,
+  grainGate,
+  markSetGate,
+  valueHistogramGate,
+  type MarkSample,
+} from '../taste/gates';
+import { WIND_OVERRIDE_MAX } from '../world/environment';
+import { SCATTER_STEP } from '../world/scatter';
 import { GRAIN } from '../taste/tokens';
 import { FALLBACK_DRAWINGS, FALLBACK_HATCH_MS } from './fixtures';
 import { DEV_SKILLS_META } from './skills-meta';
@@ -43,6 +53,8 @@ export interface DevScatterApi {
   setKindDensity?(kind: string, mult: number): void;
   setKindScale?(kind: string, mult: number): void;
   setExclusions(points: { x: number; z: number; r: number }[]): void;
+  /** Live prop placements (non-tick) — the density probe samples these. */
+  positions?(): { x: number; z: number; r: number }[];
   group?: Object3D;
 }
 
@@ -65,6 +77,9 @@ export interface DevEnvironmentApi {
   setWeather(name: string): void;
   setTimeOfDay(t: number): void;
   setIntensity(v: number): void;
+  /** Wind override (src/world/environment.ts): number pins the wind, null
+   * hands it back to the weather presets. Optional — feature-detected. */
+  setWindOverride?(v: number | null): void;
   state?: unknown;
 }
 
@@ -100,6 +115,8 @@ export interface DevHandles {
    * passed through as unknown and feature-detected here. */
   environment?: unknown;
   setGrainAmplitude?(v: number): void;
+  /** Live grain amplitude readback, for the grain gate (QA audit D6). */
+  getGrainAmplitude?(): number;
   /** Spawn n deterministic fixture drawings. Defaults to an internal
    * implementation over FALLBACK_DRAWINGS when absent. */
   spawnFallback?(n: number): void;
@@ -107,6 +124,73 @@ export interface DevHandles {
 
 /** Offscreen readback resolution for the pixel gates. */
 const READBACK_SIZE = 256;
+
+/**
+ * [D] Density-probe sampling unit: a two-iso-step neighborhood. Scatter
+ * clusters seed per grid cell, so a 2-step tile is the local composition
+ * unit — the fraction of tiles holding at least one prop is the plan-view
+ * stand-in for the brief's composition density. Measured against the shipped
+ * world: 0.400 occupancy vs the 0.39 target, so the metric reads the design
+ * where it stands (raw footprint area, by contrast, reads ~0.03 and would
+ * measure colliders, not composition).
+ */
+const DENSITY_TILE_UNITS = SCATTER_STEP * 2;
+
+/** Per-tile occupancy samples over the scattered region's bounding square. */
+function densityCoverageSamples(props: { x: number; z: number }[]): number[] {
+  let extent = DENSITY_TILE_UNITS;
+  for (const p of props) {
+    extent = Math.max(extent, Math.abs(p.x), Math.abs(p.z));
+  }
+  const n = Math.max(1, Math.ceil((2 * extent) / DENSITY_TILE_UNITS));
+  const samples = new Array<number>(n * n).fill(0);
+  for (const p of props) {
+    const ix = Math.min(n - 1, Math.max(0, Math.floor((p.x + extent) / DENSITY_TILE_UNITS)));
+    const iz = Math.min(n - 1, Math.max(0, Math.floor((p.z + extent) / DENSITY_TILE_UNITS)));
+    samples[ix * n + iz] = 1;
+  }
+  return samples;
+}
+
+/**
+ * App ui elements the mark-set lint samples (TASTE §4: icon + ruleLine +
+ * border only). The minimap carries the recorded torn-paper ruling from the
+ * qa audit (p8) — reported as an exemption, never a violation.
+ */
+const MARK_LINT_TARGETS: { selector: string; name: string; exemptReason?: string }[] = [
+  { selector: '.draw-open', name: 'draw control' },
+  { selector: '.join-line', name: 'join line' },
+  { selector: '.egg-hint', name: 'egg hint' },
+  { selector: '.draw-hint', name: 'draw hint' },
+  { selector: '.hover-name', name: 'hover name' },
+  {
+    selector: '.world-minimap',
+    name: 'minimap',
+    exemptReason: 'torn-paper scrap ruling — deliberate ground fill, qa audit p8',
+  },
+];
+
+/** Read computed styles off the live ui: an opaque background is a filled
+ * panel, any box shadow is an unrepresented mark. */
+function sampleUiMarks(): MarkSample[] {
+  const out: MarkSample[] = [];
+  for (const target of MARK_LINT_TARGETS) {
+    const el = document.querySelector(target.selector);
+    if (!(el instanceof Element)) continue;
+    const cs = getComputedStyle(el);
+    const bg = cs.backgroundColor;
+    const filled =
+      bg !== '' && bg !== 'transparent' && !/^rgba\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*0\s*\)$/.test(bg);
+    const shadowed = cs.boxShadow !== '' && cs.boxShadow !== 'none';
+    out.push({
+      name: target.name,
+      filled,
+      shadowed,
+      ...(target.exemptReason !== undefined ? { exemptReason: target.exemptReason } : {}),
+    });
+  }
+  return out;
+}
 
 /** How many fallback creatures one button press spawns. */
 const FALLBACK_SPAWN_COUNT = 3;
@@ -473,6 +557,20 @@ export async function initDevPanel(
         id: 'weather-intensity',
         onChange: (v) => env.setIntensity(v),
       });
+      // Wind override (QA audit D5) — feature-detected like the rest: the
+      // slider pins the wind through weather changes; auto hands it back to
+      // the presets (null). Both glide on the environment's ζ≥1 springs.
+      if (typeof env.setWindOverride === 'function') {
+        folder.addSlider('wind override', {
+          min: 0,
+          max: WIND_OVERRIDE_MAX,
+          step: 0.05,
+          value: 0.3,
+          id: 'wind-override',
+          onChange: (v) => env.setWindOverride?.(v),
+        });
+        folder.addButton('wind auto (release override)', () => env.setWindOverride?.(null));
+      }
       return { folder };
     },
     teardown: (panelUi) => panelUi.panel.removeFolder('weather'),
@@ -541,6 +639,40 @@ export async function initDevPanel(
           setReadout(`value histogram — ${result.pass ? 'pass' : 'fail'}: ${result.detail}`);
           refreshStillness();
         });
+      });
+      // ── density probe (TASTE §7, QA audit D6): live scatter placements
+      // sampled as 2-step-tile occupancy against DENSITY.global.
+      folder.addButton('density probe', () => {
+        const props = handles.scatter?.positions?.();
+        if (!props || props.length === 0) {
+          setReadout('density probe — no scatter positions in this world build');
+          return;
+        }
+        const result = densityGate(densityCoverageSamples(props));
+        setReadout(`density probe — ${result.pass ? 'pass' : 'fail'}: ${result.detail}`);
+        refreshStillness();
+      });
+      // ── mark-set lint (TASTE §4/§7, QA audit D6): computed styles of the
+      // live app ui against the icon/ruleLine/border mark set. color + type
+      // (hex outside tokens, uppercase) are covered at build time by
+      // gate:static; this button lints what only a running dom shows —
+      // fills and shadows.
+      folder.addButton('mark-set lint', () => {
+        const result = markSetGate(sampleUiMarks());
+        setReadout(`mark-set lint — ${result.pass ? 'pass' : 'fail'}: ${result.detail}`);
+        refreshStillness();
+      });
+      // ── grain check (TASTE §2.7/§7, QA audit D6): live amplitude off the
+      // grain pass handle; uniformity is structural (one full-frame uniform).
+      folder.addButton('grain check', () => {
+        const get = handles.getGrainAmplitude;
+        if (!get) {
+          setReadout('grain check — no grain handle in this world build');
+          return;
+        }
+        const result = grainGate(get());
+        setReadout(`grain check — ${result.pass ? 'pass' : 'fail'}: ${result.detail}`);
+        refreshStillness();
       });
       return { folder, refreshStillness };
     },

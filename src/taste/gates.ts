@@ -9,7 +9,7 @@
  */
 
 import { auditDamping } from '../motion/spring';
-import { CHARACTER, COLOR_METRICS, DENSITY } from './tokens';
+import { CHARACTER, COLOR_METRICS, DENSITY, GRAIN, MARK_KINDS } from './tokens';
 
 export interface GateResult {
   pass: boolean;
@@ -216,6 +216,82 @@ export function densityGate(coverageSamples: number[]): GateResult {
       `mean coverage ${mean.toFixed(3)} over ${coverageSamples.length} sample(s) ` +
       `(target ${DENSITY.global} ± ${DENSITY_TOLERANCE})` +
       (pass ? '' : ` — too ${direction}; open ground is the design`),
+  };
+}
+
+// ── grain gate ───────────────────────────────────────────────────────────────
+
+/** [D] Amplitude ceiling — matches the panel slider's range. Above it the
+ * grain stops reading polished-and-subtle and starts reading tactile. */
+const GRAIN_AMPLITUDE_MAX = 0.12;
+
+/**
+ * Grain is a defining signal (TASTE §2.7): present, subtle, and uniform. the
+ * caller reads the live amplitude off the grain pass handle; uniformity
+ * across the frame — and within any character's fill — holds by construction
+ * (one uniform on one full-frame post pass, never a material), so the gate's
+ * measurable half is the amplitude staying inside (0, GRAIN_AMPLITUDE_MAX].
+ */
+export function grainGate(amplitude: number): GateResult {
+  if (!Number.isFinite(amplitude)) {
+    return { pass: false, detail: 'no live grain amplitude supplied' };
+  }
+  const present = amplitude > 0;
+  const subtle = amplitude <= GRAIN_AMPLITUDE_MAX;
+  return {
+    pass: present && subtle,
+    detail:
+      `amplitude ${amplitude.toFixed(3)} (token ${GRAIN.amplitude}, bounds 0 < a <= ${GRAIN_AMPLITUDE_MAX}), ` +
+      'uniform by construction: one full-frame uniform, never a material' +
+      (present ? '' : ' — the steady grain is a defining signal; zero is a violation') +
+      (subtle ? '' : ' — louder than polished; the corpus reads low grain over gloss'),
+  };
+}
+
+// ── mark-set lint ────────────────────────────────────────────────────────────
+
+/**
+ * One sampled ui element for the mark-set lint. the caller (dev panel)
+ * inspects computed styles: `filled` = an opaque background fill (a panel /
+ * card read), `shadowed` = any box shadow. `exemptReason` marks a deliberate
+ * taste ruling (e.g. the minimap's torn-paper scrap fill) — reported in the
+ * detail, never counted as a violation.
+ */
+export interface MarkSample {
+  name: string;
+  filled: boolean;
+  shadowed: boolean;
+  exemptReason?: string;
+}
+
+/**
+ * UI uses only `icon`, `ruleLine`, `border` (TASTE §4 — the world brief's #1
+ * defining signal). filled panels and shadows under ui are unrepresented
+ * mark types; any sampled element carrying one fails unless it holds a
+ * recorded exemption ruling.
+ */
+export function markSetGate(samples: MarkSample[]): GateResult {
+  if (samples.length === 0) {
+    return { pass: false, detail: 'no ui elements sampled' };
+  }
+  const violations: string[] = [];
+  const exemptions: string[] = [];
+  for (const s of samples) {
+    const marks: string[] = [];
+    if (s.filled) marks.push('filled panel');
+    if (s.shadowed) marks.push('shadow');
+    if (marks.length === 0) continue;
+    if (s.exemptReason) exemptions.push(`${s.name} (${s.exemptReason})`);
+    else violations.push(`${s.name}: ${marks.join(' + ')}`);
+  }
+  return {
+    pass: violations.length === 0,
+    detail:
+      `${samples.length} element(s) against mark set [${MARK_KINDS.join(', ')}]` +
+      (violations.length === 0
+        ? ' — no unrepresented marks'
+        : ` — ${violations.join('; ')}`) +
+      (exemptions.length > 0 ? `; ruled exemptions: ${exemptions.join('; ')}` : ''),
   };
 }
 

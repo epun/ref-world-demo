@@ -256,6 +256,10 @@ function main(): void {
         tour,
         ink: world.ink,
         scatter: world.scatter,
+        // Grain amplitude handle (QA audit D5): the panel slider and the
+        // grain gate both ride the pass's single full-frame uniform.
+        setGrainAmplitude: (v) => world.grain.setAmplitude(v),
+        getGrainAmplitude: () => world.grain.getAmplitude(),
         // Weather handle from a parallel workstream — forwarded as-is and
         // feature-detected inside the panel, so this compiles either way.
         environment: (world as { environment?: unknown }).environment,

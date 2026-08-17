@@ -109,6 +109,17 @@ export class GrainPass {
     this.target?.setSize(this.width, this.height);
   }
 
+  /** Runtime amplitude handle (dev panel + grain gate). The value is one
+   * uniform on a full-frame pass, so uniformity across the frame — and
+   * across any character's fill — holds by construction (TASTE §2.7). */
+  setAmplitude(v: number): void {
+    this.material.uniforms.uAmplitude!.value = Math.max(0, v);
+  }
+
+  getAmplitude(): number {
+    return this.material.uniforms.uAmplitude!.value as number;
+  }
+
   /** Compose an already-rendered (linear) texture to screen with grain. */
   compose(renderer: WebGLRenderer, input: Texture, nowMs: number): void {
     // Wrapped so precision holds over long sessions.

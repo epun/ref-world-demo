@@ -413,6 +413,23 @@ export function createCreatureManager(world: WorldHandles): CreatureManager {
       // Environmental affordances, sampled once per frame for every agent.
       const props = readProps(world);
 
+      // World-units-per-screen-pixel for the bubbles' legibility floor (QA
+      // audit D4): ortho frustum height / viewport height / zoom. Feature-
+      // detected so headless tests (stub worlds, no window) skip the feed.
+      let worldUnitsPerPx = 0;
+      const camera = world.cameraRig?.camera;
+      if (
+        camera &&
+        typeof window !== 'undefined' &&
+        typeof camera.top === 'number' &&
+        typeof camera.bottom === 'number' &&
+        typeof camera.zoom === 'number'
+      ) {
+        worldUnitsPerPx =
+          (camera.top - camera.bottom) /
+          (Math.max(1, window.innerHeight) * Math.max(0.01, camera.zoom));
+      }
+
       // Prop colliders: re-index only when the scatter's version moves.
       const scatterPhysics = readScatterPhysics(world);
       if (scatterPhysics) {
@@ -459,6 +476,7 @@ export function createCreatureManager(world: WorldHandles): CreatureManager {
         slot.hatch?.update(dt, nowMs);
 
         if (slot.character) {
+          if (worldUnitsPerPx > 0) slot.character.setWorldUnitsPerPixel?.(worldUnitsPerPx);
           slot.character.update(dt, nowMs);
 
           // Autonomous behavior: the agent owns the root's x/z and heading.

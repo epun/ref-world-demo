@@ -165,6 +165,15 @@ const NIGHT_EXPOSURE = 0.55;
 /** Background (sky/ground field) luma scale at deep night. */
 const NIGHT_BACKGROUND = 0.72;
 
+/**
+ * [D] Hatch multiplier cap at deep night (QA audit D7). With the sun down
+ * the near-horizontal key turns nearly every face away from the light, so
+ * hatching covers the whole field; capping the multiplier at 0.75 of the
+ * weather-driven value keeps the night ground hatched but calm — plain
+ * paper still reads through, and the frame never collapses into stripes.
+ */
+export const NIGHT_HATCH_CAP = 0.75;
+
 function smoothstep(a: number, b: number, x: number): number {
   const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
   return t * t * (3 - 2 * t);
@@ -378,7 +387,9 @@ export function createEnvironment(deps: EnvironmentDeps): Environment {
     inkEnv.fogAmt = fogAmt.update(dt);
     inkEnv.rainAmt = rainAmt.update(dt);
     inkEnv.snowAmt = snowAmt.update(dt);
-    inkEnv.hatchMul = hatchMul.update(dt);
+    // Night cap (QA audit D7): the day factor glides with the time-of-day
+    // spring, so the cap fades in/out on the same drift as everything else.
+    inkEnv.hatchMul = hatchMul.update(dt) * (NIGHT_HATCH_CAP + (1 - NIGHT_HATCH_CAP) * day);
     deps.ink.setKeyDirection(direction);
     deps.ink.setEnvironment(inkEnv);
 

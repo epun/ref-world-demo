@@ -10,9 +10,12 @@ import {
   achromaticGate,
   auditDampingGate,
   densityGate,
+  grainGate,
+  markSetGate,
   stillnessGate,
   valueHistogramGate,
 } from '../../src/taste/gates';
+import { GRAIN } from '../../src/taste/tokens';
 
 /** build an rgba buffer from a list of opaque rgb pixels. */
 function rgba(pixels: [number, number, number][]): Uint8ClampedArray {
@@ -147,5 +150,62 @@ describe('auditDampingGate', () => {
     const result = auditDampingGate();
     expect(result.pass).toBe(true);
     expect(result.violations).toEqual([]);
+  });
+});
+
+describe('grainGate', () => {
+  it('passes the token amplitude', () => {
+    const result = grainGate(GRAIN.amplitude);
+    expect(result.pass).toBe(true);
+    expect(result.detail).toContain('uniform by construction');
+  });
+
+  it('fails at zero — the steady grain is a defining signal', () => {
+    const result = grainGate(0);
+    expect(result.pass).toBe(false);
+    expect(result.detail).toContain('defining signal');
+  });
+
+  it('fails above the polished ceiling', () => {
+    const result = grainGate(0.2);
+    expect(result.pass).toBe(false);
+    expect(result.detail).toContain('louder than polished');
+  });
+
+  it('fails a non-finite reading', () => {
+    expect(grainGate(Number.NaN).pass).toBe(false);
+  });
+});
+
+describe('markSetGate', () => {
+  it('passes clean icon/rule/border elements', () => {
+    const result = markSetGate([
+      { name: 'draw control', filled: false, shadowed: false },
+      { name: 'join line', filled: false, shadowed: false },
+    ]);
+    expect(result.pass).toBe(true);
+    expect(result.detail).toContain('icon');
+  });
+
+  it('fails a filled panel', () => {
+    const result = markSetGate([{ name: 'hud card', filled: true, shadowed: false }]);
+    expect(result.pass).toBe(false);
+    expect(result.detail).toContain('filled panel');
+  });
+
+  it('fails a shadowed element', () => {
+    expect(markSetGate([{ name: 'popup', filled: false, shadowed: true }]).pass).toBe(false);
+  });
+
+  it('reports a ruled exemption without failing', () => {
+    const result = markSetGate([
+      { name: 'minimap', filled: true, shadowed: false, exemptReason: 'torn-paper ruling' },
+    ]);
+    expect(result.pass).toBe(true);
+    expect(result.detail).toContain('torn-paper ruling');
+  });
+
+  it('fails with no elements sampled', () => {
+    expect(markSetGate([]).pass).toBe(false);
   });
 });

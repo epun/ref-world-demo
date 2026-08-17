@@ -38,7 +38,7 @@ export const DEV_SKILLS_META: readonly DevSkillMeta[] = [
     name: 'weather',
     category: 'refworld',
     description:
-      'weather controls — clear/overcast/fog/rain/snow, time of day, intensity. no-ops gracefully when the world exposes no environment handle.',
+      'weather controls — clear/overcast/fog/rain/snow, time of day, intensity, wind override. no-ops gracefully when the world exposes no environment handle.',
   },
   {
     id: 'refworld.character',
@@ -51,6 +51,6 @@ export const DEV_SKILLS_META: readonly DevSkillMeta[] = [
     name: 'taste',
     category: 'refworld',
     description:
-      'verification gates from taste §7 — damping audit, achromatic check, value histogram, stillness note.',
+      'verification gates from taste §7 — damping audit, achromatic check, value histogram, density probe, mark-set lint, grain check, stillness note.',
   },
 ];

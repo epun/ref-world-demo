@@ -9,6 +9,7 @@ import { Vector3 } from 'three';
 import {
   createEnvironment,
   daylight,
+  NIGHT_HATCH_CAP,
   sunArc,
   sunDirection,
   WEATHER,
@@ -168,6 +169,23 @@ describe('createEnvironment', () => {
     expect(deps.lastInk!.exposure).toBeGreaterThan(0.4);
     // The background field dips in value too.
     expect(deps.lastBackground).toBeLessThan(0.8);
+  });
+
+  it('caps the night hatch multiplier so the ground keeps plain paper (qa audit d7)', () => {
+    const deps = makeDeps();
+    const env = createEnvironment(deps);
+    // Noon, clear: the cap is inactive — the ink pass sees the weather value.
+    expect(deps.lastInk!.hatchMul).toBeCloseTo(1, 6);
+    env.setTimeOfDay(0);
+    settle(env);
+    // Deep night: hatch is capped at NIGHT_HATCH_CAP of the weather-driven
+    // value, and the state's weather channel itself stays uncapped.
+    expect(deps.lastInk!.hatchMul).toBeCloseTo(NIGHT_HATCH_CAP, 3);
+    expect(env.state.hatchMul).toBeCloseTo(1, 3);
+    // Back to noon: the cap glides out with the day factor.
+    env.setTimeOfDay(0.5);
+    settle(env);
+    expect(deps.lastInk!.hatchMul).toBeCloseTo(1, 3);
   });
 
   it('glides monotonically toward a weather target with no overshoot', () => {

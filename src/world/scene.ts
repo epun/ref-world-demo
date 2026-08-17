@@ -19,6 +19,15 @@ import { FlatShadows } from './shadows';
 
 export type FrameCallback = (dt: number, nowMs: number) => void;
 
+/**
+ * Frame-time ceiling for the sim step (QA audit D3). Real elapsed time is
+ * integrated up to here — down to ~4 fps the world stays wall-clock true —
+ * and only a longer gap (tab return, debugger pause) is clamped so the
+ * catch-up never lands as a lurch. Springs are unconditionally stable at
+ * this step size (ζ ≥ 1 + internal 16ms substepping in src/motion/spring.ts).
+ */
+export const DT_CLAMP_MS = 250;
+
 export interface WorldHandles {
   scene: Scene;
   cameraRig: CameraRig;
@@ -29,6 +38,8 @@ export interface WorldHandles {
   scatter: Scatter;
   /** Ink pass tuning surface for the dev panel. */
   ink: InkPass;
+  /** Grain pass amplitude handle (dev panel slider + grain gate). */
+  grain: GrainPass;
   /** Time-of-day + weather engine (spring-glided; drives lights + ink). */
   environment: Environment;
   /** Register per-frame work (entity drift, gaits, …). Runs before render. */
@@ -151,8 +162,12 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
   let last = performance.now();
 
   const loop = (nowMs: number): void => {
-    // Clamp dt so a background tab doesn't come back with a lurch.
-    const dt = Math.min(nowMs - last, 100);
+    // Integrate real elapsed time up to DT_CLAMP_MS so low fps never turns
+    // into slow motion (QA audit D3): every spring is ζ≥1 and substeps at
+    // 16ms internally, so a 250ms step settles without overshoot. Beyond the
+    // clamp (a background tab returning) the frame is capped — a lurch guard,
+    // not a pacing mechanism.
+    const dt = Math.min(nowMs - last, DT_CLAMP_MS);
     last = nowMs;
 
     cameraRig.update(dt, nowMs);
@@ -180,6 +195,7 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
     shadows,
     scatter,
     ink,
+    grain,
     environment,
     onFrame: (callback: FrameCallback): void => {
       frameCallbacks.push(callback);

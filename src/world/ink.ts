@@ -128,6 +128,7 @@ uniform float uEdgeThreshold;
 uniform float uLineWidth;
 uniform float uWobble;
 uniform float uHatchStrength;
+uniform float uHatchPeriod;
 uniform vec3 uInk;
 uniform vec3 uLightDir;
 uniform float uAnchors[6];
@@ -212,14 +213,19 @@ void main() {
     vec3 nrm = readNormal(vUv);
     float ndl = dot(nrm, uLightDir);
     float jit = (fbm(sp * 0.05 + 91.7) - 0.5) * 5.0;
-    float coord1 = (sp.x * 0.5 + sp.y + wob.x * 2.0 + jit) / 7.0;
+    float coord1 = (sp.x * 0.5 + sp.y + wob.x * 2.0 + jit) / uHatchPeriod;
     float line1 = 1.0 - smoothstep(0.18, 0.34, abs(fract(coord1) - 0.5));
-    float coord2 = (sp.x - sp.y * 0.5 + wob.y * 2.0 + jit) / 7.0;
+    float coord2 = (sp.x - sp.y * 0.5 + wob.y * 2.0 + jit) / uHatchPeriod;
     float line2 = 1.0 - smoothstep(0.16, 0.3, abs(fract(coord2) - 0.5));
     float band1 = 1.0 - smoothstep(0.12, 0.3, ndl);
     float band2 = 1.0 - smoothstep(-0.2, -0.02, ndl);
     float hatch = clamp(line1 * band1 + line2 * band2, 0.0, 1.0);
-    col = mix(col, uInk, hatch * uHatchStrength * uHatchMul);
+    // Near-black exemption (QA audit D7, mirrors the grain rule TASTE §2.7):
+    // the character is one solid mass — where the beauty luma sits in the
+    // near-black band the hatch contribution fades to nothing, so full-field
+    // night hatching never breaks the silhouette into stripes.
+    float solidMass = smoothstep(0.05, 0.14, l);
+    col = mix(col, uInk, hatch * uHatchStrength * uHatchMul * solidMass);
 
     // ── rough contour lines over depth + normal discontinuities ──────────
     float wWidth = uLineWidth * (0.7 + 0.6 * fbm(sp * 0.021 + 5.1));
@@ -303,6 +309,19 @@ void main() {
 }
 `;
 
+/** [D] Base hatch stroke period in device pixels (landed by screenshot
+ * iteration — the day look at DPR 1). */
+const HATCH_PERIOD_PX = 7;
+
+/** [D] Screen-space floor between hatch strokes, in CSS pixels (QA audit
+ * D7): under ~4px the diagonal strokes interfere with the pixel grid and
+ * alias into corduroy moiré at DPR 2. */
+const HATCH_MIN_SPACING_PX = 4;
+
+/** Stroke-normal length of the (0.5, 1) hatch direction — converts a period
+ * along the coordinate axis into perpendicular line spacing. */
+const HATCH_DIAGONAL = Math.hypot(0.5, 1);
+
 /** The cel band anchors: the measured palette, as linear lumas, ascending.
  * SURFACE.shadow shares WORLD.neutral's value, so the shadow stamps sit on
  * an anchor by construction. */
@@ -350,6 +369,7 @@ export class InkPass {
         uLineWidth: { value: this.params.lineWidth },
         uWobble: { value: this.params.wobble },
         uHatchStrength: { value: this.params.hatchStrength },
+        uHatchPeriod: { value: HATCH_PERIOD_PX },
         uInk: { value: linearColor(WORLD.ink) },
         uLightDir: { value: this.lightView },
         uAnchors: { value: ANCHORS },
@@ -386,6 +406,16 @@ export class InkPass {
     this.normalTarget.setSize(w, h);
     this.outTarget.setSize(w, h);
     this.resolution.set(w, h);
+    // Hatch frequency limit (QA audit D7): hold the perpendicular stroke
+    // spacing at >= HATCH_MIN_SPACING_PX CSS pixels regardless of DPR, and
+    // quantize the period to whole device pixels so the stroke lattice never
+    // sits in an interference band with the pixel grid. At DPR 1 this is
+    // exactly the calibrated HATCH_PERIOD_PX; at DPR 2 it widens to 9.
+    const period = Math.max(
+      HATCH_PERIOD_PX,
+      Math.ceil(HATCH_MIN_SPACING_PX * pixelRatio * HATCH_DIAGONAL),
+    );
+    this.material.uniforms.uHatchPeriod!.value = period;
   }
 
   setParams(next: Partial<InkParams>): void {

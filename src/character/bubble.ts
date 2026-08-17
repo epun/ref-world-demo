@@ -114,6 +114,15 @@ const CANVAS_PX = 192;
 /** Bubble size in world units (square sprite). */
 const BUBBLE_SIZE = 1.1;
 
+/**
+ * [D] Screen-space legibility floor (QA audit D4): the bubble is the primary
+ * legible emote signal, and proportional-to-the-creature made it a ~14px
+ * speck at the default framing. The sprite never renders under this many CSS
+ * pixels tall — the floor only ever raises the world-proportional size,
+ * never shrinks it, and the entrance/exit springs run untouched.
+ */
+const MIN_SCREEN_PX = 44;
+
 /** Gap between the character's bounding-box top and the bubble's bottom. */
 const HEAD_MARGIN = 0.3;
 
@@ -145,6 +154,13 @@ export interface Bubble {
   show(emote: EmoteName): void;
   /** Advance springs and the hold/exit timeline. Call once per frame. */
   update(dt: number, nowMs: number): void;
+  /**
+   * Current world-units-per-screen-pixel (ortho frustum height / viewport
+   * height / camera zoom), fed by the owner whenever it can compute it.
+   * Drives the screen-space legibility floor; 0 (the default) disables the
+   * floor and keeps the pure world-proportional size (headless callers).
+   */
+  setWorldUnitsPerPixel(v: number): void;
   /** Release GPU resources and unregister the springs. */
   dispose(): void;
 }
@@ -269,6 +285,8 @@ export function createBubble(options: BubbleOptions): Bubble {
   let phase: BubblePhase = 'hidden';
   let phaseMs = 0;
   let shownEmoji = '';
+  /** Legibility floor in world units — MIN_SCREEN_PX at the current zoom. */
+  let minWorldSize = 0;
 
   return {
     object: sprite,
@@ -326,11 +344,24 @@ export function createBubble(options: BubbleOptions): Bubble {
         MOTION.ambientAmplitude *
         BUBBLE_SIZE;
 
-      sprite.position.y = y.update(dt) + sway;
-      const k = scale.update(dt) * BUBBLE_SIZE;
+      // Screen-space floor (QA audit D4): clamp ABOVE the spring-driven
+      // world-proportional size, never below it. The spring still advances
+      // every frame, so entrance/exit motion carries straight through when
+      // the floor is not binding, and position/opacity keep sliding when it
+      // is — the gesture never cuts.
+      const k = Math.max(scale.update(dt) * BUBBLE_SIZE, minWorldSize);
       sprite.scale.set(k, k, 1);
+      // When the floor grows the bubble past its proportional size, lift it
+      // by the extra half-height so the tail keeps the same gap above the
+      // head instead of swallowing the (intentionally tiny) creature.
+      const lift = Math.max(0, (k - BUBBLE_SIZE) / 2);
+      sprite.position.y = y.update(dt) + sway + lift;
       visibleOpacity = opacity.update(dt);
       material.opacity = visibleOpacity;
+    },
+
+    setWorldUnitsPerPixel(v: number): void {
+      minWorldSize = v > 0 && Number.isFinite(v) ? MIN_SCREEN_PX * v : 0;
     },
 
     dispose(): void {

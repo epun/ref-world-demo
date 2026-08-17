@@ -9,6 +9,7 @@ import { describe, expect, it } from 'vitest';
 import {
   BUBBLE_EMOJI,
   bubbleOutlinePoints,
+  createBubble,
   toGrayscaleLuma,
 } from '../../src/character/bubble';
 import { EMOTE_NAMES } from '../../src/net/protocol';
@@ -89,5 +90,52 @@ describe('grayscale luma pass', () => {
     const input = new Uint8ClampedArray([255, 0, 0, 255]);
     toGrayscaleLuma(input);
     expect([...input]).toEqual([255, 0, 0, 255]);
+  });
+});
+
+describe('screen-space legibility floor (qa audit d4)', () => {
+  /** Settle the entrance well past its spring window. */
+  function settle(bubble: ReturnType<typeof createBubble>): void {
+    for (let t = 0; t < 3000; t += 16) bubble.update(16, t);
+  }
+
+  it('holds pure world-proportional size without a feed (headless default)', () => {
+    const bubble = createBubble({ seed: 1.5, anchorY: 3.5 });
+    bubble.show('happy');
+    settle(bubble);
+    expect(bubble.object.scale.x).toBeCloseTo(1.1, 3); // BUBBLE_SIZE
+    bubble.dispose();
+  });
+
+  it('never renders under 44 screen pixels once fed world-units-per-pixel', () => {
+    const bubble = createBubble({ seed: 1.5, anchorY: 3.5 });
+    // 40-unit frustum over an 800px viewport at zoom 1 → 0.05 units/px.
+    bubble.setWorldUnitsPerPixel(0.05);
+    bubble.show('happy');
+    settle(bubble);
+    const px = bubble.object.scale.x / 0.05;
+    expect(px).toBeGreaterThanOrEqual(44 - 1e-6);
+    bubble.dispose();
+  });
+
+  it('clamps above the proportional size, never below it (zoomed in)', () => {
+    const bubble = createBubble({ seed: 1.5, anchorY: 3.5 });
+    // Close zoom: 0.005 units/px → the floor (0.22 units) sits far below the
+    // proportional 1.1 — the world size must win untouched.
+    bubble.setWorldUnitsPerPixel(0.005);
+    bubble.show('happy');
+    settle(bubble);
+    expect(bubble.object.scale.x).toBeCloseTo(1.1, 3);
+    bubble.dispose();
+  });
+
+  it('ignores a zero/invalid feed', () => {
+    const bubble = createBubble({ seed: 1.5, anchorY: 3.5 });
+    bubble.setWorldUnitsPerPixel(0);
+    bubble.setWorldUnitsPerPixel(Number.NaN);
+    bubble.show('happy');
+    settle(bubble);
+    expect(bubble.object.scale.x).toBeCloseTo(1.1, 3);
+    bubble.dispose();
   });
 });

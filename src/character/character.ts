@@ -61,6 +61,14 @@ export interface Character {
    * and completes its last half-step when speed returns to zero.
    */
   setLocomotion(speed: number, heading: number): void;
+  /**
+   * Feed the current world-units-per-screen-pixel (frustum height / viewport
+   * height / zoom) so the speech bubble can hold its screen-space legibility
+   * floor (QA audit D4). Optional: headless callers and older constructions
+   * may not implement it, and without the feed the bubble stays purely
+   * world-proportional.
+   */
+  setWorldUnitsPerPixel?(v: number): void;
   /** Apply the ambient drift floor and advance the eyes. Call once per frame. */
   update(dt: number, nowMs: number): void;
   /** Release GPU resources. Remove the group from the scene first. */
@@ -234,6 +242,9 @@ export function createCharacter(
     setLocomotion(speed: number, heading: number): void {
       locoSpeed = speed;
       locoHeading = heading;
+    },
+    setWorldUnitsPerPixel(v: number): void {
+      bubble.setWorldUnitsPerPixel(v);
     },
     update(dt: number, nowMs: number): void {
       // Ambient drift only — no idle bob, nothing that reads as bounce.
