@@ -15,6 +15,8 @@
 
 import { Vector3 } from 'three';
 import type { Group, Object3D } from 'three';
+import { BehaviorAgent, type AgentPeer, type AgentProp } from '../behavior/agent';
+import { personalityFromChoice, type PersonalityChoice } from '../behavior/personality';
 import { createCharacter, type Character } from '../character/character';
 import { createEgg, type Egg } from '../egg/egg';
 import { startHatch, type HatchHandle } from '../egg/hatch';
@@ -48,6 +50,53 @@ function smoothstep(edge0: number, edge1: number, x: number): number {
   return t * t * (3 - 2 * t);
 }
 
+/** Deterministic behavior seed from the slot id (fnv-1a). Same id → same
+ * hidden life on every device; no Math.random in the behavior path. */
+function behaviorSeed(id: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < id.length; i++) {
+    h ^= id.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+/**
+ * Environmental affordances: WorldHandles may grow a `scatter` handle with
+ * prop positions (another workstream). Feature-detect it loosely — accept a
+ * `positions()` method or an `items`/`placements` array of {x, z, kind?} —
+ * and return null when absent, which the agents treat as "no props known".
+ */
+function readProps(world: WorldHandles): AgentProp[] | null {
+  const scatter = (world as WorldHandles & { scatter?: unknown }).scatter;
+  if (typeof scatter !== 'object' || scatter === null) return null;
+  const rec = scatter as unknown as Record<string, unknown>;
+  let source: unknown = null;
+  if (typeof rec['positions'] === 'function') {
+    try {
+      source = (rec['positions'] as () => unknown)();
+    } catch {
+      return null;
+    }
+  } else {
+    source = rec['items'] ?? rec['placements'];
+  }
+  if (!Array.isArray(source)) return null;
+  const out: AgentProp[] = [];
+  for (const item of source as unknown[]) {
+    if (typeof item !== 'object' || item === null) continue;
+    const p = item as Record<string, unknown>;
+    if (typeof p['x'] === 'number' && typeof p['z'] === 'number') {
+      out.push({
+        x: p['x'],
+        z: p['z'],
+        kind: typeof p['kind'] === 'string' ? p['kind'] : 'prop',
+      });
+    }
+  }
+  return out.length > 0 ? out : null;
+}
+
 type Phase = 'egg' | 'hatching' | 'alive' | 'retiring';
 
 interface Slot {
@@ -64,6 +113,12 @@ interface Slot {
   character: Character | null;
   characterRoot: Group | null;
   characterShadow: ShadowHandle | null;
+  /** Audience answer, held until hatch mints the behavior agent. */
+  personalityChoice: PersonalityChoice;
+  /** Autonomous behavior — created on hatch, null before. */
+  agent: BehaviorAgent | null;
+  /** Last pose the agent reported, for expression edge-detection. */
+  pose: 'sit' | 'sleep' | null;
   /** retire animation state */
   retireStartMs: number;
   order: number;
@@ -95,12 +150,19 @@ export interface CreatureManager {
   clear(id: string): void;
   clearAll(): void;
   pauseTimers(paused: boolean): void;
+  /** Freeze autonomous behavior (demo panel). Separate from pauseTimers:
+   * eggs keep hatching; characters hold still (ambient floor stays alive). */
+  pauseAi(paused: boolean): void;
+  /** Wander speed multiplier (demo panel tuning). 1 = spec speed. */
+  setWanderSpeed(mult: number): void;
 }
 
 export function createCreatureManager(world: WorldHandles): CreatureManager {
   const slots = new Map<string, Slot>();
   let orderCounter = 0;
   let timersPaused = false;
+  let aiPaused = false;
+  let wanderSpeedMult = 1;
 
   function worldPositionOf(slot: Slot): Vector3 | null {
     const root: Object3D | null = slot.characterRoot ?? slot.egg?.group ?? null;
@@ -109,6 +171,8 @@ export function createCreatureManager(world: WorldHandles): CreatureManager {
   }
 
   function disposeSlot(slot: Slot): void {
+    slot.agent?.dispose();
+    slot.agent = null;
     if (slot.hatch) slot.hatch.dispose();
     if (slot.egg) {
       world.scene.remove(slot.egg.group);
@@ -143,6 +207,14 @@ export function createCreatureManager(world: WorldHandles): CreatureManager {
         slot.eggShadow = null;
         slot.egg = null; // the hatch owns the egg's disposal from here
         slot.phase = 'alive';
+        // Hatch mints the hidden life: seed from the slot id, personality
+        // from the audience answer (null → mild seeded variation).
+        const seed = behaviorSeed(slot.id);
+        slot.agent = new BehaviorAgent(
+          seed,
+          personalityFromChoice(slot.personalityChoice, seed),
+        );
+        slot.agent.setSpeedMultiplier(wanderSpeedMult);
         world.cameraRig.frameAt(root.position);
       },
       onDone: () => {
@@ -186,6 +258,9 @@ export function createCreatureManager(world: WorldHandles): CreatureManager {
         character: null,
         characterRoot: null,
         characterShadow: null,
+        personalityChoice: opts.personality ?? null,
+        agent: null,
+        pose: null,
         retireStartMs: 0,
         order: orderCounter++,
       };
@@ -233,6 +308,9 @@ export function createCreatureManager(world: WorldHandles): CreatureManager {
     count: () => slots.size,
 
     update(dt, nowMs): void {
+      // Environmental affordances, sampled once per frame for every agent.
+      const props = readProps(world);
+
       for (const slot of [...slots.values()]) {
         if (slot.egg) {
           slot.egg.update(dt, nowMs);
@@ -250,6 +328,42 @@ export function createCreatureManager(world: WorldHandles): CreatureManager {
 
         if (slot.character) {
           slot.character.update(dt, nowMs);
+
+          // Autonomous behavior: the agent owns the root's x/z and heading.
+          // Never world-space Y — locomotion stays on the Surface seam.
+          const root = slot.characterRoot;
+          if (root && slot.agent && slot.phase === 'alive' && !aiPaused) {
+            const peers: AgentPeer[] = [];
+            for (const other of slots.values()) {
+              if (other === slot || other.phase !== 'alive' || !other.characterRoot) {
+                continue;
+              }
+              peers.push({
+                x: other.characterRoot.position.x,
+                z: other.characterRoot.position.z,
+                id: other.id,
+              });
+            }
+            const out = slot.agent.update(
+              dt,
+              nowMs,
+              { x: root.position.x, z: root.position.z },
+              peers,
+              props,
+            );
+            root.position.x += (out.vx * dt) / 1000;
+            root.position.z += (out.vz * dt) / 1000;
+            root.rotation.y = out.heading;
+            if (out.emote) slot.character.emote(out.emote);
+            if (out.pose !== slot.pose) {
+              // Posture → expression through the character's public surface:
+              // sleep closes the eyes; leaving it drifts them back open.
+              if (out.pose === 'sleep') slot.character.setExpression('sleepy');
+              else if (slot.pose === 'sleep') slot.character.setExpression('neutral');
+              slot.pose = out.pose;
+            }
+          }
+
           if (slot.characterRoot && slot.characterShadow) {
             slot.characterShadow.setPosition(
               slot.characterRoot.position.x + slot.character.group.position.x,
@@ -281,6 +395,17 @@ export function createCreatureManager(world: WorldHandles): CreatureManager {
 
     pauseTimers(paused): void {
       timersPaused = paused;
+    },
+
+    pauseAi(paused): void {
+      aiPaused = paused;
+    },
+
+    setWanderSpeed(mult): void {
+      wanderSpeedMult = Math.max(0, mult);
+      for (const slot of slots.values()) {
+        slot.agent?.setSpeedMultiplier(wanderSpeedMult);
+      }
     },
   };
 }
