@@ -291,6 +291,38 @@ function main(): void {
     creatures.update(dt, nowMs);
   });
 
+  // ── dev surface: ghost panel on shift+d ───────────────────────────────────
+  // Lazy dynamic import behind the static __IS_DEV__ define, so the whole
+  // src/dev/ tree (and the ghost-panel package) tree-shakes out of the
+  // NODE_ENV=production demo build.
+  if (__IS_DEV__) {
+    let fallbackIndex = 0;
+    void import('./dev').then((m) =>
+      m.initDevPanel({
+        scene: world.scene,
+        camera: world.cameraRig.camera,
+        renderer: world.renderer,
+        onFrame: world.onFrame,
+        creatures,
+        ink: world.ink,
+        scatter: world.scatter,
+        // Weather handle from a parallel workstream — forwarded as-is and
+        // feature-detected inside the panel, so this compiles either way.
+        environment: (world as { environment?: unknown }).environment,
+        spawnFallback: (n) => {
+          for (let i = 0; i < n; i++) {
+            const strokes = m.FALLBACK_DRAWINGS[fallbackIndex % m.FALLBACK_DRAWINGS.length];
+            if (!strokes) continue;
+            const ok = creatures.spawn(`dev-fallback-${fallbackIndex++}`, strokes, {
+              hatchMs: m.FALLBACK_HATCH_MS,
+            });
+            if (ok) firstSpawnHousekeeping();
+          }
+        },
+      }),
+    );
+  }
+
   // ── phones: the draw-to-3d feed ───────────────────────────────────────────
   void connectWorldFeed({
     room,
@@ -334,7 +366,9 @@ function main(): void {
 
   openControl.addEventListener('click', openOverlay);
   window.addEventListener('keydown', (event) => {
-    if (event.metaKey || event.ctrlKey || event.altKey) return;
+    // Shifted presses belong to the dev surface (ghost panel toggles on
+    // shift+d); plain d keeps the draw overlay.
+    if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
     if (event.key === 'd') {
       if (overlayOpen) closeOverlay();
       else openOverlay();
