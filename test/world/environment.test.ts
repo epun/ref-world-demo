@@ -13,6 +13,7 @@ import {
   sunDirection,
   WEATHER,
   WEATHER_NAMES,
+  WIND_OVERRIDE_MAX,
   type EnvironmentDeps,
   type WeatherPreset,
 } from '../../src/world/environment';
@@ -67,6 +68,7 @@ describe('weather catalogue', () => {
       'exposureMul',
       'fogAmt',
       'streakDensity',
+      'wind',
     ];
     for (const name of WEATHER_NAMES) {
       const preset = WEATHER[name];
@@ -92,7 +94,22 @@ describe('weather catalogue', () => {
       fogAmt: 0,
       streaks: null,
       streakDensity: 0,
+      wind: 0.3,
     });
+  });
+
+  it('carries the calibrated wind strength per weather', () => {
+    // Even clear air breathes (0.3); fog hangs almost still; rain leans in
+    // hardest but stays measured — never stormy.
+    expect(WEATHER.clear.wind).toBe(0.3);
+    expect(WEATHER.overcast.wind).toBe(0.45);
+    expect(WEATHER.fog.wind).toBe(0.15);
+    expect(WEATHER.rain.wind).toBe(0.7);
+    expect(WEATHER.snow.wind).toBe(0.4);
+    for (const name of WEATHER_NAMES) {
+      expect(WEATHER[name].wind).toBeGreaterThan(0); // nothing ever fully still
+      expect(WEATHER[name].wind).toBeLessThanOrEqual(1); // nothing ever stormy
+    }
   });
 
   it('keeps streak coverage sparse — nothing packed', () => {
@@ -212,6 +229,61 @@ describe('createEnvironment', () => {
     const env = createEnvironment(deps);
     env.setWeather('sharknado');
     expect(env.state.weather).toBe('clear');
+  });
+
+  it('glides the wind monotonically to the preset with no overshoot', () => {
+    const deps = makeDeps();
+    const env = createEnvironment(deps);
+    expect(env.state.wind).toBeCloseTo(WEATHER.clear.wind, 6);
+    env.setWeather('rain');
+    const target = WEATHER.rain.wind;
+    let prev = env.state.wind;
+    for (let t = 0; t < 10000; t += 16) {
+      env.update(16, t);
+      const now = env.state.wind;
+      expect(now).toBeGreaterThanOrEqual(prev - 1e-9); // monotone toward target
+      expect(now).toBeLessThanOrEqual(target + 1e-6); // never crosses it
+      prev = now;
+    }
+    expect(prev).toBeCloseTo(target, 2);
+    // One frame after a change the wind has barely moved — never a cut.
+    env.setWeather('fog');
+    env.update(16, 0);
+    expect(env.state.wind).toBeGreaterThan(target - 0.02);
+  });
+
+  it('scales the wind with intermediate intensity', () => {
+    const deps = makeDeps();
+    const env = createEnvironment(deps);
+    env.setWeather('rain', 0.5);
+    settle(env);
+    expect(env.state.wind).toBeCloseTo(
+      WEATHER.clear.wind + (WEATHER.rain.wind - WEATHER.clear.wind) * 0.5,
+      2,
+    );
+  });
+
+  it('setWindOverride pins the wind, survives weather changes, and null releases it', () => {
+    const deps = makeDeps();
+    const env = createEnvironment(deps);
+    env.setWindOverride(1.2);
+    expect(env.state.windOverride).toBe(1.2);
+    settle(env);
+    expect(env.state.wind).toBeCloseTo(1.2, 3);
+    // Weather changes keep the override pinned.
+    env.setWeather('fog');
+    settle(env);
+    expect(env.state.wind).toBeCloseTo(1.2, 3);
+    // Release: the wind glides back to the weather-driven value.
+    env.setWindOverride(null);
+    expect(env.state.windOverride).toBeNull();
+    settle(env);
+    expect(env.state.wind).toBeCloseTo(WEATHER.fog.wind, 2);
+    // The override clamps into [0, WIND_OVERRIDE_MAX].
+    env.setWindOverride(99);
+    expect(env.state.windOverride).toBe(WIND_OVERRIDE_MAX);
+    env.setWindOverride(-4);
+    expect(env.state.windOverride).toBe(0);
   });
 
   it('crossfades streak kinds through zero (rain → snow)', () => {

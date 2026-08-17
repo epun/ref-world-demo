@@ -27,6 +27,7 @@
 
 import { Spring } from '../motion/spring';
 import type { EmoteName } from '../net/protocol';
+import type { ColliderGrid } from '../physics/colliders';
 import { MOTION } from '../taste/tokens';
 import type { Personality } from './personality';
 import {
@@ -40,9 +41,12 @@ import {
 import {
   approachTarget,
   arrive,
+  AVOID_DISTANCE,
+  avoidanceBend,
   FOLLOW_STAND_OFF,
   headingTo,
   pickWanderTarget,
+  projectOutOfHard,
   quadrantOf,
   shortestDelta,
   STAND_OFF,
@@ -130,6 +134,7 @@ export class BehaviorAgent {
     self: Vec2,
     peers: readonly AgentPeer[],
     props: readonly AgentProp[] | null,
+    colliders: ColliderGrid | null = null,
   ): AgentTick {
     this.timeInState += dt;
 
@@ -164,6 +169,7 @@ export class BehaviorAgent {
             this.quadrantVisits,
             this.personality.energy,
             this.rand,
+            colliders,
           );
         }
         const steer = arrive(self, this.wanderTarget, cruise, this.headingSpring.value);
@@ -185,7 +191,8 @@ export class BehaviorAgent {
         // Face the companion; never push inside the stand-off.
         desiredHeading = headingTo(self, peer);
         if (gap > standOff) {
-          const target = approachTarget(self, peer, standOff);
+          // Never park inside a trunk or rock beside a peer.
+          const target = projectOutOfHard(approachTarget(self, peer, standOff), colliders);
           const speedCap = this.state === 'approach' ? cruise * 0.85 : cruise;
           const steer = arrive(self, target, speedCap, this.headingSpring.value);
           desiredSpeed = steer.speed;
@@ -214,6 +221,18 @@ export class BehaviorAgent {
         // idle / sit / sleep: still. The character's ambient drift floor
         // keeps it alive; the agent asks for nothing.
         break;
+    }
+
+    // ── obstacle avoidance ──────────────────────────────────────────────────
+    // A light repulsion inside AVOID_DISTANCE of a hard collider bends the
+    // desired heading before it reaches the spring, so creatures flow around
+    // trunks and rocks and the manager's hard resolve stays a rare backstop.
+    if (desiredHeading !== null && desiredSpeed > 0 && colliders) {
+      desiredHeading = avoidanceBend(
+        self,
+        desiredHeading,
+        colliders.queryCircle(self.x, self.z, AVOID_DISTANCE + 1),
+      );
     }
 
     // ── springs ─────────────────────────────────────────────────────────────

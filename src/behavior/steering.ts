@@ -10,9 +10,16 @@
  * population spreads instead of clumping around spawn. Energy scales the
  * roam radius (adventure creatures travel far; sleepy ones potter).
  *
+ * Obstacles: wander/approach targets are never inside a hard collider
+ * (projected out with clearance), and a light repulsion inside ~2 units of
+ * a hard surface bends the desired heading so creatures flow around props —
+ * the manager's positional resolve is a rare backstop, not the path.
+ *
  * Determinism: candidate sampling pulls from the injected rand01 stream.
  * No Three.js, no DOM, no Math.random.
  */
+
+import type { Collider, ColliderGrid } from '../physics/colliders';
 
 export interface Vec2 {
   x: number;
@@ -43,6 +50,101 @@ export const ARRIVE_RADIUS = 3;
 
 /** Candidate targets sampled per wander pick. */
 const WANDER_CANDIDATES = 8;
+
+/** Hard colliders start bending the heading inside this surface distance. */
+export const AVOID_DISTANCE = 2;
+
+/** Repulsion blend gain against the unit forward vector. */
+export const AVOID_GAIN = 1.4;
+
+/** Steering targets keep at least this clearance outside any hard collider
+ * surface (≈ a creature body radius). */
+export const TARGET_CLEARANCE = 0.9;
+
+/**
+ * Project a point out of every hard collider it sits inside (plus
+ * clearance). Sweeps until clean — a projection can land inside an
+ * overlapping neighbor, so single-pass is not enough in dense clusters —
+ * capped for safety. Returns the input object untouched when already clear.
+ */
+export function projectOutOfHard(
+  p: Vec2,
+  colliders: ColliderGrid | null | undefined,
+  clearance: number = TARGET_CLEARANCE,
+): Vec2 {
+  if (!colliders) return p;
+  let x = p.x;
+  let z = p.z;
+  let moved = false;
+  for (let pass = 0; pass < 8; pass++) {
+    let corrected = false;
+    for (const c of colliders.queryCircle(x, z, clearance)) {
+      if (!c.hard) continue;
+      const dx = x - c.x;
+      const dz = z - c.z;
+      const d = Math.hypot(dx, dz);
+      const min = c.r + clearance;
+      if (d >= min) continue;
+      if (d < 1e-6) {
+        x = c.x + min; // dead center: deterministic +x
+      } else {
+        x = c.x + (dx / d) * min;
+        z = c.z + (dz / d) * min;
+      }
+      corrected = true;
+      moved = true;
+    }
+    if (!corrected) break;
+  }
+  return moved ? { x, z } : p;
+}
+
+/**
+ * Bend a desired heading away from nearby hard colliders. Per collider the
+ * repulsion weight grows quadratically as the gap closes over
+ * AVOID_DISTANCE, so the bend is smooth and monotone with proximity; the
+ * repulsion blends into the unit forward vector and the result flows
+ * through the caller's ζ≥1 heading spring — never a jerk. Head-on contacts
+ * get a small tangential bias so the flow picks a side (deterministically,
+ * by cross-product sign) instead of stalling against the normal.
+ */
+export function avoidanceBend(
+  self: Vec2,
+  desiredHeading: number,
+  nearby: readonly Collider[],
+): number {
+  const fx = Math.sin(desiredHeading);
+  const fz = Math.cos(desiredHeading);
+  let rx = 0;
+  let rz = 0;
+  for (const c of nearby) {
+    if (!c.hard) continue;
+    const dx = self.x - c.x;
+    const dz = self.z - c.z;
+    const d = Math.hypot(dx, dz);
+    const gap = d - c.r;
+    if (gap >= AVOID_DISTANCE) continue;
+    const t = 1 - Math.max(gap, 0) / AVOID_DISTANCE;
+    const w = t * t;
+    const nx = d > 1e-6 ? dx / d : 1;
+    const nz = d > 1e-6 ? dz / d : 0;
+    rx += nx * w;
+    rz += nz * w;
+    // Head-on: steer around, not just back. Side by the sign of the 2d
+    // cross product forward × normal (ties break to +1 — deterministic).
+    const head = -(fx * nx + fz * nz);
+    if (head > 0.6) {
+      const side = fx * nz - fz * nx >= 0 ? 1 : -1;
+      rx += nz * side * w * head * 0.6;
+      rz += -nx * side * w * head * 0.6;
+    }
+  }
+  if (rx === 0 && rz === 0) return desiredHeading;
+  const vx = fx + rx * AVOID_GAIN;
+  const vz = fz + rz * AVOID_GAIN;
+  if (Math.hypot(vx, vz) < 1e-6) return desiredHeading;
+  return Math.atan2(vx, vz);
+}
 
 /** Wrap an angle to [-π, π). */
 export function wrapAngle(a: number): number {
@@ -80,6 +182,9 @@ export function quadrantOf(p: Vec2): 0 | 1 | 2 | 3 {
  *
  * @param quadrantVisits per-agent visit tallies, indexed by quadrantOf
  * @param energy scales roam radius: 0 → potter nearby, 1 → travel far
+ * @param colliders when present, every candidate is projected clear of hard
+ *   colliders before scoring — a wander target is never inside a trunk or
+ *   rock (draws no extra rand: determinism is unchanged by the grid)
  */
 export function pickWanderTarget(
   self: Vec2,
@@ -87,6 +192,7 @@ export function pickWanderTarget(
   quadrantVisits: readonly [number, number, number, number],
   energy: number,
   rand01: () => number,
+  colliders: ColliderGrid | null = null,
 ): Vec2 {
   const roamRadius = 5 + 20 * energy;
   const maxVisits = Math.max(...quadrantVisits);
@@ -106,7 +212,7 @@ export function pickWanderTarget(
       cx *= limit / fromOrigin;
       cz *= limit / fromOrigin;
     }
-    const candidate = { x: cx, z: cz };
+    const candidate = projectOutOfHard({ x: cx, z: cz }, colliders);
 
     let crowd = 0;
     for (const peer of peers) crowd += 1 / (1 + dist(candidate, peer));

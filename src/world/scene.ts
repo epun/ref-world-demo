@@ -70,6 +70,10 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
   // Tiny always-on handle for smokes and the ghost panel's feature-detect —
   // deliberately not dev-gated: it carries no dev-only code.
   (window as Window & { __refworldEnv?: Environment }).__refworldEnv = environment;
+  // Same deal for the physics smoke: live prop colliders (hard/soft circles).
+  (
+    window as Window & { __refworldColliders?: () => ReturnType<Scatter['colliders']> }
+  ).__refworldColliders = () => scatter.colliders();
 
   const resize = (): void => {
     const width = window.innerWidth;
@@ -82,30 +86,25 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
   window.addEventListener('resize', resize);
   resize();
 
-  // ── view controls: pan, rotate, zoom ─────────────────────────────────────
-  // Direct manipulation on the world canvas; the rig converts pixels to
-  // ground-plane units. All 1:1 and interruptible — reframes (frameAt) still
-  // slide on the springs, wheel zoom drifts in on its spring, and the ambient
-  // floor runs regardless. Desktop: drag pans, shift-drag or right-drag
-  // rotates, wheel zooms. Touch: one finger pans, two fingers pinch-zoom and
-  // twist-rotate.
+  // ── view controls (user-specified scheme) ────────────────────────────────
+  // Click and hold rotates. Trackpad pinch zooms (macOS delivers pinch as a
+  // ctrl-modified wheel event). Two-finger scroll / mouse wheel pans. On
+  // touch, one finger rotates (matching click-hold) and two fingers
+  // pinch-zoom and twist-rotate. All 1:1 and interruptible; wheel deltas
+  // drive spring retargets so motion drifts in, never snaps.
   const pointers = new Map<number, { x: number; y: number }>();
-  let rotating = false;
   canvas.style.touchAction = 'none';
   canvas.addEventListener('contextmenu', (event) => event.preventDefault());
   canvas.addEventListener('pointerdown', (event) => {
     pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
-    rotating = event.shiftKey || event.button === 2;
     canvas.setPointerCapture(event.pointerId);
   });
   canvas.addEventListener('pointermove', (event) => {
     const prev = pointers.get(event.pointerId);
     if (!prev) return;
     if (pointers.size === 1) {
-      const dx = event.clientX - prev.x;
-      const dy = event.clientY - prev.y;
-      if (rotating) cameraRig.rotateBy(dx);
-      else cameraRig.panBy(dx, dy, window.innerHeight);
+      // Click and hold → rotate.
+      cameraRig.rotateBy(event.clientX - prev.x);
       pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
     } else if (pointers.size === 2) {
       // Pinch: zoom by distance ratio; twist: rotate by angle delta.
@@ -125,7 +124,6 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
   });
   const releasePointer = (event: PointerEvent): void => {
     pointers.delete(event.pointerId);
-    if (pointers.size === 0) rotating = false;
   };
   canvas.addEventListener('pointerup', releasePointer);
   canvas.addEventListener('pointercancel', releasePointer);
@@ -133,7 +131,13 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
     'wheel',
     (event) => {
       event.preventDefault();
-      cameraRig.zoomBy(Math.exp(-event.deltaY * 0.0016));
+      if (event.ctrlKey || event.metaKey) {
+        // Trackpad pinch (macOS reports pinch as ctrl+wheel) → zoom.
+        cameraRig.zoomBy(Math.exp(-event.deltaY * 0.01));
+      } else {
+        // Two-finger scroll / wheel → normal panning.
+        cameraRig.panBy(-event.deltaX, -event.deltaY, window.innerHeight);
+      }
     },
     { passive: false },
   );
@@ -148,7 +152,14 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
 
     cameraRig.update(dt, nowMs);
     environment.update(dt, nowMs);
-    scatter.update(nowMs);
+    // Sun-driven shadow stamps: one shared ellipse + one flat value per
+    // frame for every stamp (scatter throttles its instanced re-lay).
+    const sun = environment.sun;
+    shadows.setSun(sun.azimuth, sun.altitude, sun.presence);
+    scatter.setSun(sun.azimuth, sun.altitude, sun.presence);
+    // Weather-driven vertex wind: the environment's spring-glided strength
+    // into the scatter's shared wind uniforms (three value writes).
+    scatter.setWind(environment.state.wind, nowMs);
     for (const callback of frameCallbacks) callback(dt, nowMs);
     const composed = ink.render(renderer, scene, cameraRig.camera, nowMs);
     grain.compose(renderer, composed, nowMs);

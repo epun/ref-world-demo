@@ -3,17 +3,30 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { InstancedMesh, type Material } from 'three';
 import { PROP_VARIANT_COUNTS } from '../../src/world/props';
 import {
   BUILDING_ADJ_RADIUS,
   BUILDING_MAX,
+  clampWindStrength,
   computePlacements,
   createScatter,
   filterExcluded,
   SCATTER_EXTENT,
   SCATTER_KINDS,
   SCATTER_STEP,
+  WIND_AZIMUTH_PERIOD_MS,
+  WIND_STRENGTH_MAX,
+  WIND_STRENGTH_MIN,
+  WIND_SWAY_KINDS,
+  windAzimuth,
   type Placement,
+} from '../../src/world/scatter';
+// Collider surface (kept as a separate import: the physics workstream).
+import {
+  BUSH_SOFT_FOOTPRINT,
+  colliderFor,
+  TRUNK_FOOTPRINT,
 } from '../../src/world/scatter';
 
 describe('scatter placement', () => {
@@ -227,6 +240,129 @@ describe('scatter placement', () => {
     expect(trees(1)).toBeLessThan(trees(2));
   });
 
+  it('wind direction drift is deterministic, finite, and wanders', () => {
+    // Pure in nowMs: two devices (or two calls) agree exactly.
+    for (const t of [0, 1234.5, 60000, WIND_AZIMUTH_PERIOD_MS * 2.7]) {
+      expect(windAzimuth(t)).toBe(windAzimuth(t));
+      expect(Number.isFinite(windAzimuth(t))).toBe(true);
+    }
+    // The heading actually wanders over multiple periods…
+    const samples = [0, 0.5, 1.2, 2.1, 3.4, 4.8].map((k) =>
+      windAzimuth(k * WIND_AZIMUTH_PERIOD_MS),
+    );
+    expect(new Set(samples.map((a) => a.toFixed(4))).size).toBeGreaterThan(3);
+    // …but smoothly: adjacent frames barely move (no snap, TASTE §2.1).
+    for (let t = 0; t < WIND_AZIMUTH_PERIOD_MS; t += 1000) {
+      expect(Math.abs(windAzimuth(t + 16) - windAzimuth(t))).toBeLessThan(0.01);
+    }
+  });
+
+  it('clamps wind strength sanely — floored above zero, capped, NaN-safe', () => {
+    expect(clampWindStrength(0.35)).toBe(0.35);
+    expect(clampWindStrength(0)).toBe(WIND_STRENGTH_MIN); // nothing fully still
+    expect(clampWindStrength(-3)).toBe(WIND_STRENGTH_MIN);
+    expect(clampWindStrength(99)).toBe(WIND_STRENGTH_MAX);
+    expect(clampWindStrength(Number.NaN)).toBe(WIND_STRENGTH_MIN);
+    expect(WIND_STRENGTH_MIN).toBeGreaterThan(0);
+  });
+
+  it('scatter handle: setWind clamps and reports through windState', () => {
+    const scatter = createScatter();
+    try {
+      scatter.setWind(0.7, 5000);
+      expect(scatter.windState().strength).toBeCloseTo(0.7, 6);
+      expect(scatter.windState().timeMs).toBe(5000);
+      expect(scatter.windState().azimuth).toBe(windAzimuth(5000));
+      scatter.setWind(-1, 6000);
+      expect(scatter.windState().strength).toBe(WIND_STRENGTH_MIN);
+      scatter.setWind(99, 7000);
+      expect(scatter.windState().strength).toBe(WIND_STRENGTH_MAX);
+    } finally {
+      scatter.dispose();
+    }
+  });
+
+  it('wind touches only vegetation: sway kinds carry the height attribute, rigid kinds none', () => {
+    expect([...WIND_SWAY_KINDS].sort()).toEqual(['bush', 'conifer', 'tree']);
+    const scatter = createScatter();
+    try {
+      const meshes = scatter.group.children.filter(
+        (o): o is InstancedMesh => o instanceof InstancedMesh && o.name.length > 0,
+      );
+      const kindOf = (name: string): string => name.split('-')[0]!;
+      const swaySet = new Set<string>(WIND_SWAY_KINDS);
+      const rigid = ['building', 'rock', 'stump'];
+      expect(meshes.some((m) => swaySet.has(kindOf(m.name)))).toBe(true);
+      expect(meshes.some((m) => rigid.includes(kindOf(m.name)))).toBe(true);
+
+      const materialsOf = (pick: (kind: string) => boolean): Set<Material> =>
+        new Set(meshes.filter((m) => pick(kindOf(m.name))).map((m) => m.material as Material));
+
+      for (const mesh of meshes) {
+        const kind = kindOf(mesh.name);
+        const attr = mesh.geometry.getAttribute('aWindHeight');
+        if (swaySet.has(kind)) {
+          // Height fraction in [0,1], roots pinned at 0, crowns near 1.
+          expect(attr, mesh.name).toBeDefined();
+          let min = Infinity;
+          let max = -Infinity;
+          for (let i = 0; i < attr!.count; i++) {
+            const h = attr!.getX(i);
+            expect(h).toBeGreaterThanOrEqual(0);
+            expect(h).toBeLessThanOrEqual(1);
+            min = Math.min(min, h);
+            max = Math.max(max, h);
+          }
+          expect(min, mesh.name).toBeLessThan(0.05);
+          expect(max, mesh.name).toBeGreaterThan(0.9);
+        } else {
+          // Rigid kinds (and ticks, which bend by position.y alone) carry no
+          // wind attribute — buildings, rocks and stumps never lean.
+          expect(attr, mesh.name).toBeUndefined();
+        }
+      }
+
+      // Rigid kinds share the stock material — no wind injection at all: its
+      // onBeforeCompile leaves a shader untouched, while the sway material
+      // injects the wind uniforms and displacement.
+      const fakeShader = () => ({
+        uniforms: {} as Record<string, { value: unknown }>,
+        vertexShader: '#include <common>\nvoid main() {\n#include <begin_vertex>\n}',
+        fragmentShader: '',
+      });
+      const rigidMaterials = materialsOf((k) => rigid.includes(k));
+      const swayMaterials = materialsOf((k) => swaySet.has(k));
+      expect(rigidMaterials.size).toBe(1);
+      expect(swayMaterials.size).toBe(1);
+      const [rigidMat] = rigidMaterials;
+      const [swayMat] = swayMaterials;
+      expect(rigidMat).not.toBe(swayMat);
+
+      const rigidShader = fakeShader();
+      rigidMat!.onBeforeCompile(rigidShader as never, undefined as never);
+      expect(rigidShader.vertexShader).not.toContain('uWindStrength');
+      expect(rigidShader.uniforms['uWindStrength']).toBeUndefined();
+
+      const swayShader = fakeShader();
+      swayMat!.onBeforeCompile(swayShader as never, undefined as never);
+      expect(swayShader.vertexShader).toContain('uWindStrength');
+      expect(swayShader.vertexShader).toContain('aWindHeight');
+      expect(swayShader.uniforms['uWindStrength']).toBeDefined();
+
+      // Ticks bend too — full-blade, no attribute needed.
+      const tick = scatter.group.children.find(
+        (o): o is InstancedMesh => o instanceof InstancedMesh && o.name === 'tick',
+      );
+      expect(tick).toBeDefined();
+      const tickShader = fakeShader();
+      (tick!.material as Material).onBeforeCompile(tickShader as never, undefined as never);
+      expect(tickShader.vertexShader).toContain('uWindStrength');
+      expect(tickShader.vertexShader).not.toContain('aWindHeight');
+    } finally {
+      scatter.dispose();
+    }
+  });
+
   it('scatter handle: setKindDensity and setKindScale act per kind', () => {
     const scatter = createScatter();
     try {
@@ -247,6 +383,123 @@ describe('scatter placement', () => {
       scatter.setKindScale('rock', 2);
       expect(scatter.positions().find((p) => p.kind === 'rock')!.r).toBeCloseTo(rockR * 2, 6);
       expect(scatter.positions().find((p) => p.kind === 'tree')!.r).toBeCloseTo(treeR, 6);
+    } finally {
+      scatter.dispose();
+    }
+  });
+});
+
+// ── colliders (hard/soft body physics) ───────────────────────────────────────
+
+describe('scatter colliders', () => {
+  it('colliderFor: trunk kinds block small, grounded kinds at base extent, bush soft, tick none', () => {
+    const at = (kind: Placement['kind'], scale = 1): Placement => ({
+      kind,
+      variant: 0,
+      x: 3,
+      z: -4,
+      scale,
+      rotY: 0,
+    });
+    expect(colliderFor(at('tick'), 0.4)).toBeNull();
+
+    const tree = colliderFor(at('tree'), 2.4)!;
+    expect(tree.hard).toBe(true);
+    expect(tree.r).toBeCloseTo(TRUNK_FOOTPRINT.tree!, 9); // trunk, not the 2.4 crown
+    expect(tree.r).toBeLessThan(2.4);
+
+    const conifer = colliderFor(at('conifer', 1.2), 2.0)!;
+    expect(conifer.r).toBeCloseTo(TRUNK_FOOTPRINT.conifer! * 1.2, 9);
+
+    const rock = colliderFor(at('rock', 0.8), 1.7)!;
+    expect(rock.hard).toBe(true);
+    expect(rock.r).toBeCloseTo(1.7 * 0.8, 9); // base extent × instance scale
+
+    const bush = colliderFor(at('bush', 1.1), 1.9)!;
+    expect(bush.hard).toBe(false);
+    expect(bush.r).toBeCloseTo(BUSH_SOFT_FOOTPRINT * 1.1, 9);
+
+    for (const kind of ['building', 'stump'] as const) {
+      expect(colliderFor(at(kind), 1.5)!.hard).toBe(true);
+    }
+  });
+
+  it('handle: one collider per visible non-tick prop, hard/soft split by kind', () => {
+    const scatter = createScatter();
+    try {
+      const props = scatter.positions();
+      const colliders = scatter.colliders();
+      expect(colliders.length).toBe(props.length);
+      // Same iteration order as positions(): pair them up.
+      props.forEach((p, i) => {
+        const c = colliders[i]!;
+        expect(c.x).toBe(p.x);
+        expect(c.z).toBe(p.z);
+        expect(c.hard).toBe(p.kind !== 'bush');
+        if (p.kind === 'tree' || p.kind === 'conifer') {
+          expect(c.r, p.kind).toBeLessThan(p.r); // trunks block, crowns overhang
+        }
+        expect(c.r).toBeGreaterThan(0);
+      });
+    } finally {
+      scatter.dispose();
+    }
+  });
+
+  it('handle: cached between mutations, version bumps on every rebuild path', () => {
+    const scatter = createScatter();
+    try {
+      const v0 = scatter.collidersVersion();
+      const first = scatter.colliders();
+      expect(scatter.colliders()).toBe(first); // cached array identity
+
+      scatter.setKindDensity('tree', 0);
+      expect(scatter.collidersVersion()).toBeGreaterThan(v0);
+      const noTrees = scatter.colliders();
+      expect(noTrees).not.toBe(first);
+      expect(noTrees.length).toBeLessThan(first.length);
+
+      scatter.setKindDensity('tree', 1);
+      const v1 = scatter.collidersVersion();
+      // Exclusions hide props — and their colliders with them.
+      const victim = scatter.colliders()[0]!;
+      scatter.setExclusions([{ x: victim.x, z: victim.z, r: 0.5 }]);
+      expect(scatter.collidersVersion()).toBeGreaterThan(v1);
+      expect(
+        scatter.colliders().some((c) => c.x === victim.x && c.z === victim.z),
+      ).toBe(false);
+
+      // Kind scale scales the collider footprint too.
+      scatter.setExclusions([]);
+      const rockBefore = scatter
+        .colliders()
+        .find((c, i) => scatter.positions()[i]!.kind === 'rock')!;
+      scatter.setKindScale('rock', 2);
+      const rockAfter = scatter
+        .colliders()
+        .find((c) => c.x === rockBefore.x && c.z === rockBefore.z)!;
+      expect(rockAfter.r).toBeCloseTo(rockBefore.r * 2, 6);
+    } finally {
+      scatter.dispose();
+    }
+  });
+
+  it('nudge: slots are capped at 8, nearby re-nudges refresh instead of burning slots', () => {
+    const scatter = createScatter();
+    try {
+      expect(scatter.nudgeState()).toHaveLength(0);
+      scatter.nudge(5, 5, 0.8);
+      expect(scatter.nudgeState()).toHaveLength(1);
+      // Brushing the same bush again lands in the same slot.
+      scatter.nudge(5.2, 5.1, 0.5);
+      expect(scatter.nudgeState()).toHaveLength(1);
+      expect(scatter.nudgeState()[0]!.strength).toBeCloseTo(0.8, 9); // max kept
+      // Zero / negative strength is a no-op.
+      scatter.nudge(20, 20, 0);
+      expect(scatter.nudgeState()).toHaveLength(1);
+      // Distinct points fill distinct slots, capped at 8.
+      for (let i = 0; i < 12; i++) scatter.nudge(i * 7, -40, 1);
+      expect(scatter.nudgeState().length).toBeLessThanOrEqual(8);
     } finally {
       scatter.dispose();
     }

@@ -26,6 +26,7 @@ import {
   BufferAttribute,
   BufferGeometry,
   CircleGeometry,
+  Color,
   DoubleSide,
   Group,
   InstancedMesh,
@@ -33,16 +34,19 @@ import {
   MeshBasicMaterial,
   MeshStandardMaterial,
   Quaternion,
+  Vector2,
   Vector3,
+  Vector4,
 } from 'three';
-import { sampleDrift } from '../motion/ambient';
-import { SURFACE, WORLD } from '../taste/tokens';
+import type { Collider } from '../physics/colliders';
+import { MOTION, SURFACE, WORLD } from '../taste/tokens';
 import {
   buildPropGeometries,
   INFLATED_PROP_KINDS,
   PROP_VARIANT_COUNTS,
   type InflatedPropKind,
 } from './props';
+import { stampEllipse, stampRotationY, type StampEllipse } from './shadows';
 
 export type ScatterKind = InflatedPropKind | 'tick';
 
@@ -244,6 +248,47 @@ export function filterExcluded(placements: Placement[], exclusions: Exclusion[])
   });
 }
 
+// ── colliders (hard/soft body physics) ───────────────────────────────────────
+// One footprint circle per placed prop instance, for the physics/behavior
+// layer (src/physics/). Hard bodies block (positional resolve + slide); the
+// soft body — bush — damps a creature's speed and sways when brushed. Ticks
+// are flat ink marks on the ground: no collider at all.
+//
+// Trees and conifers block at the TRUNK, not the crown: the canopy overhangs
+// walkable ground, so their footprint is a small circle under the stem.
+// Grounded kinds (rock/building/stump) block at their base extent (the
+// variant's inflated footprint radius).
+
+export type { Collider } from '../physics/colliders';
+
+/** Trunk footprint radius at instance scale 1, world units. */
+export const TRUNK_FOOTPRINT: Partial<Record<InflatedPropKind, number>> = {
+  tree: 0.65,
+  conifer: 0.55,
+};
+
+/** Soft bush footprint at instance scale 1, world units. */
+export const BUSH_SOFT_FOOTPRINT = 1.0;
+
+/**
+ * Pure per-placement collider. `baseRadius` is the variant's inflated
+ * footprint radius (grounded kinds use it); trunk kinds override it with
+ * their trunk footprint. Returns null for ticks.
+ */
+export function colliderFor(
+  p: Placement,
+  baseRadius: number,
+  kindScaleMult = 1,
+): Collider | null {
+  if (p.kind === 'tick') return null;
+  const s = p.scale * kindScaleMult;
+  if (p.kind === 'bush') {
+    return { x: p.x, z: p.z, r: BUSH_SOFT_FOOTPRINT * s, hard: false };
+  }
+  const trunk = TRUNK_FOOTPRINT[p.kind];
+  return { x: p.x, z: p.z, r: (trunk ?? baseRadius) * s, hard: true };
+}
+
 // ── tick geometry ────────────────────────────────────────────────────────────
 // A grass tick is 2–3 tiny ink strokes: thin leaning quads in two crossing
 // vertical planes so the mark reads from the iso camera at any y-rotation.
@@ -281,6 +326,161 @@ function buildTickGeometry(): BufferGeometry {
   return geometry;
 }
 
+// ── wind (environment physics) ───────────────────────────────────────────────
+// Per-vertex wind in the shared scatter materials, injected via
+// onBeforeCompile. This REPLACES the old whole-group sampleDrift sway: the
+// group transform is now identity and the always-on motion the stillness
+// probe requires comes from these gusts instead — value noise never sits
+// still, and the strength floor below keeps it from ever reaching zero.
+//
+// Motion law (TASTE §2.1): gusts are smooth 2-octave value noise — no
+// jitter, no shiver, nothing linear. Displacement bends vertices by height
+// fraction squared (roots pinned, crowns sway) along the wind direction,
+// plus a small perpendicular flutter. Rigid kinds (building, rock, stump)
+// get NO injection at all — stone and timber don't lean with the weather.
+
+/** Kinds whose foliage bends in the wind. Everything else is rigid. */
+export const WIND_SWAY_KINDS: readonly InflatedPropKind[] = ['tree', 'conifer', 'bush'];
+
+/** setWind clamps into this range. The floor keeps the world breathing —
+ * nothing ever fully still (TASTE §3) — the cap keeps it composed. */
+export const WIND_STRENGTH_MIN = 0.05;
+export const WIND_STRENGTH_MAX = 1.5;
+
+export function clampWindStrength(v: number): number {
+  if (!Number.isFinite(v)) return WIND_STRENGTH_MIN;
+  return Math.min(WIND_STRENGTH_MAX, Math.max(WIND_STRENGTH_MIN, v));
+}
+
+/** The wind heading wanders over ~6 ambient periods (~22s) so gusts drift
+ * around the compass instead of pumping one axis forever. */
+export const WIND_AZIMUTH_PERIOD_MS = MOTION.ambientMs * 6;
+
+/** Deterministic hash → [0, 1). Same recipe family as motion/ambient. */
+function windHash01(n: number): number {
+  const x = Math.sin(n) * 43758.5453123;
+  return x - Math.floor(x);
+}
+
+/** 1D value noise in [-1, 1] — smoothstep between hashed lattice points. */
+function windValueNoise(t: number, seed: number): number {
+  const i = Math.floor(t);
+  const f = t - i;
+  const u = f * f * (3 - 2 * f);
+  const a = windHash01(i * 127.1 + seed * 311.7);
+  const b = windHash01((i + 1) * 127.1 + seed * 311.7);
+  return (a + (b - a) * u) * 2 - 1;
+}
+
+const WIND_AZIMUTH_SEED = 41.7;
+
+/** Slow-drifting wind heading (radians), pure in nowMs — deterministic, so
+ * two devices see the same weather lean the same way. Two octaves keep the
+ * wander organic without ever snapping. */
+export function windAzimuth(nowMs: number): number {
+  const t = nowMs / WIND_AZIMUTH_PERIOD_MS;
+  return (
+    (windValueNoise(t, WIND_AZIMUTH_SEED) * 0.75 +
+      windValueNoise(t * 0.37 + 11.3, WIND_AZIMUTH_SEED + 1) * 0.45) *
+    Math.PI
+  );
+}
+
+/** Amplitude/frequency recipe baked into a material's injected GLSL. */
+interface WindProfile {
+  /** Lean amplitude in radians at strength 1 (the gust envelope's mean). */
+  bend: number;
+  /** Gust noise frequency, Hz — kept near the ambient period. */
+  gustHz: number;
+  /** Perpendicular flutter amplitude in radians at strength 1. */
+  flutter: number;
+  flutterHz: number;
+  /** Per-instance detune (seconds) hashed from instance position, so
+   * neighbors move coherently but never identically. */
+  phaseJitter: number;
+  /** GLSL factor multiplying position.y into the displacement: trees use
+   * their aWindHeight attribute (→ heightFrac², roots pinned, crowns sway);
+   * ticks use 1.0 (full-blade bend pivoting at the root). */
+  heightExpr: string;
+}
+
+/** Trees / conifers / bushes: slow crown sway, small amplitude — the gust
+ * envelope spans ~0°–2.9° at strength 1 (≈1.4° mean), trunks nearly still
+ * because displacement scales with heightFrac². Most of the amplitude is in
+ * the gust (0.45 + 0.55·g below), not a static lean, so the crowns visibly
+ * breathe instead of holding one bent pose. */
+const WIND_PROFILE_SWAY: WindProfile = {
+  bend: 0.05,
+  gustHz: 0.38,
+  flutter: 0.016,
+  flutterHz: 0.7,
+  phaseJitter: 1.6,
+  heightExpr: 'aWindHeight',
+};
+
+/** Grass ticks: tiny marks, so they carry the wind read — ~2× the trees'
+ * angular sway with a quicker (still smooth) flutter. */
+const WIND_PROFILE_TICK: WindProfile = {
+  bend: 0.1,
+  gustHz: 0.7,
+  flutter: 0.07,
+  flutterHz: 1.5,
+  phaseJitter: 2.4,
+  heightExpr: '1.0',
+};
+
+const glslFloat = (v: number): string => v.toFixed(5);
+
+/** Top-level declarations appended after <common>. */
+function windCommonGlsl(declareHeightAttr: boolean): string {
+  return `
+uniform float uWindTime;
+uniform vec2 uWindDir;
+uniform float uWindStrength;
+${declareHeightAttr ? 'attribute float aWindHeight;' : ''}
+float windHash(float n) { return fract(sin(n) * 43758.5453123); }
+float windNoise(float t, float seed) {
+  float i = floor(t);
+  float f = t - i;
+  float u = f * f * (3.0 - 2.0 * f);
+  float a = windHash(i * 127.1 + seed * 311.7);
+  float b = windHash((i + 1.0) * 127.1 + seed * 311.7);
+  return (a + (b - a) * u) * 2.0 - 1.0;
+}
+`;
+}
+
+/** begin_vertex replacement: smooth value-noise gusts keyed on the instance's
+ * world position (a wave traveling downwind, so neighbors lean together a
+ * beat apart), bending vertices along the wind + a small perpendicular
+ * flutter. Displacement is computed in world axes and rotated back into
+ * object space through the instance matrix (transpose ≙ inverse rotation),
+ * normalized so the sway angle is scale-consistent across instance sizes. */
+function windBeginGlsl(p: WindProfile): string {
+  return `#include <begin_vertex>
+{
+  #ifdef USE_INSTANCING
+  vec2 windCell = vec2(instanceMatrix[3][0], instanceMatrix[3][2]);
+  mat3 windRot = mat3(instanceMatrix);
+  float windS2 = max(dot(windRot[0], windRot[0]), 1e-6);
+  #else
+  vec2 windCell = vec2(0.0);
+  mat3 windRot = mat3(1.0);
+  float windS2 = 1.0;
+  #endif
+  float windPhase = dot(windCell, uWindDir) * -0.05
+    + windHash(dot(windCell, vec2(127.1, 311.7))) * ${glslFloat(p.phaseJitter)};
+  float windT = uWindTime * ${glslFloat(p.gustHz)} + windPhase;
+  float windGust = 0.72 * windNoise(windT, 17.3) + 0.28 * windNoise(windT * 2.3 + 5.1, 29.7);
+  float windBend = ${glslFloat(p.bend)} * uWindStrength * (0.45 + 0.55 * windGust);
+  float windFlut = ${glslFloat(p.flutter)} * uWindStrength
+    * windNoise(uWindTime * ${glslFloat(p.flutterHz)} + windPhase * 1.7, 47.9);
+  vec2 windLean = uWindDir * windBend + vec2(-uWindDir.y, uWindDir.x) * windFlut;
+  vec3 windWorld = vec3(windLean.x, 0.0, windLean.y) * (${p.heightExpr} * position.y);
+  transformed += (windWorld * windRot) * inversesqrt(windS2);
+}`;
+}
+
 // ── instanced assembly ───────────────────────────────────────────────────────
 
 /** Just proud of the ground; under the creature shadows' 0.02 lift. */
@@ -288,6 +488,11 @@ const PROP_SHADOW_LIFT = 0.018;
 const TICK_LIFT = 0.015;
 /** Shadow stamp sits a touch inside the footprint, like the creatures'. */
 const SHADOW_FIT = 0.8;
+
+/** Re-lay the instanced shadow matrices only when the sun has moved beyond
+ * ~1° in azimuth or altitude — it glides slowly, so most frames are just the
+ * (cheap) shared material-value update. */
+export const SHADOW_SUN_EPS = Math.PI / 180;
 
 export interface Scatter {
   group: Group;
@@ -302,16 +507,42 @@ export interface Scatter {
   setKindDensity(kind: ScatterKind, mult: number): void;
   /** Per-kind uniform scale multiplier on every instance of the kind. */
   setKindScale(kind: ScatterKind, mult: number): void;
-  /** Barely-perceptible whole-group sway. Call once per frame. */
-  update(nowMs: number): void;
+  /**
+   * Sun-drive the instanced shadow discs (same ellipse system as
+   * FlatShadows — stretched away from the sun's azimuth, one shared flat
+   * value). Call once per frame: the material value updates cheaply every
+   * call; instance matrices only re-lay when azimuth/altitude have moved
+   * beyond SHADOW_SUN_EPS (~1°).
+   */
+  setSun(azimuth: number, altitude: number, presence: number): void;
+  /**
+   * Drive the vertex wind. Call once per frame with the environment's live
+   * (spring-glided) wind strength and the frame time; strength is clamped to
+   * [WIND_STRENGTH_MIN, WIND_STRENGTH_MAX] and the heading drifts on its own
+   * via windAzimuth(timeMs). Three uniform writes — no matrix re-uploads.
+   */
+  setWind(strength: number, timeMs: number): void;
+  /** Live wind values (dev panel / tests). */
+  windState(): { strength: number; azimuth: number; timeMs: number };
+  /**
+   * Physics colliders for the currently visible props: hard bodies block,
+   * soft bodies (bush) damp + sway; ticks have none. Cached — rebuilt lazily
+   * after placements/exclusions/scales change. Consumers key their spatial
+   * index on collidersVersion() and re-query only when it moves.
+   */
+  colliders(): Collider[];
+  /** Bumps whenever the collider set may have changed. */
+  collidersVersion(): number;
+  /**
+   * Soft-body brush: kick a brief localized sway impulse into swaying
+   * instances near (x, z) — the visible read of a creature pushing through
+   * a bush. Strength ~[0, 1]; decays on its own (~1s smooth pulse).
+   */
+  nudge(x: number, z: number, strength: number): void;
+  /** Live nudge slots (tests / dev panel). */
+  nudgeState(): { x: number; z: number; strength: number; t0: number }[];
   dispose(): void;
 }
-
-/** Stable seed for the scatter group's drift channel. */
-const SWAY_SEED = 63.9;
-/** The sway rides one shared group transform: per-instance drift would mean
- * re-uploading thousands of matrices every frame for a sub-pixel effect. */
-const SWAY_SCALE = 1.6;
 
 export function createScatter(): Scatter {
   const group = new Group();
@@ -320,25 +551,147 @@ export function createScatter(): Scatter {
   const variantOf = (p: Placement) => geometries.get(p.kind as InflatedPropKind)![p.variant]!;
 
   // Light paper albedo, fully matte — the ink pass draws the form. Never a
-  // grey mass (GENERATOR §ink rendering pass).
+  // grey mass (GENERATOR §ink rendering pass). Rigid kinds (building, rock,
+  // stump) render with this stock material: no wind injection at all.
   const propMaterial = new MeshStandardMaterial({
+    color: WORLD.light,
+    roughness: 1,
+    metalness: 0,
+  });
+  // Swaying kinds share the same look plus the vertex wind.
+  const swayMaterial = new MeshStandardMaterial({
     color: WORLD.light,
     roughness: 1,
     metalness: 0,
   });
   // Ticks are unlit ink marks — the only dark the environment carries.
   const tickMaterial = new MeshBasicMaterial({ color: WORLD.ink, side: DoubleSide });
-  // Flat stamped shadow discs, one hard value (TASTE §2.4).
+
+  // One shared uniform set drives every wind-injected material; setWind is
+  // three value writes, never a recompile.
+  const windUniforms = {
+    uWindTime: { value: 0 },
+    uWindDir: { value: new Vector2(1, 0) },
+    uWindStrength: { value: WIND_STRENGTH_MIN },
+  };
+  let windTimeMs = 0;
+
+  const injectWind = (
+    material: MeshStandardMaterial | MeshBasicMaterial,
+    profile: WindProfile,
+    cacheKey: string,
+  ): void => {
+    material.onBeforeCompile = (shader) => {
+      Object.assign(shader.uniforms, windUniforms);
+      shader.vertexShader = shader.vertexShader
+        .replace(
+          '#include <common>',
+          `#include <common>\n${windCommonGlsl(profile.heightExpr === 'aWindHeight')}`,
+        )
+        .replace('#include <begin_vertex>', windBeginGlsl(profile));
+    };
+    // The injected chunks change the program — never share a cache slot with
+    // the stock material.
+    material.customProgramCacheKey = () => cacheKey;
+  };
+  injectWind(swayMaterial, WIND_PROFILE_SWAY, 'scatter-wind-sway-v1');
+  injectWind(tickMaterial, WIND_PROFILE_TICK, 'scatter-wind-tick-v1');
+
+  // ── soft-body nudge impulses (colliders section) ─────────────────────────
+  // [seam: wind agent] A creature brushing through a bush kicks a brief
+  // localized sway. This is a SECOND, additive onBeforeCompile wrap on the
+  // sway material's chain: the wind injection above runs first, then this
+  // wrap appends its own uniforms and begin_vertex block (the wind block's
+  // replacement keeps the literal `#include <begin_vertex>` at its head, so
+  // this block lands beside it — both displace `transformed`). Impulses
+  // decay in-shader against uWindTime (seconds, driven by setWind), so a
+  // nudge needs no per-frame CPU upkeep. Wind agent: keep this wrap AFTER
+  // the injectWind calls and keep uWindTime in seconds.
+  const NUDGE_SLOTS = 8;
+  /** World-unit falloff radius around the brush point. */
+  const NUDGE_RADIUS = 2.5;
+  /** Re-kick cadence while pushing through (past the pulse crest). */
+  const NUDGE_REKICK_S = 0.45;
+  // Slot layout: x, y = world x/z of the brush; z = strength; w = t0 (s).
+  const nudgeUniforms = {
+    uNudge: { value: Array.from({ length: NUDGE_SLOTS }, () => new Vector4()) },
+  };
+  let nudgeCursor = 0;
+
+  const nudgeBeginGlsl = `#include <begin_vertex>
+{
+  #ifdef USE_INSTANCING
+  vec2 nudgeCell = vec2(instanceMatrix[3][0], instanceMatrix[3][2]);
+  mat3 nudgeRot = mat3(instanceMatrix);
+  float nudgeS2 = max(dot(nudgeRot[0], nudgeRot[0]), 1e-6);
+  #else
+  vec2 nudgeCell = vec2(0.0);
+  mat3 nudgeRot = mat3(1.0);
+  float nudgeS2 = 1.0;
+  #endif
+  vec2 nudgeLean = vec2(0.0);
+  for (int i = 0; i < ${NUDGE_SLOTS}; i++) {
+    float nudgeStr = uNudge[i].z;
+    vec2 nudgeD = nudgeCell - uNudge[i].xy;
+    float nudgeDist = length(nudgeD);
+    float nudgeFall = 1.0 - smoothstep(0.0, ${glslFloat(NUDGE_RADIUS)}, nudgeDist);
+    float nudgeAge = max(uWindTime - uNudge[i].w, 0.0);
+    float nudgeEnv = (nudgeAge * 4.0) * exp(1.0 - nudgeAge * 4.0);
+    nudgeLean += (nudgeD / max(nudgeDist, 1e-4))
+      * (nudgeStr * nudgeFall * nudgeEnv * 0.22);
+  }
+  vec3 nudgeWorld = vec3(nudgeLean.x, 0.0, nudgeLean.y) * (aWindHeight * position.y);
+  transformed += (nudgeWorld * nudgeRot) * inversesqrt(nudgeS2);
+}`;
+
+  const windSwayCompile = swayMaterial.onBeforeCompile;
+  swayMaterial.onBeforeCompile = (shader, renderer): void => {
+    windSwayCompile(shader, renderer);
+    Object.assign(shader.uniforms, nudgeUniforms);
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', `#include <common>\nuniform vec4 uNudge[${NUDGE_SLOTS}];`)
+      .replace('#include <begin_vertex>', nudgeBeginGlsl);
+  };
+  const windSwayKey = swayMaterial.customProgramCacheKey.bind(swayMaterial);
+  swayMaterial.customProgramCacheKey = (): string => `${windSwayKey()}+nudge-v1`;
+
+  // Bake the height-fraction attribute the sway shader bends by. Rigid kinds
+  // deliberately never get this attribute (taste guard: tests assert it).
+  const swayKindSet = new Set<InflatedPropKind>(WIND_SWAY_KINDS);
+  for (const kind of WIND_SWAY_KINDS) {
+    for (const variant of geometries.get(kind)!) {
+      const position = variant.geometry.getAttribute('position');
+      const heights = new Float32Array(position.count);
+      for (let i = 0; i < position.count; i++) {
+        heights[i] = Math.min(Math.max(position.getY(i) / variant.height, 0), 1);
+      }
+      variant.geometry.setAttribute('aWindHeight', new BufferAttribute(heights, 1));
+    }
+  }
+  // Flat stamped shadow discs, one hard value (TASTE §2.4). The sun retints
+  // the ONE shared value (toward the ground as presence falls) and reshapes
+  // the shared ellipse — the fill itself never gradates.
   const shadowMaterial = new MeshBasicMaterial({
     color: SURFACE.shadow,
     polygonOffset: true,
     polygonOffsetFactor: -2,
     polygonOffsetUnits: -2,
   });
+  const shadowGroundValue = new Color(SURFACE.ground);
+  const shadowInkValue = new Color(SURFACE.shadow);
 
   const tickGeometry = buildTickGeometry();
   const shadowGeometry = new CircleGeometry(1, 40);
   shadowGeometry.rotateX(-Math.PI / 2);
+
+  // Sun-driven shadow ellipse, shared by every instanced disc. null = the
+  // noon circle (identical to the static layout). Matrices re-lay only when
+  // the sun moves beyond SHADOW_SUN_EPS.
+  let sunEllipse: StampEllipse | null = null;
+  let sunAzimuth = Number.NaN;
+  let sunAltitude = Number.NaN;
+  let shadowMesh: InstancedMesh | null = null;
+  let shadowSpots: { x: number; z: number; r: number }[] = [];
 
   let globalDensity = 1;
   const kindDensity: Partial<Record<ScatterKind, number>> = {};
@@ -346,6 +699,11 @@ export function createScatter(): Scatter {
   let placements = computePlacements();
   let exclusions: Exclusion[] = [];
   let meshes: InstancedMesh[] = [];
+
+  // Collider cache — invalidated by rebuild() (every placement / exclusion /
+  // scale mutation funnels through it), rebuilt lazily on colliders().
+  let colliderCache: Collider[] | null = null;
+  let colliderVersion = 0;
 
   const scaleOf = (kind: ScatterKind): number => Math.max(0, kindScale[kind] ?? 1);
 
@@ -365,12 +723,40 @@ export function createScatter(): Scatter {
       mesh.dispose();
     }
     meshes = [];
+    shadowMesh = null;
+    shadowSpots = [];
+  }
+
+  /** Write every shadow-disc instance matrix from the current sun ellipse:
+   * long axis r×stretch along the away-from-sun direction, short axis r,
+   * center pushed away from the sun by offset×r. Circle when the sun is at
+   * the noon reference (or before the first setSun). */
+  function layShadows(): void {
+    if (!shadowMesh) return;
+    const e = sunEllipse;
+    if (e) quat.setFromAxisAngle(axisY, stampRotationY(e));
+    else quat.identity();
+    for (let i = 0; i < shadowSpots.length; i++) {
+      const s = shadowSpots[i]!;
+      const push = e ? e.offset * s.r : 0;
+      pos.set(
+        s.x + (e ? e.dirX * push : 0),
+        PROP_SHADOW_LIFT,
+        s.z + (e ? e.dirZ * push : 0),
+      );
+      scl.set(s.r * (e ? e.stretch : 1), 1, s.r);
+      shadowMesh.setMatrixAt(i, matrix.compose(pos, quat, scl));
+    }
+    shadowMesh.instanceMatrix.needsUpdate = true;
   }
 
   /** Rebuild every InstancedMesh from placements minus exclusions. Runs on
    * setExclusions / setDensity calls only — never per frame. */
   function rebuild(): void {
     clearMeshes();
+    // Colliders track visible placements: drop the cache, bump the version.
+    colliderCache = null;
+    colliderVersion++;
     const visible = filterExcluded(placements, exclusions);
 
     // One InstancedMesh per (kind, variant) — ~20 draws total.
@@ -379,7 +765,9 @@ export function createScatter(): Scatter {
       for (let v = 0; v < variants.length; v++) {
         const of = visible.filter((p) => p.kind === kind && p.variant === v);
         if (of.length === 0) continue;
-        const mesh = new InstancedMesh(variants[v]!.geometry, propMaterial, of.length);
+        const material = swayKindSet.has(kind) ? swayMaterial : propMaterial;
+        const mesh = new InstancedMesh(variants[v]!.geometry, material, of.length);
+        mesh.name = `${kind}-${v}`;
         mesh.frustumCulled = false;
         const kMult = scaleOf(kind);
         of.forEach((p, i) => {
@@ -397,6 +785,7 @@ export function createScatter(): Scatter {
     const ticks = visible.filter((p) => p.kind === 'tick');
     if (ticks.length > 0) {
       const mesh = new InstancedMesh(tickGeometry, tickMaterial, ticks.length);
+      mesh.name = 'tick';
       mesh.frustumCulled = false;
       const tickMult = scaleOf('tick');
       ticks.forEach((p, i) => {
@@ -410,22 +799,22 @@ export function createScatter(): Scatter {
       group.add(mesh);
     }
 
-    // One shadow disc per large/medium prop — ticks get none.
+    // One shadow disc per large/medium prop — ticks get none. Matrices are
+    // laid by layShadows from the current sun ellipse.
     const shadowed = visible.filter((p) => p.kind !== 'tick');
     if (shadowed.length > 0) {
       const mesh = new InstancedMesh(shadowGeometry, shadowMaterial, shadowed.length);
       mesh.frustumCulled = false;
       mesh.renderOrder = 1;
-      shadowed.forEach((p, i) => {
-        const r = variantOf(p).radius * p.scale * scaleOf(p.kind) * SHADOW_FIT;
-        quat.identity();
-        pos.set(p.x, PROP_SHADOW_LIFT, p.z);
-        scl.set(r, 1, r);
-        mesh.setMatrixAt(i, matrix.compose(pos, quat, scl));
-      });
-      mesh.instanceMatrix.needsUpdate = true;
+      shadowSpots = shadowed.map((p) => ({
+        x: p.x,
+        z: p.z,
+        r: variantOf(p).radius * p.scale * scaleOf(p.kind) * SHADOW_FIT,
+      }));
+      shadowMesh = mesh;
       meshes.push(mesh);
       group.add(mesh);
+      layShadows();
     }
   }
 
@@ -461,10 +850,77 @@ export function createScatter(): Scatter {
       kindScale[kind] = mult;
       rebuild();
     },
-    update(nowMs: number): void {
-      const drift = sampleDrift(nowMs, SWAY_SEED, SWAY_SCALE);
-      group.position.set(drift.x, 0, drift.y);
-      group.rotation.y = drift.rot * 0.5;
+    setSun(azimuth: number, altitude: number, presence: number): void {
+      // The one flat value every stamp shares this frame — presence 0 lands
+      // exactly on the ground value (invisible; night/storm).
+      shadowMaterial.color
+        .copy(shadowGroundValue)
+        .lerp(shadowInkValue, Math.min(1, Math.max(0, presence)));
+      // Throttled shape update: NaN sentinels force the first lay.
+      const moved =
+        !(Math.abs(azimuth - sunAzimuth) < SHADOW_SUN_EPS) ||
+        !(Math.abs(altitude - sunAltitude) < SHADOW_SUN_EPS);
+      if (!moved) return;
+      sunAzimuth = azimuth;
+      sunAltitude = altitude;
+      sunEllipse = stampEllipse(azimuth, altitude);
+      layShadows();
+    },
+    // NOTE: the old whole-group sampleDrift sway (position + rotation.y on
+    // `group`) is gone — the per-vertex wind below is what keeps the scatter
+    // off the stillness probe now, and it does it in-material instead of
+    // nudging thousands of instances through one shared transform.
+    setWind(strength: number, timeMs: number): void {
+      windTimeMs = timeMs;
+      windUniforms.uWindStrength.value = clampWindStrength(strength);
+      windUniforms.uWindTime.value = timeMs / 1000;
+      const azimuth = windAzimuth(timeMs);
+      windUniforms.uWindDir.value.set(Math.cos(azimuth), Math.sin(azimuth));
+    },
+    windState(): { strength: number; azimuth: number; timeMs: number } {
+      return {
+        strength: windUniforms.uWindStrength.value,
+        azimuth: windAzimuth(windTimeMs),
+        timeMs: windTimeMs,
+      };
+    },
+    colliders(): Collider[] {
+      if (!colliderCache) {
+        colliderCache = [];
+        for (const p of filterExcluded(placements, exclusions)) {
+          if (p.kind === 'tick') continue;
+          const c = colliderFor(p, variantOf(p).radius, scaleOf(p.kind));
+          if (c) colliderCache.push(c);
+        }
+      }
+      return colliderCache;
+    },
+    collidersVersion: (): number => colliderVersion,
+    nudge(x: number, z: number, strength: number): void {
+      const s = Math.min(1.5, Math.max(0, strength));
+      if (s <= 0) return;
+      const now = windUniforms.uWindTime.value; // seconds (wind seam)
+      const slots = nudgeUniforms.uNudge.value;
+      // A nudge near a live slot refreshes it instead of burning a new one;
+      // re-kick only past the pulse crest, so pushing through a bush reads
+      // as a repeated gentle rock, never a frozen rise.
+      for (const slot of slots) {
+        if (slot.z <= 0) continue;
+        const dx = slot.x - x;
+        const dz = slot.y - z;
+        if (dx * dx + dz * dz < 0.8) {
+          if (now - slot.w >= NUDGE_REKICK_S) slot.set(x, z, Math.max(slot.z, s), now);
+          else slot.z = Math.max(slot.z, s);
+          return;
+        }
+      }
+      slots[nudgeCursor]!.set(x, z, s, now);
+      nudgeCursor = (nudgeCursor + 1) % NUDGE_SLOTS;
+    },
+    nudgeState(): { x: number; z: number; strength: number; t0: number }[] {
+      return nudgeUniforms.uNudge.value
+        .filter((v) => v.z > 0)
+        .map((v) => ({ x: v.x, z: v.y, strength: v.z, t0: v.w }));
     },
     dispose(): void {
       clearMeshes();
@@ -473,6 +929,7 @@ export function createScatter(): Scatter {
       tickGeometry.dispose();
       shadowGeometry.dispose();
       propMaterial.dispose();
+      swayMaterial.dispose();
       tickMaterial.dispose();
       shadowMaterial.dispose();
     },

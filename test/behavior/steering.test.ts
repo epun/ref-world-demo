@@ -12,15 +12,20 @@ import {
   approachTarget,
   arrive,
   ARRIVE_RADIUS,
+  AVOID_DISTANCE,
+  avoidanceBend,
   headingTo,
   pickWanderTarget,
+  projectOutOfHard,
   quadrantOf,
   shortestDelta,
   STAND_OFF,
+  TARGET_CLEARANCE,
   WORLD_EXTENT,
   wrapAngle,
   type Vec2,
 } from '../../src/behavior/steering';
+import { buildColliderGrid, type Collider } from '../../src/physics/colliders';
 
 function dist(a: Vec2, b: Vec2): number {
   return Math.hypot(a.x - b.x, a.z - b.z);
@@ -151,5 +156,107 @@ describe('pickWanderTarget — dispersal (PLAN §7.1)', () => {
       return sum / 40;
     };
     expect(reach(1)).toBeGreaterThan(reach(0) * 2);
+  });
+});
+
+// ── obstacle avoidance ───────────────────────────────────────────────────────
+
+/** A deterministic little forest of hard circles (plus some soft strays). */
+function fuzzForest(count: number, seed: number): Collider[] {
+  const rand = makeRand(seed);
+  const out: Collider[] = [];
+  for (let i = 0; i < count; i++) {
+    out.push({
+      x: (rand() - 0.5) * 70,
+      z: (rand() - 0.5) * 70,
+      r: 0.5 + rand() * 1.5,
+      hard: rand() < 0.85,
+    });
+  }
+  return out;
+}
+
+describe('projectOutOfHard', () => {
+  it('projects a point inside a hard collider out to the clearance ring', () => {
+    const grid = buildColliderGrid([{ x: 0, z: 0, r: 2, hard: true }]);
+    const p = projectOutOfHard({ x: 0.5, z: 0 }, grid);
+    expect(Math.hypot(p.x, p.z)).toBeCloseTo(2 + TARGET_CLEARANCE, 6);
+  });
+
+  it('returns the same object when the point is already clear (and for soft)', () => {
+    const grid = buildColliderGrid([
+      { x: 0, z: 0, r: 2, hard: true },
+      { x: 10, z: 0, r: 2, hard: false },
+    ]);
+    const clear = { x: 6, z: 6 };
+    expect(projectOutOfHard(clear, grid)).toBe(clear);
+    const inBush = { x: 10, z: 0.2 };
+    expect(projectOutOfHard(inBush, grid)).toBe(inBush); // soft never blocks
+    expect(projectOutOfHard(clear, null)).toBe(clear);
+  });
+});
+
+describe('avoidanceBend', () => {
+  it('bends the heading away, monotonically with proximity', () => {
+    // Obstacle bearing 0.4 rad off the +z forward; close the gap step by
+    // step — the deflection must never shrink as the surface gets nearer.
+    const heading = 0;
+    const r = 0.6;
+    let prev = -1;
+    for (let gap = AVOID_DISTANCE - 0.05; gap >= 0.05; gap -= 0.1) {
+      const d = gap + r;
+      const c: Collider = { x: Math.sin(0.4) * d, z: Math.cos(0.4) * d, r, hard: true };
+      const bent = avoidanceBend({ x: 0, z: 0 }, heading, [c]);
+      const deflection = Math.abs(wrapAngle(bent - heading));
+      expect(deflection).toBeGreaterThanOrEqual(prev - 1e-9);
+      expect(wrapAngle(bent - heading)).toBeLessThan(0); // away from the obstacle
+      prev = deflection;
+    }
+    expect(prev).toBeGreaterThan(0.15); // near contact the bend is real
+  });
+
+  it('leaves the heading untouched beyond AVOID_DISTANCE or for soft bodies', () => {
+    const far: Collider = { x: 0, z: 5, r: 1, hard: true }; // gap 4 > 2
+    const bush: Collider = { x: 0, z: 1, r: 1, hard: false };
+    expect(avoidanceBend({ x: 0, z: 0 }, 0.3, [far, bush])).toBe(0.3);
+    expect(avoidanceBend({ x: 0, z: 0 }, 0.3, [])).toBe(0.3);
+  });
+
+  it('picks a side deterministically on a dead head-on contact', () => {
+    const c: Collider = { x: 0, z: 1.4, r: 0.8, hard: true };
+    const a = avoidanceBend({ x: 0, z: 0 }, 0, [c]);
+    const b = avoidanceBend({ x: 0, z: 0 }, 0, [c]);
+    expect(a).toBe(b);
+    expect(Math.abs(wrapAngle(a))).toBeGreaterThan(0.1); // it does turn
+  });
+});
+
+describe('wander targets never land inside hard colliders', () => {
+  it('fuzz: 500 seeded rolls across a scattered forest', () => {
+    const forest = fuzzForest(80, 21);
+    const grid = buildColliderGrid(forest);
+    const rand = makeRand(1234);
+    for (let i = 0; i < 500; i++) {
+      const self = { x: (rand() - 0.5) * 60, z: (rand() - 0.5) * 60 };
+      const t = pickWanderTarget(self, [], [0, 0, 0, 0], rand(), rand, grid);
+      for (const c of forest) {
+        if (!c.hard) continue;
+        expect(
+          Math.hypot(t.x - c.x, t.z - c.z),
+          `target (${t.x.toFixed(2)}, ${t.z.toFixed(2)}) vs collider (${c.x.toFixed(2)}, ${c.z.toFixed(2)}) r=${c.r.toFixed(2)}`,
+        ).toBeGreaterThanOrEqual(c.r - 1e-9);
+      }
+    }
+  });
+
+  it('the grid changes candidate positions, never the rand draw count', () => {
+    // Same stream with and without a grid → the same number of draws, so
+    // downstream behavior stays deterministic when colliders appear.
+    const grid = buildColliderGrid(fuzzForest(40, 8));
+    const a = makeRand(42);
+    const b = makeRand(42);
+    pickWanderTarget({ x: 1, z: 2 }, [], [0, 0, 0, 0], 0.7, a);
+    pickWanderTarget({ x: 1, z: 2 }, [], [0, 0, 0, 0], 0.7, b, grid);
+    expect(a()).toBe(b()); // streams still in lockstep
   });
 });

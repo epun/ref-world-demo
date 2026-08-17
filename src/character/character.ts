@@ -31,6 +31,7 @@ import {
   type DeformState,
   type GaitState,
 } from './deform';
+import { createBlendshellCharacter } from './blendshell/build';
 import { runEmote, type EmoteRun } from './emotes';
 import { createGait } from './gait';
 import { createEyes } from './eyes';
@@ -96,6 +97,17 @@ export interface CharacterOptions {
    * drawing (the dial's dev-tunable floor).
    */
   fidelity?: number;
+  /**
+   * Body construction (docs/BLENDSHELL.md step 6): 'inflate' (default,
+   * shipping) inflates the synthesized silhouette; 'blendshell' builds the
+   * SDF blend-shell body with IK stepping — behind this flag until visual
+   * review flips the default.
+   *
+   * Dev override (smokes/dev tools only — main.ts stays untouched): setting
+   * `globalThis.__refworldConstruction = 'blendshell'` flips the DEFAULT for
+   * callers that don't pass this option. An explicit option always wins.
+   */
+  construction?: 'inflate' | 'blendshell';
 }
 
 /**
@@ -110,6 +122,14 @@ export function createCharacter(
   worldScale = 1,
   options: CharacterOptions = {},
 ): Character | null {
+  // Construction flag resolution: explicit option > dev override > 'inflate'.
+  const override = (globalThis as { __refworldConstruction?: unknown }).__refworldConstruction;
+  const construction =
+    options.construction ?? (override === 'blendshell' ? 'blendshell' : 'inflate');
+  if (construction === 'blendshell') {
+    return createBlendshellCharacter(strokes, worldScale);
+  }
+
   const interpreted = interpretDrawing(strokes, options.fidelity ?? 1);
   if (!interpreted) return null;
   // The synthesized body's analysis: eyes, deformation, and gait all read

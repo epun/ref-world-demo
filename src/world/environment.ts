@@ -15,14 +15,17 @@
  *                  paper fog, and drift sparse ink/paper flecks (rain/snow)
  *                  through the composite. All achromatic by construction:
  *                  presets are pure scalars applied to token-derived values.
+ *   wind         → a per-preset strength (mirroring cellshader's per-weather
+ *                  `wind` driving its cloud drift) that scene.ts feeds into
+ *                  the scatter's per-vertex sway via state.wind.
  *
  * TRANSITIONS ARE THE POINT: setWeather / setTimeOfDay / setIntensity only
  * retarget ζ≥1 springs at t.primary — a weather change is a slow drift of
  * every affected uniform, never a cut (TASTE §2.1, confidence 1.00).
  *
- * Future work (noted, cheap path not taken): stamped-shadow length/direction
- * following the sun arc — shadows are flat discs today (src/world/shadows.ts)
- * and stretching them is a separate geometry pass.
+ * Stamped-shadow length/direction follows the sun arc via the read-only
+ * `sun` getter below — scene.ts feeds it to FlatShadows/scatter each frame
+ * (src/world/shadows.ts owns the ellipse math).
  *
  * Dependencies are injected so this module stays testable in node: the
  * lighting handles are structural (intensity + position), the ink surface is
@@ -67,6 +70,12 @@ export interface WeatherPreset {
   streaks: StreakKind;
   /** Streak coverage at full intensity, 0–1. Kept low — nothing packed. */
   streakDensity: number;
+  /**
+   * Wind strength driving the scatter's per-vertex sway (grass ticks +
+   * tree/conifer/bush crowns), mirroring cellshader's per-weather `wind`
+   * scalar. Even clear air breathes; fog hangs almost still; rain leans in.
+   */
+  wind: number;
 }
 
 export const WEATHER: Record<WeatherName, WeatherPreset> = {
@@ -79,6 +88,7 @@ export const WEATHER: Record<WeatherName, WeatherPreset> = {
     fogAmt: 0,
     streaks: null,
     streakDensity: 0,
+    wind: 0.3,
   },
   // Fill up / key down — the frame flattens; hatching thins; value dips a touch.
   overcast: {
@@ -89,8 +99,10 @@ export const WEATHER: Record<WeatherName, WeatherPreset> = {
     fogAmt: 0,
     streaks: null,
     streakDensity: 0,
+    wind: 0.45,
   },
   // Depth washes toward the light token in banded steps — drawn layers of paper.
+  // The air hangs nearly still in fog.
   fog: {
     keyMul: 0.55,
     fillMul: 1.05,
@@ -99,8 +111,10 @@ export const WEATHER: Record<WeatherName, WeatherPreset> = {
     fogAmt: 0.8,
     streaks: null,
     streakDensity: 0,
+    wind: 0.15,
   },
   // Sparse diagonal ink hairlines drifting down the page; frame value down.
+  // The strongest lean the world ever takes — still measured, never stormy.
   rain: {
     keyMul: 0.5,
     fillMul: 0.95,
@@ -109,6 +123,7 @@ export const WEATHER: Record<WeatherName, WeatherPreset> = {
     fogAmt: 0.3,
     streaks: 'rain',
     streakDensity: 0.55,
+    wind: 0.7,
   },
   // Sparse light flecks swaying slowly downward; a thin distance wash.
   snow: {
@@ -119,6 +134,7 @@ export const WEATHER: Record<WeatherName, WeatherPreset> = {
     fogAmt: 0.35,
     streaks: 'snow',
     streakDensity: 0.5,
+    wind: 0.4,
   },
 };
 
@@ -235,9 +251,29 @@ export interface EnvironmentState {
   fogAmt: number;
   rainAmt: number;
   snowAmt: number;
+  /** Live (spring-glided) wind strength — scene.ts feeds it to the scatter's
+   * vertex wind each frame via scatter.setWind(state.wind, nowMs). */
+  wind: number;
+  /** The panel's wind override, or null when the weather drives it. */
+  windOverride: number | null;
   keyIntensity: number;
   fillIntensity: number;
   backgroundScale: number;
+}
+
+/** Live sun read for the stamped-shadow pass (all spring-glided upstream). */
+export interface SunState {
+  /** Sun azimuth, radians (world atan2(x, z) convention). */
+  azimuth: number;
+  /** Sun altitude, radians; negative below the horizon. */
+  altitude: number;
+  /**
+   * Stamp presence 0–1: daylight × the gliding weather key balance. keyMul
+   * is the monochrome stand-in for cellshader's per-weather `shadow` scalar
+   * — overcast/fog/rain flatten the light and the stamps fade with it, and
+   * a sunken sun takes presence to 0 (hatching carries night shading).
+   */
+  presence: number;
 }
 
 export interface Environment {
@@ -247,13 +283,25 @@ export interface Environment {
   setTimeOfDay(t: number): void;
   /** Glide the weather blend strength over clear, 0–1. */
   setIntensity(v: number): void;
+  /**
+   * Override the wind strength (a panel slider), or pass null to hand it
+   * back to the weather presets. Clamped to [0, WIND_OVERRIDE_MAX]; the
+   * change glides on the same ζ≥1 spring as every other channel.
+   */
+  setWindOverride(v: number | null): void;
   readonly weatherNames: readonly WeatherName[];
   readonly state: EnvironmentState;
+  /** Current sun azimuth/altitude/presence for the flat shadow stamps. */
+  readonly sun: SunState;
   /** Advance the glide springs and push the frame's values into the deps. */
   update(dt: number, nowMs: number): void;
 }
 
 const clamp01 = (x: number): number => Math.min(1, Math.max(0, x));
+
+/** Ceiling for the panel's wind override — headroom over the rain preset
+ * without ever letting the world read stormy (TASTE §2.1: measured, ambient). */
+export const WIND_OVERRIDE_MAX = 1.5;
 
 export function createEnvironment(deps: EnvironmentDeps): Environment {
   const { key, fill } = deps.lighting;
@@ -279,6 +327,11 @@ export function createEnvironment(deps: EnvironmentDeps): Environment {
   const fogAmt = glide(0);
   const rainAmt = glide(0);
   const snowAmt = glide(0);
+  const wind = glide(WEATHER.clear.wind);
+
+  /** Non-null while the panel is holding the wind; weather changes still
+   * retarget every other channel but leave the wind pinned here. */
+  let windOverride: number | null = null;
 
   /** Retarget every weather channel at the current preset × intensity blend.
    * At intensity 0 the targets are exactly the clear preset. */
@@ -293,6 +346,7 @@ export function createEnvironment(deps: EnvironmentDeps): Environment {
     fogAmt.retarget(blend(clear.fogAmt, preset.fogAmt));
     rainAmt.retarget(preset.streaks === 'rain' ? preset.streakDensity * intensity : 0);
     snowAmt.retarget(preset.streaks === 'snow' ? preset.streakDensity * intensity : 0);
+    wind.retarget(windOverride ?? blend(clear.wind, preset.wind));
   };
 
   const direction = new Vector3().copy(KEY_DIRECTION);
@@ -328,6 +382,10 @@ export function createEnvironment(deps: EnvironmentDeps): Environment {
     deps.ink.setKeyDirection(direction);
     deps.ink.setEnvironment(inkEnv);
 
+    // Wind: no dep of its own — scene.ts reads state.wind after this update
+    // and pushes it into the scatter's vertex-wind uniforms.
+    wind.update(dt);
+
     // Night sky: the background field dips in value — achromatic, a luma
     // scale on the ground token, applied by scene.ts.
     lastBackground = NIGHT_BACKGROUND + (1 - NIGHT_BACKGROUND) * day;
@@ -353,7 +411,20 @@ export function createEnvironment(deps: EnvironmentDeps): Environment {
       intensity = clamp01(v);
       retargetWeather();
     },
+    setWindOverride(v: number | null): void {
+      windOverride =
+        v === null ? null : Math.min(WIND_OVERRIDE_MAX, Math.max(0, v));
+      retargetWeather();
+    },
     weatherNames: WEATHER_NAMES,
+    get sun(): SunState {
+      const arc = sunArc(time.value);
+      return {
+        azimuth: arc.azimuth,
+        altitude: arc.altitude,
+        presence: lastDay * clamp01(keyMul.value),
+      };
+    },
     get state(): EnvironmentState {
       return {
         weather,
@@ -369,6 +440,8 @@ export function createEnvironment(deps: EnvironmentDeps): Environment {
         fogAmt: fogAmt.value,
         rainAmt: rainAmt.value,
         snowAmt: snowAmt.value,
+        wind: wind.value,
+        windOverride,
         keyIntensity: key.intensity,
         fillIntensity: fill.intensity,
         backgroundScale: lastBackground,

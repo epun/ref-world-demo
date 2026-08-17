@@ -11,7 +11,13 @@
 import { describe, expect, it } from 'vitest';
 import { BehaviorAgent, MAX_SPEED, type AgentTick } from '../../src/behavior/agent';
 import type { Personality } from '../../src/behavior/personality';
+import { makeRand } from '../../src/behavior/states';
 import { Spring } from '../../src/motion/spring';
+import {
+  buildColliderGrid,
+  type Collider,
+  type ColliderGrid,
+} from '../../src/physics/colliders';
 import { MOTION } from '../../src/taste/tokens';
 
 const NEUTRAL: Personality = {
@@ -39,13 +45,20 @@ interface Sim {
   z: number;
 }
 
-function step(sim: Sim, now: number, peers: Sim[], props: null): AgentTick {
+function step(
+  sim: Sim,
+  now: number,
+  peers: Sim[],
+  props: null,
+  colliders: ColliderGrid | null = null,
+): AgentTick {
   const tick = sim.agent.update(
     DT,
     now,
     { x: sim.x, z: sim.z },
     peers.map((p, i) => ({ x: p.x, z: p.z, id: `peer-${i}` })),
     props,
+    colliders,
   );
   sim.x += (tick.vx * DT) / 1000;
   sim.z += (tick.vz * DT) / 1000;
@@ -163,6 +176,57 @@ describe('BehaviorAgent', () => {
     expect(max).toBeLessThanOrEqual(target + 1e-6);
     expect(spring.value).toBeCloseTo(target, 3);
     spring.dispose();
+  });
+
+  it('same seed + same collider grid → identical trajectory (colliders draw no rand)', () => {
+    const rand = makeRand(64);
+    const forest: Collider[] = [];
+    for (let i = 0; i < 40; i++) {
+      forest.push({
+        x: (rand() - 0.5) * 40,
+        z: (rand() - 0.5) * 40,
+        r: 0.5 + rand(),
+        hard: rand() < 0.8,
+      });
+    }
+    const grid = buildColliderGrid(forest);
+    const a: Sim = { agent: new BehaviorAgent(321, ROAMER), x: 0, z: 0 };
+    const b: Sim = { agent: new BehaviorAgent(321, ROAMER), x: 0, z: 0 };
+    for (let i = 0; i < 3000; i++) {
+      const now = i * DT;
+      expect(step(a, now, [], null, grid)).toEqual(step(b, now, [], null, grid));
+    }
+    expect(a.x).toBe(b.x);
+    expect(a.z).toBe(b.z);
+    a.agent.dispose();
+    b.agent.dispose();
+  });
+
+  it('steers around a wall of hard colliders instead of pushing into it', () => {
+    // A roamer wandering with a dense picket to its east. Steering is not
+    // the collision system — the manager's positional resolve is — but the
+    // avoidance bend must keep the agent flowing around the circles, so any
+    // incursion stays a shallow graze the resolve would erase, never a
+    // plow-through.
+    const picket: Collider[] = [];
+    for (let z = -30; z <= 30; z += 2.2) {
+      picket.push({ x: 8, z, r: 1, hard: true });
+    }
+    const grid = buildColliderGrid(picket);
+    const sim: Sim = { agent: new BehaviorAgent(909, ROAMER), x: 0, z: 0 };
+    let worst = Infinity;
+    let insideTicks = 0;
+    for (let i = 0; i < 12000; i++) {
+      step(sim, i * DT, [], null, grid);
+      for (const c of picket) {
+        const gap = Math.hypot(sim.x - c.x, sim.z - c.z) - c.r;
+        worst = Math.min(worst, gap);
+        if (gap < 0) insideTicks++;
+      }
+    }
+    expect(worst).toBeGreaterThan(-0.2); // grazes only, never deep
+    expect(insideTicks / 12000).toBeLessThan(0.02); // and rare
+    sim.agent.dispose();
   });
 
   it('setSpeedMultiplier(0) parks the agent without a snap', () => {
