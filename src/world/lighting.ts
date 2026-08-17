@@ -12,8 +12,13 @@ import { DirectionalLight, Group, HemisphereLight } from 'three';
 import { LIGHTING, WORLD } from '../taste/tokens';
 
 /** Fill carries the exposure; calibrated so the ground renders at its token
- * value under fill + key together. */
-const FILL_INTENSITY = 0.85;
+ * value under fill + key together. Measured against a rendered frame: at
+ * 0.85 the ground came out at display luma 0.42 vs the 0.74 target [M],
+ * which also inverted the shadow read (unlit stamp lighter than lit ground).
+ * Intensity is linear in radiance but the target is display sRGB, so the
+ * calibration runs through the transfer curve: 2.85 lands the rendered
+ * ground on its token and restores shadow polarity. */
+const FILL_INTENSITY = 2.85;
 
 /** Key derived from the measured ratio — key sits at a third of the fill. */
 const KEY_INTENSITY = FILL_INTENSITY * LIGHTING.keyToFill;
