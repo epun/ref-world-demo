@@ -43,12 +43,12 @@ export interface WorldHandles {
   /** Time-of-day + weather engine (spring-glided; drives lights + ink). */
   environment: Environment;
   /**
-   * Dev color grade for the paper field: tint the scene background and the
-   * ground disc by hue [0,1) / saturation [0,1], keeping the ground token's
-   * lightness — the value structure (and groundLuma 0.74) never moves.
-   * Saturation 0 restores the exact achromatic token.
+   * Dev color grade for the paper field: set the scene background and the
+   * ground disc to a css color (e.g. a picker's hex string). Night dimming
+   * keeps scaling the chosen color, so time of day still reads. Passing the
+   * ground token restores the shipped achromatic look exactly.
    */
-  setBackgroundTint(hue: number, saturation: number): void;
+  setBackgroundColor(color: string): void;
   /** Register per-frame work (entity drift, gaits, …). Runs before render. */
   onFrame(callback: FrameCallback): void;
 }
@@ -65,12 +65,9 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
   const backgroundBase = new Color(SURFACE.ground);
   const background = backgroundBase.clone();
   scene.background = background;
-  // Paper tint (dev color grade): the token's lightness is the anchor; the
-  // tint re-derives backgroundBase (and the ground disc) around it so the
-  // night dimming below keeps scaling a hue-true base.
-  const paperHsl = { h: 0, s: 0, l: 0 };
-  backgroundBase.getHSL(paperHsl);
-  const paperLightness = paperHsl.l;
+  // Paper color (dev color grade): setBackgroundColor swaps backgroundBase
+  // (and the ground disc) wholesale; the night dimming below keeps scaling
+  // whatever base is current, so time of day still reads under a grade.
   let backgroundLumaScale = 1;
 
   const cameraRig = new CameraRig(window.innerWidth / window.innerHeight);
@@ -213,10 +210,8 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
     ink,
     grain,
     environment,
-    setBackgroundTint: (hue: number, saturation: number): void => {
-      const h = ((hue % 1) + 1) % 1;
-      const s = Math.min(1, Math.max(0, saturation));
-      backgroundBase.setHSL(h, s, paperLightness);
+    setBackgroundColor: (color: string): void => {
+      backgroundBase.set(color);
       background.copy(backgroundBase).multiplyScalar(backgroundLumaScale);
       (ground.material as MeshBasicMaterial).color.copy(backgroundBase);
     },

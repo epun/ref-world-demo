@@ -34,7 +34,7 @@ import {
 } from '../taste/gates';
 import { WIND_OVERRIDE_MAX } from '../world/environment';
 import { SCATTER_STEP } from '../world/scatter';
-import { GRAIN } from '../taste/tokens';
+import { GRAIN, SURFACE } from '../taste/tokens';
 import { FALLBACK_DRAWINGS, FALLBACK_HATCH_MS } from './fixtures';
 import { DEV_SKILLS_META } from './skills-meta';
 
@@ -121,8 +121,8 @@ export interface DevHandles {
   /** Live grain amplitude readback, for the grain gate (QA audit D6). */
   getGrainAmplitude?(): number;
   /** Color grade for the paper field (scene background + ground disc):
-   * hue 0–1, saturation 0–1, token lightness held. */
-  setBackgroundTint?(hue: number, saturation: number): void;
+   * a css color string from the panel's picker. */
+  setBackgroundColor?(color: string): void;
   /** Spawn n deterministic fixture drawings. Defaults to an internal
    * implementation over FALLBACK_DRAWINGS when absent. */
   spawnFallback?(n: number): void;
@@ -243,6 +243,62 @@ export async function initDevPanel(
   // Ghost Panel's own toggle convention: shift+d (README "Press Shift+D").
   ui.bindToggleKey('D', { shift: true });
   if (options.showOnMount) ui.show();
+
+  // ── scene outliner sync (user ask): creatures AND environment objects ─────
+  // appear as named rows. The panel mounts with autoRegister off, and a
+  // mount-time scan would miss everything dynamic anyway (creatures spawn
+  // later, the scatter rebuilds on every density change) — so a low-cadence
+  // sync walks the scene for named meshes/groups, registers new ones, and
+  // drops rows whose object has left the scene graph. objectManager.remove
+  // detaches an attached object, so it only ever runs for nodes that are
+  // already detached; cameras are exempt (the rig camera is not a scene
+  // child, and its row hosts the look-through control).
+  const om = ui.objectManager;
+  if (om) {
+    const inScene = (node: Object3D): boolean => {
+      let p: Object3D = node;
+      while (p.parent) p = p.parent;
+      return p === (handles.scene as Object3D);
+    };
+    const syncOutliner = (): void => {
+      for (const name of om.getNames()) {
+        const obj = om.objects[name]?.object as
+          | (Object3D & { isCamera?: boolean })
+          | undefined;
+        if (!obj?.isObject3D || obj.isCamera) continue;
+        if (!inScene(obj)) om.remove(name);
+      }
+      const known = new Set(
+        Object.values(om.objects)
+          .map((e) => e?.object)
+          .filter(Boolean),
+      );
+      const names = new Set(om.getNames());
+      (handles.scene as Object3D).traverse((node) => {
+        if (known.has(node)) return;
+        const label = node.name.trim();
+        if (!label) return;
+        const flags = node as { isMesh?: boolean; isGroup?: boolean };
+        if (!flags.isMesh && !flags.isGroup) return;
+        // Descendants of a registered node stay collapsed under it — no
+        // sub-part spam from creature roots.
+        for (let p = node.parent; p; p = p.parent) if (known.has(p)) return;
+        let unique = label;
+        for (let i = 2; names.has(unique); i++) unique = `${label} ${i}`;
+        om.register(unique, node);
+        known.add(node);
+        names.add(unique);
+      });
+    };
+    let outlinerClockMs = 0;
+    handles.onFrame((dt) => {
+      outlinerClockMs += dt;
+      if (outlinerClockMs < 1000) return;
+      outlinerClockMs = 0;
+      syncOutliner();
+    });
+    syncOutliner();
+  }
 
   const { creatures } = handles;
 
@@ -481,7 +537,7 @@ export async function initDevPanel(
       // environment's density and scale variables.
       const setGrain = handles.setGrainAmplitude;
       const ink = handles.ink;
-      const setBackgroundTint = handles.setBackgroundTint;
+      const setBackgroundColor = handles.setBackgroundColor;
       const setObjectTint = scatter?.setTint?.bind(scatter);
       const style = panelUi.addFolder('shader style');
       if (setGrain) {
@@ -560,30 +616,14 @@ export async function initDevPanel(
           },
         });
       }
-      if (setBackgroundTint) {
-        let paperHue = 0;
-        let paperSat = 0;
-        style.addSlider('background hue', {
-          min: 0,
-          max: 1,
-          step: 0.01,
-          value: 0,
-          id: 'background-hue',
-          onChange: (v) => {
-            paperHue = v;
-            setBackgroundTint(paperHue, paperSat);
-          },
-        });
-        style.addSlider('background saturation', {
-          min: 0,
-          max: 1,
-          step: 0.01,
-          value: 0,
-          id: 'background-saturation',
-          onChange: (v) => {
-            paperSat = v;
-            setBackgroundTint(paperHue, paperSat);
-          },
+      // Background color: a real picker (swatch + popover + hex field).
+      // Starts on the ground token; picking it again restores the shipped
+      // achromatic look exactly.
+      if (setBackgroundColor) {
+        style.addColor('background color', {
+          value: SURFACE.ground,
+          id: 'background-color',
+          onChange: (c) => setBackgroundColor(c),
         });
       }
 

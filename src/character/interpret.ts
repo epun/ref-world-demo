@@ -7,10 +7,10 @@
  * and the contour is simplified CORNER-PRESERVINGLY — a drawn triangle keeps
  * its three shoulders, softened by hand-wobble rather than rounded into a
  * blob. Species membership comes from what gets ADDED around that shape:
- * tiny stubby legs when the drawing has none, grounding, and the proportion
- * band. Motif extraction (./extractMotifs) still measures the ORIGINAL
- * drawing to decide those additions; drawn feet/ears/crowns are already part
- * of the contour and are never double-added.
+ * the two tiny stubby legs every character stands on (user ruling),
+ * grounding, and the proportion band. Motif extraction (./extractMotifs)
+ * still measures the ORIGINAL drawing; drawn feet/ears/crowns stay part of
+ * the contour and the species legs stamp beneath the grounded mass.
  *
  * The processed silhouette is a MASK, not a re-synthesized stroke list: the
  * mask runs through the same pure tail (distance transform → contour →
@@ -512,7 +512,9 @@ export interface BodyPlan {
   taper: number;
   /** Identity axis: appendage attitude class × amount. 0 unsalted. */
   droop: number;
-  /** Stubby legs to append — empty when the drawing has its own feet. */
+  /** Stubby legs to append. Always two (user ruling: all characters have
+   * legs) — drawn feet stay part of the contour and the species legs stamp
+   * beneath the mass regardless. */
   legs: BodyLeg[];
   /** Contour hand-wobble amplitude, as a fraction of mask size. */
   wobble: number;
@@ -521,10 +523,11 @@ export interface BodyPlan {
 }
 
 /**
- * Resolve motifs + seed into the body plan. The drawing's own feet outrank
- * everything: a drawing WITH foot protrusions keeps them (they are already
- * part of the contour) and gains nothing; a legless drawing (blob, hat,
- * fish) gains exactly two stubby species legs at default stance positions.
+ * Resolve motifs + seed into the body plan. Every character gets the two
+ * stubby species legs (user ruling: all characters have legs). A drawing
+ * with its own foot protrusions keeps them — they are already part of the
+ * contour — and the species legs still stamp beneath the grounded mass, so
+ * even a drawing whose bottom bumps register as "feet" reads as standing.
  *
  * @param identitySeed optional identity salt (identitySeedOf). When present,
  *   a SEPARATE rng channel jitters the within-band numbers so two ids never
@@ -557,14 +560,14 @@ export function bodyPlan(motifs: Motifs, seed: number, identitySeed?: number): B
   const phase2 = rng() * Math.PI * 2;
 
   const legs: BodyLeg[] = [];
-  // A stance needs two feet. Fewer than two drawn foot protrusions (zero, or
-  // one — which on thin outlines is usually belly-line noise) → append the
-  // species legs; two or more → the drawing's own feet are already part of
-  // the contour and gain nothing.
-  if (motifs.feet.length < 2) {
-    // Exactly two stubby, near-vertical, chunky legs (avatar spec). The
-    // attitude class splays them a touch (droopy) or pulls them under
-    // (perky); the stance jitters per identity, clamped so it stands.
+  // Every character stands on the two stubby species legs (user ruling: all
+  // characters have legs). Drawn foot protrusions remain in the contour —
+  // the stamped legs land beneath the grounded bottom band and merge with
+  // them — so drawings with "feet" that never read as legs still stand.
+  // Exactly two stubby, near-vertical, chunky legs (avatar spec). The
+  // attitude class splays them a touch (droopy) or pulls them under
+  // (perky); the stance jitters per identity, clamped so it stands.
+  {
     const length = clamp(legLenBase * legLenJitter, 0.1, SPECIES_LEG_MAX);
     const width = clamp(0.14 * legWidthJitter, 0.1, 0.2);
     for (const side of [-1, 1] as const) {
@@ -731,12 +734,23 @@ function proportionWarp(mask: Mask, plan: BodyPlan): Mask | null {
 }
 
 /**
- * SPECIES ADDITIONS: grounding + stubby legs. Grounding flattens the last
- * few rows of the body's underside (columns whose lowest ink already sits in
- * the bottom band drop to a shared baseline) so the creature stands rather
- * than balances; the legs are stamped as slightly wavy tapered capsules
- * rooted inside the mass. A small closing afterwards fillets the junctions
- * so nothing reads as an engineered weld.
+ * SPECIES ADDITIONS: grounding + stubby legs. Everything is measured
+ * against the body's UNDERSIDE BASELINE — the median of the per-column
+ * lowest-ink profile — not the mask's absolute bottom, so a drawing's own
+ * legs (which hang below the baseline) are never swallowed:
+ *
+ * - Grounding flattens columns whose underside sits just above the baseline
+ *   down TO the baseline (a stance, not a slab) so the creature stands
+ *   rather than balances. Columns already deeper than the baseline are
+ *   drawn legs/feet and stay untouched.
+ * - Each species leg stamps at its stance column UNLESS that column already
+ *   carries a drawn protrusion at least half a leg deep — the drawn leg IS
+ *   the leg there. Either way every character ends up visibly legged (user
+ *   ruling: all characters have legs).
+ *
+ * Legs are slightly wavy tapered capsules rooted inside the mass at the
+ * baseline. A small closing afterwards fillets the junctions so nothing
+ * reads as an engineered weld.
  */
 function groundAndLegs(mask: Mask, plan: BodyPlan, rng: () => number): Mask {
   const size = mask.size;
@@ -749,33 +763,44 @@ function groundAndLegs(mask: Mask, plan: BodyPlan, rng: () => number): Mask {
   const out: Mask = { size, data };
 
   if (plan.legs.length > 0) {
-    // Grounding: flat-ish bottom bias where the legs attach.
+    // Per-column underside profile (lowest ink y; -1 = empty column).
+    const lowestAt = (x: number): number => {
+      for (let y = b.maxY; y >= b.minY; y--) if (data[y * size + x] === 1) return y;
+      return -1;
+    };
+    const profile: number[] = [];
+    for (let x = b.minX; x <= b.maxX; x++) {
+      const y = lowestAt(x);
+      if (y >= 0) profile.push(y);
+    }
+    profile.sort((a, c) => a - c);
+    // Median underside: drawn feet are the deep tail and don't drag it down.
+    const baseline = profile[Math.floor(profile.length / 2)] ?? b.maxY;
+
+    // Grounding: flatten near-baseline columns down to the baseline.
     const band = Math.max(1, Math.round(0.05 * bodyH));
     for (let x = b.minX; x <= b.maxX; x++) {
-      let lowest = -1;
-      for (let y = b.maxY; y >= b.minY; y--) {
-        if (data[y * size + x] === 1) {
-          lowest = y;
-          break;
-        }
-      }
-      if (lowest >= b.maxY - band && lowest >= 0) {
-        for (let y = lowest; y <= b.maxY; y++) data[y * size + x] = 1;
+      const lowest = lowestAt(x);
+      if (lowest >= baseline - band && lowest < baseline) {
+        for (let y = lowest; y <= baseline; y++) data[y * size + x] = 1;
       }
     }
 
     for (const leg of plan.legs) {
       const lx = cx + leg.x * bodyW;
-      const col = clamp(Math.round(lx), 0, size - 1);
-      // Attach at the lowest ink near the leg's column.
-      let attachY = b.maxY;
-      for (let y = b.maxY; y >= b.minY; y--) {
-        if (data[y * size + col] === 1) {
-          attachY = y;
-          break;
-        }
-      }
+      let col = clamp(Math.round(lx), 0, size - 1);
+      // Walk inward to the nearest inked column so a narrow-bottomed body
+      // still gets its leg on the mass.
+      const step = leg.x < 0 ? 1 : -1;
+      while (lowestAt(col) < 0 && col > b.minX && col < b.maxX) col += step;
+      const colLowest = lowestAt(col);
+      if (colLowest < 0) continue;
       const len = leg.length * bodyH;
+      // A drawn leg already hangs at this stance column — keep it as the
+      // leg instead of welding a second one onto its tip.
+      if (colLowest >= baseline + 0.5 * len) continue;
+      // Root at the underside baseline, never on a protrusion tip.
+      const attachY = Math.min(colLowest, baseline);
       const r0 = Math.max(2.5, (leg.width * bodyW) / 2);
       const dirX = Math.sin(leg.angle);
       const dirY = Math.cos(leg.angle);

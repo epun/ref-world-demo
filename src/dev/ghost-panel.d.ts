@@ -44,6 +44,15 @@ declare module 'ghost-panel' {
     onChange?: (value: string) => void;
   }
 
+  /** createColor (controls.js): swatch + popover picker; value/onChange
+   * carry hex strings like '#aabbcc'. */
+  export interface GhostColorOptions {
+    value?: string;
+    id?: string;
+    tooltip?: string;
+    onChange?: (value: string) => void;
+  }
+
   export interface GhostButtonRowEntry {
     label: string;
     onClick: () => void;
@@ -54,6 +63,7 @@ declare module 'ghost-panel' {
     addSlider(label: string, opts?: GhostSliderOptions): GhostFolder;
     addCheckbox(label: string, opts?: GhostCheckboxOptions): GhostFolder;
     addSelect(label: string, opts?: GhostSelectOptions): GhostFolder;
+    addColor(label: string, opts?: GhostColorOptions): GhostFolder;
     addButton(label: string, onClick: () => void): GhostFolder;
     /** Returns the button-row handle, not the folder (see folder.js). */
     addButtonRow(buttons: GhostButtonRowEntry[]): unknown;
@@ -86,9 +96,20 @@ declare module 'ghost-panel' {
     registry: { unregister(id: string): void };
   }
 
+  /** SceneObjectManager (three-extensions.js): the outliner's registry.
+   * register triggers the outliner refresh; remove also detaches the object
+   * from its parent, so only call it for nodes already out of the scene. */
+  export interface GhostObjectManager {
+    register(name: string, object: unknown): void;
+    remove(name: string): void;
+    getNames(): string[];
+    objects: Record<string, { object?: unknown } | undefined>;
+  }
+
   export interface GhostPanelUi {
     panel: { removeFolder(name: string): void; title: string };
     scenePanel: unknown;
+    objectManager?: GhostObjectManager;
     addFolder(name: string, opts?: { collapsed?: boolean }): GhostFolder;
     getFolder(name: string): GhostFolder | undefined;
     show(): void;

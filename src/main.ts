@@ -261,7 +261,7 @@ function main(): void {
         setGrainAmplitude: (v) => world.grain.setAmplitude(v),
         getGrainAmplitude: () => world.grain.getAmplitude(),
         // Paper color grade (shader style section): background + ground.
-        setBackgroundTint: (h, s) => world.setBackgroundTint(h, s),
+        setBackgroundColor: (c) => world.setBackgroundColor(c),
         // Weather handle from a parallel workstream — forwarded as-is and
         // feature-detected inside the panel, so this compiles either way.
         environment: (world as { environment?: unknown }).environment,

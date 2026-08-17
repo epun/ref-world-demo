@@ -207,8 +207,8 @@ describe('corner preservation', () => {
 // ── §1a: species additions (stubby legs) ─────────────────────────────────────
 
 describe('stubby legs', () => {
-  it('plans exactly two tiny near-vertical legs for legless drawings', () => {
-    for (const fixture of [ringOutline, hat, fish, circleBlob, eared]) {
+  it('plans exactly two tiny near-vertical legs for every drawing (user ruling)', () => {
+    for (const fixture of [ringOutline, hat, fish, circleBlob, eared, snowman, quadruped, bird]) {
       const plan = bodyPlan(motifsOf(fixture), strokeSeed(fixture));
       expect(plan.legs.length).toBe(2);
       for (const leg of plan.legs) {
@@ -221,12 +221,6 @@ describe('stubby legs', () => {
     }
   });
 
-  it('adds nothing when the drawing has its own feet', () => {
-    for (const fixture of [snowman, quadruped, bird]) {
-      expect(bodyPlan(motifsOf(fixture), strokeSeed(fixture)).legs.length).toBe(0);
-    }
-  });
-
   it('a legless drawing hatches with two feet on the actual body', () => {
     for (const fixture of [hat, ringOutline, fish]) {
       const echoed = extractMotifs(interpret(fixture));
@@ -235,10 +229,13 @@ describe('stubby legs', () => {
     }
   });
 
-  it('drawn legs survive without extras', () => {
+  it('drawn legs survive, merged with the stamped stance', () => {
+    // The quadruped keeps its own feet in the contour; the species legs
+    // stamp beneath the grounded bottom band and merge with them, so the
+    // hatched body still reads a multi-foot echo, never a legless slab.
     const echoed = extractMotifs(interpret(quadruped));
-    expect(echoed.feet.length).toBeGreaterThanOrEqual(3);
-    expect(echoed.feet.length).toBeLessThanOrEqual(4);
+    expect(echoed.feet.length).toBeGreaterThanOrEqual(2);
+    expect(echoed.feet.length).toBeLessThanOrEqual(5);
   });
 });
 

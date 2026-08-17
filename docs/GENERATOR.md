@@ -38,9 +38,13 @@ another sleeping, two sitting together. Success is "that little one is mine" fol
 
 The creature's body silhouette is the drawing's own shape — **filled, smoothed,
 simplified, and chunkified** — not a synthesized species torso. A drawn hat stays a hat;
-a fish stays a fish. Species membership comes from what gets *added*: tiny stubby legs
-(when the drawing has none), the single pupil eye, stance and grounding — the reference
-sheet's grammar, where a house with legs and an eye is a creature.
+a fish stays a fish. Species membership comes from what gets *added*: the tiny stubby
+legs, the single pupil eye, stance and grounding — the reference sheet's grammar, where
+a house with legs and an eye is a creature.
+
+**All characters have legs (user ruling, 2026-08-17):** the two species legs are always
+stamped beneath the grounded mass. Drawn foot protrusions stay part of the contour and
+merge with the stance — a drawing whose bottom bumps register as "feet" still stands.
 
 **Silhouette variety (user decision):** bodies are not all round. Triangle bodies, square
 bodies, boxy masses, stars — strong primitive silhouettes are first-class species members
