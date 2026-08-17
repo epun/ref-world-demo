@@ -1,0 +1,27 @@
+{
+  "name": "ref-world",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "An isometric WebGL world where a drawing becomes an egg, hatches, and walks around.",
+  "scripts": {
+    "dev": "vite",
+    "build": "npm run gate:static && tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "gate:static": "tsx scripts/gates/static.ts"
+  },
+  "dependencies": {
+    "three": "0.180.0"
+  },
+  "devDependencies": {
+    "@types/three": "0.180.0",
+    "ghost-panel": "github:epun/ghost-panel",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vite": "^7.1.0",
+    "vitest": "^3.2.4"
+  }
+}
