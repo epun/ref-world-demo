@@ -35,3 +35,25 @@ conversation). Complements `avatar-prompt.md`.
   avatar spec and blend-shell plan).
 - Object-like silhouettes are legitimate creatures — no need to coerce drawings toward
   animal anatomy when they read as a house or a key; legs + eye are enough.
+
+---
+
+# environment asset reference (user-supplied, hidden-folks register)
+
+A second environment sheet: white paper ground, ink-outlined white-filled assets, small
+hooded figures among them. Assets to bring into the world (queued workstream):
+
+- **picnic table** — hand-wobbled, sagging planks; rectilinear-adjacent but drawn, per the
+  building precedent
+- **palm tree** — new vegetation kind: curved trunk, drooping frond crown
+- **cactus** — saguaro-style lobed column
+- **water tower** — small elevated tank on legs; landmark rarity
+- **signpost + bunting** — posts strung with pennant lines (wind-coupled sway); sign faces
+  may carry lowercase text (e.g. the room code) per the type rules
+- **boulder monoliths** — large standing rocks, bigger than the current rock kind
+- **stump cluster / dotted ground texture** — the sheet's stippled ground shading is
+  already covered by our grass ticks
+
+All through the same analyze-inflate pipeline, with hard colliders, per-instance
+variation, and grove/cluster placement rules. Figures in the sheet are reference for
+scale contrast, not new creature guidance.
