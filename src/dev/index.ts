@@ -6,7 +6,7 @@
  * Layout: ghost-panel's inspector is hard-locked to the RIGHT edge (its
  * legacy `side` option is intentionally ignored — see node_modules/
  * ghost-panel/index.js "Locked layout"), which is exactly where the
- * environment variables were asked to live. We pass `scenePanel: false` so
+ * environment variables were asked to live. The left scene panel lists
  * the right-hand inspector is the only panel.
  *
  * Toggle: ghost-panel's own convention, shift+d, bound via
@@ -121,7 +121,10 @@ export async function initDevPanel(
     camera: handles.camera,
     ...(handles.renderer ? { renderer: handles.renderer } : {}),
     // One panel only, docked right (the inspector's locked side).
-    scenePanel: false,
+    // Left outliner ON (user ask): creatures appear in the scene panel by
+    // their named roots; the right panel keeps the refworld skills.
+    scenePanel: true,
+    scenePanelTitle: 'scene',
     materialsPanel: false,
     // The world renders through a custom post chain and has no renderer
     // handle here — skip scene auto-scan and workflow auto-detection so the

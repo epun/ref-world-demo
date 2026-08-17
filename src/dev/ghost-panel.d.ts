@@ -115,6 +115,7 @@ declare module 'ghost-panel' {
     controls?: unknown;
     gizmo?: boolean;
     scenePanel?: boolean;
+  scenePanelTitle?: string;
     materialsPanel?: boolean;
     autoRegister?: boolean;
     saveLoad?: boolean;

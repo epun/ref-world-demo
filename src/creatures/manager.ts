@@ -205,6 +205,10 @@ export function createCreatureManager(world: WorldHandles): CreatureManager {
         slot.character = next;
         slot.pending = null;
         slot.characterRoot = root;
+        // Named so the ghost-panel scene outliner lists each creature
+        // legibly (user ask). Lowercase, name over id when the drawer
+        // signed one.
+        root.name = slot.name ? `creature ${slot.name}` : `creature ${slot.id}`;
         slot.characterShadow = world.shadows.addShadow(`char-${slot.id}`, next.radius);
         world.shadows.removeShadow(`egg-${slot.id}`);
         slot.eggShadow = null;
@@ -367,6 +371,9 @@ export function createCreatureManager(world: WorldHandles): CreatureManager {
             root.position.x += (out.vx * dt) / 1000;
             root.position.z += (out.vz * dt) / 1000;
             root.rotation.y = out.heading;
+            // The gait reads the agent's actual ground speed — walk cycles
+            // blend in with movement and drift out to the ambient floor.
+            slot.character.setLocomotion(Math.hypot(out.vx, out.vz), out.heading);
             if (out.emote) slot.character.emote(out.emote);
             if (out.pose !== slot.pose) {
               // Posture → expression through the character's public surface:
@@ -375,6 +382,10 @@ export function createCreatureManager(world: WorldHandles): CreatureManager {
               else if (slot.pose === 'sleep') slot.character.setExpression('neutral');
               slot.pose = out.pose;
             }
+          } else {
+            // No agent driving (paused ai, retiring): the root holds still,
+            // so the gait must see speed 0 and complete its last half-step.
+            slot.character.setLocomotion(0, root?.rotation.y ?? 0);
           }
 
           if (slot.characterRoot && slot.characterShadow) {
