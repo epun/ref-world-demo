@@ -30,7 +30,26 @@ another sleeping, two sitting together. Success is "that little one is mine" fol
 
 ## Rulings on the two real divergences [D]
 
-### 1. Drawing → creature: motifs, not replica *(updated by user decision)*
+### 1a. Drawn objects keep their shape *(user decision, supersedes 1's torso synthesis)*
+
+> User: "if a person draws an object or an animal we should resemble that shape. i.e. a
+> hat, fish, cat, etc." — with the earlier qualifiers "not exactly of course" and "we
+> don't want stray lines to create line or simple vector characters."
+
+The creature's body silhouette is the drawing's own shape — **filled, smoothed,
+simplified, and chunkified** — not a synthesized species torso. A drawn hat stays a hat;
+a fish stays a fish. Species membership comes from what gets *added*: tiny stubby legs
+(when the drawing has none), the single pupil eye, stance and grounding — the reference
+sheet's grammar, where a house with legs and an eye is a creature.
+
+Robustness rules (the "not exactly" and "no vector characters" halves):
+- **Outline drawings fill**: enclosed regions become solid mass, not inflated rings.
+- **Thin/stray lines thicken** to a chunky minimum body thickness (avatar spec: strong,
+  chunky silhouette) — a scribble becomes a solid blob, never a wire figure.
+- **Simplification + hand wobble + identity jitter** keep it from reading as a tracing.
+- Motif extraction still runs (feet/crown/aspect) to place legs, eye, and appendages.
+
+### 1. Drawing → creature: motifs, not replica *(historical — torso synthesis superseded by 1a)*
 
 > User: "The hatched 3D figure should not be an exact replica of what they drew, but it
 > should be inspired and have the motifs of what the user drew."
