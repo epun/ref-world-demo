@@ -78,36 +78,6 @@ function ensureOverlayStyle(): void {
   opacity: 1;
   transform: translateY(0);
 }
-.egg-hint {
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 4vmin;
-  z-index: 4;
-  text-align: center;
-  color: ${WORLD.ink};
-  font: 400 13px/1.4 ui-sans-serif, system-ui, sans-serif;
-  opacity: 0;
-  transform: translateY(6px);
-  transition:
-    opacity ${MOTION.tertiaryMs}ms ${MOTION.settleCurve},
-    transform ${MOTION.tertiaryMs}ms ${MOTION.settleCurve};
-  pointer-events: none;
-}
-.egg-hint.visible {
-  opacity: 1;
-  transform: translateY(0);
-}
-.join-line {
-  position: fixed;
-  left: 84px;
-  bottom: 38px;
-  z-index: 4;
-  color: ${WORLD.ink};
-  font: 400 13px/1.4 ui-sans-serif, system-ui, sans-serif;
-  opacity: 0.85;
-  pointer-events: none;
-}
 .draw-open {
   position: fixed;
   left: 24px;
@@ -187,6 +157,15 @@ function main(): void {
     return;
   }
 
+  // A minted room is written back into this page's own address. Nothing is
+  // drawn on screen any more (user ask), so the address bar is where the
+  // code lives: shareable, and a reload keeps the same room instead of
+  // stranding the phones already drawing into it.
+  if (!isRoomCode(fromUrl)) {
+    params.set('room', room);
+    history.replaceState(null, '', `${location.pathname}?${params}${location.hash}`);
+  }
+
   const creatures = createCreatureManager(world);
   installHoverNames(canvas, world.cameraRig.camera, creatures);
 
@@ -205,8 +184,8 @@ function main(): void {
     passive: true,
   });
 
-  // World minimap, bottom-right. The join line moved bottom-left (beside the
-  // pencil control) to leave the corner to the map.
+  // World minimap, bottom-right — with the join line gone it is the only
+  // persistent chrome besides the pencil control.
   installWorldMinimap({
     manager: creatures,
     cameraRig: world.cameraRig,
@@ -216,21 +195,9 @@ function main(): void {
 
   ensureOverlayStyle();
 
-  const eggHint = document.createElement('div');
-  eggHint.className = 'egg-hint';
-  eggHint.textContent = 'press h to hatch · shift+h for the hatch moment';
-
-  // Join line: restrained lowercase type, bottom-left beside the pencil
-  // control (the minimap owns the bottom-right corner). Sparse type is the
-  // taste's one allowance; the image still leads.
-  const joinLine = document.createElement('div');
-  joinLine.className = 'join-line';
-  joinLine.textContent = `draw at ${location.host}/draw/?room=${room}`;
-
-  function firstSpawnHousekeeping(): void {
-    eggHint.textContent = 'press h to hatch · shift+h for the hatch moment';
-    eggHint.classList.add('visible');
-  }
+  // No on-screen join line and no key hints (user ask): the frame is the
+  // world, nothing else. The room still travels — it is written into this
+  // page's own address below — and the ghost panel carries the controls.
 
   world.onFrame((dt, nowMs) => {
     creatures.update(dt, nowMs);
@@ -275,8 +242,7 @@ function main(): void {
             const ok = creatures.spawn(`dev-fallback-${fallbackIndex++}`, strokes, {
               hatchMs: m.FALLBACK_HATCH_MS,
             });
-            if (ok) firstSpawnHousekeeping();
-          }
+                }
         },
       }, { showOnMount }),
     );
@@ -295,11 +261,6 @@ function main(): void {
         personality: d.personality,
         hatchMs: HATCH_TIMER_MS,
       });
-      if (ok) firstSpawnHousekeeping();
-    },
-    onStatus: (_state, text) => {
-      // Reflect feed state quietly in the join line; never a toast.
-      joinLine.textContent = `draw at ${location.host}/draw/?room=${room}` + (text === 'live' ? '' : ` — ${text}`);
     },
   });
 
@@ -312,7 +273,7 @@ function main(): void {
   hint.textContent = 'draw a solid shape — it becomes a creature';
 
   const openControl = createOpenControl();
-  document.body.append(overlay, openControl, eggHint, joinLine);
+  document.body.append(overlay, openControl);
 
   let overlayOpen = false;
   const openOverlay = (): void => {
@@ -340,7 +301,6 @@ function main(): void {
       !overlayOpen
     ) {
       tour.hatchAllMoment(() => creatures.hatchAll());
-      eggHint.textContent = 'press 1-7 to emote';
       return;
     }
     // Other shifted presses belong to the dev surface (ghost panel toggles
@@ -359,7 +319,6 @@ function main(): void {
     // Manual hatch — every ready egg, identical sequence to the timer.
     if (event.key === 'h' && !overlayOpen) {
       creatures.hatchAll();
-      eggHint.textContent = 'press 1-7 to emote';
     }
     // Dev emote keys on the most recent character (PLAN §6.3).
     if (!overlayOpen && event.key >= '1' && event.key <= '7') {
@@ -380,7 +339,6 @@ function main(): void {
         return;
       }
       hint.classList.remove('visible');
-      firstSpawnHousekeeping();
       drawScreen.capture.clear();
       closeOverlay();
     },
