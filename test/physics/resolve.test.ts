@@ -5,7 +5,10 @@
  * overshoot would read as bounce, forbidden at confidence 1.00), inward
  * velocity removed, tangential velocity preserved bit-for-bit, corners clean
  * after the standard two passes. Soft: the damping factor and deepest-
- * overlap pick. Separation: mutual, symmetric, overlap capped at ~40%.
+ * overlap pick. Separation: HARD, mutual, symmetric, iterated — creatures
+ * never interpenetrate, and a head-on pair glides around instead of
+ * stalling. stepCreatures: substepped integration so a clamped 250ms frame
+ * can never tunnel a body through a collider.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -13,11 +16,13 @@ import { makeRand } from '../../src/behavior/states';
 import type { Collider } from '../../src/physics/colliders';
 import {
   deepestSoftOverlap,
-  MAX_CREATURE_OVERLAP,
+  MAX_STEP_TRAVEL,
   RESOLVE_SKIN,
   resolveHard,
-  separationOffsets,
+  separateCreatures,
   SOFT_SPEED_FACTOR,
+  stepCreatures,
+  type CreatureBody,
   type KinematicBody,
 } from '../../src/physics/resolve';
 
@@ -124,54 +129,209 @@ describe('soft bodies', () => {
   });
 });
 
-describe('separationOffsets — creatures brush past, never stack', () => {
-  it('returns null when circles do not overlap', () => {
-    expect(separationOffsets(0, 0, 1, 3, 0, 1, 16)).toBeNull();
+function body(x: number, z: number, r: number, vx = 0, vz = 0): CreatureBody {
+  return { x, z, vx, vz, r };
+}
+
+function pairGap(a: CreatureBody, b: CreatureBody): number {
+  return Math.hypot(a.x - b.x, a.z - b.z) - (a.r + b.r);
+}
+
+describe('separateCreatures — hard non-penetration between creatures', () => {
+  it('leaves a non-overlapping pair untouched', () => {
+    const a = body(0, 0, 1);
+    const b = body(3, 0, 1);
+    expect(separateCreatures([a, b])).toBe(false);
+    expect(a).toEqual(body(0, 0, 1));
+    expect(b).toEqual(body(3, 0, 1));
   });
 
-  it('is mutual and symmetric (half each, opposite signs)', () => {
-    const off = separationOffsets(0, 0, 1, 0.4, 0, 1, 16)!;
-    expect(off.ax).toBeCloseTo(-off.bx, 12);
-    expect(off.az).toBeCloseTo(-off.bz, 12);
-    expect(off.ax).toBeLessThan(0); // a is left of b: pushed further left
+  it('pushes an overlapping pair to exact contact, split half/half', () => {
+    const a = body(0, 0, 1);
+    const b = body(0.5, 0, 1);
+    expect(separateCreatures([a, b])).toBe(true);
+    // Fully separated in ONE call — a hard constraint, not a relaxing nudge.
+    expect(pairGap(a, b)).toBeGreaterThanOrEqual(0);
+    expect(pairGap(a, b)).toBeLessThanOrEqual(RESOLVE_SKIN + 1e-9);
+    // Symmetric: the pair midpoint never moves (no shove, no dominance).
+    expect((a.x + b.x) / 2).toBeCloseTo(0.25, 12);
+    expect(a.z).toBeCloseTo(0, 12);
+    expect(b.z).toBeCloseTo(0, 12);
   });
 
-  it('caps overlap at MAX_CREATURE_OVERLAP immediately', () => {
-    const ar = 1;
-    const br = 1;
-    const sum = ar + br;
-    // Deep stack: 90% overlap.
-    const off = separationOffsets(0, 0, ar, 0.2, 0, br, 16)!;
-    const d = Math.hypot(0 + off.ax - (0.2 + off.bx), off.az - off.bz);
-    const pen = sum - d;
-    expect(pen).toBeLessThanOrEqual(MAX_CREATURE_OVERLAP * sum + 1e-9);
+  it('splits a dead-center stack deterministically (+x)', () => {
+    const run = (): [CreatureBody, CreatureBody] => {
+      const a = body(1, 1, 0.8);
+      const b = body(1, 1, 0.8);
+      separateCreatures([a, b]);
+      return [a, b];
+    };
+    const [a1, b1] = run();
+    const [a2, b2] = run();
+    expect(a1).toEqual(a2);
+    expect(b1).toEqual(b2);
+    expect(a1.x).toBeGreaterThan(b1.x);
+    expect(pairGap(a1, b1)).toBeGreaterThanOrEqual(0);
   });
 
-  it('relaxes the remaining overlap out over repeated frames (no snap)', () => {
-    let ax = 0;
-    let bx = 1.4; // overlap 0.6 of sum 2 — under the 0.8 cap, soft path only
-    const singleFramePush = separationOffsets(ax, 0, 1, bx, 0, 1, 16)!;
-    // One frame moves a small fraction, not the whole overlap: a drift.
-    expect(Math.abs(singleFramePush.ax)).toBeLessThan(0.1);
-    for (let i = 0; i < 400; i++) {
-      const off = separationOffsets(ax, 0, 1, bx, 0, 1, 16);
-      if (!off) break;
-      ax += off.ax;
-      bx += off.bx;
+  it('resolves a chain of three stacked creatures within the pass budget', () => {
+    const bodies = [body(0, 0, 1), body(1.2, 0, 1), body(2.4, 0, 1)];
+    separateCreatures(bodies);
+    for (let i = 0; i < bodies.length; i++) {
+      for (let j = i + 1; j < bodies.length; j++) {
+        expect(pairGap(bodies[i]!, bodies[j]!)).toBeGreaterThanOrEqual(-1e-9);
+      }
     }
-    expect(bx - ax).toBeGreaterThan(1.9); // essentially separated
   });
 
-  it('splits a dead-center stack deterministically', () => {
-    const a = separationOffsets(1, 1, 0.8, 1, 1, 0.8, 16)!;
-    const b = separationOffsets(1, 1, 0.8, 1, 1, 0.8, 16)!;
-    expect(a).toEqual(b);
-    expect(a.ax).toBeGreaterThan(0); // +x split
+  it('removes only the CLOSING relative velocity — no bounce energy, tangent kept', () => {
+    const a = body(0, 0, 1, 1, 0.4);
+    const b = body(1.5, 0, 1, -1, 0.4);
+    separateCreatures([a, b]);
+    // Relative normal velocity is no longer closing.
+    const dx = a.x - b.x;
+    const dz = a.z - b.z;
+    const d = Math.hypot(dx, dz);
+    const closing = -((a.vx - b.vx) * (dx / d) + (a.vz - b.vz) * (dz / d));
+    expect(closing).toBeLessThanOrEqual(1e-9);
+    // The shared tangential velocity is untouched, and no speed was added.
+    expect(a.vz).toBeCloseTo(0.4, 12);
+    expect(b.vz).toBeCloseTo(0.4, 12);
+    expect(Math.hypot(a.vx, a.vz)).toBeLessThanOrEqual(Math.hypot(1, 0.4) + 1e-9);
   });
 
-  it('writes into the provided out object (allocation-free path)', () => {
-    const out = { ax: 0, az: 0, bx: 0, bz: 0 };
-    const res = separationOffsets(0, 0, 1, 0.5, 0, 1, 16, out);
-    expect(res).toBe(out);
+  it('separating bodies (already parting) keep their velocities bit-for-bit', () => {
+    const a = body(0, 0, 1, -0.5, 0.1);
+    const b = body(1.5, 0, 1, 0.5, -0.1);
+    separateCreatures([a, b]);
+    expect(a.vx).toBe(-0.5);
+    expect(a.vz).toBe(0.1);
+    expect(b.vx).toBe(0.5);
+    expect(b.vz).toBe(-0.1);
+  });
+});
+
+describe('stepCreatures — the per-frame movement law', () => {
+  const noProps = (): readonly Collider[] => [];
+
+  it('two creatures driven head-on never overlap and glide past each other', () => {
+    const a = body(-3, 0, 0.9, 1.2, 0);
+    const b = body(3, 0.01, 0.9, -1.2, 0); // hair off-axis, like real life
+    const dt = 16;
+    for (let frame = 0; frame < 900; frame++) {
+      // Stubborn walkers: the drive re-asserts itself every frame, exactly
+      // like the behavior springs do.
+      a.vx = 1.2;
+      a.vz = 0;
+      b.vx = -1.2;
+      b.vz = 0;
+      stepCreatures([a, b], dt, noProps);
+      expect(pairGap(a, b)).toBeGreaterThanOrEqual(-1e-6);
+    }
+    // ~14s of walking: the tangential slide let them shoulder PAST each
+    // other — neither stalled nose to nose.
+    expect(a.x).toBeGreaterThan(b.x);
+    expect(a.x).toBeGreaterThan(1);
+    expect(b.x).toBeLessThan(-1);
+  });
+
+  it('a dead-center head-on meeting still resolves deterministically', () => {
+    const a = body(-2, 0, 0.8, 1.2, 0);
+    const b = body(2, 0, 0.8, -1.2, 0);
+    for (let frame = 0; frame < 600; frame++) {
+      a.vx = 1.2;
+      a.vz = 0;
+      b.vx = -1.2;
+      b.vz = 0;
+      stepCreatures([a, b], 16, noProps);
+      expect(pairGap(a, b)).toBeGreaterThanOrEqual(-1e-6);
+    }
+  });
+
+  it('a creature driven at a rock never penetrates it', () => {
+    const rock: Collider = { x: 4, z: 0, r: 1.2, hard: true };
+    const near = (): readonly Collider[] => [rock];
+    const c = body(0, 0.2, 0.8, 1.2, 0);
+    for (let frame = 0; frame < 600; frame++) {
+      c.vx = 1.2;
+      c.vz = 0;
+      stepCreatures([c], 16, near);
+      const pen = c.r + rock.r - Math.hypot(c.x - rock.x, c.z - rock.z);
+      expect(pen).toBeLessThanOrEqual(1e-9);
+    }
+  });
+
+  it('a big clamped dt at high speed cannot tunnel through a collider', () => {
+    // 16 u/s over the 250ms dt clamp = 4u of travel in one frame — ten times
+    // the trunk's diameter. Naive integration would land far beyond it.
+    const trunk: Collider = { x: 2, z: 0, r: 0.4, hard: true };
+    const near = (): readonly Collider[] => [trunk];
+    const c = body(0, 0, 0.5, 16, 0);
+    stepCreatures([c], 250, near);
+    // Blocked at the surface, on the NEAR side — never across.
+    expect(c.x).toBeLessThanOrEqual(trunk.x - (trunk.r + c.r) + RESOLVE_SKIN + 1e-9);
+    expect(c.x).toBeGreaterThan(1);
+  });
+
+  it('substep travel never exceeds MAX_STEP_TRAVEL between resolves', () => {
+    // Indirect but load-bearing: a collider thinner than MAX_STEP_TRAVEL in
+    // the path still blocks at every driven speed the demo can produce.
+    const thin: Collider = { x: 3, z: 0, r: MAX_STEP_TRAVEL / 2, hard: true };
+    const near = (): readonly Collider[] => [thin];
+    for (const speed of [1.2, 3.6, 8, 14]) {
+      const c = body(0, 0, 0.3, speed, 0);
+      stepCreatures([c], 250, near);
+      expect(c.x).toBeLessThan(thin.x);
+    }
+  });
+
+  it('a pair squeezed against a wall resolves clear of BOTH wall and each other', () => {
+    const wall: Collider = { x: 0, z: 3, r: 2, hard: true };
+    const near = (): readonly Collider[] => [wall];
+    const a = body(-0.2, 0.4, 0.8, 0, 1.0);
+    const b = body(0.2, 0.2, 0.8, 0, 1.0);
+    for (let frame = 0; frame < 400; frame++) {
+      a.vx = 0;
+      a.vz = 1.0;
+      b.vx = 0;
+      b.vz = 1.0;
+      stepCreatures([a, b], 16, near);
+      expect(pairGap(a, b)).toBeGreaterThanOrEqual(-0.02);
+      for (const c of [a, b]) {
+        const pen = c.r + wall.r - Math.hypot(c.x - wall.x, c.z - wall.z);
+        expect(pen).toBeLessThanOrEqual(1e-6);
+      }
+    }
+  });
+
+  it('respects the hard pad fraction (visual-silhouette inflation)', () => {
+    const rock: Collider = { x: 2, z: 0, r: 1, hard: true };
+    const near = (): readonly Collider[] => [rock];
+    const c = body(0, 0, 0.5, 1.2, 0);
+    for (let frame = 0; frame < 400; frame++) {
+      c.vx = 1.2;
+      c.vz = 0;
+      stepCreatures([c], 16, near, { hardPadFrac: 0.11 });
+    }
+    const gap = Math.hypot(c.x - rock.x, c.z - rock.z) - (c.r + rock.r * 1.11);
+    expect(gap).toBeGreaterThanOrEqual(-1e-9);
+  });
+
+  it('is deterministic for identical inputs', () => {
+    const run = (): CreatureBody[] => {
+      const bodies = [
+        body(-2, 0, 0.8, 1.2, 0),
+        body(2, 0.01, 0.8, -1.2, 0),
+        body(0, 2, 0.7, 0, -1.0),
+      ];
+      for (let frame = 0; frame < 200; frame++) {
+        bodies[0]!.vx = 1.2;
+        bodies[1]!.vx = -1.2;
+        bodies[2]!.vz = -1.0;
+        stepCreatures(bodies, 16, noProps);
+      }
+      return bodies;
+    };
+    expect(run()).toEqual(run());
   });
 });

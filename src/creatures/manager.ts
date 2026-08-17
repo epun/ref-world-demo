@@ -13,10 +13,11 @@
  * creature sinks and fades out over t.primary, then disposes.
  */
 
-import { Vector3 } from 'three';
+import { Mesh, Vector3 } from 'three';
 import type { Group, Object3D } from 'three';
 import { BehaviorAgent, MAX_SPEED, type AgentPeer, type AgentProp } from '../behavior/agent';
 import { personalityFromChoice, type PersonalityChoice } from '../behavior/personality';
+import { projectOutOfHard } from '../behavior/steering';
 import { createCharacter, type Character } from '../character/character';
 import {
   buildColliderGrid,
@@ -24,15 +25,13 @@ import {
   type ColliderGrid,
 } from '../physics/colliders';
 import {
-  CREATURE_BODY_FIT,
   deepestSoftOverlap,
-  resolveHard,
-  separationOffsets,
   SOFT_SPEED_FACTOR,
-  type KinematicBody,
-  type SeparationOffsets,
+  stepCreatures,
+  type CreatureBody,
 } from '../physics/resolve';
-import { createEgg, type Egg } from '../egg/egg';
+import { VARIATION_BULGE, VARIATION_SCALE_XZ } from '../world/scatter';
+import { createEgg, EGG_RADIUS, type Egg } from '../egg/egg';
 import { startHatch, type HatchHandle } from '../egg/hatch';
 import type { StrokeList } from '../shape/types';
 import { MOTION } from '../taste/tokens';
@@ -135,6 +134,48 @@ function readScatterPhysics(world: WorldHandles): ScatterPhysics | null {
  * frame of travel at peak speed plus the deepest push-out a prop can cause. */
 const COLLIDER_QUERY_PAD = 1.5;
 
+/** Fractional inflation of hard prop colliders during creature resolve: the
+ * scatter's per-instance shape variation widens a prop's visual silhouette
+ * beyond its published footprint circle by up to scale-jitter + bulge
+ * (see src/world/scatter.ts); resolving against the padded circle keeps the
+ * contact at the VISUAL surface. */
+const HARD_PAD_FRAC = VARIATION_SCALE_XZ + VARIATION_BULGE;
+
+/** Spawn spots keep this clearance from hard surfaces and existing
+ * residents: the egg's own footprint plus a small skin, so an egg never
+ * lands overlapping a rock, a building, or another egg. */
+const SPAWN_CLEARANCE = EGG_RADIUS + 0.25;
+
+/**
+ * True collision radius of a character, measured from the generated mesh
+ * itself: the widest x/z reach of every mesh in the group (geometry
+ * bounding box × node scale + node offset). Bodies vary per drawing — a
+ * wide fish needs a wide circle, a narrow triangle a slim one — and the
+ * character's published `radius` is the SHADOW stamp (deliberately tucked
+ * inside the silhouette), so colliding on it let wide bodies visually clip.
+ * The character rotates freely about y, so the circle covers the widest
+ * silhouette at any facing. Falls back to the shadow radius when the group
+ * carries no measurable mesh (defensive — never expected).
+ */
+export function measureBodyRadius(character: Character): number {
+  let r = 0;
+  character.group.traverse((obj) => {
+    if (!(obj instanceof Mesh)) return;
+    const geometry = obj.geometry;
+    if (!geometry.boundingBox) geometry.computeBoundingBox();
+    const bb = geometry.boundingBox;
+    if (!bb || bb.isEmpty()) return;
+    const ex =
+      Math.max(Math.abs(bb.min.x), Math.abs(bb.max.x)) * Math.abs(obj.scale.x) +
+      Math.abs(obj.position.x);
+    const ez =
+      Math.max(Math.abs(bb.min.z), Math.abs(bb.max.z)) * Math.abs(obj.scale.z) +
+      Math.abs(obj.position.z);
+    r = Math.max(r, ex, ez);
+  });
+  return r > 0.05 ? r : character.radius;
+}
+
 /** Speed floor (units/s) under which brushing a bush stops kicking sway. */
 const NUDGE_MIN_SPEED = 0.15;
 
@@ -154,6 +195,9 @@ interface Slot {
   character: Character | null;
   characterRoot: Group | null;
   characterShadow: ShadowHandle | null;
+  /** Collision radius measured from the hatched character's real mesh
+   * footprint (measureBodyRadius); 0 until hatch. */
+  bodyR: number;
   /** Audience answer, held until hatch mints the behavior agent. */
   personalityChoice: PersonalityChoice;
   /** Autonomous behavior — created on hatch, null before. */
@@ -219,9 +263,63 @@ export function createCreatureManager(world: WorldHandles): CreatureManager {
   const nearScratch: Collider[] = [];
   const eggColliderPool: Collider[] = [];
   let eggColliderCount = 0;
-  const resolveBody: KinematicBody = { x: 0, z: 0, vx: 0, vz: 0 };
-  const sepScratch: SeparationOffsets = { ax: 0, az: 0, bx: 0, bz: 0 };
-  const aliveScratch: { slot: Slot; root: Group; r: number }[] = [];
+  const bodyPool: CreatureBody[] = [];
+  const stepBodies: CreatureBody[] = [];
+  const aliveScratch: { slot: Slot; root: Group; body: CreatureBody; heading: number }[] = [];
+
+  /** Lazily (re)index the scatter's prop colliders — shared by the per-frame
+   * update AND spawn placement, so an egg placed before the first frame
+   * still sees the world. */
+  function ensureColliderGrid(): ColliderGrid | null {
+    const scatterPhysics = readScatterPhysics(world);
+    if (!scatterPhysics) {
+      colliderGrid = null;
+      colliderGridVersion = -1;
+      return null;
+    }
+    const version = scatterPhysics.collidersVersion();
+    if (version !== colliderGridVersion || !colliderGrid) {
+      colliderGrid = buildColliderGrid(scatterPhysics.colliders());
+      colliderGridVersion = version;
+    }
+    return colliderGrid;
+  }
+
+  /**
+   * Deterministic spawn spot, projected clear of the world: the golden-angle
+   * spiral reaches past the scatter's origin clearing (radius ~20 vs the
+   * ~11u planted-free field), so raw spots CAN land inside a rock or under a
+   * building — and an egg placed there sits visibly clipped for its whole
+   * incubation. Push out of hard props (with the same visual pad the live
+   * resolve uses) and out of every resident egg/creature, re-projecting
+   * against props after each resident push so the final spot is clear of
+   * both.
+   */
+  function clearSpawnSpot(spot: { x: number; z: number }): { x: number; z: number } {
+    const grid = ensureColliderGrid();
+    let p = projectOutOfHard(spot, grid, SPAWN_CLEARANCE);
+    for (let pass = 0; pass < 4; pass++) {
+      let moved = false;
+      for (const s of slots.values()) {
+        if (s.phase === 'retiring') continue;
+        const root: Object3D | null = s.characterRoot ?? s.egg?.group ?? null;
+        if (!root) continue;
+        const residentR = s.characterRoot ? s.bodyR : (s.egg?.radius ?? 0);
+        const min = residentR + SPAWN_CLEARANCE;
+        const dx = p.x - root.position.x;
+        const dz = p.z - root.position.z;
+        const d = Math.hypot(dx, dz);
+        if (d >= min) continue;
+        const nx = d > 1e-9 ? dx / d : 1;
+        const nz = d > 1e-9 ? dz / d : 0;
+        p = { x: root.position.x + nx * min, z: root.position.z + nz * min };
+        moved = true;
+      }
+      if (!moved) break;
+      p = projectOutOfHard(p, grid, SPAWN_CLEARANCE);
+    }
+    return p;
+  }
 
   /** Gather everything hard/soft near a circle into nearScratch: spatial-hash
    * props plus the (few) static egg colliders. */
@@ -285,6 +383,9 @@ export function createCreatureManager(world: WorldHandles): CreatureManager {
         // signed one.
         root.name = slot.name ? `creature ${slot.name}` : `creature ${slot.id}`;
         slot.characterShadow = world.shadows.addShadow(`char-${slot.id}`, next.radius);
+        // Collision circle from the REAL mesh footprint (wide fish ≠ narrow
+        // triangle) — never the tucked-in shadow radius.
+        slot.bodyR = measureBodyRadius(next);
         world.shadows.removeShadow(`egg-${slot.id}`);
         slot.eggShadow = null;
         slot.egg = null; // the hatch owns the egg's disposal from here
@@ -326,7 +427,9 @@ export function createCreatureManager(world: WorldHandles): CreatureManager {
         if (oldest) beginRetire(oldest, performance.now());
       }
 
-      const spot = spawnSpot(orderCounter % 64);
+      // Projected clear of props and residents — an egg never incubates
+      // half-inside a rock (the raw spiral can reach planted ground).
+      const spot = clearSpawnSpot(spawnSpot(orderCounter % 64));
       const egg = createEgg(strokes, { x: spot.x, z: spot.z });
       const nowMs = performance.now();
       const slot: Slot = {
@@ -343,6 +446,7 @@ export function createCreatureManager(world: WorldHandles): CreatureManager {
         character: null,
         characterRoot: null,
         characterShadow: null,
+        bodyR: 0,
         personalityChoice: opts.personality ?? null,
         agent: null,
         pose: null,
@@ -432,16 +536,7 @@ export function createCreatureManager(world: WorldHandles): CreatureManager {
 
       // Prop colliders: re-index only when the scatter's version moves.
       const scatterPhysics = readScatterPhysics(world);
-      if (scatterPhysics) {
-        const version = scatterPhysics.collidersVersion();
-        if (version !== colliderGridVersion || !colliderGrid) {
-          colliderGrid = buildColliderGrid(scatterPhysics.colliders());
-          colliderGridVersion = version;
-        }
-      } else {
-        colliderGrid = null;
-        colliderGridVersion = -1;
-      }
+      ensureColliderGrid();
 
       // Eggs are static hard colliders — creatures walk around them. Pool
       // objects are reused frame to frame (no churn).
@@ -504,7 +599,7 @@ export function createCreatureManager(world: WorldHandles): CreatureManager {
             );
             let vx = out.vx;
             let vz = out.vz;
-            const bodyR = slot.character.radius * CREATURE_BODY_FIT;
+            const bodyR = slot.bodyR > 0 ? slot.bodyR : slot.character.radius;
             const near = gatherNear(root.position.x, root.position.z, bodyR);
 
             // Soft bodies: pushing through a bush is slow (~55% damped), and
@@ -524,27 +619,22 @@ export function createCreatureManager(world: WorldHandles): CreatureManager {
               }
             }
 
-            root.position.x += (vx * dt) / 1000;
-            root.position.z += (vz * dt) / 1000;
-
-            // Hard bodies (trunks, rocks, buildings, stumps, eggs): push out
-            // along the penetration normal + slide the remaining velocity
-            // along the tangent — positional correction only, never a bounce.
-            resolveBody.x = root.position.x;
-            resolveBody.z = root.position.z;
-            resolveBody.vx = vx;
-            resolveBody.vz = vz;
-            resolveHard(resolveBody, bodyR, near);
-            root.position.x = resolveBody.x;
-            root.position.z = resolveBody.z;
-            vx = resolveBody.vx;
-            vz = resolveBody.vz;
+            // Movement itself is deferred to the substepped resolve phase
+            // below — integrating here and resolving later is exactly the
+            // gap that let a big clamped dt tunnel through a trunk.
+            let body = bodyPool[aliveScratch.length];
+            if (!body) {
+              body = { x: 0, z: 0, vx: 0, vz: 0, r: 0 };
+              bodyPool[aliveScratch.length] = body;
+            }
+            body.x = root.position.x;
+            body.z = root.position.z;
+            body.vx = vx;
+            body.vz = vz;
+            body.r = bodyR;
+            aliveScratch.push({ slot, root, body, heading: out.heading });
 
             root.rotation.y = out.heading;
-            // The gait reads the RESOLVED ground speed — walk cycles blend
-            // in with actual movement and drift out to the ambient floor.
-            slot.character.setLocomotion(Math.hypot(vx, vz), out.heading);
-            aliveScratch.push({ slot, root, r: bodyR });
             if (out.emote) slot.character.emote(out.emote);
             if (out.pose !== slot.pose) {
               // Posture → expression through the character's public surface:
@@ -578,46 +668,33 @@ export function createCreatureManager(world: WorldHandles): CreatureManager {
         }
       }
 
-      // Creature-vs-creature: soft mutual separation (half-strength push,
-      // overlap hard-capped at ~40%) so creatures brush past each other
-      // rather than stack. Positional only — velocities untouched, so the
-      // gait never sees a phantom shove.
-      for (let i = 0; i < aliveScratch.length; i++) {
-        for (let j = i + 1; j < aliveScratch.length; j++) {
-          const a = aliveScratch[i]!;
-          const b = aliveScratch[j]!;
-          const off = separationOffsets(
-            a.root.position.x,
-            a.root.position.z,
-            a.r,
-            b.root.position.x,
-            b.root.position.z,
-            b.r,
-            dt,
-            sepScratch,
-          );
-          if (!off) continue;
-          a.root.position.x += off.ax;
-          a.root.position.z += off.az;
-          b.root.position.x += off.bx;
-          b.root.position.z += off.bz;
-        }
-      }
-      // Backstop: a separation push must not land anyone inside a hard
-      // body — re-resolve (positional only) and re-seat the shadows.
-      for (const a of aliveScratch) {
-        resolveBody.x = a.root.position.x;
-        resolveBody.z = a.root.position.z;
-        resolveBody.vx = 0;
-        resolveBody.vz = 0;
-        resolveHard(resolveBody, a.r, gatherNear(resolveBody.x, resolveBody.z, a.r));
-        a.root.position.x = resolveBody.x;
-        a.root.position.z = resolveBody.z;
-        const character = a.slot.character;
-        if (character && a.slot.characterShadow) {
-          a.slot.characterShadow.setPosition(
-            a.root.position.x + character.group.position.x,
-            a.root.position.z + character.group.position.z,
+      // ── movement: substepped integrate + hard resolve + hard separation ──
+      // One pass over every agent-driven body: positions advance in substeps
+      // small enough that nothing can tunnel a collider, every substep pushes
+      // bodies out of hard props (padded to the props' visual silhouettes)
+      // and separates every creature pair to exact contact — symmetric,
+      // iterated, with a tangential slide for head-on meetings. Deterministic
+      // iteration order: sorted by slot id, so resolution never flickers
+      // frame to frame. All corrections positional — no impulses, no bounce.
+      if (aliveScratch.length > 0) {
+        aliveScratch.sort((a, b) =>
+          a.slot.id < b.slot.id ? -1 : a.slot.id > b.slot.id ? 1 : 0,
+        );
+        stepBodies.length = 0;
+        for (const entry of aliveScratch) stepBodies.push(entry.body);
+        stepCreatures(stepBodies, dt, gatherNear, { hardPadFrac: HARD_PAD_FRAC });
+        for (const entry of aliveScratch) {
+          const { slot, root, body } = entry;
+          root.position.x = body.x;
+          root.position.z = body.z;
+          const character = slot.character;
+          if (!character) continue;
+          // The gait reads the RESOLVED ground speed — walk cycles blend in
+          // with actual movement and drift out to the ambient floor.
+          character.setLocomotion(Math.hypot(body.vx, body.vz), entry.heading);
+          slot.characterShadow?.setPosition(
+            body.x + character.group.position.x,
+            body.z + character.group.position.z,
           );
         }
       }
