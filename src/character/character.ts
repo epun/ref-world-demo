@@ -22,8 +22,17 @@ import type { EmoteName } from '../net/protocol';
 import type { ShapeAnalysis, StrokeList } from '../shape/types';
 import { MOTION } from '../taste/tokens';
 import { createBubble } from './bubble';
-import { applyDeform, deformPoint, heightFrac, type DeformState } from './deform';
+import {
+  applyDeform,
+  deformPoint,
+  gaitRollAngle,
+  heightFrac,
+  NEUTRAL_GAIT,
+  type DeformState,
+  type GaitState,
+} from './deform';
 import { runEmote, type EmoteRun } from './emotes';
+import { createGait } from './gait';
 import { createEyes } from './eyes';
 import type { Expression, ExpressionName } from './expressions';
 import { interpretDrawing } from './interpret';
@@ -54,6 +63,12 @@ export interface Character {
    * settles into the ambient floor.
    */
   emote(name: EmoteName): void;
+  /**
+   * Feed the agent's current ground speed (world units/s) and heading
+   * (radians). Drives the gait layer: the walk cycle blends in with speed
+   * and completes its last half-step when speed returns to zero.
+   */
+  setLocomotion(speed: number, heading: number): void;
   /** Apply the ambient drift floor and advance the eyes. Call once per frame. */
   update(dt: number, nowMs: number): void;
   /** Release GPU resources. Remove the group from the scene first. */
@@ -170,6 +185,14 @@ export function createCharacter(
   };
   let emoteRun: EmoteRun | null = null;
 
+  // Gait layer (./gait.ts): phase/amplitude from the agent's reported speed,
+  // composed ADDITIVELY with the emote springs — the two never fight over a
+  // channel. archetype picks the stride character (waddle vs undulation).
+  const gait = createGait(analysis.archetype);
+  let gaitState: GaitState = NEUTRAL_GAIT;
+  let locoSpeed = 0;
+  let locoHeading = 0;
+
   /** Push spring state to the GPU and carry the eye caps along with it. */
   function applyBodyState(state: DeformState): void {
     deform.set(state);
@@ -181,11 +204,13 @@ export function createCharacter(
     // eyes track the deformed head; PLAN §3.4 keeps them proud of the body).
     qy.setFromAxisAngle(Y_AXIS, state.twist * anchorH);
     qx.setFromAxisAngle(X_AXIS, state.leanX * anchorH);
-    qz.setFromAxisAngle(Z_AXIS, state.leanZ * anchorH);
+    // The waddle roll is a whole-body rotation about the same axis as leanZ —
+    // fold it in so the eye caps roll with the planted foot too.
+    qz.setFromAxisAngle(Z_AXIS, state.leanZ * anchorH + gaitRollAngle(gaitState));
     eyeRot.copy(qz).multiply(qx).multiply(qy);
     eyes.group.quaternion.copy(eyeRot);
 
-    const d = deformPoint(anchor, state, frame);
+    const d = deformPoint(anchor, state, frame, gaitState);
     anchorRest.set(anchor.x, anchor.y, anchor.z).multiplyScalar(scale).applyQuaternion(eyeRot);
     eyes.group.position.set(
       d.x * scale - anchorRest.x,
@@ -225,6 +250,10 @@ export function createCharacter(
       if (bubble.object.parent !== group) group.add(bubble.object);
       bubble.show(name);
     },
+    setLocomotion(speed: number, heading: number): void {
+      locoSpeed = speed;
+      locoHeading = heading;
+    },
     update(dt: number, nowMs: number): void {
       // Ambient drift only — no idle bob, nothing that reads as bounce.
       // Nonzero motion over any 2s idle sample (stillness probe).
@@ -236,6 +265,12 @@ export function createCharacter(
       // springs advance every frame regardless, so a finished emote keeps
       // drifting home and then rests at neutral under the ambient floor.
       if (emoteRun?.update(dt)) emoteRun = null;
+
+      // Gait: phase/amplitude follow the reported speed; the uniforms are a
+      // separate additive layer, so emote and walk compose instead of fight.
+      gaitState = gait.update(dt, locoSpeed, locoHeading);
+      deform.setGait(gaitState);
+
       applyBodyState({
         squash: springs.squash.update(dt),
         leanX: springs.leanX.update(dt),
@@ -261,6 +296,7 @@ export function createCharacter(
       springs.leanZ.dispose();
       springs.twist.dispose();
       springs.reach.dispose();
+      gait.dispose();
     },
   };
 }

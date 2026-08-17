@@ -166,9 +166,24 @@ export function createBubble(options: BubbleOptions): Bubble {
   const material = new SpriteMaterial({
     transparent: true,
     depthWrite: false,
+    // The bubble is a status signal: it reads over the body and props even
+    // when the creature stands behind something (renderOrder draws it last).
+    depthTest: false,
     opacity: 0,
   });
+  // The world's ink pass re-renders the scene with a MeshNormalMaterial
+  // override for edge detection. An overridden sprite loses its billboard
+  // (the quad renders flat in world space) and the edge pass inks a false
+  // tilted square. Opting out keeps the sprite's own material in that pass…
+  material.allowOverride = false;
   const sprite = new Sprite(material);
+  // …and this hook zeroes its opacity there, so the bubble contributes
+  // nothing at all to the normal buffer: no false edges, only the beauty
+  // render carries it (visibleOpacity is restored for the beauty pass).
+  let visibleOpacity = 0;
+  sprite.onBeforeRender = (_renderer, scene) => {
+    material.opacity = scene?.overrideMaterial ? 0 : visibleOpacity;
+  };
   sprite.scale.set(BUBBLE_SIZE * ENTER_SCALE, BUBBLE_SIZE * ENTER_SCALE, 1);
   sprite.position.set(0, restY - ENTER_DROP, 0);
   sprite.visible = false;
@@ -227,7 +242,10 @@ export function createBubble(options: BubbleOptions): Bubble {
     ctx.fill();
     ctx.stroke();
 
-    // The emoji, centered in the ellipse.
+    // The emoji, centered in the ellipse. Color emoji glyphs ignore
+    // fillStyle; monochrome fallback fonts (headless/test environments)
+    // render with it — ink, so the mark stays legible either way.
+    ctx.fillStyle = WORLD.ink;
     ctx.font = `${Math.round(s * 0.42)}px sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
@@ -313,7 +331,8 @@ export function createBubble(options: BubbleOptions): Bubble {
       sprite.position.y = y.update(dt) + sway;
       const k = scale.update(dt) * BUBBLE_SIZE;
       sprite.scale.set(k, k, 1);
-      material.opacity = opacity.update(dt);
+      visibleOpacity = opacity.update(dt);
+      material.opacity = visibleOpacity;
     },
 
     dispose(): void {
