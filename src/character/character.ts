@@ -16,6 +16,8 @@ import { inflate } from '../inflate/inflate';
 import { sampleDrift } from '../motion/ambient';
 import { analyze } from '../shape/analyze';
 import type { ShapeAnalysis, StrokeList } from '../shape/types';
+import { createEyes } from './eyes';
+import type { Expression, ExpressionName } from './expressions';
 import { createCharacterMaterial, toBufferGeometry } from './mesh';
 
 /** Target character height in world units. Characters render small —
@@ -32,7 +34,9 @@ export interface Character {
   radius: number;
   /** The shape analysis, kept for later modules (eyes, gait). */
   analysis: ShapeAnalysis;
-  /** Apply the ambient drift floor. Call once per frame. */
+  /** Glide the eyes to an expression (springs retarget, never snap). */
+  setExpression(e: ExpressionName | Expression): void;
+  /** Apply the ambient drift floor and advance the eyes. Call once per frame. */
   update(dt: number, nowMs: number): void;
   /** Release GPU resources. Remove the group from the scene first. */
   dispose(): void;
@@ -84,6 +88,12 @@ export function createCharacter(strokes: StrokeList, worldScale = 1): Character 
   const group = new Group();
   group.add(mesh);
 
+  // Eyes: computed in inflate-local space, scaled up to match the mesh, and
+  // lifted by the same ground offset so they sit on the scaled body surface.
+  const eyes = createEyes(analysis, scale);
+  eyes.group.position.y = mesh.position.y;
+  group.add(eyes.group);
+
   const radius =
     (Math.max(box.max.x - box.min.x, box.max.z - box.min.z) / 2) * scale * SHADOW_FIT;
 
@@ -94,14 +104,20 @@ export function createCharacter(strokes: StrokeList, worldScale = 1): Character 
     group,
     radius,
     analysis,
-    update(_dt: number, nowMs: number): void {
+    setExpression(e: ExpressionName | Expression): void {
+      eyes.setExpression(e);
+    },
+    update(dt: number, nowMs: number): void {
       // Ambient drift only — no idle bob, nothing that reads as bounce.
       // Nonzero motion over any 2s idle sample (stillness probe).
       const drift = sampleDrift(nowMs, seed, worldHeight);
       group.position.set(drift.x, 0, drift.y);
       group.rotation.y = drift.rot;
+      eyes.update(dt);
     },
     dispose(): void {
+      group.remove(eyes.group);
+      eyes.dispose();
       group.remove(mesh);
       geometry.dispose();
       material.dispose();
