@@ -5,6 +5,7 @@
 
 import type {
   Archetype,
+  Contour,
   Feature,
   Mask,
   ShapeAnalysis,
@@ -85,15 +86,27 @@ export interface AnalyzeOptions {
   contourPoints?: number;
 }
 
-/**
- * Run the whole pipeline. Returns null when the drawing carries no usable ink
- * (empty stroke list, or everything eliminated as stray dots).
- */
-export function analyze(strokes: StrokeList, opts: AnalyzeOptions = {}): ShapeAnalysis | null {
-  const size = opts.size ?? 512;
-  const raw = rasterize(strokes, size);
-  const { mask } = largestComponent(raw);
+export interface MaskAnalyzeOptions {
+  /** RDP tolerance in pixels, scaled to size/512. Ignored when `contour` is given. */
+  epsilon?: number;
+  /** Final contour density. Ignored when `contour` is given. */
+  contourPoints?: number;
+  /**
+   * Pre-built contour in mask pixel space (e.g. the §1a corner-preserving
+   * chain). When absent, the default trace → RDP → Chaikin → resample chain
+   * runs on the mask.
+   */
+  contour?: Contour;
+}
 
+/**
+ * Run the pipeline's tail on an already-built mask: bounds, distance
+ * transform, contour (default chain or a caller-supplied one), skeleton
+ * features, archetype, head lobe. Returns null for empty or degenerate ink.
+ * The mask must be a single connected component (largestComponent first).
+ */
+export function analyzeMask(mask: Mask, opts: MaskAnalyzeOptions = {}): ShapeAnalysis | null {
+  const size = mask.size;
   const bounds = inkBounds(mask);
   if (bounds.maxX < 0) return null;
   // Reject degenerate ink (a dot or a hairline): nothing to inflate.
@@ -103,11 +116,16 @@ export function analyze(strokes: StrokeList, opts: AnalyzeOptions = {}): ShapeAn
 
   const distance = distanceTransform(mask);
 
-  const rawContour = traceContour(mask);
-  if (rawContour.length < 8) return null;
-  const eps = (opts.epsilon ?? 1.5) * (size / 512);
-  const soft = chaikin(simplify(rawContour, eps), 2);
-  const contour = resample(soft, opts.contourPoints ?? 120);
+  let contour = opts.contour;
+  if (!contour) {
+    const rawContour = traceContour(mask);
+    if (rawContour.length < 8) return null;
+    const eps = (opts.epsilon ?? 1.5) * (size / 512);
+    const soft = chaikin(simplify(rawContour, eps), 2);
+    contour = resample(soft, opts.contourPoints ?? 120);
+  } else if (contour.length < 8) {
+    return null;
+  }
 
   const skel = extractRidges(distance, mask);
   const leaves = findLeaves(skel, distance, Math.max(4, size / 85));
@@ -116,4 +134,18 @@ export function analyze(strokes: StrokeList, opts: AnalyzeOptions = {}): ShapeAn
   const headLobe = findHeadLobe(distance, bounds);
 
   return { mask, distance, contour, features, archetype, headLobe, bounds };
+}
+
+/**
+ * Run the whole pipeline. Returns null when the drawing carries no usable ink
+ * (empty stroke list, or everything eliminated as stray dots).
+ */
+export function analyze(strokes: StrokeList, opts: AnalyzeOptions = {}): ShapeAnalysis | null {
+  const size = opts.size ?? 512;
+  const raw = rasterize(strokes, size);
+  const { mask } = largestComponent(raw);
+  const maskOpts: MaskAnalyzeOptions = {};
+  if (opts.epsilon !== undefined) maskOpts.epsilon = opts.epsilon;
+  if (opts.contourPoints !== undefined) maskOpts.contourPoints = opts.contourPoints;
+  return analyzeMask(mask, maskOpts);
 }

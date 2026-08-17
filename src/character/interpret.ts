@@ -1,13 +1,23 @@
 /**
- * The interpretation pass (GENERATOR §1 — "motifs, not replica").
+ * The interpretation pass (GENERATOR §1a — "drawn objects keep their shape").
  *
- * The user's drawing is no longer inflated verbatim: analyze() measures it,
- * this module extracts its motifs (proportions, foot/limb placement,
- * top-of-head appendages, contour lumpiness), and synthesizes a SPECIES BODY
- * — an irregular blob/egg torso with a merged head lobe, tiny legs, optional
- * lateral nubs and crown appendages — whose anatomy echoes those motifs. The
- * synthesized stroke list runs through the very same analyze → inflate
- * pipeline, so eyes, deformation, and locomotion all work on the actual body.
+ * The creature's body silhouette IS the drawing's own shape, processed for
+ * robustness: outline drawings are flood-filled into solid mass, stray and
+ * thin ink is chunkified to a minimum body thickness (never a wire figure),
+ * and the contour is simplified CORNER-PRESERVINGLY — a drawn triangle keeps
+ * its three shoulders, softened by hand-wobble rather than rounded into a
+ * blob. Species membership comes from what gets ADDED around that shape:
+ * tiny stubby legs when the drawing has none, grounding, and the proportion
+ * band. Motif extraction (./extractMotifs) still measures the ORIGINAL
+ * drawing to decide those additions; drawn feet/ears/crowns are already part
+ * of the contour and are never double-added.
+ *
+ * The processed silhouette is a MASK, not a re-synthesized stroke list: the
+ * mask runs through the same pure tail (distance transform → contour →
+ * skeleton → analyzeMask) that analyze() uses, so eyes, deformation, and
+ * locomotion all work on the actual body. interpretDrawing returns the
+ * ORIGINAL strokes untouched — they serve the egg paint-on and the marking
+ * channel, while only the analysis drives the mesh.
  *
  * Recognition channel 2 (the drawing painted onto the body) lives in
  * ./marking.ts; the verbatim path survives as fidelity 0 (the dial's floor).
@@ -18,14 +28,33 @@
  * identity id (identitySeedOf) so no two submissions ever share a body.
  */
 
-import { analyze, type AnalyzeOptions } from '../shape/analyze';
+import { analyze, analyzeMask, type AnalyzeOptions } from '../shape/analyze';
+import {
+  chaikin,
+  chaikinOpen,
+  detectCorners,
+  resample,
+  resampleOpen,
+  simplify,
+  simplifyOpen,
+  traceContour,
+} from '../shape/contour';
+import { distanceTransform } from '../shape/distance';
+import {
+  dilate,
+  erode,
+  fillHoles,
+  largestComponent,
+  rasterize,
+  stampLine,
+} from '../shape/raster';
 import type {
   Archetype,
   Contour,
   Feature,
+  Mask,
   Point,
   ShapeAnalysis,
-  Stroke,
   StrokeList,
 } from '../shape/types';
 
@@ -415,399 +444,502 @@ export function extractMotifs(analysis: ShapeAnalysis): Motifs {
   };
 }
 
-// ── species synthesis ────────────────────────────────────────────────────────
+// ── body genesis (GENERATOR §1a — the drawing's own shape) ───────────────────
 
-/** Species band: every creature reads as the same loose species (GENERATOR §1). */
-export const SPECIES_ASPECT_MIN = 0.9;
-export const SPECIES_ASPECT_MAX = 1.6;
-/** Species trait: legs are tiny — never longer than this × torso height. */
+/** Widened proportion band: a tall drawn bottle or a wide drawn fish keeps
+ * its identity; only the extremes are pulled back in (GENERATOR §1a). */
+export const SPECIES_ASPECT_MIN = 0.6;
+export const SPECIES_ASPECT_MAX = 2.0;
+/** Species trait: added legs are tiny — never longer than this × body height. */
 export const SPECIES_LEG_MAX = 0.35;
 /** Near-vertical clamp on leg splay (radians) so the creature stands. */
 export const SPECIES_LEG_SPLAY = 0.18;
 
-/** The numeric body plan, in [0,1] canvas space (y-down). */
-export interface SpeciesParams {
-  torso: { cx: number; cy: number; width: number; height: number };
-  head: { cx: number; cy: number; r: number };
-  legs: { x: number; topY: number; angle: number; length: number; width: number }[];
-  arms: { side: -1 | 1; y: number; length: number; width: number }[];
-  crown: { angle: number; length: number; width: number }[];
-  /** Low-frequency hand-wobble amplitude, canvas units. */
-  wobble: number;
-  /** Identity axis: body taper class × amount — +top-heavy / −bottom-heavy
-   * shift between the torso's softening discs. 0 when unsalted. */
-  taper: number;
-  /** Identity axis: extra arm droop, radians (negative = perky). 0 when
-   * unsalted. */
-  droop: number;
-}
+/** Morphological closing radius (fraction of mask size): fuses stray/nearby
+ * lines into one mass before filling. */
+export const CLOSE_RADIUS = 0.035;
+/** Chunk floor (fraction of mask size): the filled mask's DT peak must clear
+ * this — a scribble or stick figure becomes a solid blob, never a wire. */
+export const CHUNK_FLOOR = 0.07;
+/** Corner detection: windowed turning angle above this pins the vertex. */
+export const CORNER_ANGLE = (35 * Math.PI) / 180;
+/** Corner detection window, as a fraction of the contour ring's point count. */
+export const CORNER_WINDOW = 0.03;
 
-/** Identity jitter spans — WITHIN-band variation only. The drawing's motifs
- * keep deciding counts (legs, crown, arms); the salt moves the individual
- * around inside the species envelope. Spans are deliberately wide: two
- * hatchlings of one drawing must differ at world scale, not under a loupe. */
-export const IDENTITY_TORSO_JITTER = 0.18;
+/** Identity jitter spans — WITHIN-band variation only. The drawing keeps
+ * deciding the shape; the salt moves the individual around inside the
+ * species envelope. Spans are deliberately wide enough that two hatchlings
+ * of one drawing differ at world scale, not under a loupe. */
+export const IDENTITY_ASPECT_JITTER = 0.1;
+export const IDENTITY_FULLNESS_JITTER = 0.08;
+export const IDENTITY_STANCE_WIDTH_JITTER = 0.15;
+export const IDENTITY_STANCE_JITTER = 0.08;
 export const IDENTITY_LEG_JITTER = 0.25;
 export const IDENTITY_LEG_WIDTH_JITTER = 0.2;
-export const IDENTITY_CROWN_JITTER = 0.22;
-/** Stance width: how far apart the leg slots sit, as a multiplier span. */
-export const IDENTITY_STANCE_WIDTH_JITTER = 0.15;
-/** Stance: radians of per-leg angle nudge, clamped back under the splay. */
-export const IDENTITY_STANCE_JITTER = 0.08;
 
-/** Discrete identity axes — read-at-a-glance classes that multiply perceived
- * variety far beyond continuous jitter. All resolve to the neutral middle
- * when unsalted. */
-/** Head-lobe size classes: small / medium / large. */
-export const IDENTITY_HEAD_CLASSES = [0.8, 1, 1.22] as const;
-/** Body taper strength: ±16% shift between the torso's two softening discs
- * (top-heavy vs bottom-heavy), by the taper class −1 | 0 | +1. */
-export const IDENTITY_TAPER_AMOUNT = 0.16;
-/** Appendage attitude: extra arm droop (radians) per droop class −1 (perk)
- * | 0 | +1 (droop); crown angles spread/pull by ±20% on the same class. */
+/** Discrete identity axes — read-at-a-glance classes. All resolve to the
+ * neutral middle when unsalted. */
+/** Upper-region width classes (small / medium / large "head" mass). */
+export const IDENTITY_HEAD_CLASSES = [0.88, 1, 1.14] as const;
+/** Mass-distribution taper: ±14% row-width shift top↔bottom per class. */
+export const IDENTITY_TAPER_AMOUNT = 0.14;
+/** Appendage attitude: leg splay/droop bias per class −1 | 0 | +1. */
 export const IDENTITY_DROOP_AMOUNT = 0.18;
-export const IDENTITY_CROWN_SPREAD = 0.2;
+
+/** One added stubby leg, in body-relative units. */
+export interface BodyLeg {
+  /** Attach x offset from the body center, as a fraction of body width. */
+  x: number;
+  /** Radians off straight-down. |angle| ≤ SPECIES_LEG_SPLAY. */
+  angle: number;
+  /** Length as a fraction of body height. ≤ SPECIES_LEG_MAX. */
+  length: number;
+  /** Width as a fraction of body width. */
+  width: number;
+}
+
+/** The numeric plan for processing a drawing into a body — split out from
+ * the mask work so the banding rules (aspect band, tiny legs, near-vertical
+ * splay, leg count) are directly testable numbers. */
+export interface BodyPlan {
+  /** Identity axis: multiplies the measured aspect before the band clamp. 1 unsalted. */
+  aspectJitter: number;
+  /** Identity axis: overall bulk scale inside the frame. 1 unsalted. */
+  fullness: number;
+  /** Identity axis: upper-region width class multiplier. 1 unsalted. */
+  headScale: number;
+  /** Identity axis: row-width taper, +top-heavy / −bottom-heavy. 0 unsalted. */
+  taper: number;
+  /** Identity axis: appendage attitude class × amount. 0 unsalted. */
+  droop: number;
+  /** Stubby legs to append — empty when the drawing has its own feet. */
+  legs: BodyLeg[];
+  /** Contour hand-wobble amplitude, as a fraction of mask size. */
+  wobble: number;
+  /** Wobble phases (radians) for the two sine octaves. */
+  wobblePhase: [number, number];
+}
 
 /**
- * Resolve motifs + seed into the species body plan. Split out from stroke
- * emission so the banding rules (aspect clamp, tiny legs, near-vertical
- * splay, crown echo) are directly testable numbers.
+ * Resolve motifs + seed into the body plan. The drawing's own feet outrank
+ * everything: a drawing WITH foot protrusions keeps them (they are already
+ * part of the contour) and gains nothing; a legless drawing (blob, hat,
+ * fish) gains exactly two stubby species legs at default stance positions.
  *
  * @param identitySeed optional identity salt (identitySeedOf). When present,
- *   a SEPARATE rng channel jitters the within-band numbers (torso fullness
- *   ±8%, leg length ±12%, crown reach ±10%, stance) so two ids never share a
- *   body; when absent the output is byte-identical to the unsalted pipeline.
+ *   a SEPARATE rng channel jitters the within-band numbers so two ids never
+ *   share a body; when absent the output is byte-identical to the unsalted
+ *   pipeline.
  */
-export function speciesParams(
-  motifs: Motifs,
-  seed: number,
-  identitySeed?: number,
-): SpeciesParams {
+export function bodyPlan(motifs: Motifs, seed: number, identitySeed?: number): BodyPlan {
   const rng = makeRng(seed);
   // Identity channel: its own rng so adding the salt never reshuffles the
-  // base draws (compat: no salt → the exact pre-salt body). Draws happen in
-  // one fixed order (continuous jitters + discrete classes below), so the
-  // same id always lands the same individual.
+  // base draws. Draws happen in one fixed order, so the same id always lands
+  // the same individual.
   const idRng = identitySeed === undefined ? null : makeRng((identitySeed ^ 0x85ebca6b) >>> 0);
   const jitter = (span: number): number => (idRng ? 1 + (idRng() - 0.5) * 2 * span : 1);
   /** Discrete class draw: −1 | 0 | +1 (0 when unsalted). */
   const pickClass = (): number => (idRng ? Math.floor(idRng() * 3) - 1 : 0);
 
-  const torsoJitter = jitter(IDENTITY_TORSO_JITTER);
-  const headClass = pickClass();
-  const headClassMult = IDENTITY_HEAD_CLASSES[headClass + 1]!;
+  const aspectJitter = jitter(IDENTITY_ASPECT_JITTER);
+  const fullness = jitter(IDENTITY_FULLNESS_JITTER);
+  const headScale = IDENTITY_HEAD_CLASSES[pickClass() + 1]!;
   const taper = pickClass() * IDENTITY_TAPER_AMOUNT;
-  const droopClass = pickClass();
-  const droop = droopClass * IDENTITY_DROOP_AMOUNT;
+  const droop = pickClass() * IDENTITY_DROOP_AMOUNT;
   const stanceWidth = jitter(IDENTITY_STANCE_WIDTH_JITTER);
   const legLenJitter = jitter(IDENTITY_LEG_JITTER);
   const legWidthJitter = jitter(IDENTITY_LEG_WIDTH_JITTER);
 
-  // Torso: aspect and fullness echo the drawing, clamped into the species band.
-  const aspect = clamp(motifs.aspect, SPECIES_ASPECT_MIN, SPECIES_ASPECT_MAX);
-  const torsoH = 0.44;
-  let torsoW =
-    (torsoH / aspect) * (0.85 + 0.25 * clamp(motifs.torsoFullness, 0, 1)) * torsoJitter;
-  torsoW = clamp(torsoW, torsoH / SPECIES_ASPECT_MAX, torsoH / SPECIES_ASPECT_MIN);
+  // Base draws, fixed order regardless of salt (compat: no salt → the exact
+  // unsalted body).
+  const legLenBase = 0.16 + 0.05 * rng();
+  const phase1 = rng() * Math.PI * 2;
+  const phase2 = rng() * Math.PI * 2;
 
-  // Head: merged upper lobe sized from the drawing's head thickness, scaled
-  // by the identity's discrete size class (small / medium / large).
-  const headR = (torsoW / 2) * (0.52 + 0.42 * clamp(motifs.headSize, 0.3, 1)) * headClassMult;
-
-  // Legs: 2 or 4 per feet motifs/archetype; a legless blob drawing stays a
-  // blob (it glides). The contour feet channel outranks the archetype: the
-  // production-resolution skeleton routinely prunes thin drawn legs (or
-  // hallucinates extras), while the contour counts them faithfully — the
-  // archetype only decides when no foot protrusions were found at all.
-  const feetCount = motifs.feet.length;
-  const legCount =
-    feetCount >= 4
-      ? 4
-      : feetCount >= 1
-        ? 2
-        : motifs.archetype === 'quadruped'
-          ? 4
-          : motifs.archetype === 'biped' || motifs.archetype === 'bird'
-            ? 2
-            : 0;
-  // Tiny — the identity jitter is clamped back under SPECIES_LEG_MAX.
-  const legLen = Math.min(
-    torsoH * (0.26 + 0.06 * rng()) * legLenJitter,
-    torsoH * SPECIES_LEG_MAX,
-  );
-  const legW = Math.max(0.034, torsoW * 0.11 * legWidthJitter);
-
-  // Crown: the signature echo — same angular POSITIONS as the drawing (a
-  // left ear stays a left ear), reach in a band. The identity salt scales
-  // each reach, and the droop class spreads (droopy) or pulls upright
-  // (perky) the whole set by ±20% — never flipping a side.
-  const crown = motifs.crown.map((m) => {
-    const r = clamp(m.reach * 2.2, 0, 1);
-    return {
-      angle: clamp(m.angle * (1 + droopClass * IDENTITY_CROWN_SPREAD), -1.15, 1.15),
-      length: headR * (0.7 + 1.3 * r) * jitter(IDENTITY_CROWN_JITTER),
-      width: Math.max(0.03, headR * (0.72 - 0.3 * r)),
-    };
-  });
-
-  // Vertical layout: center the whole plan, scale down if it overflows.
-  const crownMax = crown.reduce((m, c) => Math.max(m, c.length), 0);
-  const above = headR * 1.45 + crownMax; // head + crown overhang past torso top
-  const below = legCount > 0 ? legLen : 0;
-  let total = torsoH + above + below;
-  const fit = total > 0.88 ? 0.88 / total : 1;
-  const s = (v: number): number => v * fit;
-  total *= fit;
-
-  const torso = {
-    cx: 0.5,
-    cy: (1 - total) / 2 + s(above) + s(torsoH) / 2,
-    width: s(torsoW),
-    height: s(torsoH),
-  };
-  const torsoTop = torso.cy - torso.height / 2;
-  const torsoBottom = torso.cy + torso.height / 2;
-
-  const head = {
-    cx: 0.5 + (rng() - 0.5) * 0.02,
-    // Overlapping merge, but proud enough of the torso to read as a head.
-    cy: torsoTop - s(headR) * 0.45,
-    r: s(headR),
-  };
-
-  // Leg slots, left→right, with angles echoing the drawn feet (clamped
-  // near-vertical so it stands).
-  const slots =
-    legCount === 4
-      ? [-0.36, -0.13, 0.13, 0.36]
-      : legCount === 2
-        ? [-0.24, 0.24]
-        : [];
-  const defaults =
-    legCount === 4 ? [-0.14, -0.05, 0.05, 0.14] : legCount === 2 ? [-0.08, 0.08] : [];
-  const drawn = motifs.feet.map((f) => f.angle).sort((a, b) => a - b);
-  const legs = slots.map((off, i) => {
-    const echo =
-      drawn.length > 0
-        ? drawn[Math.round((i * (drawn.length - 1)) / Math.max(1, slots.length - 1))]!
-        : defaults[i]!;
-    // Stance: the identity salt widens/narrows the slot spread and nudges
-    // each leg's angle, clamped back under the splay so it still stands.
-    const stance = idRng ? (idRng() - 0.5) * 2 * IDENTITY_STANCE_JITTER : 0;
-    return {
-      x: torso.cx + off * torso.width * stanceWidth,
-      topY: torsoBottom - torso.width * 0.18,
-      angle: clamp(echo + stance, -SPECIES_LEG_SPLAY, SPECIES_LEG_SPLAY),
-      length: s(legLen),
-      width: s(legW),
-    };
-  });
-
-  // Arms/wings: tiny lateral nubs at the drawn heights.
-  const arms = motifs.limbs.map((m) => ({
-    side: m.side,
-    y: torsoBottom - clamp(m.height, 0.35, 0.7) * torso.height,
-    length: torso.width * (0.16 + 0.1 * clamp(m.reach, 0, 1)),
-    width: Math.max(0.028, torso.width * 0.13),
-  }));
+  const legs: BodyLeg[] = [];
+  // A stance needs two feet. Fewer than two drawn foot protrusions (zero, or
+  // one — which on thin outlines is usually belly-line noise) → append the
+  // species legs; two or more → the drawing's own feet are already part of
+  // the contour and gain nothing.
+  if (motifs.feet.length < 2) {
+    // Exactly two stubby, near-vertical, chunky legs (avatar spec). The
+    // attitude class splays them a touch (droopy) or pulls them under
+    // (perky); the stance jitters per identity, clamped so it stands.
+    const length = clamp(legLenBase * legLenJitter, 0.1, SPECIES_LEG_MAX);
+    const width = clamp(0.14 * legWidthJitter, 0.1, 0.2);
+    for (const side of [-1, 1] as const) {
+      const stance = idRng ? (idRng() - 0.5) * 2 * IDENTITY_STANCE_JITTER : 0;
+      legs.push({
+        x: side * 0.22 * stanceWidth,
+        angle: clamp(
+          side * (0.04 + droop * 0.2) + stance,
+          -SPECIES_LEG_SPLAY,
+          SPECIES_LEG_SPLAY,
+        ),
+        length,
+        width,
+      });
+    }
+  }
 
   return {
-    torso,
-    head,
-    legs,
-    arms,
-    crown: crown.map((c) => ({ ...c, length: s(c.length), width: s(c.width) })),
-    wobble: 0.005 + 0.02 * clamp(motifs.lumpiness, 0, 1),
+    aspectJitter,
+    fullness,
+    headScale,
     taper,
     droop,
+    legs,
+    wobble: 0.0035 + 0.004 * clamp(motifs.lumpiness, 0, 1),
+    wobblePhase: [
+      phase1 + (idRng ? idRng() * Math.PI * 2 : 0),
+      phase2 + (idRng ? idRng() * Math.PI * 2 : 0),
+    ],
   };
 }
 
-/** A filled disc stroke (test/fixtures/strokes.ts style). */
-function disc(cx: number, cy: number, r: number): Stroke {
-  return { pts: [[clamp(cx, 0.02, 0.98), clamp(cy, 0.02, 0.98), 1]], w: r * 2 };
-}
-
-/**
- * A capsule from (x0,y0) toward (dx,dy)·length, perturbed by seeded
- * low-frequency waviness (amplitude pinned to zero at both ends) and tapered
- * slightly toward the tip — so no stroke ever reads as an engineered segment.
- */
-function wavyStroke(
-  x0: number,
-  y0: number,
-  dx: number,
-  dy: number,
-  length: number,
-  width: number,
-  amp: number,
-  taper: number,
-  rng: () => number,
-): Stroke {
-  const cycles = 1 + rng();
-  const phase = rng() * Math.PI * 2;
-  const px = -dy;
-  const py = dx;
-  const pts: [number, number, number][] = [];
-  const K = 8;
-  for (let i = 0; i <= K; i++) {
-    const t = i / K;
-    const o = amp * Math.sin(t * Math.PI * cycles + phase) * Math.sin(t * Math.PI);
-    pts.push([
-      clamp(x0 + dx * length * t + px * o, 0.02, 0.98),
-      clamp(y0 + dy * length * t + py * o, 0.02, 0.98),
-      1 - taper * t,
-    ]);
+/** Ink bounds of a mask (−1 maxX when empty). */
+function maskBounds(mask: Mask): { minX: number; minY: number; maxX: number; maxY: number } {
+  const { size, data } = mask;
+  let minX = size, minY = size, maxX = -1, maxY = -1;
+  for (let y = 0; y < size; y++) {
+    const row = y * size;
+    for (let x = 0; x < size; x++) {
+      if (data[row + x] === 1) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
   }
-  return { pts, w: width };
+  return { minX, minY, maxX, maxY };
 }
 
 /**
- * Build the species creature as a stroke list. Deterministic: same motifs +
- * seed (+ identity salt) → identical strokes. The result feeds the ordinary
- * analyze → inflate pipeline.
+ * FILL + CHUNKIFY (GENERATOR §1a robustness rules): rasterize the original
+ * strokes, close (fuse stray/nearby lines), flood-fill enclosed regions so
+ * outline drawings become solid mass, keep the largest component, then
+ * enforce the minimum chunk thickness — if the DT peak sits under the chunk
+ * floor, dilate until it clears it. Never a wire figure.
  */
-export function synthesizeSpecies(
+function fillAndChunkify(strokes: StrokeList, size: number): Mask | null {
+  const raw = rasterize(strokes, size);
+  const closeR = Math.max(2, Math.round(CLOSE_RADIUS * size));
+  // Fill between dilate and erode: the erosion of a solid mass stays solid,
+  // so outline gaps up to ~2×closeR still seal before the fill.
+  let mask = erode(fillHoles(dilate(raw, closeR)), closeR);
+  mask = largestComponent(mask).mask;
+  const bounds = maskBounds(mask);
+  if (bounds.maxX < 0) return null;
+
+  const floor = CHUNK_FLOOR * size;
+  for (let i = 0; i < 3; i++) {
+    const dt = distanceTransform(mask);
+    // Thin-part guard: the max-DT floor alone is defeated by one fat lobe
+    // (a stick figure's head clears it while the limbs stay wires). The
+    // 25th-percentile DT over ink approximates the thin parts' half-width —
+    // solid shapes score high (a disc's p25 is ~0.13R), wire figures low.
+    const hist = new Uint32Array(size);
+    let ink = 0;
+    for (let p = 0; p < dt.data.length; p++) {
+      const v = dt.data[p]!;
+      if (v > 0) {
+        hist[Math.min(size - 1, Math.floor(v))]!++;
+        ink++;
+      }
+    }
+    let p25 = 0;
+    for (let acc = 0, b = 0; b < size; b++) {
+      acc += hist[b]!;
+      if (acc >= ink * 0.25) {
+        p25 = b;
+        break;
+      }
+    }
+    const need = Math.max(floor - dt.max, floor * 0.5 - p25);
+    if (need <= 0) break;
+    mask = dilate(mask, Math.max(1, Math.ceil(need)));
+  }
+  // Dilation can seal a U into an O — re-fill so no interior holes survive.
+  return fillHoles(mask);
+}
+
+/**
+ * PROPORTION: scale the body into the widened species band and normalize it
+ * into the frame (nearest-neighbor inverse warp — pure and deterministic).
+ * The same warp carries the identity's mass-distribution axes: the taper
+ * class biases row width top↔bottom, the head class scales the upper
+ * region's width. Leaves margin below for the stubby legs.
+ */
+function proportionWarp(mask: Mask, plan: BodyPlan): Mask | null {
+  const size = mask.size;
+  const b = maskBounds(mask);
+  if (b.maxX < 0) return null;
+  const w0 = Math.max(1, b.maxX - b.minX + 1);
+  const h0 = Math.max(1, b.maxY - b.minY + 1);
+  const aspect0 = h0 / w0;
+  const target = clamp(
+    aspect0 * plan.aspectJitter,
+    SPECIES_ASPECT_MIN,
+    SPECIES_ASPECT_MAX,
+  );
+
+  // Target box: the body's longer dimension spans ~62% of the frame (the
+  // inflate step renormalizes scale anyway; this keeps mask resolution high
+  // and leaves leg + wobble margin on every side).
+  const bulk = 0.62 * clamp(plan.fullness, 0.85, 1.12) * size;
+  let bodyH = target >= 1 ? bulk : bulk * target;
+  let bodyW = bodyH / target;
+  const legPx = plan.legs.reduce((m, l) => Math.max(m, l.length), 0) * bodyH * 1.2;
+  const maxH = 0.92 * size - legPx;
+  if (bodyH > maxH) {
+    const s = maxH / bodyH;
+    bodyH *= s;
+    bodyW *= s;
+  }
+
+  const cxT = size / 2;
+  const top = (size - bodyH - legPx) / 2;
+  const cx0 = (b.minX + b.maxX) / 2;
+
+  const out = new Uint8Array(size * size);
+  for (let y = 0; y < size; y++) {
+    const v = (y - top) / bodyH;
+    if (v < 0 || v > 1) continue;
+    // Row-width scale: taper (top-heavy vs bottom-heavy) × head class
+    // (upper-region width), bounded so nothing reads as a different shape.
+    const headW = clamp(1 - v / 0.35, 0, 1);
+    const rs = clamp(
+      (1 + plan.taper * (1 - 2 * v)) * (1 + (plan.headScale - 1) * headW),
+      0.78,
+      1.28,
+    );
+    const ys = b.minY + v * (h0 - 1);
+    const sy = Math.round(ys);
+    if (sy < 0 || sy >= size) continue;
+    const row = y * size;
+    const srcRow = sy * size;
+    const invSx = w0 / (bodyW * rs);
+    for (let x = 0; x < size; x++) {
+      const xs = cx0 + (x - cxT) * invSx;
+      const sx = Math.round(xs);
+      if (sx < b.minX || sx > b.maxX) continue;
+      if (mask.data[srcRow + sx] === 1) out[row + x] = 1;
+    }
+  }
+  return { size, data: out };
+}
+
+/**
+ * SPECIES ADDITIONS: grounding + stubby legs. Grounding flattens the last
+ * few rows of the body's underside (columns whose lowest ink already sits in
+ * the bottom band drop to a shared baseline) so the creature stands rather
+ * than balances; the legs are stamped as slightly wavy tapered capsules
+ * rooted inside the mass. A small closing afterwards fillets the junctions
+ * so nothing reads as an engineered weld.
+ */
+function groundAndLegs(mask: Mask, plan: BodyPlan, rng: () => number): Mask {
+  const size = mask.size;
+  const b = maskBounds(mask);
+  if (b.maxX < 0) return mask;
+  const bodyW = b.maxX - b.minX + 1;
+  const bodyH = b.maxY - b.minY + 1;
+  const cx = (b.minX + b.maxX) / 2;
+  const data = mask.data.slice();
+  const out: Mask = { size, data };
+
+  if (plan.legs.length > 0) {
+    // Grounding: flat-ish bottom bias where the legs attach.
+    const band = Math.max(1, Math.round(0.05 * bodyH));
+    for (let x = b.minX; x <= b.maxX; x++) {
+      let lowest = -1;
+      for (let y = b.maxY; y >= b.minY; y--) {
+        if (data[y * size + x] === 1) {
+          lowest = y;
+          break;
+        }
+      }
+      if (lowest >= b.maxY - band && lowest >= 0) {
+        for (let y = lowest; y <= b.maxY; y++) data[y * size + x] = 1;
+      }
+    }
+
+    for (const leg of plan.legs) {
+      const lx = cx + leg.x * bodyW;
+      const col = clamp(Math.round(lx), 0, size - 1);
+      // Attach at the lowest ink near the leg's column.
+      let attachY = b.maxY;
+      for (let y = b.maxY; y >= b.minY; y--) {
+        if (data[y * size + col] === 1) {
+          attachY = y;
+          break;
+        }
+      }
+      const len = leg.length * bodyH;
+      const r0 = Math.max(2.5, (leg.width * bodyW) / 2);
+      const dirX = Math.sin(leg.angle);
+      const dirY = Math.cos(leg.angle);
+      // Rooted inside the mass; three slightly wavy segments; gentle taper.
+      let px = lx;
+      let py = attachY - r0 * 1.5;
+      const wob = r0 * 0.3;
+      const total = len + r0 * 1.5;
+      const K = 3;
+      for (let s = 1; s <= K; s++) {
+        const t = s / K;
+        const sway = s < K ? (rng() - 0.5) * 2 * wob : 0;
+        const nx = lx + dirX * total * t + sway;
+        const ny = attachY - r0 * 1.5 + dirY * total * t;
+        stampLine(out, px, py, nx, ny, r0 * (1 - 0.15 * ((s - 1) / K)), r0 * (1 - 0.15 * t));
+        px = nx;
+        py = ny;
+      }
+    }
+
+    // Fillet the junctions (small closing) — the taste bans engineered
+    // welds; radius stays well under the leg half-width so nothing vanishes.
+    const filletR = Math.max(1, Math.round(0.012 * size));
+    return largestComponent(fillHoles(erode(fillHoles(dilate(out, filletR)), filletR))).mask;
+  }
+  return out;
+}
+
+/**
+ * SIMPLIFY, corner-preservingly (GENERATOR §1a silhouette variety): trace
+ * the mask, detect corners by windowed turning angle, simplify with RDP but
+ * PIN corner vertices, Chaikin-smooth ONLY the runs between pinned corners,
+ * then lay the seeded hand-wobble (+ identity-salt phase) over the whole
+ * ring. A drawn triangle keeps three shoulders; a circle stays smooth.
+ */
+function bodyContour(
+  mask: Mask,
+  plan: BodyPlan,
+  contourPoints: number,
+): Contour | null {
+  const size = mask.size;
+  const rawC = traceContour(mask);
+  if (rawC.length < 8) return null;
+  const eps = 1.8 * (size / 512);
+
+  // Uniform ring for stable windowed turning angles.
+  const ring = resample(rawC, 360);
+  const win = Math.max(3, Math.round(ring.length * CORNER_WINDOW));
+  const corners = detectCorners(ring, win, CORNER_ANGLE);
+
+  let pts: Point[];
+  if (corners.length >= 1) {
+    // Perimeter shares per inter-corner run → point budget per run.
+    const n = ring.length;
+    const runs: { pts: Point[]; len: number }[] = [];
+    let total = 0;
+    for (let k = 0; k < corners.length; k++) {
+      const a = corners[k]!;
+      const b = corners[(k + 1) % corners.length]!;
+      // Walk a → b the long way when a === b (single corner: the whole ring).
+      const run: Point[] = [ring[a]!];
+      for (let i = (a + 1) % n; ; i = (i + 1) % n) {
+        run.push(ring[i]!);
+        if (i === b) break;
+      }
+      let len = 0;
+      for (let i = 0; i < run.length - 1; i++) {
+        len += Math.hypot(run[i + 1]!.x - run[i]!.x, run[i + 1]!.y - run[i]!.y);
+      }
+      runs.push({ pts: run, len });
+      total += len;
+    }
+    pts = [];
+    for (const r of runs) {
+      const budget = Math.max(3, Math.round((contourPoints * r.len) / Math.max(total, 1e-9)));
+      const seg = resampleOpen(chaikinOpen(simplifyOpen(r.pts, eps), 2), budget);
+      // Drop the last point — it is the next run's pinned first corner.
+      for (let i = 0; i < seg.length - 1; i++) pts.push(seg[i]!);
+    }
+  } else {
+    // No corners: the classic smooth chain (a circle stays a circle).
+    pts = resample(chaikin(simplify(rawC, eps), 2), contourPoints);
+  }
+  if (pts.length < 8) return null;
+
+  // Hand-wobble: two low-frequency octaves along the outward normal, seeded
+  // (and phase-salted) — keeps the silhouette from reading as a tracing.
+  const amp = Math.min(plan.wobble, 0.008) * size;
+  const [p1, p2] = plan.wobblePhase;
+  const m = pts.length;
+  const out: Contour = new Array<Point>(m);
+  for (let i = 0; i < m; i++) {
+    const prev = pts[(i - 1 + m) % m]!;
+    const next = pts[(i + 1) % m]!;
+    let nx = next.y - prev.y;
+    let ny = prev.x - next.x;
+    const nl = Math.hypot(nx, ny);
+    if (nl > 1e-9) {
+      nx /= nl;
+      ny /= nl;
+    }
+    const t = i / m;
+    const o =
+      amp *
+      (0.65 * Math.sin(2 * Math.PI * 2 * t + p1) + 0.35 * Math.sin(2 * Math.PI * 5 * t + p2));
+    const p = pts[i]!;
+    out[i] = {
+      x: clamp(p.x + nx * o, 0, size - 1),
+      y: clamp(p.y + ny * o, 0, size - 1),
+    };
+  }
+  return out;
+}
+
+/**
+ * The full §1a body genesis: fill → chunkify → proportion → ground + legs →
+ * corner-preserving contour → analysis. Pure and deterministic. Returns null
+ * when any stage degenerates (callers fall back to the source analysis).
+ */
+export function buildBody(
+  strokes: StrokeList,
   motifs: Motifs,
   seed: number,
+  size: number,
+  contourPoints: number,
   identitySeed?: number,
-): StrokeList {
-  const p = speciesParams(motifs, seed, identitySeed);
-  // Separate channel so param evolution never reshuffles the wobble phases.
-  const rng = makeRng((seed ^ 0x9e3779b9) >>> 0);
-  const strokes: StrokeList = [];
-  const { torso, head } = p;
-
-  // Torso: a fat capsule/disc cluster — an irregular egg, never a primitive.
-  // The capsule runs along the longer dimension (tall bodies stand a vertical
-  // core, squat ones a horizontal one); jittered discs soften it into a blob.
-  const tall = torso.height >= torso.width;
-  const coreLen = Math.abs(torso.height - torso.width);
-  const coreW = Math.min(torso.height, torso.width);
-  const ax = tall ? 0 : 1;
-  const ay = tall ? 1 : 0;
-  strokes.push(
-    wavyStroke(
-      torso.cx - ax * coreLen * 0.5,
-      torso.cy - ay * coreLen * 0.5,
-      ax,
-      ay,
-      Math.max(coreLen, 1e-3),
-      coreW,
-      p.wobble * 0.6,
-      0,
-      rng,
-    ),
-  );
-  // The softening discs carry the identity's taper axis: canvas y runs down,
-  // so the +along disc sits at the BOTTOM of a tall body — top-heavy
-  // (taper > 0) shrinks it and grows the top disc, bottom-heavy the reverse.
-  // Zero taper (unsalted) keeps the exact pre-salt radii.
-  const along = coreLen / 2 + coreW * 0.1;
-  strokes.push(
-    disc(
-      torso.cx + ax * along * 0.7 + (rng() - 0.5) * coreW * 0.08,
-      torso.cy + ay * along * 0.7 + (rng() - 0.5) * coreW * 0.08,
-      coreW * 0.5 * (1 - p.taper),
-    ),
-  );
-  strokes.push(
-    disc(
-      torso.cx - ax * along * 0.75 + (rng() - 0.5) * coreW * 0.1,
-      torso.cy - ay * along * 0.75 + (rng() - 0.5) * coreW * 0.1,
-      coreW * 0.44 * (1 + p.taper),
-    ),
-  );
-
-  // Head: merged upper lobe, with a jittered companion so the merge is soft.
-  strokes.push(disc(head.cx, head.cy, head.r));
-  strokes.push(
-    disc(head.cx + (rng() - 0.5) * head.r * 0.5, head.cy + head.r * 0.2, head.r * 0.8),
-  );
-
-  // Legs: tiny, near-vertical, echoing the drawn angles.
-  for (const leg of p.legs) {
-    strokes.push(
-      wavyStroke(
-        leg.x,
-        leg.topY,
-        Math.sin(leg.angle),
-        Math.cos(leg.angle),
-        leg.length + torso.width * 0.18, // embedded start → visible length ≈ leg.length
-        leg.width,
-        p.wobble * 0.8,
-        0.12,
-        rng,
-      ),
-    );
-  }
-
-  // Arms/wings: tiny lateral nubs at the drawn heights, drooping slightly —
-  // plus the identity's attitude axis (perky lifts them, droopy sinks them).
-  for (const arm of p.arms) {
-    const droop = Math.max(0.02, 0.25 + rng() * 0.2 + p.droop);
-    const dx = arm.side * Math.cos(droop);
-    const dy = Math.sin(droop);
-    strokes.push(
-      wavyStroke(
-        torso.cx + arm.side * torso.width * 0.34,
-        arm.y,
-        dx,
-        dy,
-        arm.length + torso.width * 0.16,
-        arm.width,
-        p.wobble * 0.7,
-        0.15,
-        rng,
-      ),
-    );
-  }
-
-  // Crown appendages: the drawn ears/antennae/horns echoed at their angles.
-  for (const c of p.crown) {
-    const dx = Math.sin(c.angle);
-    const dy = -Math.cos(c.angle);
-    strokes.push(
-      wavyStroke(
-        head.cx + dx * head.r * 0.55,
-        head.cy + dy * head.r * 0.55,
-        dx,
-        dy,
-        c.length + head.r * 0.2,
-        c.width,
-        p.wobble * (0.9 + 0.6 * clamp(motifs.lumpiness, 0, 1)),
-        0.18,
-        rng,
-      ),
-    );
-  }
-
-  return strokes;
+): ShapeAnalysis | null {
+  const plan = bodyPlan(motifs, seed, identitySeed);
+  const filled = fillAndChunkify(strokes, size);
+  if (!filled) return null;
+  const proportioned = proportionWarp(filled, plan);
+  if (!proportioned) return null;
+  // Separate stamp channel so plan evolution never reshuffles leg waviness.
+  const legRng = makeRng((seed ^ 0x9e3779b9) >>> 0);
+  const body = groundAndLegs(proportioned, plan, legRng);
+  const contour = bodyContour(body, plan, contourPoints);
+  if (!contour) return null;
+  return analyzeMask(body, { contour });
 }
 
 // ── the pass ─────────────────────────────────────────────────────────────────
 
 export interface InterpretedDrawing {
-  /** The strokes the character body is built from (synthesized, or the
-   * original at fidelity 0). */
+  /** The ORIGINAL strokes, untouched — they serve the egg paint-on and the
+   * marking channel. Only the analysis drives the body mesh. */
   strokes: StrokeList;
-  /** Analysis OF THOSE STROKES — eyes and inflation work on the actual body. */
+  /** Analysis of the PROCESSED BODY — eyes and inflation work on the actual
+   * silhouette (the drawing's own shape, §1a). */
   analysis: ShapeAnalysis;
 }
 
 /**
- * Run the full interpretation: analyze the drawing, extract motifs,
- * synthesize the species body, re-analyze it.
+ * Run the full interpretation: analyze the drawing, extract motifs, process
+ * the drawing's own mask into the body (fill, chunkify, proportion, legs,
+ * corner-preserving contour), and analyze THAT.
  *
- * @param fidelity 1 (default) = full species synthesis; 0 = verbatim
+ * @param fidelity 1 (default) = full §1a processing; 0 = verbatim
  *   passthrough (the dial's floor, dev-tunable). Intermediate values
- *   threshold at 0.5 — a true geometric blend between the drawing and the
- *   species body is future work.
+ *   threshold at 0.5 — a true geometric blend is future work.
  * @param opts analyze options (tests use smaller mask sizes).
  * @param identitySeed optional identity salt (identitySeedOf): mixed (XOR)
- *   into the stroke seed so the same drawing under two ids synthesizes two
- *   distinct individuals of the SAME species — motif counts and angles stay
- *   motif-driven; only the within-band jitter takes the salt. Absent → the
+ *   into the stroke seed so the same drawing under two ids processes into
+ *   two distinct individuals of the SAME shape — leg counts and corners stay
+ *   drawing-driven; only the within-band jitter takes the salt. Absent → the
  *   unsalted pipeline, byte-identical to before.
  * @returns null when the drawing carries no usable ink.
  */
@@ -824,11 +956,18 @@ export function interpretDrawing(
   const motifs = extractMotifs(source);
   const base = strokeSeed(strokes);
   const seed = identitySeed === undefined ? base : (base ^ identitySeed) >>> 0;
-  const species = synthesizeSpecies(motifs, seed, identitySeed);
-  const synthesized = analyze(species, opts);
-  // A synthesized body that fails analysis would leave the creature with no
-  // silhouette at all — fall back to the verbatim drawing (should not happen;
-  // the species plan always rasterizes to one fat component).
-  if (!synthesized) return { strokes, analysis: source };
-  return { strokes: species, analysis: synthesized };
+  const size = opts.size ?? 512;
+  const body = buildBody(
+    strokes,
+    motifs,
+    seed,
+    size,
+    opts.contourPoints ?? 120,
+    identitySeed,
+  );
+  // A body that fails analysis would leave the creature with no silhouette
+  // at all — fall back to the verbatim drawing (should not happen; the
+  // processed mask is always one fat component).
+  if (!body) return { strokes, analysis: source };
+  return { strokes, analysis: body };
 }

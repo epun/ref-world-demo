@@ -6,6 +6,7 @@
  * needs no antialiasing.
  */
 
+import { distanceTransform } from './distance';
 import type { Mask, StrokeList } from './types';
 
 /** Stamp a filled disc into the mask. */
@@ -55,6 +56,103 @@ export function rasterize(strokes: StrokeList, size = 512): Mask {
     }
   }
   return { size, data };
+}
+
+/**
+ * Stamp a straight capsule (marching discs) into an existing mask, with a
+ * linear radius taper from r0 at (x0,y0) to r1 at (x1,y1). Coordinates and
+ * radii in pixels. Mutates the mask in place — deterministic, pure of any
+ * global state.
+ */
+export function stampLine(
+  mask: Mask,
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+  r0: number,
+  r1: number,
+): void {
+  const { size, data } = mask;
+  const dist = Math.hypot(x1 - x0, y1 - y0);
+  const rMin = Math.max(0.75, Math.min(r0, r1));
+  const steps = Math.max(1, Math.ceil(dist / (rMin * 0.5)));
+  for (let s = 0; s <= steps; s++) {
+    const t = s / steps;
+    stampDisc(
+      data,
+      size,
+      x0 + (x1 - x0) * t,
+      y0 + (y1 - y0) * t,
+      Math.max(0.75, r0 + (r1 - r0) * t),
+    );
+  }
+}
+
+/**
+ * Flood-fill enclosed regions: any background not reachable from the mask
+ * border becomes ink. This is GENERATOR §1a's "outline drawings fill" — a
+ * drawn ring becomes a solid disc, a drawn hat outline a solid hat.
+ * 4-connected, matching largestComponent's connectivity.
+ */
+export function fillHoles(mask: Mask): Mask {
+  const { size, data } = mask;
+  const reachable = new Uint8Array(size * size);
+  const stack: number[] = [];
+  const push = (i: number): void => {
+    if (data[i] === 0 && reachable[i] === 0) {
+      reachable[i] = 1;
+      stack.push(i);
+    }
+  };
+  for (let x = 0; x < size; x++) {
+    push(x);
+    push((size - 1) * size + x);
+  }
+  for (let y = 0; y < size; y++) {
+    push(y * size);
+    push(y * size + size - 1);
+  }
+  while (stack.length > 0) {
+    const p = stack.pop()!;
+    const x = p % size;
+    const y = (p / size) | 0;
+    if (x > 0) push(p - 1);
+    if (x < size - 1) push(p + 1);
+    if (y > 0) push(p - size);
+    if (y < size - 1) push(p + size);
+  }
+  const out = new Uint8Array(size * size);
+  for (let i = 0; i < out.length; i++) out[i] = reachable[i] === 1 ? 0 : 1;
+  return { size, data: out };
+}
+
+/**
+ * Morphological dilation by a Euclidean radius, via the distance transform
+ * of the inverted mask (exact, O(n)). Radius ≤ 0 returns a copy.
+ */
+export function dilate(mask: Mask, radius: number): Mask {
+  const { size, data } = mask;
+  if (radius <= 0) return { size, data: data.slice() };
+  const inverted = new Uint8Array(size * size);
+  for (let i = 0; i < inverted.length; i++) inverted[i] = data[i] === 1 ? 0 : 1;
+  const dt = distanceTransform({ size, data: inverted });
+  const out = new Uint8Array(size * size);
+  for (let i = 0; i < out.length; i++) out[i] = dt.data[i]! <= radius ? 1 : 0;
+  return { size, data: out };
+}
+
+/**
+ * Morphological erosion by a Euclidean radius, via the mask's own distance
+ * transform. Radius ≤ 0 returns a copy.
+ */
+export function erode(mask: Mask, radius: number): Mask {
+  const { size, data } = mask;
+  if (radius <= 0) return { size, data: data.slice() };
+  const dt = distanceTransform(mask);
+  const out = new Uint8Array(size * size);
+  for (let i = 0; i < out.length; i++) out[i] = dt.data[i]! > radius ? 1 : 0;
+  return { size, data: out };
 }
 
 /**

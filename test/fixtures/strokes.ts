@@ -66,6 +66,66 @@ export const bird: StrokeList = [
 ];
 
 // ---------------------------------------------------------------------------
+// §1a fixtures — drawn objects that keep their shape
+// ---------------------------------------------------------------------------
+
+/** Points along a circular arc (deterministic), for outline drawings. */
+function arc(
+  cx: number,
+  cy: number,
+  r: number,
+  from: number,
+  to: number,
+  steps: number,
+): [number, number][] {
+  const pts: [number, number][] = [];
+  for (let i = 0; i <= steps; i++) {
+    const a = from + ((to - from) * i) / steps;
+    pts.push([cx + r * Math.cos(a), cy + r * Math.sin(a)]);
+  }
+  return pts;
+}
+
+/** An UNFILLED ring — a thin circular outline. §1a fills it solid. */
+export const ringOutline: StrokeList = [
+  polyline(arc(0.5, 0.5, 0.28, 0, Math.PI * 2, 40), 0.03),
+];
+
+/** A hat: wide brim capsule + unfilled dome outline sitting on it. */
+export const hat: StrokeList = [
+  capsule(0.12, 0.68, 0.88, 0.68, 0.07), // brim
+  polyline(arc(0.5, 0.68, 0.26, Math.PI, Math.PI * 2, 24), 0.05), // dome outline
+];
+
+/** A fish: solid oval body + unfilled triangular tail. No feet anywhere. */
+export const fish: StrokeList = [
+  capsule(0.28, 0.5, 0.58, 0.5, 0.3), // body
+  polyline([[0.66, 0.5], [0.86, 0.36], [0.86, 0.64], [0.66, 0.5]], 0.045), // tail
+];
+
+/** A triangle outline — three straight sides, apex up. */
+export const triangleOutline: StrokeList = [
+  polyline([[0.5, 0.16], [0.84, 0.8], [0.16, 0.8], [0.5, 0.16]], 0.045),
+];
+
+/** A square-ish outline. */
+export const squareOutline: StrokeList = [
+  polyline(
+    [[0.24, 0.24], [0.76, 0.24], [0.76, 0.76], [0.24, 0.76], [0.24, 0.24]],
+    0.045,
+  ),
+];
+
+/** A stick figure — all hairlines; §1a chunkifies it into a solid blob. */
+export const stickFigure: StrokeList = [
+  disc(0.5, 0.2, 0.07), // head
+  capsule(0.5, 0.28, 0.5, 0.6, 0.025), // spine
+  capsule(0.32, 0.42, 0.68, 0.42, 0.025), // arms
+  capsule(0.5, 0.6, 0.36, 0.86, 0.025), // left leg
+  capsule(0.5, 0.6, 0.64, 0.86, 0.025), // right leg
+];
+
+// ---------------------------------------------------------------------------
 // Degenerate fixtures
 // ---------------------------------------------------------------------------
 
