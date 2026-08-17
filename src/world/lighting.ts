@@ -27,7 +27,15 @@ const FILL_INTENSITY = 2.85;
 /** Key derived from the measured ratio — key sits at a third of the fill. */
 const KEY_INTENSITY = FILL_INTENSITY * LIGHTING.keyToFill;
 
-export function createLighting(): Group {
+/** Live light handles, exposed so the environment engine (environment.ts)
+ * can drive the sun arc and weather rebalance through springs. */
+export interface Lighting {
+  group: Group;
+  key: DirectionalLight;
+  fill: HemisphereLight;
+}
+
+export function createLighting(): Lighting {
   const group = new Group();
 
   // Broad ambient fill: sky in the palette's light role, bounce from the
@@ -41,5 +49,5 @@ export function createLighting(): Group {
   key.castShadow = false;
 
   group.add(fill, key, key.target);
-  return group;
+  return { group, key, fill };
 }

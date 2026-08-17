@@ -299,7 +299,7 @@ export function mountAliveScreen(
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
 
     scene = new Scene();
-    scene.add(createLighting(), character.group);
+    scene.add(createLighting().group, character.group);
 
     // Head-on, NOT isometric: straight down the z axis so the silhouette is
     // the drawing (PLAN §1 invariant). Frame from the character's measured

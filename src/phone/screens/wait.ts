@@ -205,7 +205,7 @@ export function mountWaitScreen(
   renderer.setClearAlpha(0); // the screen's ground shows through
 
   const scene = new Scene();
-  scene.add(createLighting(), egg.group);
+  scene.add(createLighting().group, egg.group);
 
   const camera = new PerspectiveCamera(CAMERA_FOV, 0.85, 0.1, 100);
   camera.position.set(

@@ -9,6 +9,7 @@
 import { Color, Scene, WebGLRenderer } from 'three';
 import { SURFACE } from '../taste/tokens';
 import { CameraRig } from './camera';
+import { createEnvironment, type Environment } from './environment';
 import { GrainPass } from './grain';
 import { createGround } from './ground';
 import { InkPass } from './ink';
@@ -28,6 +29,8 @@ export interface WorldHandles {
   scatter: Scatter;
   /** Ink pass tuning surface for the dev panel. */
   ink: InkPass;
+  /** Time-of-day + weather engine (spring-glided; drives lights + ink). */
+  environment: Environment;
   /** Register per-frame work (entity drift, gaits, …). Runs before render. */
   onFrame(callback: FrameCallback): void;
 }
@@ -39,15 +42,34 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
 
   const scene = new Scene();
   // Beyond the ground disc the frame is still the ground value — one field.
-  scene.background = new Color(SURFACE.ground);
+  // The environment engine dips its value at night (never its hue), so the
+  // token stays the base and the live background is a scaled copy.
+  const backgroundBase = new Color(SURFACE.ground);
+  const background = backgroundBase.clone();
+  scene.background = background;
 
   const cameraRig = new CameraRig(window.innerWidth / window.innerHeight);
   const shadows = new FlatShadows();
   const ink = new InkPass();
   const grain = new GrainPass();
   const scatter = createScatter();
+  const lighting = createLighting();
 
-  scene.add(createGround(), createLighting(), shadows.group, scatter.group);
+  scene.add(createGround(), lighting.group, shadows.group, scatter.group);
+
+  // Time-of-day + weather. All its setters glide through ζ≥1 springs; the
+  // per-frame update pushes sun direction, light balance, exposure, fog and
+  // streak amounts into the lights and the ink composite.
+  const environment = createEnvironment({
+    lighting,
+    ink,
+    setBackground: (lumaScale: number): void => {
+      background.copy(backgroundBase).multiplyScalar(lumaScale);
+    },
+  });
+  // Tiny always-on handle for smokes and the ghost panel's feature-detect —
+  // deliberately not dev-gated: it carries no dev-only code.
+  (window as Window & { __refworldEnv?: Environment }).__refworldEnv = environment;
 
   const resize = (): void => {
     const width = window.innerWidth;
@@ -125,6 +147,7 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
     last = nowMs;
 
     cameraRig.update(dt, nowMs);
+    environment.update(dt, nowMs);
     scatter.update(nowMs);
     for (const callback of frameCallbacks) callback(dt, nowMs);
     const composed = ink.render(renderer, scene, cameraRig.camera, nowMs);
@@ -141,6 +164,7 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
     shadows,
     scatter,
     ink,
+    environment,
     onFrame: (callback: FrameCallback): void => {
       frameCallbacks.push(callback);
     },

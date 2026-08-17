@@ -52,6 +52,25 @@ import type { Camera, Texture, WebGLRenderer } from 'three';
 import { CHARACTER, MOTION, SURFACE, WORLD } from '../taste/tokens';
 import { KEY_DIRECTION } from './lighting';
 
+/**
+ * Per-frame environment drive (src/world/environment.ts). All values arrive
+ * pre-glided through ζ≥1 springs — the pass just forwards them as uniforms.
+ */
+export interface InkEnvironment {
+  /** Pre-quantize exposure multiplier: night ~0.55 → day 1.0. Applied
+   * before the toon quantize so night frames sit in the darker bands —
+   * still band-quantized, never smooth. */
+  exposure: number;
+  /** Depth-banded paper wash toward the light token, 0–1. */
+  fogAmt: number;
+  /** Rain streak coverage, 0–1: sparse diagonal ink hairlines. */
+  rainAmt: number;
+  /** Snow fleck coverage, 0–1: sparse light dots with lateral sway. */
+  snowAmt: number;
+  /** Multiplier on hatch strength (overcast light flattens hatching). */
+  hatchMul: number;
+}
+
 export interface InkParams {
   /** Depth discontinuity (0–1 ortho depth) that starts a contour line. */
   edgeThreshold: number;
@@ -107,6 +126,13 @@ uniform float uHatchStrength;
 uniform vec3 uInk;
 uniform vec3 uLightDir;
 uniform float uAnchors[6];
+uniform float uExposure;
+uniform float uHatchMul;
+uniform float uFogAmt;
+uniform float uRainAmt;
+uniform float uSnowAmt;
+uniform vec3 uLight;
+uniform float uEnvTime;
 
 varying vec2 vUv;
 
@@ -151,7 +177,9 @@ float luma(vec3 c) {
 void main() {
   vec2 px = 1.0 / uResolution;
   vec2 sp = gl_FragCoord.xy;
-  vec3 col = texture2D(uScene, vUv).rgb;
+  // Exposure runs BEFORE the quantize: at night the whole frame slides into
+  // the darker anchors — the result is still flat cel bands, never smooth.
+  vec3 col = texture2D(uScene, vUv).rgb * uExposure;
   float depth = readDepth(vUv);
 
   // Pen-wobble field: two decorrelated low-frequency channels, world-stable
@@ -186,7 +214,7 @@ void main() {
     float band1 = 1.0 - smoothstep(0.12, 0.3, ndl);
     float band2 = 1.0 - smoothstep(-0.2, -0.02, ndl);
     float hatch = clamp(line1 * band1 + line2 * band2, 0.0, 1.0);
-    col = mix(col, uInk, hatch * uHatchStrength);
+    col = mix(col, uInk, hatch * uHatchStrength * uHatchMul);
 
     // ── rough contour lines over depth + normal discontinuities ──────────
     float wWidth = uLineWidth * (0.7 + 0.6 * fbm(sp * 0.021 + 5.1));
@@ -208,6 +236,52 @@ void main() {
     // Ink flow varies along the line — occasionally thin, never uniform.
     float flow = 0.55 + 0.45 * smoothstep(0.25, 0.6, fbm(sp * 0.013 + 131.0));
     col = mix(col, uInk, clamp(edge * flow, 0.0, 1.0));
+  }
+
+  // ── fog: a paper wash keyed to linear ortho depth, cut into 2–3 flat
+  // bands so it reads as drawn layers, never a smooth atmosphere. Band
+  // boundaries wobble with the pen noise. The sky (depth 1) washes fully.
+  if (uFogAmt > 0.001) {
+    float fogT = clamp((depth - 0.20) / 0.12, 0.0, 1.0);
+    float fogBand = clamp(floor(fogT * 3.0 + 0.5 + (n1 - 0.5) * 0.9), 0.0, 3.0) / 3.0;
+    // The wash target is the light token under the frame's exposure, so
+    // night fog washes toward dimmed paper instead of fighting the dark.
+    col = mix(col, uLight * uExposure, fogBand * uFogAmt * 0.85);
+  }
+
+  // ── rain: sparse short diagonal ink hairlines drifting down the page at
+  // a measured pace — an ambient drizzle of pen marks, never a spray.
+  if (uRainAmt > 0.001) {
+    vec2 rd = normalize(vec2(0.20, -1.0));
+    float across = dot(sp, vec2(-rd.y, rd.x)) + (n1 - 0.5) * 7.0;
+    float along = dot(sp, rd);
+    float lane = floor(across / 64.0);
+    float h = hash(vec2(lane, 3.7));
+    if (h < uRainAmt * 0.85) {
+      float speed = 80.0 + 70.0 * hash(vec2(lane, 9.1));
+      float cycle = 420.0 + 360.0 * hash(vec2(lane, 5.3));
+      float head = fract((along - uEnvTime * speed) / cycle + h * 7.31);
+      float lat = abs(fract(across / 64.0) - 0.5);
+      float hair = 1.0 - smoothstep(0.012, 0.026, lat);
+      float seg = 1.0 - smoothstep(30.0 / cycle, 40.0 / cycle, head);
+      col = mix(col, uInk, hair * seg * 0.7);
+    }
+  }
+
+  // ── snow: sparse light flecks drifting slowly downward with a lateral
+  // noise sway — same restraint, dots of the light token on the frame.
+  if (uSnowAmt > 0.001) {
+    vec2 q = vec2(sp.x + (n2 - 0.5) * 10.0, sp.y + uEnvTime * 24.0);
+    vec2 id = floor(q / 72.0);
+    float hs = hash(id);
+    if (hs < uSnowAmt * 0.8) {
+      vec2 jit = vec2(hash(id + 11.0), hash(id + 29.0));
+      vec2 c = (id + 0.15 + 0.7 * jit) * 72.0;
+      c.x += sin(uEnvTime * (0.4 + 0.5 * hs) + hs * 6.28) * 8.0;
+      float d = distance(q, c);
+      float fleck = 1.0 - smoothstep(1.1, 2.1, d);
+      col = mix(col, uLight, fleck * 0.9);
+    }
   }
 
   gl_FragColor = vec4(col, 1.0);
@@ -237,6 +311,9 @@ export class InkPass {
   private readonly quadCamera = new OrthographicCamera(-1, 1, 1, -1, 0, 1);
   private readonly resolution = new Vector2(1, 1);
   private readonly lightView = new Vector3();
+  /** World-space key direction; environment.ts retargets it per frame as the
+   * sun arcs. Defaults to the calibrated constant. */
+  private readonly keyDirection = KEY_DIRECTION.clone();
   private readonly normalClear = new Color(0.5, 0.5, 1);
   private readonly params: InkParams = { ...DEFAULTS };
 
@@ -261,6 +338,13 @@ export class InkPass {
         uInk: { value: linearColor(WORLD.ink) },
         uLightDir: { value: this.lightView },
         uAnchors: { value: ANCHORS },
+        uExposure: { value: 1 },
+        uHatchMul: { value: 1 },
+        uFogAmt: { value: 0 },
+        uRainAmt: { value: 0 },
+        uSnowAmt: { value: 0 },
+        uLight: { value: linearColor(WORLD.light) },
+        uEnvTime: { value: 0 },
       },
       vertexShader: VERTEX,
       fragmentShader: FRAGMENT,
@@ -302,6 +386,22 @@ export class InkPass {
     return { ...this.params };
   }
 
+  /** Point the hatch/shading key. Called per frame by the environment engine
+   * so the hatch threshold follows the sun. */
+  setKeyDirection(direction: Vector3): void {
+    this.keyDirection.copy(direction);
+  }
+
+  /** Push the frame's environment drive (already spring-glided upstream). */
+  setEnvironment(env: InkEnvironment): void {
+    const u = this.material.uniforms;
+    u.uExposure!.value = env.exposure;
+    u.uHatchMul!.value = env.hatchMul;
+    u.uFogAmt!.value = env.fogAmt;
+    u.uRainAmt!.value = env.rainAmt;
+    u.uSnowAmt!.value = env.snowAmt;
+  }
+
   /**
    * Render the scene through the ink chain. Returns the composited texture
    * (linear) for the grain pass to compose to screen.
@@ -310,8 +410,11 @@ export class InkPass {
     // Slow shared drift — the same pacing as the grain's paper slide.
     const t = (nowMs % (MOTION.ambientMs * 4096)) / MOTION.ambientMs;
     this.material.uniforms.uTime!.value = t * 0.05;
+    // Streak clock in seconds — slow, measured drift for rain/snow. Wrapped
+    // on the same long period as the other clocks so precision holds.
+    this.material.uniforms.uEnvTime!.value = (nowMs % (MOTION.ambientMs * 4096)) / 1000;
     // Key direction into view space (the normal target is view-space).
-    this.lightView.copy(KEY_DIRECTION).transformDirection(camera.matrixWorldInverse);
+    this.lightView.copy(this.keyDirection).transformDirection(camera.matrixWorldInverse);
 
     renderer.setRenderTarget(this.colorTarget);
     renderer.render(scene, camera);
