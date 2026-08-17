@@ -100,7 +100,16 @@ const FALLBACK_SPAWN_COUNT = 3;
  * Mount the ghost-panel dev surface. Resolves to a disposer, or null when
  * there is no DOM (node) — in which case nothing was imported or mounted.
  */
-export async function initDevPanel(handles: DevHandles): Promise<{ dispose(): void } | null> {
+export interface DevPanelOptions {
+  /** Show the panel immediately on mount (production first-press flow, where
+   * the shift+d that loaded the chunk should also reveal it). */
+  showOnMount?: boolean;
+}
+
+export async function initDevPanel(
+  handles: DevHandles,
+  options: DevPanelOptions = {},
+): Promise<{ dispose(): void } | null> {
   if (typeof document === 'undefined' || typeof window === 'undefined') return null;
 
   // Lazy: the only ghost-panel touchpoint in the repo.
@@ -125,6 +134,7 @@ export async function initDevPanel(handles: DevHandles): Promise<{ dispose(): vo
 
   // Ghost Panel's own toggle convention: shift+d (README "Press Shift+D").
   ui.bindToggleKey('D', { shift: true });
+  if (options.showOnMount) ui.show();
 
   const { creatures } = handles;
 

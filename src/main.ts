@@ -291,11 +291,15 @@ function main(): void {
     creatures.update(dt, nowMs);
   });
 
-  // ── dev surface: ghost panel on shift+d ───────────────────────────────────
-  // Lazy dynamic import behind the static __IS_DEV__ define, so the whole
-  // src/dev/ tree (and the ghost-panel package) tree-shakes out of the
-  // NODE_ENV=production demo build.
-  if (__IS_DEV__) {
+  // ── ghost panel on shift+d ────────────────────────────────────────────────
+  // The panel ships in EVERY build (user decision — the generator brief's
+  // presentation controls exist for live demos on the deployed link). It
+  // stays a lazy chunk: in dev builds it mounts at boot; in production it
+  // loads on the first shift+d, costing nothing until the presenter asks.
+  let panelRequested = false;
+  const mountPanel = (showOnMount: boolean): void => {
+    if (panelRequested) return;
+    panelRequested = true;
     let fallbackIndex = 0;
     void import('./dev').then((m) =>
       m.initDevPanel({
@@ -319,9 +323,13 @@ function main(): void {
             if (ok) firstSpawnHousekeeping();
           }
         },
-      }),
+      }, { showOnMount }),
     );
-  }
+  };
+  if (__IS_DEV__) mountPanel(false);
+  window.addEventListener('keydown', (event) => {
+    if (event.shiftKey && (event.key === 'D' || event.key === 'd')) mountPanel(true);
+  });
 
   // ── phones: the draw-to-3d feed ───────────────────────────────────────────
   void connectWorldFeed({
