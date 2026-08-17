@@ -3,15 +3,31 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { InstancedMesh, type Material } from 'three';
+import {
+  InstancedMesh,
+  Matrix4,
+  Quaternion,
+  Vector3,
+  type Material,
+  type MeshStandardMaterial,
+} from 'three';
+import { WORLD } from '../../src/taste/tokens';
 import { PROP_VARIANT_COUNTS } from '../../src/world/props';
 import {
+  applyInstanceVariation,
   BUILDING_ADJ_RADIUS,
   BUILDING_MAX,
   clampWindStrength,
   computePlacements,
   createScatter,
   filterExcluded,
+  instanceVariation,
+  ROCK_SQUASH_Y,
+  ROCK_WIDEN_XZ,
+  VARIATION_BULGE,
+  VARIATION_LEAN_RAD,
+  VARIATION_SCALE_XZ,
+  VARIATION_SCALE_Y,
   SCATTER_EXTENT,
   SCATTER_KINDS,
   SCATTER_STEP,
@@ -330,18 +346,22 @@ describe('scatter placement', () => {
         vertexShader: '#include <common>\nvoid main() {\n#include <begin_vertex>\n}',
         fragmentShader: '',
       });
+      // Rigid kinds split into two materials now (rocks carry the mid-tone
+      // stone albedo; building/stump keep the light paper) — but NEITHER
+      // gets a wind injection.
       const rigidMaterials = materialsOf((k) => rigid.includes(k));
       const swayMaterials = materialsOf((k) => swaySet.has(k));
-      expect(rigidMaterials.size).toBe(1);
+      expect(rigidMaterials.size).toBe(2);
       expect(swayMaterials.size).toBe(1);
-      const [rigidMat] = rigidMaterials;
       const [swayMat] = swayMaterials;
-      expect(rigidMat).not.toBe(swayMat);
 
-      const rigidShader = fakeShader();
-      rigidMat!.onBeforeCompile(rigidShader as never, undefined as never);
-      expect(rigidShader.vertexShader).not.toContain('uWindStrength');
-      expect(rigidShader.uniforms['uWindStrength']).toBeUndefined();
+      for (const rigidMat of rigidMaterials) {
+        expect(rigidMat).not.toBe(swayMat);
+        const rigidShader = fakeShader();
+        rigidMat.onBeforeCompile(rigidShader as never, undefined as never);
+        expect(rigidShader.vertexShader).not.toContain('uWindStrength');
+        expect(rigidShader.uniforms['uWindStrength']).toBeUndefined();
+      }
 
       const swayShader = fakeShader();
       swayMat!.onBeforeCompile(swayShader as never, undefined as never);
@@ -413,7 +433,9 @@ describe('scatter colliders', () => {
 
     const rock = colliderFor(at('rock', 0.8), 1.7)!;
     expect(rock.hard).toBe(true);
-    expect(rock.r).toBeCloseTo(1.7 * 0.8, 9); // base extent × instance scale
+    // Base extent × instance scale × the rock widen bias (rocks render flat
+    // and wide so they never read as eggs — the collider follows).
+    expect(rock.r).toBeCloseTo(1.7 * 0.8 * ROCK_WIDEN_XZ, 9);
 
     const bush = colliderFor(at('bush', 1.1), 1.9)!;
     expect(bush.hard).toBe(false);
@@ -500,6 +522,259 @@ describe('scatter colliders', () => {
       // Distinct points fill distinct slots, capped at 8.
       for (let i = 0; i < 12; i++) scatter.nudge(i * 7, -40, 1);
       expect(scatter.nudgeState().length).toBeLessThanOrEqual(8);
+    } finally {
+      scatter.dispose();
+    }
+  });
+});
+
+// ── per-instance shape variation (no two identical props) ────────────────────
+
+describe('instance variation', () => {
+  it('is deterministic and every channel sits in [0, 1)', () => {
+    for (const p of computePlacements()) {
+      const v = instanceVariation(p.x, p.z);
+      expect(v).toEqual(instanceVariation(p.x, p.z));
+      for (const c of v) {
+        expect(c).toBeGreaterThanOrEqual(0);
+        expect(c).toBeLessThan(1);
+      }
+    }
+  });
+
+  it('differs between instances — silhouettes, not just sizes', () => {
+    const placements = computePlacements().filter((p) => p.kind !== 'tick');
+    const signatures = new Set(
+      placements.map((p) =>
+        instanceVariation(p.x, p.z)
+          .map((c) => c.toFixed(5))
+          .join(','),
+      ),
+    );
+    // Practically every instance carries its own deformation vector.
+    expect(signatures.size).toBeGreaterThan(placements.length * 0.98);
+  });
+
+  it('max vertex displacement stays under the amplitude thresholds', () => {
+    // Radial (x/z) worst case: scale × bulge compounding; vertical: scale
+    // only; lean adds at most LEAN_RAD × the (scaled) height.
+    const radialMax = (1 + VARIATION_SCALE_XZ) * (1 + VARIATION_BULGE) - 1; // ≈ 0.113
+    const samples = [
+      { x: 1, y: 0, z: 0 },
+      { x: 0.8, y: 1.2, z: -0.6 },
+      { x: -1.5, y: 3.1, z: 0.4 },
+      { x: 0, y: 6.4, z: 0 }, // tallest authored prop height
+      { x: 2.2, y: 0.5, z: 2.2 },
+      { x: -0.3, y: 5.0, z: -1.9 },
+    ];
+    const placements = computePlacements().slice(0, 300);
+    expect(placements.length).toBeGreaterThan(50);
+    for (const p of placements) {
+      const v = instanceVariation(p.x, p.z);
+      for (const s of samples) {
+        const out = applyInstanceVariation(s, v);
+        expect(Math.abs(out.y - s.y)).toBeLessThanOrEqual(
+          Math.abs(s.y) * VARIATION_SCALE_Y + 1e-9,
+        );
+        const leanBound = VARIATION_LEAN_RAD * Math.max(out.y, 0);
+        expect(Math.abs(out.x - s.x)).toBeLessThanOrEqual(
+          Math.abs(s.x) * radialMax + leanBound + 1e-9,
+        );
+        expect(Math.abs(out.z - s.z)).toBeLessThanOrEqual(
+          Math.abs(s.z) * radialMax + leanBound + 1e-9,
+        );
+      }
+    }
+    // Subtlety in absolute terms: a crown point 2 units out on a 6.4-unit
+    // prop never moves more than ~0.55 units — on-model, never a new shape.
+    const worst = applyInstanceVariation({ x: 2, y: 6.4, z: 2 }, [0.999, 0.999, 0.999, 0.999]);
+    expect(Math.hypot(worst.x - 2, worst.y - 6.4, worst.z - 2)).toBeLessThan(0.75);
+  });
+
+  it('the variation channel leaves placements untouched', () => {
+    const before = computePlacements();
+    for (const p of before) instanceVariation(p.x, p.z);
+    expect(computePlacements()).toEqual(before);
+  });
+
+  it('every instanced prop and tick mesh carries a matching aVariation attribute', () => {
+    const scatter = createScatter();
+    try {
+      const meshes = scatter.group.children.filter(
+        (o): o is InstancedMesh => o instanceof InstancedMesh && o.name.length > 0,
+      );
+      expect(meshes.length).toBeGreaterThan(5);
+      const matrix = new Matrix4();
+      const pos = new Vector3();
+      const quat = new Quaternion();
+      const scl = new Vector3();
+      for (const mesh of meshes) {
+        const attr = mesh.geometry.getAttribute('aVariation');
+        expect(attr, mesh.name).toBeDefined();
+        expect(attr!.itemSize, mesh.name).toBe(4);
+        expect(attr!.count, mesh.name).toBe(mesh.count);
+        // Attribute rows pair with their instances: re-derive from the
+        // instance matrix translation (ticks bake a small y-lift; the
+        // variation hash reads x/z only, so the lift is irrelevant).
+        for (let i = 0; i < Math.min(mesh.count, 8); i++) {
+          mesh.getMatrixAt(i, matrix);
+          matrix.decompose(pos, quat, scl);
+          const expected = instanceVariation(pos.x, pos.z);
+          for (let c = 0; c < 4; c++) {
+            expect(attr!.getComponent(i, c), `${mesh.name}[${i}].${c}`).toBeCloseTo(
+              expected[c]!,
+              6,
+            );
+          }
+        }
+      }
+    } finally {
+      scatter.dispose();
+    }
+  });
+
+  it('all three scatter materials inject the variation into the vertex stage', () => {
+    const scatter = createScatter();
+    try {
+      const meshes = scatter.group.children.filter(
+        (o): o is InstancedMesh => o instanceof InstancedMesh && o.name.length > 0,
+      );
+      const kindOf = (name: string): string => name.split('-')[0]!;
+      const swaySet = new Set<string>(WIND_SWAY_KINDS);
+      const fakeShader = () => ({
+        uniforms: {} as Record<string, { value: unknown }>,
+        vertexShader: '#include <common>\nvoid main() {\n#include <begin_vertex>\n}',
+        fragmentShader: '',
+      });
+      const materialFor = (pick: (kind: string) => boolean): Material =>
+        meshes.find((m) => pick(kindOf(m.name)))!.material as Material;
+
+      // Rigid kinds (building/rock/stump): variation yes, wind still no.
+      const rigid = fakeShader();
+      materialFor((k) => ['building', 'rock', 'stump'].includes(k)).onBeforeCompile(
+        rigid as never,
+        undefined as never,
+      );
+      expect(rigid.vertexShader).toContain('aVariation');
+      expect(rigid.vertexShader).not.toContain('uWindStrength');
+
+      // Sway kinds: variation chained WITH the wind, neither clobbered.
+      const sway = fakeShader();
+      materialFor((k) => swaySet.has(k)).onBeforeCompile(sway as never, undefined as never);
+      expect(sway.vertexShader).toContain('aVariation');
+      expect(sway.vertexShader).toContain('uWindStrength');
+      expect(sway.vertexShader).toContain('aWindHeight');
+      // Variation deforms the form BEFORE the wind displaces it.
+      expect(sway.vertexShader.indexOf('varBulge')).toBeLessThan(
+        sway.vertexShader.indexOf('windGust'),
+      );
+
+      // Ticks reuse the same path (their length/bend jitter) plus their wind.
+      const tick = fakeShader();
+      materialFor((k) => k === 'tick').onBeforeCompile(tick as never, undefined as never);
+      expect(tick.vertexShader).toContain('aVariation');
+      expect(tick.vertexShader).toContain('uWindStrength');
+    } finally {
+      scatter.dispose();
+    }
+  });
+});
+
+// ── rock legibility (eggs are the only light-shelled lumps) ──────────────────
+
+describe('rock legibility', () => {
+  it('rocks render mid-toned, squashed and widened; other rigid kinds stay light', () => {
+    const scatter = createScatter();
+    try {
+      const meshes = scatter.group.children.filter(
+        (o): o is InstancedMesh => o instanceof InstancedMesh && o.name.length > 0,
+      );
+      const rock = meshes.find((m) => m.name.startsWith('rock-'));
+      const otherRigid = meshes.find(
+        (m) => m.name.startsWith('building-') || m.name.startsWith('stump-'),
+      );
+      expect(rock).toBeDefined();
+      expect(otherRigid).toBeDefined();
+
+      // Mid-band albedo for stone; the light role stays with the eggs (and
+      // the other props' paper fill).
+      expect(rock!.material).not.toBe(otherRigid!.material);
+      const rockColor = (rock!.material as MeshStandardMaterial).color.getHexString();
+      const rigidColor = (otherRigid!.material as MeshStandardMaterial).color.getHexString();
+      expect(`#${rockColor}`).toBe(WORLD.neutral);
+      expect(`#${rigidColor}`).toBe(WORLD.light);
+
+      // Flat-and-wide instance bias: y/x scale ratio = SQUASH / WIDEN.
+      const matrix = new Matrix4();
+      const pos = new Vector3();
+      const quat = new Quaternion();
+      const scl = new Vector3();
+      rock!.getMatrixAt(0, matrix);
+      matrix.decompose(pos, quat, scl);
+      expect(scl.y / scl.x).toBeCloseTo(ROCK_SQUASH_Y / ROCK_WIDEN_XZ, 6);
+      expect(scl.z).toBeCloseTo(scl.x, 9);
+      otherRigid!.getMatrixAt(0, matrix);
+      matrix.decompose(pos, quat, scl);
+      expect(scl.y / scl.x).toBeCloseTo(1, 6);
+    } finally {
+      scatter.dispose();
+    }
+  });
+});
+
+// ── zero density is EXACTLY zero (no invisible colliders) ────────────────────
+
+describe('zero kind density', () => {
+  it('multiplier 0 → no placements of the kind, seeds and cluster neighbors alike', () => {
+    const base = computePlacements();
+    for (const kind of ['tree', 'rock'] as const) {
+      const none = computePlacements({ kindDensity: { [kind]: 0 } });
+      expect(none.filter((p) => p.kind === kind)).toHaveLength(0);
+      // Ticks roll on their own layer: byte-identical.
+      expect(none.filter((p) => p.kind === 'tick')).toEqual(
+        base.filter((p) => p.kind === 'tick'),
+      );
+      // Every other base placement survives untouched (freed cells may ADD
+      // other kinds — the documented per-kind independence — never move them).
+      const key = (p: Placement): string => `${p.kind}:${p.x.toFixed(4)},${p.z.toFixed(4)}`;
+      const after = new Set(none.map(key));
+      for (const p of base) {
+        if (p.kind === kind) continue;
+        expect(after.has(key(p)), key(p)).toBe(true);
+      }
+    }
+  });
+
+  it('handle: zeroing a kind removes its meshes, positions, colliders, and restores exactly', () => {
+    const scatter = createScatter();
+    try {
+      const rockMeshCount = (): number =>
+        scatter.group.children.filter(
+          (o) => o instanceof InstancedMesh && o.name.startsWith('rock-'),
+        ).length;
+      const baseColliders = scatter.colliders().map((c) => ({ ...c }));
+      const basePositions = scatter.positions();
+      const rocks = basePositions.filter((p) => p.kind === 'rock');
+      expect(rocks.length).toBeGreaterThan(0);
+      expect(rockMeshCount()).toBeGreaterThan(0);
+
+      scatter.setKindDensity('rock', 0);
+      const positions = scatter.positions();
+      const colliders = scatter.colliders();
+      expect(positions.filter((p) => p.kind === 'rock')).toHaveLength(0);
+      expect(rockMeshCount()).toBe(0);
+      // One collider per visible prop — with rocks gone, none of the rock
+      // colliders may linger (creatures must not steer around ghosts).
+      expect(colliders).toHaveLength(positions.length);
+      const rockSpots = new Set(rocks.map((r) => `${r.x},${r.z}`));
+      for (const c of colliders) {
+        expect(rockSpots.has(`${c.x},${c.z}`)).toBe(false);
+      }
+
+      // Restoring the multiplier restores the original set exactly.
+      scatter.setKindDensity('rock', 1);
+      expect(scatter.positions()).toEqual(basePositions);
+      expect(scatter.colliders()).toEqual(baseColliders);
     } finally {
       scatter.dispose();
     }

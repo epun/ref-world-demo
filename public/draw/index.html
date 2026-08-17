@@ -260,7 +260,10 @@
       // wait screen (3D egg painted with it), then navigate. Short delay so
       // the MQTT publish flushes and the toast reads.
       try {
-        sessionStorage.setItem('refworld:handoff', JSON.stringify({ name: userName || null, room, strokes: msg.strokes, ts: msg.ts }));
+        // id travels with the handoff: the companion's portrait salts its
+        // synthesis with the same identity the world spawns under, so both
+        // render the identical creature.
+        sessionStorage.setItem('refworld:handoff', JSON.stringify({ id: msg.id, name: userName || null, room, strokes: msg.strokes, ts: msg.ts }));
       } catch {}
       strokes = []; cur = null; redraw();
       document.getElementById('send').disabled = true;

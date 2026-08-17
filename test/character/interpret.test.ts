@@ -11,6 +11,7 @@ import {
   SPECIES_LEG_MAX,
   SPECIES_LEG_SPLAY,
   extractMotifs,
+  identitySeedOf,
   interpretDrawing,
   speciesParams,
   strokeSeed,
@@ -189,5 +190,101 @@ describe('interpretDrawing', () => {
     const high = interpretDrawing(snowman, 0.75, OPTS);
     expect(low!.strokes).toBe(snowman);
     expect(high!.strokes).not.toEqual(snowman);
+  });
+});
+
+// ── identity salt (no two characters look the same) ──────────────────────────
+
+describe('identity salt', () => {
+  const seedA = identitySeedOf('feed-aaaa111');
+  const seedB = identitySeedOf('feed-bbbb222');
+
+  it('identitySeedOf is a stable fnv-1a: deterministic, id-sensitive', () => {
+    expect(identitySeedOf('local-0')).toBe(identitySeedOf('local-0'));
+    expect(identitySeedOf('local-0')).not.toBe(identitySeedOf('local-1'));
+    expect(Number.isInteger(identitySeedOf('x'))).toBe(true);
+  });
+
+  it('two identities, same strokes → different stroke lists', () => {
+    for (const fixture of [snowman, quadruped, eared]) {
+      const a = interpretDrawing(fixture, 1, OPTS, seedA)!;
+      const b = interpretDrawing(fixture, 1, OPTS, seedB)!;
+      expect(a.strokes).not.toEqual(b.strokes);
+    }
+  });
+
+  it('motif-driven counts are identical across identities — only jitter moves', () => {
+    for (const fixture of [snowman, quadruped, eared, circleBlob]) {
+      const motifs = motifsOf(fixture);
+      const seed = strokeSeed(fixture);
+      const a = speciesParams(motifs, (seed ^ seedA) >>> 0, seedA);
+      const b = speciesParams(motifs, (seed ^ seedB) >>> 0, seedB);
+      // Counts and the angular signature's SIDES stay the drawing's (the
+      // droop/perk class spreads angles but never flips a left ear right).
+      expect(a.legs.length).toBe(b.legs.length);
+      expect(a.crown.length).toBe(b.crown.length);
+      expect(a.arms.length).toBe(b.arms.length);
+      expect(a.crown.map((c) => Math.sign(c.angle))).toEqual(
+        b.crown.map((c) => Math.sign(c.angle)),
+      );
+    }
+  });
+
+  it('discrete identity axes vary the read-at-a-glance classes', () => {
+    const motifs = motifsOf(snowman);
+    const seed = strokeSeed(snowman);
+    const headRs = new Set<string>();
+    const tapers = new Set<number>();
+    const droops = new Set<number>();
+    for (let i = 0; i < 12; i++) {
+      const salt = identitySeedOf(`id-${i}`);
+      const p = speciesParams(motifs, (seed ^ salt) >>> 0, salt);
+      // Normalize head radius by torso width to isolate the class multiplier
+      // from the continuous torso jitter.
+      headRs.add((p.head.r / p.torso.width).toFixed(3));
+      tapers.add(p.taper);
+      droops.add(p.droop);
+    }
+    expect(headRs.size).toBeGreaterThanOrEqual(2);
+    expect(tapers.size).toBeGreaterThanOrEqual(2);
+    expect(droops.size).toBeGreaterThanOrEqual(2);
+    // Unsalted: every discrete axis rests at its neutral middle.
+    const plain = speciesParams(motifs, seed);
+    expect(plain.taper).toBe(0);
+    expect(plain.droop).toBe(0);
+  });
+
+  it('no salt → byte-identical to the unsalted pipeline (compat)', () => {
+    const motifs = motifsOf(snowman);
+    const seed = strokeSeed(snowman);
+    // The optional params change nothing when absent…
+    expect(speciesParams(motifs, seed)).toEqual(speciesParams(motifs, seed, undefined));
+    expect(synthesizeSpecies(motifs, seed)).toEqual(synthesizeSpecies(motifs, seed, undefined));
+    // …and interpretDrawing without a salt IS the plain stroke-seed pipeline.
+    const out = interpretDrawing(snowman, 1, OPTS);
+    expect(out!.strokes).toEqual(synthesizeSpecies(motifs, seed));
+  });
+
+  it('same identity + strokes → identical synthesis (phone/world parity)', () => {
+    const a = interpretDrawing(quadruped, 1, OPTS, seedA);
+    const b = interpretDrawing(quadruped, 1, OPTS, seedA);
+    expect(a!.strokes).toEqual(b!.strokes);
+  });
+
+  it('salted bodies stay inside the species bands', () => {
+    for (const fixture of [snowman, quadruped, bird, eared]) {
+      const motifs = motifsOf(fixture);
+      for (const id of ['a', 'bb', 'ccc', 'dddd', 'feed-1234567']) {
+        const salt = identitySeedOf(id);
+        const p = speciesParams(motifs, (strokeSeed(fixture) ^ salt) >>> 0, salt);
+        const aspect = p.torso.height / p.torso.width;
+        expect(aspect).toBeGreaterThanOrEqual(SPECIES_ASPECT_MIN - 1e-9);
+        expect(aspect).toBeLessThanOrEqual(SPECIES_ASPECT_MAX + 1e-9);
+        for (const leg of p.legs) {
+          expect(leg.length).toBeLessThanOrEqual(SPECIES_LEG_MAX * p.torso.height + 1e-9);
+          expect(Math.abs(leg.angle)).toBeLessThanOrEqual(SPECIES_LEG_SPLAY + 1e-9);
+        }
+      }
+    }
   });
 });

@@ -14,7 +14,8 @@
  *
  * PURE module: no Three.js, no DOM, no Math.random, no Date. Same strokes →
  * same creature on every device (PLAN §6.3). All randomness is a seeded LCG
- * keyed off a hash of the input strokes.
+ * keyed off a hash of the input strokes, optionally salted by a stable
+ * identity id (identitySeedOf) so no two submissions ever share a body.
  */
 
 import { analyze, type AnalyzeOptions } from '../shape/analyze';
@@ -103,6 +104,22 @@ export function strokeSeed(strokes: StrokeList): number {
       h = Math.imul(h ^ Math.round(y * 4096), 16777619);
       h = Math.imul(h ^ Math.round(ws * 256), 16777619);
     }
+  }
+  return h >>> 0;
+}
+
+/**
+ * Identity salt: FNV-1a over a stable id string (a publish id, a slot id).
+ * Mixed into the stroke seed so the SAME drawing submitted twice (two ids)
+ * hatches two visibly distinct individuals, while the same submission viewed
+ * on phone and world (same id) stays byte-identical. Same recipe as the
+ * behavior seed, so no new hash family enters the deterministic path.
+ */
+export function identitySeedOf(id: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < id.length; i++) {
+    h ^= id.charCodeAt(i);
+    h = Math.imul(h, 16777619);
   }
   return h >>> 0;
 }
@@ -417,24 +434,85 @@ export interface SpeciesParams {
   crown: { angle: number; length: number; width: number }[];
   /** Low-frequency hand-wobble amplitude, canvas units. */
   wobble: number;
+  /** Identity axis: body taper class × amount — +top-heavy / −bottom-heavy
+   * shift between the torso's softening discs. 0 when unsalted. */
+  taper: number;
+  /** Identity axis: extra arm droop, radians (negative = perky). 0 when
+   * unsalted. */
+  droop: number;
 }
+
+/** Identity jitter spans — WITHIN-band variation only. The drawing's motifs
+ * keep deciding counts (legs, crown, arms); the salt moves the individual
+ * around inside the species envelope. Spans are deliberately wide: two
+ * hatchlings of one drawing must differ at world scale, not under a loupe. */
+export const IDENTITY_TORSO_JITTER = 0.18;
+export const IDENTITY_LEG_JITTER = 0.25;
+export const IDENTITY_LEG_WIDTH_JITTER = 0.2;
+export const IDENTITY_CROWN_JITTER = 0.22;
+/** Stance width: how far apart the leg slots sit, as a multiplier span. */
+export const IDENTITY_STANCE_WIDTH_JITTER = 0.15;
+/** Stance: radians of per-leg angle nudge, clamped back under the splay. */
+export const IDENTITY_STANCE_JITTER = 0.08;
+
+/** Discrete identity axes — read-at-a-glance classes that multiply perceived
+ * variety far beyond continuous jitter. All resolve to the neutral middle
+ * when unsalted. */
+/** Head-lobe size classes: small / medium / large. */
+export const IDENTITY_HEAD_CLASSES = [0.8, 1, 1.22] as const;
+/** Body taper strength: ±16% shift between the torso's two softening discs
+ * (top-heavy vs bottom-heavy), by the taper class −1 | 0 | +1. */
+export const IDENTITY_TAPER_AMOUNT = 0.16;
+/** Appendage attitude: extra arm droop (radians) per droop class −1 (perk)
+ * | 0 | +1 (droop); crown angles spread/pull by ±20% on the same class. */
+export const IDENTITY_DROOP_AMOUNT = 0.18;
+export const IDENTITY_CROWN_SPREAD = 0.2;
 
 /**
  * Resolve motifs + seed into the species body plan. Split out from stroke
  * emission so the banding rules (aspect clamp, tiny legs, near-vertical
  * splay, crown echo) are directly testable numbers.
+ *
+ * @param identitySeed optional identity salt (identitySeedOf). When present,
+ *   a SEPARATE rng channel jitters the within-band numbers (torso fullness
+ *   ±8%, leg length ±12%, crown reach ±10%, stance) so two ids never share a
+ *   body; when absent the output is byte-identical to the unsalted pipeline.
  */
-export function speciesParams(motifs: Motifs, seed: number): SpeciesParams {
+export function speciesParams(
+  motifs: Motifs,
+  seed: number,
+  identitySeed?: number,
+): SpeciesParams {
   const rng = makeRng(seed);
+  // Identity channel: its own rng so adding the salt never reshuffles the
+  // base draws (compat: no salt → the exact pre-salt body). Draws happen in
+  // one fixed order (continuous jitters + discrete classes below), so the
+  // same id always lands the same individual.
+  const idRng = identitySeed === undefined ? null : makeRng((identitySeed ^ 0x85ebca6b) >>> 0);
+  const jitter = (span: number): number => (idRng ? 1 + (idRng() - 0.5) * 2 * span : 1);
+  /** Discrete class draw: −1 | 0 | +1 (0 when unsalted). */
+  const pickClass = (): number => (idRng ? Math.floor(idRng() * 3) - 1 : 0);
+
+  const torsoJitter = jitter(IDENTITY_TORSO_JITTER);
+  const headClass = pickClass();
+  const headClassMult = IDENTITY_HEAD_CLASSES[headClass + 1]!;
+  const taper = pickClass() * IDENTITY_TAPER_AMOUNT;
+  const droopClass = pickClass();
+  const droop = droopClass * IDENTITY_DROOP_AMOUNT;
+  const stanceWidth = jitter(IDENTITY_STANCE_WIDTH_JITTER);
+  const legLenJitter = jitter(IDENTITY_LEG_JITTER);
+  const legWidthJitter = jitter(IDENTITY_LEG_WIDTH_JITTER);
 
   // Torso: aspect and fullness echo the drawing, clamped into the species band.
   const aspect = clamp(motifs.aspect, SPECIES_ASPECT_MIN, SPECIES_ASPECT_MAX);
   const torsoH = 0.44;
-  let torsoW = (torsoH / aspect) * (0.85 + 0.25 * clamp(motifs.torsoFullness, 0, 1));
+  let torsoW =
+    (torsoH / aspect) * (0.85 + 0.25 * clamp(motifs.torsoFullness, 0, 1)) * torsoJitter;
   torsoW = clamp(torsoW, torsoH / SPECIES_ASPECT_MAX, torsoH / SPECIES_ASPECT_MIN);
 
-  // Head: merged upper lobe sized from the drawing's head thickness.
-  const headR = (torsoW / 2) * (0.52 + 0.42 * clamp(motifs.headSize, 0.3, 1));
+  // Head: merged upper lobe sized from the drawing's head thickness, scaled
+  // by the identity's discrete size class (small / medium / large).
+  const headR = (torsoW / 2) * (0.52 + 0.42 * clamp(motifs.headSize, 0.3, 1)) * headClassMult;
 
   // Legs: 2 or 4 per feet motifs/archetype; a legless blob drawing stays a
   // blob (it glides). The contour feet channel outranks the archetype: the
@@ -452,15 +530,22 @@ export function speciesParams(motifs: Motifs, seed: number): SpeciesParams {
           : motifs.archetype === 'biped' || motifs.archetype === 'bird'
             ? 2
             : 0;
-  const legLen = torsoH * (0.26 + 0.06 * rng()); // tiny — well under SPECIES_LEG_MAX
-  const legW = Math.max(0.034, torsoW * 0.11);
+  // Tiny — the identity jitter is clamped back under SPECIES_LEG_MAX.
+  const legLen = Math.min(
+    torsoH * (0.26 + 0.06 * rng()) * legLenJitter,
+    torsoH * SPECIES_LEG_MAX,
+  );
+  const legW = Math.max(0.034, torsoW * 0.11 * legWidthJitter);
 
-  // Crown: the signature echo — same angular positions, reach in a band.
+  // Crown: the signature echo — same angular POSITIONS as the drawing (a
+  // left ear stays a left ear), reach in a band. The identity salt scales
+  // each reach, and the droop class spreads (droopy) or pulls upright
+  // (perky) the whole set by ±20% — never flipping a side.
   const crown = motifs.crown.map((m) => {
     const r = clamp(m.reach * 2.2, 0, 1);
     return {
-      angle: clamp(m.angle, -1.15, 1.15),
-      length: headR * (0.7 + 1.3 * r),
+      angle: clamp(m.angle * (1 + droopClass * IDENTITY_CROWN_SPREAD), -1.15, 1.15),
+      length: headR * (0.7 + 1.3 * r) * jitter(IDENTITY_CROWN_JITTER),
       width: Math.max(0.03, headR * (0.72 - 0.3 * r)),
     };
   });
@@ -506,10 +591,13 @@ export function speciesParams(motifs: Motifs, seed: number): SpeciesParams {
       drawn.length > 0
         ? drawn[Math.round((i * (drawn.length - 1)) / Math.max(1, slots.length - 1))]!
         : defaults[i]!;
+    // Stance: the identity salt widens/narrows the slot spread and nudges
+    // each leg's angle, clamped back under the splay so it still stands.
+    const stance = idRng ? (idRng() - 0.5) * 2 * IDENTITY_STANCE_JITTER : 0;
     return {
-      x: torso.cx + off * torso.width,
+      x: torso.cx + off * torso.width * stanceWidth,
       topY: torsoBottom - torso.width * 0.18,
-      angle: clamp(echo, -SPECIES_LEG_SPLAY, SPECIES_LEG_SPLAY),
+      angle: clamp(echo + stance, -SPECIES_LEG_SPLAY, SPECIES_LEG_SPLAY),
       length: s(legLen),
       width: s(legW),
     };
@@ -530,6 +618,8 @@ export function speciesParams(motifs: Motifs, seed: number): SpeciesParams {
     arms,
     crown: crown.map((c) => ({ ...c, length: s(c.length), width: s(c.width) })),
     wobble: 0.005 + 0.02 * clamp(motifs.lumpiness, 0, 1),
+    taper,
+    droop,
   };
 }
 
@@ -574,11 +664,15 @@ function wavyStroke(
 
 /**
  * Build the species creature as a stroke list. Deterministic: same motifs +
- * seed → identical strokes. The result feeds the ordinary analyze → inflate
- * pipeline.
+ * seed (+ identity salt) → identical strokes. The result feeds the ordinary
+ * analyze → inflate pipeline.
  */
-export function synthesizeSpecies(motifs: Motifs, seed: number): StrokeList {
-  const p = speciesParams(motifs, seed);
+export function synthesizeSpecies(
+  motifs: Motifs,
+  seed: number,
+  identitySeed?: number,
+): StrokeList {
+  const p = speciesParams(motifs, seed, identitySeed);
   // Separate channel so param evolution never reshuffles the wobble phases.
   const rng = makeRng((seed ^ 0x9e3779b9) >>> 0);
   const strokes: StrokeList = [];
@@ -605,19 +699,23 @@ export function synthesizeSpecies(motifs: Motifs, seed: number): StrokeList {
       rng,
     ),
   );
+  // The softening discs carry the identity's taper axis: canvas y runs down,
+  // so the +along disc sits at the BOTTOM of a tall body — top-heavy
+  // (taper > 0) shrinks it and grows the top disc, bottom-heavy the reverse.
+  // Zero taper (unsalted) keeps the exact pre-salt radii.
   const along = coreLen / 2 + coreW * 0.1;
   strokes.push(
     disc(
       torso.cx + ax * along * 0.7 + (rng() - 0.5) * coreW * 0.08,
       torso.cy + ay * along * 0.7 + (rng() - 0.5) * coreW * 0.08,
-      coreW * 0.5,
+      coreW * 0.5 * (1 - p.taper),
     ),
   );
   strokes.push(
     disc(
       torso.cx - ax * along * 0.75 + (rng() - 0.5) * coreW * 0.1,
       torso.cy - ay * along * 0.75 + (rng() - 0.5) * coreW * 0.1,
-      coreW * 0.44,
+      coreW * 0.44 * (1 + p.taper),
     ),
   );
 
@@ -644,9 +742,10 @@ export function synthesizeSpecies(motifs: Motifs, seed: number): StrokeList {
     );
   }
 
-  // Arms/wings: tiny lateral nubs at the drawn heights, drooping slightly.
+  // Arms/wings: tiny lateral nubs at the drawn heights, drooping slightly —
+  // plus the identity's attitude axis (perky lifts them, droopy sinks them).
   for (const arm of p.arms) {
-    const droop = 0.25 + rng() * 0.2;
+    const droop = Math.max(0.02, 0.25 + rng() * 0.2 + p.droop);
     const dx = arm.side * Math.cos(droop);
     const dy = Math.sin(droop);
     strokes.push(
@@ -705,19 +804,27 @@ export interface InterpretedDrawing {
  *   threshold at 0.5 — a true geometric blend between the drawing and the
  *   species body is future work.
  * @param opts analyze options (tests use smaller mask sizes).
+ * @param identitySeed optional identity salt (identitySeedOf): mixed (XOR)
+ *   into the stroke seed so the same drawing under two ids synthesizes two
+ *   distinct individuals of the SAME species — motif counts and angles stay
+ *   motif-driven; only the within-band jitter takes the salt. Absent → the
+ *   unsalted pipeline, byte-identical to before.
  * @returns null when the drawing carries no usable ink.
  */
 export function interpretDrawing(
   strokes: StrokeList,
   fidelity = 1,
   opts: AnalyzeOptions = {},
+  identitySeed?: number,
 ): InterpretedDrawing | null {
   const source = analyze(strokes, opts);
   if (!source) return null;
   if (fidelity < 0.5) return { strokes, analysis: source };
 
   const motifs = extractMotifs(source);
-  const species = synthesizeSpecies(motifs, strokeSeed(strokes));
+  const base = strokeSeed(strokes);
+  const seed = identitySeed === undefined ? base : (base ^ identitySeed) >>> 0;
+  const species = synthesizeSpecies(motifs, seed, identitySeed);
   const synthesized = analyze(species, opts);
   // A synthesized body that fails analysis would leave the creature with no
   // silhouette at all — fall back to the verbatim drawing (should not happen;

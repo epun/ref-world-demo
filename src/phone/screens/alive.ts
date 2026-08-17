@@ -82,6 +82,13 @@ const BUTTON_SIZE_PX = 52; // ≥44px hit area
 
 export interface AliveScreenOptions {
   strokes: StrokeList;
+  /**
+   * The drawing's publish id — the same identity the world spawns the
+   * creature under. Passing it keeps the portrait pixel-identical to the
+   * world creature (the identity salts the synthesis jitter). Absent (the
+   * local same-device flow) the portrait seeds from the strokes alone.
+   */
+  identity?: string;
   onEmote(emote: EmoteName): void;
 }
 
@@ -293,7 +300,12 @@ export function mountAliveScreen(
   let scene: Scene | null = null;
   let camera: OrthographicCamera | null = null;
 
-  character = createCharacter(options.strokes);
+  // Same identity as the world's slot → the identical creature (parity).
+  character = createCharacter(
+    options.strokes,
+    1,
+    options.identity === undefined ? {} : { identity: options.identity },
+  );
   if (character) {
     renderer = new WebGLRenderer({ canvas: portraitCanvas, antialias: true, alpha: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));

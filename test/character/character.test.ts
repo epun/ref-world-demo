@@ -4,9 +4,13 @@
  * safe.
  */
 
-import { Box3 } from 'three';
+import { Box3, Mesh } from 'three';
 import { describe, expect, it } from 'vitest';
-import { CHARACTER_HEIGHT, createCharacter } from '../../src/character/character';
+import {
+  CHARACTER_HEIGHT,
+  createCharacter,
+  type Character,
+} from '../../src/character/character';
 import { MOTION } from '../../src/taste/tokens';
 import { circleBlob, snowman } from '../fixtures/strokes';
 
@@ -74,5 +78,30 @@ describe('createCharacter', () => {
     );
     expect(moved).toBeGreaterThan(0);
     expect(moved).toBeLessThan(CHARACTER_HEIGHT * MOTION.ambientAmplitude * 4);
+  });
+
+  it('identity salt: two ids differ, same id matches, no id stays compat', () => {
+    const positionsOf = (c: Character): number[] => {
+      const mesh = c.group.children.find((o): o is Mesh => o instanceof Mesh);
+      expect(mesh).toBeDefined();
+      return Array.from(mesh!.geometry.getAttribute('position')!.array as Float32Array);
+    };
+    const a = createCharacter(snowman, 1, { identity: 'feed-aaaa111' })!;
+    const b = createCharacter(snowman, 1, { identity: 'feed-bbbb222' })!;
+    const a2 = createCharacter(snowman, 1, { identity: 'feed-aaaa111' })!;
+    const plain = createCharacter(snowman)!;
+    const plainEmptyOpts = createCharacter(snowman, 1, {})!;
+    try {
+      // Same drawing, two publish ids → two distinct bodies.
+      expect(positionsOf(a)).not.toEqual(positionsOf(b));
+      // Same id (phone portrait vs world creature) → the identical mesh.
+      expect(positionsOf(a)).toEqual(positionsOf(a2));
+      // No identity → byte-identical to the pre-salt pipeline; the salted
+      // build really is a different individual from the unsalted one.
+      expect(positionsOf(plain)).toEqual(positionsOf(plainEmptyOpts));
+      expect(positionsOf(a)).not.toEqual(positionsOf(plain));
+    } finally {
+      for (const c of [a, b, a2, plain, plainEmptyOpts]) c.dispose();
+    }
   });
 });

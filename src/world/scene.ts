@@ -74,6 +74,8 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
   (
     window as Window & { __refworldColliders?: () => ReturnType<Scatter['colliders']> }
   ).__refworldColliders = () => scatter.colliders();
+  // And the scatter handle itself, for density/variation smokes.
+  (window as Window & { __refworldScatter?: Scatter }).__refworldScatter = scatter;
 
   const resize = (): void => {
     const width = window.innerWidth;

@@ -40,6 +40,19 @@ const STAMP_FIT = 0.5;
 const STAMP_CX = 0.5;
 const STAMP_CY = 0.38;
 
+/** Identity jitter spans: stamp center offset (uv) and tilt (radians, ≈±4.6°)
+ * — enough that two hatchlings of one drawing wear the mark differently,
+ * small enough that it stays a front-of-belly tattoo. */
+const STAMP_JITTER_X = 0.03;
+const STAMP_JITTER_Y = 0.025;
+const STAMP_JITTER_ROT = 0.08;
+
+/** Cheap deterministic hash → [0, 1). Same recipe as motion/ambient. */
+function hash(n: number): number {
+  const x = Math.sin(n) * 43758.5453123;
+  return x - Math.floor(x);
+}
+
 const MARK_GLSL_DECL = /* glsl */ `
 uniform sampler2D uMarkMap;
 uniform vec3 uMarkColor;
@@ -110,14 +123,28 @@ function paintStroke(ctx: CanvasRenderingContext2D, stroke: Stroke, sizePx: numb
  * @param strokes  the ORIGINAL drawing, not the synthesized body.
  * @param box      the geometry bounding box (object space) the front
  *                 projection spans.
+ * @param identitySeed optional identity salt (character.ts): jitters the
+ *                 stamp's center and tilt slightly, so two hatchlings of
+ *                 one drawing wear the mark differently. Absent → the exact
+ *                 front-center placement as before.
  * @returns null in DOM-less environments (pure test runs) — no marking.
  */
 export function applyMarking(
   material: MeshPhysicalMaterial,
   strokes: StrokeList,
   box: { min: { x: number; y: number }; max: { x: number; y: number } },
+  identitySeed?: number,
 ): MarkingHandle | null {
   if (typeof document === 'undefined') return null;
+
+  // Identity placement jitter — deterministic per id, zero when unsalted.
+  const idMix = identitySeed === undefined ? null : (identitySeed % 8192) * 0.4271;
+  const stampCx =
+    STAMP_CX + (idMix === null ? 0 : (hash(idMix + 3.1) - 0.5) * 2 * STAMP_JITTER_X);
+  const stampCy =
+    STAMP_CY + (idMix === null ? 0 : (hash(idMix + 7.7) - 0.5) * 2 * STAMP_JITTER_Y);
+  const stampRot =
+    idMix === null ? 0 : (hash(idMix + 1.3) - 0.5) * 2 * STAMP_JITTER_ROT;
 
   const sizeX = Math.max(box.max.x - box.min.x, 1e-6);
   const sizeY = Math.max(box.max.y - box.min.y, 1e-6);
@@ -146,13 +173,19 @@ export function applyMarking(
       fh /= over;
     }
     // uv v runs bottom→top (flipY upload); canvas rows run top→bottom.
+    // Drawn about the (identity-jittered) center so the tilt pivots there;
+    // unsalted this is the exact front-center stamp as before.
+    ctx.save();
+    ctx.translate(stampCx * TEX_SIZE, (1 - stampCy) * TEX_SIZE);
+    ctx.rotate(stampRot);
     ctx.drawImage(
       stamp,
-      (STAMP_CX - fw / 2) * TEX_SIZE,
-      (1 - STAMP_CY - fh / 2) * TEX_SIZE,
+      (-fw / 2) * TEX_SIZE,
+      (-fh / 2) * TEX_SIZE,
       fw * TEX_SIZE,
       fh * TEX_SIZE,
     );
+    ctx.restore();
   }
 
   const texture = new CanvasTexture(canvas);

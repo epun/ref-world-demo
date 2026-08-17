@@ -14,7 +14,7 @@
  * same character identically.
  */
 
-import { Group, Mesh, Quaternion, Vector3 } from 'three';
+import { Group, Mesh } from 'three';
 import { inflate } from '../inflate/inflate';
 import { sampleDrift } from '../motion/ambient';
 import { Spring } from '../motion/spring';
@@ -22,24 +22,15 @@ import type { EmoteName } from '../net/protocol';
 import type { ShapeAnalysis, StrokeList } from '../shape/types';
 import { MOTION } from '../taste/tokens';
 import { createBubble } from './bubble';
-import {
-  applyDeform,
-  deformPoint,
-  gaitRollAngle,
-  heightFrac,
-  NEUTRAL_GAIT,
-  type DeformState,
-  type GaitState,
-} from './deform';
+import { applyDeform, NEUTRAL_GAIT, type GaitState } from './deform';
 import { createBlendshellCharacter } from './blendshell/build';
 import { runEmote, type EmoteRun } from './emotes';
 import { createGait } from './gait';
-import { createEyes } from './eyes';
+import { applyEyes } from './eyes';
 import type { Expression, ExpressionName } from './expressions';
-import { interpretDrawing } from './interpret';
+import { identitySeedOf, interpretDrawing } from './interpret';
 import { applyMarking } from './marking';
 import { createCharacterMaterial, deformFrameOf, toBufferGeometry } from './mesh';
-import { computeEyePlacement } from './placement';
 
 /** Target character height in world units. Characters render small —
  * "scale is the subject" (PLAN §7). */
@@ -108,6 +99,15 @@ export interface CharacterOptions {
    * callers that don't pass this option. An explicit option always wins.
    */
   construction?: 'inflate' | 'blendshell';
+  /**
+   * Stable identity id (the drawing's publish id / slot id). Salts the
+   * within-band synthesis jitter, eye shape/size, marking placement, and the
+   * drift/bubble seed so no two submissions look the same — even from the
+   * SAME drawing. Motif counts and angles stay drawing-driven. The phone and
+   * the world pass the same id for the same submission, so both render the
+   * identical creature. Absent → seeded purely from the strokes (compat).
+   */
+  identity?: string;
 }
 
 /**
@@ -130,7 +130,12 @@ export function createCharacter(
     return createBlendshellCharacter(strokes, worldScale);
   }
 
-  const interpreted = interpretDrawing(strokes, options.fidelity ?? 1);
+  // Identity salt: hash the stable id when the caller supplies one; without
+  // it every seed below falls back to the stroke data alone (compat).
+  const identitySeed =
+    options.identity === undefined ? undefined : identitySeedOf(options.identity);
+
+  const interpreted = interpretDrawing(strokes, options.fidelity ?? 1, {}, identitySeed);
   if (!interpreted) return null;
   // The synthesized body's analysis: eyes, deformation, and gait all read
   // the silhouette that actually exists.
@@ -155,43 +160,20 @@ export function createCharacter(
   const deform = applyDeform(material, frame);
   // Recognition channel 2: the ORIGINAL drawing, painted front-center as a
   // quiet light knockout. Chains onto the deform hook — order matters.
-  const marking = applyMarking(material, strokes, box);
+  const marking = applyMarking(material, strokes, box, identitySeed);
+  // The eye: painted INTO the same material (no cap geometry to catch the
+  // free-orbit camera edge-on). Chained after deform + marking; because its
+  // projection reads the undeformed position, it rides every squash / lean /
+  // twist / gait exactly where the vertex shader puts the surface.
+  const eyes = applyEyes(material, analysis, identitySeed);
 
   const mesh = new Mesh(geometry, material);
   mesh.scale.setScalar(scale);
   // Rest on the ground: bounding-box min.y lands exactly at y = 0.
   mesh.position.y = -box.min.y * scale;
-  const yOff = mesh.position.y;
 
   const group = new Group();
   group.add(mesh);
-
-  // Eyes: computed in inflate-local space, scaled up to match the mesh, and
-  // lifted by the same ground offset so they sit on the scaled body surface.
-  const eyes = createEyes(analysis, scale);
-  eyes.group.position.y = yOff;
-  group.add(eyes.group);
-
-  // The eye pair rides the deformed body: its rest anchor (the pair midpoint,
-  // in the mesh's object space) is pushed through deformPoint each frame with
-  // the CURRENT uniform values, and the group is rotated by the deformation's
-  // pure rotations at the anchor height — so the caps track the head exactly
-  // where the vertex shader puts it.
-  const placement = computeEyePlacement(analysis);
-  const anchor = {
-    x: (placement.left.x + placement.right.x) / 2,
-    y: (placement.left.y + placement.right.y) / 2,
-    z: (placement.left.z + placement.right.z) / 2,
-  };
-  const anchorH = heightFrac(anchor.y, frame);
-  const X_AXIS = new Vector3(1, 0, 0);
-  const Y_AXIS = new Vector3(0, 1, 0);
-  const Z_AXIS = new Vector3(0, 0, 1);
-  const qx = new Quaternion();
-  const qy = new Quaternion();
-  const qz = new Quaternion();
-  const eyeRot = new Quaternion();
-  const anchorRest = new Vector3();
 
   // One ζ≥1 spring per deform channel. Squash is the attack channel (the
   // quick dip in happy/angry) and settles a step faster; the rest drift at
@@ -213,36 +195,15 @@ export function createCharacter(
   let locoSpeed = 0;
   let locoHeading = 0;
 
-  /** Push spring state to the GPU and carry the eye caps along with it. */
-  function applyBodyState(state: DeformState): void {
-    deform.set(state);
-
-    // Rigid head frame anchored at the pair midpoint: rotation = the
-    // deformation's twist∘leanX∘leanZ at the anchor's height (same order as
-    // deformPoint), position solved so the anchor lands exactly on its
-    // deformed image. Approximate for the individual caps — and fine (the
-    // eyes track the deformed head; PLAN §3.4 keeps them proud of the body).
-    qy.setFromAxisAngle(Y_AXIS, state.twist * anchorH);
-    qx.setFromAxisAngle(X_AXIS, state.leanX * anchorH);
-    // The waddle roll is a whole-body rotation about the same axis as leanZ —
-    // fold it in so the eye caps roll with the planted foot too.
-    qz.setFromAxisAngle(Z_AXIS, state.leanZ * anchorH + gaitRollAngle(gaitState));
-    eyeRot.copy(qz).multiply(qx).multiply(qy);
-    eyes.group.quaternion.copy(eyeRot);
-
-    const d = deformPoint(anchor, state, frame, gaitState);
-    anchorRest.set(anchor.x, anchor.y, anchor.z).multiplyScalar(scale).applyQuaternion(eyeRot);
-    eyes.group.position.set(
-      d.x * scale - anchorRest.x,
-      yOff + d.y * scale - anchorRest.y,
-      d.z * scale - anchorRest.z,
-    );
-  }
-
   const radius =
     (Math.max(box.max.x - box.min.x, box.max.z - box.min.z) / 2) * scale * SHADOW_FIT;
 
-  const seed = driftSeed(strokes);
+  // The drift/bubble seed carries the identity salt too, so two hatchlings
+  // of one drawing decorrelate their ambient drift and bubble outlines. The
+  // mix is a small bounded offset — no salt (0) keeps the exact old seed.
+  const seed =
+    driftSeed(strokes) +
+    (identitySeed === undefined ? 0 : (identitySeed % 977) * 0.6180339887);
   const worldHeight = height * scale;
 
   // Speech bubble (./bubble.ts): the legible emote signal at world scale.
@@ -291,7 +252,9 @@ export function createCharacter(
       gaitState = gait.update(dt, locoSpeed, locoHeading);
       deform.setGait(gaitState);
 
-      applyBodyState({
+      // The eye needs no carry: it is paint in the body material, and its
+      // projection rides the vertex-stage deformation by construction.
+      deform.set({
         squash: springs.squash.update(dt),
         leanX: springs.leanX.update(dt),
         leanZ: springs.leanZ.update(dt),
@@ -305,7 +268,6 @@ export function createCharacter(
     dispose(): void {
       group.remove(bubble.object);
       bubble.dispose();
-      group.remove(eyes.group);
       eyes.dispose();
       group.remove(mesh);
       geometry.dispose();

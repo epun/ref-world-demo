@@ -28,14 +28,13 @@ import { createBubble } from '../bubble';
 import { CHARACTER_HEIGHT, type Character } from '../character';
 import { MIN_SQUASH } from '../deform';
 import { runEmote, type EmoteRun } from '../emotes';
-import { createEyes } from '../eyes';
+import { applyEyes } from '../eyes';
 import type { Expression, ExpressionName } from '../expressions';
 import { extractMotifs, strokeSeed } from '../interpret';
 import { applyMarking } from '../marking';
-import { computeEyePlacement } from '../placement';
 import { createOutline } from './outline';
 import { createSecondary } from './secondary';
-import { sdfSpec, specBounds, specFromMotifs, specHeight, type V3 } from './spec';
+import { specBounds, specFromMotifs, specHeight, type V3 } from './spec';
 import { createShell } from './shell';
 import { createStepper } from './step';
 
@@ -90,38 +89,20 @@ export function createBlendshellCharacter(
   const group = new Group();
   group.add(body);
 
-  // Eyes on the head part's front surface: bisect the CPU SDF along +z from
-  // the head center — the exact surface the vertex shader snaps to.
+  // The eye paints into the shell material (no cap geometry — see eyes.ts):
+  // anchored at the head part's center in spec space, sized to ~half the
+  // head radius (avatar spec: the eye is large and carries the face). The
+  // fragment's facing fade keeps it front-only on the snapped surface.
   const head = spec.parts.find((p) => p.group === 'head');
   const eyeAnchor: V3 = head
     ? [head.a[0], head.a[1] + head.r * 0.1, head.a[2]]
     : [0, height * 0.7, 0];
   const eyeR = head ? head.r : height * 0.2;
-  let lo = eyeAnchor[2];
-  let hi = eyeAnchor[2] + eyeR + 0.3;
-  for (let i = 0; i < 24; i++) {
-    const mid = (lo + hi) / 2;
-    if (sdfSpec([eyeAnchor[0], eyeAnchor[1], mid], spec.parts) < 0) lo = mid;
-    else hi = mid;
-  }
-  const surfZ = (lo + hi) / 2;
-
-  // Reuse eyes.ts as-is: pick its internal scale so the single mark lands at
-  // ~half the head radius (avatar spec: the eye is large and carries the face).
-  const placement = computeEyePlacement(analysis);
-  const markR = Math.min(placement.radius * 1.5, placement.separation * 1.35);
-  const eyeScale = (eyeR * 0.5) / Math.max(markR, 1e-6);
-  const eyes = createEyes(analysis, eyeScale);
-  const capX = ((placement.left.x + placement.right.x) / 2) * eyeScale;
-  const capY = ((placement.left.y + placement.right.y) / 2) * eyeScale;
-  const capZ = Math.max(placement.left.z, placement.right.z) * eyeScale;
-  const eyeBase: V3 = [
-    eyeAnchor[0] - capX,
-    eyeAnchor[1] - capY,
-    surfZ + eyeR * 0.08 - capZ,
-  ];
-  eyes.group.position.set(eyeBase[0], eyeBase[1], eyeBase[2]);
-  unit.add(eyes.group);
+  const eyes = applyEyes(shell.material, analysis, undefined, {
+    cx: eyeAnchor[0],
+    cy: eyeAnchor[1],
+    r: eyeR * 0.5,
+  });
 
   // Locomotion: reactive IK stepping owns the legs (gait v1 does not run in
   // this mode); verlet ropes own the crown/tail chains.
@@ -198,15 +179,14 @@ export function createBlendshellCharacter(
       qz.setFromAxisAngle(Z_AXIS, leanZ);
       body.quaternion.copy(qz).multiply(qx).multiply(qy);
 
-      // The eye cap rides the body bob (the head part lifts in the shader).
-      eyes.group.position.set(eyeBase[0], eyeBase[1] + pose.lift, eyeBase[2]);
+      // The eye rides the body bob (the head part lifts in the shader).
+      eyes.setLift(pose.lift);
       eyes.update(dt);
       bubble.update(dt, nowMs);
     },
     dispose(): void {
       group.remove(bubble.object);
       bubble.dispose();
-      unit.remove(eyes.group);
       eyes.dispose();
       unit.remove(shell.mesh, outline.mesh);
       outline.dispose();

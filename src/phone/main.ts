@@ -30,14 +30,21 @@ document.body.style.background = SURFACE.canvas;
  * already published over MQTT by the draw page, so it is NOT resent (a
  * resend would spawn a duplicate egg in the world under a new id).
  */
-function readHandoff(): StrokeList | null {
+interface Handoff {
+  strokes: StrokeList;
+  /** The publish id — the same identity the world spawns under, so the
+   * alive-screen portrait renders the identical creature. */
+  id: string | null;
+}
+
+function readHandoff(): Handoff | null {
   try {
     const raw = sessionStorage.getItem('refworld:handoff');
     if (!raw) return null;
     sessionStorage.removeItem('refworld:handoff'); // one-shot
     const parsed: unknown = JSON.parse(raw);
     if (typeof parsed !== 'object' || parsed === null) return null;
-    const rec = parsed as { strokes?: unknown; ts?: unknown };
+    const rec = parsed as { id?: unknown; strokes?: unknown; ts?: unknown };
     if (!Array.isArray(rec.strokes)) return null;
     // Stale stashes (an old tab restored much later) go back to drawing.
     if (typeof rec.ts === 'number' && Date.now() - rec.ts > 10 * 60 * 1000) return null;
@@ -46,7 +53,8 @@ function readHandoff(): StrokeList | null {
       const stroke = feedStrokeToStroke(fs as { pts: [number, number][]; width?: number });
       if (stroke) out.push(stroke);
     }
-    return out.length > 0 ? out : null;
+    if (out.length === 0) return null;
+    return { strokes: out, id: typeof rec.id === 'string' && rec.id ? rec.id : null };
   } catch {
     return null;
   }
@@ -56,6 +64,8 @@ async function boot(): Promise<void> {
   const session = await createSession();
 
   let strokes: StrokeList = [];
+  /** Publish id from the draw-page handoff — the creature's identity. */
+  let identity: string | null = null;
   let waitHandle: WaitScreenHandle | null = null;
   let aliveHandle: AliveScreenHandle | null = null;
   let hatchInMs: number | null = null;
@@ -92,6 +102,8 @@ async function boot(): Promise<void> {
     alive: (section) => {
       const handle = mountAliveScreen(section, {
         strokes,
+        // Same identity the world spawned under → the identical creature.
+        ...(identity !== null ? { identity } : {}),
         onEmote: (emote) => session.sendEmote(emote),
       });
       if (lastPose) handle.setPose(lastPose);
@@ -114,9 +126,10 @@ async function boot(): Promise<void> {
   // (The local session never reaches the MQTT feed, so no duplicate egg.)
   const handedOff = readHandoff();
   if (handedOff) {
-    strokes = handedOff;
+    strokes = handedOff.strokes;
+    identity = handedOff.id;
     hatchInMs = 20000;
-    session.sendDrawing(handedOff);
+    session.sendDrawing(handedOff.strokes);
     machine.goTo('wait');
   }
 

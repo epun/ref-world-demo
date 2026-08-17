@@ -307,7 +307,10 @@ export function createCreatureManager(world: WorldHandles): CreatureManager {
 
   const manager: CreatureManager = {
     spawn(id, strokes, opts): boolean {
-      const next = createCharacter(strokes);
+      // The slot id is the creature's identity: it salts the within-band
+      // synthesis so the same drawing submitted twice hatches two visibly
+      // distinct individuals, and it matches the phone portrait (same id).
+      const next = createCharacter(strokes, 1, { identity: id });
       if (!next) return false;
 
       const existing = slots.get(id);

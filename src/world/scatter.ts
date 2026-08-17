@@ -29,6 +29,7 @@ import {
   Color,
   DoubleSide,
   Group,
+  InstancedBufferAttribute,
   InstancedMesh,
   Matrix4,
   MeshBasicMaterial,
@@ -92,11 +93,14 @@ const SEED_PROB: Record<ScatterKind, number> = {
   conifer: 0.009,
   rock: 0.011,
   stump: 0.004,
-  building: 0.004,
+  building: 0.008,
 };
 
-/** At most this many buildings in the whole region, in cell iteration order. */
-export const BUILDING_MAX = 4;
+/** At most this many buildings in the whole region, in cell iteration order.
+ * Raised from 4 (user report: "where are the buildings") — structures should
+ * be encountered while roaming; the panel's building-density slider layers
+ * on top via setKindDensity('building'). */
+export const BUILDING_MAX = 10;
 /** No two buildings of the same variant within this many world units. */
 export const BUILDING_ADJ_RADIUS = SCATTER_STEP * 8;
 
@@ -235,6 +239,73 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
   return out;
 }
 
+// ── per-instance shape variation (pure) ──────────────────────────────────────
+// "No two identical": beyond the authored variants, every placed instance
+// deforms its silhouette a little — non-uniform scale, a slight lean, a
+// low-frequency radial bulge/pinch — driven by a per-instance attribute
+// seeded from the SAME placement hash family as position/scale/rotation, so
+// the same world grows (and deforms) identically on every device. The
+// amplitudes are deliberately subtle: a cottage still reads as that cottage
+// variant, a conifer as that conifer — individuals, not random shapes.
+
+/** Non-uniform scale jitter: ±7% on x/z, ±5% on y. */
+export const VARIATION_SCALE_XZ = 0.07;
+export const VARIATION_SCALE_Y = 0.05;
+/** Height-weighted lean, radians (≈±2.5°). */
+export const VARIATION_LEAN_RAD = 0.0436;
+/** Low-frequency radial bulge/pinch, ±4%. */
+export const VARIATION_BULGE = 0.04;
+
+/** Rocks additionally squash flat and wide (instance-matrix bias): together
+ * with their mid-tone albedo this separates a stone's low mass from the
+ * egg's tall LIGHT ellipse — the user could not tell them apart. */
+export const ROCK_SQUASH_Y = 0.82;
+export const ROCK_WIDEN_XZ = 1.12;
+
+/**
+ * The four seeded variation channels for an instance at (x, z), each in
+ * [0, 1): x-scale, z-scale, y-scale, and a phase channel (lean azimuth +
+ * bulge phase + lean amount). Same quantized-position hash family as the
+ * placement's own scale/rotation rolls — pure and deterministic.
+ */
+export function instanceVariation(x: number, z: number): [number, number, number, number] {
+  const ix = Math.round(x * 8);
+  const iz = Math.round(z * 8);
+  return [
+    cellHash(ix, iz, 61.7),
+    cellHash(ix, iz, 62.9),
+    cellHash(ix, iz, 63.3),
+    cellHash(ix, iz, 64.1),
+  ];
+}
+
+/**
+ * Pure TS mirror of the vertex-stage variation (VARIATION_BEGIN_GLSL below):
+ * scale → bulge → lean, in object space, before the instance matrix. Kept in
+ * lockstep with the GLSL so the amplitude-bound tests measure the real
+ * displacement law. `p` is an object-space vertex position.
+ */
+export function applyInstanceVariation(
+  p: { x: number; y: number; z: number },
+  v: readonly [number, number, number, number],
+): { x: number; y: number; z: number } {
+  const sx = 1 + (v[0] - 0.5) * 2 * VARIATION_SCALE_XZ;
+  const sz = 1 + (v[1] - 0.5) * 2 * VARIATION_SCALE_XZ;
+  const sy = 1 + (v[2] - 0.5) * 2 * VARIATION_SCALE_Y;
+  let x = p.x * sx;
+  const y = p.y * sy;
+  let z = p.z * sz;
+  const phase = v[3] * Math.PI * 2;
+  const bulge = 1 + VARIATION_BULGE * Math.sin(y * 1.7 + phase * 3.0);
+  x *= bulge;
+  z *= bulge;
+  const lean = (((v[3] * 7.13) % 1) - 0.5) * 2 * VARIATION_LEAN_RAD;
+  const rise = Math.max(y, 0);
+  x += Math.cos(phase) * lean * rise;
+  z += Math.sin(phase) * lean * rise;
+  return { x, y, z };
+}
+
 /** Placements outside every exclusion circle (strictly inside = hidden). */
 export function filterExcluded(placements: Placement[], exclusions: Exclusion[]): Placement[] {
   if (exclusions.length === 0) return placements;
@@ -286,7 +357,9 @@ export function colliderFor(
     return { x: p.x, z: p.z, r: BUSH_SOFT_FOOTPRINT * s, hard: false };
   }
   const trunk = TRUNK_FOOTPRINT[p.kind];
-  return { x: p.x, z: p.z, r: (trunk ?? baseRadius) * s, hard: true };
+  // Rocks render widened (ROCK_WIDEN_XZ) — the collider follows the visual.
+  const widen = p.kind === 'rock' ? ROCK_WIDEN_XZ : 1;
+  return { x: p.x, z: p.z, r: (trunk ?? baseRadius) * s * widen, hard: true };
 }
 
 // ── tick geometry ────────────────────────────────────────────────────────────
@@ -481,6 +554,28 @@ function windBeginGlsl(p: WindProfile): string {
 }`;
 }
 
+// ── per-instance shape variation (GLSL) ──────────────────────────────────────
+// The shader half of applyInstanceVariation — keep the two in lockstep. Runs
+// at the head of the begin_vertex chain (in object space, before the wind /
+// nudge displacements and the instance matrix), so every kind — buildings,
+// rocks, stumps, bushes, trees, conifers, ticks — gets it, and the swaying
+// kinds compose it with their wind cleanly.
+
+function variationBeginGlsl(): string {
+  return `#include <begin_vertex>
+{
+  transformed *= vec3(
+    1.0 + (aVariation.x - 0.5) * ${glslFloat(2 * VARIATION_SCALE_XZ)},
+    1.0 + (aVariation.z - 0.5) * ${glslFloat(2 * VARIATION_SCALE_Y)},
+    1.0 + (aVariation.y - 0.5) * ${glslFloat(2 * VARIATION_SCALE_XZ)});
+  float varPhase = aVariation.w * 6.2831853;
+  float varBulge = 1.0 + ${glslFloat(VARIATION_BULGE)} * sin(transformed.y * 1.7 + varPhase * 3.0);
+  transformed.xz *= varBulge;
+  float varLean = (fract(aVariation.w * 7.13) - 0.5) * ${glslFloat(2 * VARIATION_LEAN_RAD)};
+  transformed.xz += vec2(cos(varPhase), sin(varPhase)) * (varLean * max(transformed.y, 0.0));
+}`;
+}
+
 // ── instanced assembly ───────────────────────────────────────────────────────
 
 /** Just proud of the ground; under the creature shadows' 0.02 lift. */
@@ -551,10 +646,18 @@ export function createScatter(): Scatter {
   const variantOf = (p: Placement) => geometries.get(p.kind as InflatedPropKind)![p.variant]!;
 
   // Light paper albedo, fully matte — the ink pass draws the form. Never a
-  // grey mass (GENERATOR §ink rendering pass). Rigid kinds (building, rock,
-  // stump) render with this stock material: no wind injection at all.
+  // grey mass (GENERATOR §ink rendering pass). Rigid kinds (building, stump)
+  // render with this stock material: no wind injection at all.
   const propMaterial = new MeshStandardMaterial({
     color: WORLD.light,
+    roughness: 1,
+    metalness: 0,
+  });
+  // Rocks step down to the MID band: eggs are the palette's light role and
+  // must be the only light-shelled lumps on the field (user report: light
+  // rocks read as eggs). Mid-tone stone masses, like the corpus's stones.
+  const rockMaterial = new MeshStandardMaterial({
+    color: WORLD.neutral,
     roughness: 1,
     metalness: 0,
   });
@@ -654,6 +757,37 @@ export function createScatter(): Scatter {
   };
   const windSwayKey = swayMaterial.customProgramCacheKey.bind(swayMaterial);
   swayMaterial.customProgramCacheKey = (): string => `${windSwayKey()}+nudge-v1`;
+
+  // ── per-instance shape variation (see the pure section up top) ────────────
+  // Chained onto each material's EXISTING onBeforeCompile (wind agent seam:
+  // never clobber the chain). Each replacement keeps the literal
+  // `#include <begin_vertex>` at its head, so wrapping LAST lands this block
+  // FIRST in the shader source — the variation deforms the object-space form
+  // before the wind/nudge displacements add on top. ALL kinds carry it:
+  // rigid (building / rock / stump), swaying (tree / conifer / bush), ticks.
+  const chainVariation = (
+    material: MeshStandardMaterial | MeshBasicMaterial,
+    cacheKey?: string,
+  ): void => {
+    const previous = material.onBeforeCompile;
+    material.onBeforeCompile = (shader, renderer): void => {
+      previous.call(material, shader, renderer);
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', '#include <common>\nattribute vec4 aVariation;')
+        .replace('#include <begin_vertex>', variationBeginGlsl());
+    };
+    if (cacheKey !== undefined) {
+      // The rigid material had the stock program until now — give it a key.
+      material.customProgramCacheKey = (): string => cacheKey;
+    } else {
+      const previousKey = material.customProgramCacheKey.bind(material);
+      material.customProgramCacheKey = (): string => `${previousKey()}+variation-v1`;
+    }
+  };
+  chainVariation(propMaterial, 'scatter-prop-variation-v1');
+  chainVariation(rockMaterial, 'scatter-rock-variation-v1');
+  chainVariation(swayMaterial);
+  chainVariation(tickMaterial);
 
   // Bake the height-fraction attribute the sway shader bends by. Rigid kinds
   // deliberately never get this attribute (taste guard: tests assert it).
@@ -765,17 +899,27 @@ export function createScatter(): Scatter {
       for (let v = 0; v < variants.length; v++) {
         const of = visible.filter((p) => p.kind === kind && p.variant === v);
         if (of.length === 0) continue;
-        const material = swayKindSet.has(kind) ? swayMaterial : propMaterial;
+        const material =
+          kind === 'rock' ? rockMaterial : swayKindSet.has(kind) ? swayMaterial : propMaterial;
         const mesh = new InstancedMesh(variants[v]!.geometry, material, of.length);
         mesh.name = `${kind}-${v}`;
         mesh.frustumCulled = false;
         const kMult = scaleOf(kind);
+        // Rocks squash flat and wide — the anti-egg silhouette bias.
+        const widenXZ = kind === 'rock' ? ROCK_WIDEN_XZ : 1;
+        const squashY = kind === 'rock' ? ROCK_SQUASH_Y : 1;
+        // Per-instance shape variation, seeded from the placement hash —
+        // rebuilt alongside the matrices so attribute rows always pair with
+        // their instances.
+        const variation = new Float32Array(of.length * 4);
         of.forEach((p, i) => {
           quat.setFromAxisAngle(axisY, p.rotY);
           pos.set(p.x, 0, p.z);
-          scl.setScalar(p.scale * kMult);
+          scl.set(p.scale * kMult * widenXZ, p.scale * kMult * squashY, p.scale * kMult * widenXZ);
           mesh.setMatrixAt(i, matrix.compose(pos, quat, scl));
+          variation.set(instanceVariation(p.x, p.z), i * 4);
         });
+        mesh.geometry.setAttribute('aVariation', new InstancedBufferAttribute(variation, 4));
         mesh.instanceMatrix.needsUpdate = true;
         meshes.push(mesh);
         group.add(mesh);
@@ -788,12 +932,17 @@ export function createScatter(): Scatter {
       mesh.name = 'tick';
       mesh.frustumCulled = false;
       const tickMult = scaleOf('tick');
+      // Ticks ride the same variation path — for them it reads as blade
+      // length / bend jitter.
+      const variation = new Float32Array(ticks.length * 4);
       ticks.forEach((p, i) => {
         quat.setFromAxisAngle(axisY, p.rotY);
         pos.set(p.x, TICK_LIFT, p.z);
         scl.setScalar(p.scale * tickMult);
         mesh.setMatrixAt(i, matrix.compose(pos, quat, scl));
+        variation.set(instanceVariation(p.x, p.z), i * 4);
       });
+      mesh.geometry.setAttribute('aVariation', new InstancedBufferAttribute(variation, 4));
       mesh.instanceMatrix.needsUpdate = true;
       meshes.push(mesh);
       group.add(mesh);
@@ -809,7 +958,12 @@ export function createScatter(): Scatter {
       shadowSpots = shadowed.map((p) => ({
         x: p.x,
         z: p.z,
-        r: variantOf(p).radius * p.scale * scaleOf(p.kind) * SHADOW_FIT,
+        r:
+          variantOf(p).radius *
+          p.scale *
+          scaleOf(p.kind) *
+          (p.kind === 'rock' ? ROCK_WIDEN_XZ : 1) *
+          SHADOW_FIT,
       }));
       shadowMesh = mesh;
       meshes.push(mesh);
@@ -829,7 +983,11 @@ export function createScatter(): Scatter {
           x: p.x,
           z: p.z,
           kind: p.kind as InflatedPropKind,
-          r: variantOf(p).radius * p.scale * scaleOf(p.kind),
+          r:
+            variantOf(p).radius *
+            p.scale *
+            scaleOf(p.kind) *
+            (p.kind === 'rock' ? ROCK_WIDEN_XZ : 1),
         }));
     },
     setExclusions(points: Exclusion[]): void {
@@ -929,6 +1087,7 @@ export function createScatter(): Scatter {
       tickGeometry.dispose();
       shadowGeometry.dispose();
       propMaterial.dispose();
+      rockMaterial.dispose();
       swayMaterial.dispose();
       tickMaterial.dispose();
       shadowMaterial.dispose();
