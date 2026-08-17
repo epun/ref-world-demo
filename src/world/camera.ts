@@ -33,9 +33,14 @@ const ZOOM_MAX = 2.6;
 
 /** OrbitControls dampingFactor 0.05 at 60hz ≈ exp decay with this τ. */
 const ORBIT_DAMPING_TAU_MS = 325;
-/** Elevation clamps: never under the ground plane, never over the pole. */
-const ELEVATION_MIN = 0.12;
+/** Elevation clamps: the floor keeps the ground filling the frame — at
+ * 0.12 the view went nearly edge-on and saw past the plane (user report). */
+const ELEVATION_MIN = 0.3;
 const ELEVATION_MAX = 1.45;
+
+/** Pan bounds: the look-target stays inside the populated region, so no
+ * combination of pan, orbit, and zoom reaches the world's edge. */
+const PAN_LIMIT = 150;
 
 export class CameraRig {
   readonly camera: OrthographicCamera;
@@ -81,8 +86,8 @@ export class CameraRig {
    * velocity over, so mid-flight retargets stay continuous.
    */
   frameAt(point: Vector3): void {
-    this.targetX.retarget(point.x);
-    this.targetZ.retarget(point.z);
+    this.targetX.retarget(Math.min(PAN_LIMIT, Math.max(-PAN_LIMIT, point.x)));
+    this.targetZ.retarget(Math.min(PAN_LIMIT, Math.max(-PAN_LIMIT, point.z)));
   }
 
   update(dt: number, nowMs: number): void {
@@ -159,8 +164,8 @@ export class CameraRig {
     const dy = (dyPx * unitsPerPx) / Math.max(0.25, Math.sin(this.elevationValue));
     const wx = rightX * dx + fwdX * dy;
     const wz = rightZ * dx + fwdZ * dy;
-    this.targetX.reset(this.targetX.value + wx);
-    this.targetZ.reset(this.targetZ.value + wz);
+    this.targetX.reset(Math.min(PAN_LIMIT, Math.max(-PAN_LIMIT, this.targetX.value + wx)));
+    this.targetZ.reset(Math.min(PAN_LIMIT, Math.max(-PAN_LIMIT, this.targetZ.value + wz)));
   }
 
   /** Preserve the iso frustum on resize: height fixed, width follows aspect. */

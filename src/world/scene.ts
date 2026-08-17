@@ -90,7 +90,7 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
   // Plain click-drag orbits BOTH axes with the cellshader reference feel
   // (OrbitControls mapping + damping); shift+drag pans. Trackpad pinch
   // zooms (macOS delivers pinch as ctrl+wheel); two-finger scroll / wheel
-  // pans. On touch, one finger orbits and two fingers pinch-zoom and
+  // zooms too. On touch, one finger orbits and two fingers pinch-zoom and
   // twist-rotate. Wheel deltas drive spring retargets so motion drifts.
   const pointers = new Map<number, { x: number; y: number }>();
   canvas.style.touchAction = 'none';
@@ -137,13 +137,10 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
     'wheel',
     (event) => {
       event.preventDefault();
-      if (event.ctrlKey || event.metaKey) {
-        // Trackpad pinch (macOS reports pinch as ctrl+wheel) → zoom.
-        cameraRig.zoomBy(Math.exp(-event.deltaY * 0.01));
-      } else {
-        // Two-finger scroll / wheel → normal panning.
-        cameraRig.panBy(-event.deltaX, -event.deltaY, window.innerHeight);
-      }
+      // The wheel zooms (user scheme). Trackpad pinch arrives as ctrl+wheel
+      // with finer deltas, so it gets a stronger factor to feel 1:1.
+      const k = event.ctrlKey || event.metaKey ? 0.01 : 0.0016;
+      cameraRig.zoomBy(Math.exp(-event.deltaY * k));
     },
     { passive: false },
   );
