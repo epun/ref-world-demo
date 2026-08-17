@@ -14,6 +14,10 @@ export interface FeedStroke {
 export interface FeedDrawing {
   id?: string | number;
   name?: string;
+  /** Audience personality answer added by our draw page; untyped on the wire
+   * (createDrawFeed passes the parsed payload through untouched), validated
+   * by normalizeDrawing on ingest. */
+  personality?: string | null;
   strokes: FeedStroke[];
   ts?: number;
 }

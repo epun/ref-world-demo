@@ -71,6 +71,10 @@ interface Slot {
 
 export interface SpawnOptions {
   name?: string | null;
+  /** Audience personality answer ("what does your little creature want
+   * most?"). Biases behavior transition probabilities only — never shown in
+   * UI (docs/GENERATOR.md §behavior). Absent/null → neutral defaults. */
+  personality?: 'friends' | 'snacks' | 'sleep' | 'adventure' | 'chaos' | null;
   /** ms until auto-hatch. */
   hatchMs: number;
 }

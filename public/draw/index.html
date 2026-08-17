@@ -68,6 +68,12 @@
       background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.18); color: #fff; outline: none;
       user-select: text; -webkit-user-select: text; }
     .name-input:focus { border-color: #fff; }
+    .sheet-q { font-size: 13px; color: rgba(255,255,255,0.55); margin: 16px 0 9px; }
+    .pills { display: flex; flex-wrap: wrap; gap: 8px; }
+    .pill { padding: 9px 15px; border-radius: 999px; font-size: 14px; font-weight: 600;
+      background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.14);
+      color: rgba(255,255,255,0.85); cursor: pointer; transition: background .15s, border-color .15s, color .15s; }
+    .pill.sel { background: #fff; color: #0a0a0a; border-color: #fff; }
     .sheet-go { width: 100%; margin-top: 14px; background: #fff; color: #0a0a0a; }
     .sheet-skip { width: 100%; margin-top: 6px; background: transparent; color: rgba(255,255,255,0.5);
       font-weight: 600; font-size: 14px; padding: 11px; }
@@ -104,6 +110,8 @@
       <div class="sheet-sub">Your name shows in the scene. Asked once — then it remembers.</div>
       <input id="nameInput" class="name-input" type="text" maxlength="16" placeholder="First name"
              autocomplete="off" autocorrect="off" autocapitalize="words" enterkeyhint="go" />
+      <div class="sheet-q">what does your little creature want most?</div>
+      <div class="pills" id="pills"></div>
       <button class="sheet-go" id="sheetGo">Send</button>
       <button class="sheet-skip" id="sheetSkip">Skip — send without a name</button>
     </div>
@@ -122,6 +130,10 @@
     const UP_TOPIC = TOPIC + '/up';   // scene → phone (two-way back channel)
     if (params.get('title')) { const t = params.get('title').slice(0, 40); document.getElementById('appTitle').textContent = t; document.title = t; }
 
+    // NOTE: the swatches stay functional here (this page is a standalone kit),
+    // but THIS project's world ignores color on ingest — the experience is
+    // black and white by ruling (docs/GENERATOR.md §ruling 2); strokes are
+    // rasterized to a binary mask regardless of the color drawn with.
     const COLORS = ['#0a0a0a', '#e5484d', '#f5a623', '#34d058', '#3b82f6', '#a855f7', '#ec4899'];
     const SIZES  = [4, 8, 16];
 
@@ -242,9 +254,28 @@
       signed = true; localStorage.setItem(NAME_KEY, userName); updateChip();
     }
 
+    // ── Personality — one optional question, tap again to deselect ──────────
+    // Remembered like the name; "change" on the chip reopens the sheet.
+    // Receivers must tolerate the field being absent (older pages) or null.
+    const PERSONALITIES = ['friends', 'snacks', 'sleep', 'adventure', 'chaos'];
+    const PERS_KEY = 'drawto3d:personality';
+    let personality = PERSONALITIES.includes(localStorage.getItem(PERS_KEY)) ? localStorage.getItem(PERS_KEY) : null;
+    const pillsEl = document.getElementById('pills');
+    PERSONALITIES.forEach((p) => {
+      const b = document.createElement('div');
+      b.className = 'pill' + (p === personality ? ' sel' : '');
+      b.textContent = p;
+      b.onclick = () => {
+        personality = personality === p ? null : p;   // optional: no forced default
+        localStorage.setItem(PERS_KEY, personality || '');
+        [...pillsEl.children].forEach((x) => x.classList.toggle('sel', x.textContent === personality));
+      };
+      pillsEl.appendChild(b);
+    });
+
     function publish() {
       if (!strokes.length || !connected) return;
-      const msg = { id: Math.random().toString(36).slice(2, 9), name: userName, strokes, ts: Date.now() };
+      const msg = { id: Math.random().toString(36).slice(2, 9), name: userName, personality: personality || null, strokes, ts: Date.now() };
       client.publish(TOPIC, JSON.stringify(msg), { qos: 0 });
       strokes = []; cur = null; redraw();
       document.getElementById('hint').style.opacity = '1';

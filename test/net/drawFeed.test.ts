@@ -63,6 +63,24 @@ describe('normalizeDrawing', () => {
     expect(normalizeDrawing(drawing)!.name).toBeNull();
   });
 
+  it('passes each of the five personality values through', () => {
+    for (const p of ['friends', 'snacks', 'sleep', 'adventure', 'chaos'] as const) {
+      expect(normalizeDrawing({ ...drawing, personality: p })!.personality).toBe(p);
+    }
+  });
+
+  it('nulls unknown personality values', () => {
+    expect(normalizeDrawing({ ...drawing, personality: 'world-domination' })!.personality).toBeNull();
+    expect(normalizeDrawing({ ...drawing, personality: 'Friends' })!.personality).toBeNull();
+    expect(normalizeDrawing({ ...drawing, personality: '' })!.personality).toBeNull();
+    expect(normalizeDrawing({ ...drawing, personality: 42 as never })!.personality).toBeNull();
+  });
+
+  it('nulls absent personality (older phone pages)', () => {
+    expect(normalizeDrawing(drawing)!.personality).toBeNull();
+    expect(normalizeDrawing({ ...drawing, personality: null })!.personality).toBeNull();
+  });
+
   it('returns null for drawings with no usable strokes', () => {
     expect(normalizeDrawing({ strokes: [] })).toBeNull();
     expect(normalizeDrawing({ strokes: [{ pts: [] }] })).toBeNull();

@@ -295,6 +295,7 @@ function main(): void {
     onDrawing: (d) => {
       const ok = creatures.spawn(d.id, d.strokes, {
         name: d.name,
+        personality: d.personality,
         hatchMs: HATCH_TIMER_MS,
       });
       if (ok) firstSpawnHousekeeping();

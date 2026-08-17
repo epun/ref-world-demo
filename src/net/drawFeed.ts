@@ -47,11 +47,19 @@ export function feedDrawingToStrokes(d: FeedDrawing): StrokeList {
   return out;
 }
 
+/** The five audience personality answers ("what does your little creature
+ * want most?" — docs/GENERATOR.md §behavior). */
+export const PERSONALITIES = ['friends', 'snacks', 'sleep', 'adventure', 'chaos'] as const;
+export type Personality = (typeof PERSONALITIES)[number];
+
 export interface IncomingDrawing {
   /** Stable id for spawn bookkeeping (their id, or a hash of content). */
   id: string;
   /** Lowercased drawer name, if the phone page sent one. */
   name: string | null;
+  /** Validated personality answer; anything else (absent, unknown value,
+   * older phone page) → null, meaning neutral behavior defaults. */
+  personality: Personality | null;
   strokes: StrokeList;
 }
 
@@ -67,12 +75,18 @@ function contentId(strokes: StrokeList): string {
   return 'd' + (h >>> 0).toString(36);
 }
 
+function normalizePersonality(v: unknown): Personality | null {
+  return typeof v === 'string' && (PERSONALITIES as readonly string[]).includes(v)
+    ? (v as Personality)
+    : null;
+}
+
 export function normalizeDrawing(d: FeedDrawing): IncomingDrawing | null {
   const strokes = feedDrawingToStrokes(d);
   if (strokes.length === 0) return null;
   const id = d.id != null ? String(d.id) : contentId(strokes);
   const name = typeof d.name === 'string' && d.name.trim() !== '' ? d.name.trim().toLowerCase() : null;
-  return { id, name, strokes };
+  return { id, name, personality: normalizePersonality(d.personality), strokes };
 }
 
 export interface WorldFeedOptions {
