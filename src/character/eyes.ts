@@ -89,7 +89,10 @@ void main() {
   float slope = 0.8;
   float ch = ${MARK_R} * (1.6 - 1.9 * uWedge);
   float dw = (p.y / open + slope * xi - ch) * inversesqrt(1.0 + slope * slope);
-  d = max(d, -dw);
+  // Cut where dw > 0 (above the descending line). The previous -dw sign
+  // inverted the half-plane: at wedge = 0 it discarded the entire mark, so
+  // eyes never rendered at all.
+  d = max(d, dw);
 
   // Soft knockout edge, ~1.5px in screen space.
   float aa = fwidth(d) * 1.5 + 1e-4;

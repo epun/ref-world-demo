@@ -110,8 +110,6 @@
       <div class="sheet-sub">Your name shows in the scene. Asked once — then it remembers.</div>
       <input id="nameInput" class="name-input" type="text" maxlength="16" placeholder="First name"
              autocomplete="off" autocorrect="off" autocapitalize="words" enterkeyhint="go" />
-      <div class="sheet-q">what does your little creature want most?</div>
-      <div class="pills" id="pills"></div>
       <button class="sheet-go" id="sheetGo">Send</button>
       <button class="sheet-skip" id="sheetSkip">Skip — send without a name</button>
     </div>
@@ -254,33 +252,20 @@
       signed = true; localStorage.setItem(NAME_KEY, userName); updateChip();
     }
 
-    // ── Personality — one optional question, tap again to deselect ──────────
-    // Remembered like the name; "change" on the chip reopens the sheet.
-    // Receivers must tolerate the field being absent (older pages) or null.
-    const PERSONALITIES = ['friends', 'snacks', 'sleep', 'adventure', 'chaos'];
-    const PERS_KEY = 'drawto3d:personality';
-    let personality = PERSONALITIES.includes(localStorage.getItem(PERS_KEY)) ? localStorage.getItem(PERS_KEY) : null;
-    const pillsEl = document.getElementById('pills');
-    PERSONALITIES.forEach((p) => {
-      const b = document.createElement('div');
-      b.className = 'pill' + (p === personality ? ' sel' : '');
-      b.textContent = p;
-      b.onclick = () => {
-        personality = personality === p ? null : p;   // optional: no forced default
-        localStorage.setItem(PERS_KEY, personality || '');
-        [...pillsEl.children].forEach((x) => x.classList.toggle('sel', x.textContent === personality));
-      };
-      pillsEl.appendChild(b);
-    });
-
     function publish() {
       if (!strokes.length || !connected) return;
-      const msg = { id: Math.random().toString(36).slice(2, 9), name: userName, personality: personality || null, strokes, ts: Date.now() };
+      const msg = { id: Math.random().toString(36).slice(2, 9), name: userName, strokes, ts: Date.now() };
       client.publish(TOPIC, JSON.stringify(msg), { qos: 0 });
+      // Hand off to the companion's egg view: stash the drawing for the
+      // wait screen (3D egg painted with it), then navigate. Short delay so
+      // the MQTT publish flushes and the toast reads.
+      try {
+        sessionStorage.setItem('refworld:handoff', JSON.stringify({ name: userName || null, room, strokes: msg.strokes, ts: msg.ts }));
+      } catch {}
       strokes = []; cur = null; redraw();
-      document.getElementById('hint').style.opacity = '1';
       document.getElementById('send').disabled = true;
       showToast(userName ? `✨ ${userName}'s drawing is up!` : '✨ Sent!');
+      setTimeout(() => { location.href = '/phone.html?room=' + room + '&handoff=1'; }, 700);
     }
 
     document.getElementById('send').onclick = () => {

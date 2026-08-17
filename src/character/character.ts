@@ -1,14 +1,17 @@
 /**
- * Drawing → standing character (PLAN §3, P1).
+ * Drawing → standing character (PLAN §3, P1 + the interpretation pass).
  *
- * Runs the pure pipeline (analyze → inflate), wraps the result into a
- * THREE.Group scaled to world size and resting on the ground, and rides the
- * ambient drift floor exactly like the P0 test blob: position x/z and
- * rotation.y from sampleDrift, seeded deterministically from the stroke data
- * — no Math.random, so two devices drift the same character identically.
+ * Runs the pure pipeline (interpret → inflate): the drawing is analyzed,
+ * its motifs synthesize a species body (GENERATOR §1 — "motifs, not
+ * replica"), and THAT silhouette is inflated. The stored analysis is of the
+ * synthesized body, so eyes and deformation land on the actual mesh; the
+ * original drawing survives as a light knockout marking painted on the front
+ * of the body (./marking.ts). The verbatim path remains at fidelity 0.
  *
- * The analysis result is kept on the Character for the modules that follow
- * (eyes anchor on headLobe, gait on archetype/features).
+ * The group rides the ambient drift floor exactly like the P0 test blob:
+ * position x/z and rotation.y from sampleDrift, seeded deterministically
+ * from the ORIGINAL stroke data — no Math.random, so two devices drift the
+ * same character identically.
  */
 
 import { Group, Mesh, Quaternion, Vector3 } from 'three';
@@ -16,13 +19,14 @@ import { inflate } from '../inflate/inflate';
 import { sampleDrift } from '../motion/ambient';
 import { Spring } from '../motion/spring';
 import type { EmoteName } from '../net/protocol';
-import { analyze } from '../shape/analyze';
 import type { ShapeAnalysis, StrokeList } from '../shape/types';
 import { MOTION } from '../taste/tokens';
 import { applyDeform, deformPoint, heightFrac, type DeformState } from './deform';
 import { runEmote, type EmoteRun } from './emotes';
 import { createEyes } from './eyes';
 import type { Expression, ExpressionName } from './expressions';
+import { interpretDrawing } from './interpret';
+import { applyMarking } from './marking';
 import { createCharacterMaterial, deformFrameOf, toBufferGeometry } from './mesh';
 import { computeEyePlacement } from './placement';
 
@@ -69,6 +73,15 @@ function driftSeed(strokes: StrokeList): number {
   return (points % 971) * 0.618 + fx * 37.42 + fy * 91.17;
 }
 
+export interface CharacterOptions {
+  /**
+   * Interpretation fidelity (GENERATOR §1): 1 (default) = species body
+   * synthesized from the drawing's motifs; 0 = verbatim inflation of the
+   * drawing (the dial's dev-tunable floor).
+   */
+  fidelity?: number;
+}
+
 /**
  * Build a character from a stroke list. Returns null when the drawing
  * carries no usable ink (analyze() rejects it) — the caller keeps the draw
@@ -76,9 +89,16 @@ function driftSeed(strokes: StrokeList): number {
  *
  * @param worldScale multiplies the ~3.5-unit target height.
  */
-export function createCharacter(strokes: StrokeList, worldScale = 1): Character | null {
-  const analysis = analyze(strokes);
-  if (!analysis) return null;
+export function createCharacter(
+  strokes: StrokeList,
+  worldScale = 1,
+  options: CharacterOptions = {},
+): Character | null {
+  const interpreted = interpretDrawing(strokes, options.fidelity ?? 1);
+  if (!interpreted) return null;
+  // The synthesized body's analysis: eyes, deformation, and gait all read
+  // the silhouette that actually exists.
+  const analysis = interpreted.analysis;
 
   const geometry = toBufferGeometry(inflate(analysis));
   const box = geometry.boundingBox;
@@ -97,6 +117,9 @@ export function createCharacter(strokes: StrokeList, worldScale = 1): Character 
   // injected into the vertex shader, bending the mesh about its base.
   const frame = deformFrameOf(geometry);
   const deform = applyDeform(material, frame);
+  // Recognition channel 2: the ORIGINAL drawing, painted front-center as a
+  // quiet light knockout. Chains onto the deform hook — order matters.
+  const marking = applyMarking(material, strokes, box);
 
   const mesh = new Mesh(geometry, material);
   mesh.scale.setScalar(scale);
@@ -217,6 +240,7 @@ export function createCharacter(strokes: StrokeList, worldScale = 1): Character 
       group.remove(mesh);
       geometry.dispose();
       material.dispose();
+      marking?.dispose();
       springs.squash.dispose();
       springs.leanX.dispose();
       springs.leanZ.dispose();
