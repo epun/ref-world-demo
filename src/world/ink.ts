@@ -86,7 +86,9 @@ export interface InkParams {
 const DEFAULTS: InkParams = {
   edgeThreshold: 0.0009,
   lineWidth: 2.1,
-  wobble: 3.0,
+  // 3.0 detached lines visibly from small silhouettes (user report);
+  // 1.6 keeps the pen roughness with the line still riding the mesh.
+  wobble: 1.6,
   hatchStrength: 0.7,
 };
 
@@ -231,8 +233,18 @@ void main() {
     vec3 nb = readNormal(wuv - oy);
     vec3 nt = readNormal(wuv + oy);
     float nEdge = max(1.0 - dot(nl, nr), 1.0 - dot(nb, nt));
+    // The normal target renders with an override material that skips the
+    // character's deform/gait vertex stage, so its edges sit at the
+    // UNDEFORMED pose and drift off a walking body (user-visible offset).
+    // Depth comes from the beauty render and is always correct — so near
+    // the dark character mass, depth edges own the line and the stale
+    // normal edges are suppressed.
+    float mn = min(
+      min(luma(texture2D(uScene, wuv - ox).rgb), luma(texture2D(uScene, wuv + ox).rgb)),
+      min(luma(texture2D(uScene, wuv - oy).rgb), luma(texture2D(uScene, wuv + oy).rgb)));
+    float nearDark = 1.0 - smoothstep(0.09, 0.22, mn);
     float edge = smoothstep(uEdgeThreshold, uEdgeThreshold * 2.2, dEdge);
-    edge = max(edge, smoothstep(0.45, 0.85, nEdge) * 0.9);
+    edge = max(edge, smoothstep(0.45, 0.85, nEdge) * 0.9 * (1.0 - nearDark));
     // Ink flow varies along the line — occasionally thin, never uniform.
     float flow = 0.55 + 0.45 * smoothstep(0.25, 0.6, fbm(sp * 0.013 + 131.0));
     col = mix(col, uInk, clamp(edge * flow, 0.0, 1.0));
