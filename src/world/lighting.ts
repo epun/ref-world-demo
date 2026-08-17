@@ -8,8 +8,12 @@
  * shadows.ts — a soft shadow map would be a penumbra, which is forbidden.
  */
 
-import { DirectionalLight, Group, HemisphereLight } from 'three';
+import { DirectionalLight, Group, HemisphereLight, Vector3 } from 'three';
 import { LIGHTING, WORLD } from '../taste/tokens';
+
+/** World-space key light direction (normalized), exported for the ink pass:
+ * hatching keys off "facing away from the key" (GENERATOR §ink pass). */
+export const KEY_DIRECTION = new Vector3(24, 40, 18).normalize();
 
 /** Fill carries the exposure; calibrated so the ground renders at its token
  * value under fill + key together. Measured against a rendered frame: at
@@ -33,7 +37,7 @@ export function createLighting(): Group {
   // Hard key. No shadow mapping — sharp shadow edges come from the flat
   // stamped shadow pass, never from a shadow map.
   const key = new DirectionalLight(WORLD.light, KEY_INTENSITY);
-  key.position.set(24, 40, 18);
+  key.position.copy(KEY_DIRECTION).multiplyScalar(50);
   key.castShadow = false;
 
   group.add(fill, key, key.target);

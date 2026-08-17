@@ -1,6 +1,9 @@
 /**
  * World assembly (PLAN §7): renderer, scene, camera rig, ground, lighting,
- * flat shadow pass, grain pass, and the render loop.
+ * flat shadow pass, prop scatter, ink pass, grain pass, and the render loop.
+ *
+ * Post chain: scene → ink composite (toon bands + wobbly contours + hatch)
+ * → grain (the final paper layer). GENERATOR §ink rendering pass.
  */
 
 import { Color, Scene, WebGLRenderer } from 'three';
@@ -8,7 +11,9 @@ import { SURFACE } from '../taste/tokens';
 import { CameraRig } from './camera';
 import { GrainPass } from './grain';
 import { createGround } from './ground';
+import { InkPass } from './ink';
 import { createLighting } from './lighting';
+import { createScatter, type Scatter } from './scatter';
 import { FlatShadows } from './shadows';
 
 export type FrameCallback = (dt: number, nowMs: number) => void;
@@ -17,6 +22,10 @@ export interface WorldHandles {
   scene: Scene;
   cameraRig: CameraRig;
   shadows: FlatShadows;
+  /** Prop scatter: exclusions come from the creature coordinator. */
+  scatter: Scatter;
+  /** Ink pass tuning surface for the dev panel. */
+  ink: InkPass;
   /** Register per-frame work (entity drift, gaits, …). Runs before render. */
   onFrame(callback: FrameCallback): void;
 }
@@ -32,15 +41,18 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
 
   const cameraRig = new CameraRig(window.innerWidth / window.innerHeight);
   const shadows = new FlatShadows();
+  const ink = new InkPass();
   const grain = new GrainPass();
+  const scatter = createScatter();
 
-  scene.add(createGround(), createLighting(), shadows.group);
+  scene.add(createGround(), createLighting(), shadows.group, scatter.group);
 
   const resize = (): void => {
     const width = window.innerWidth;
     const height = window.innerHeight;
     renderer.setSize(width, height);
     cameraRig.resize(width, height);
+    ink.setSize(width, height, pixelRatio);
     grain.setSize(width, height, pixelRatio);
   };
   window.addEventListener('resize', resize);
@@ -55,8 +67,10 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
     last = nowMs;
 
     cameraRig.update(dt, nowMs);
+    scatter.update(nowMs);
     for (const callback of frameCallbacks) callback(dt, nowMs);
-    grain.render(renderer, scene, cameraRig.camera, nowMs);
+    const composed = ink.render(renderer, scene, cameraRig.camera, nowMs);
+    grain.compose(renderer, composed, nowMs);
 
     requestAnimationFrame(loop);
   };
@@ -66,6 +80,8 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
     scene,
     cameraRig,
     shadows,
+    scatter,
+    ink,
     onFrame: (callback: FrameCallback): void => {
       frameCallbacks.push(callback);
     },

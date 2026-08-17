@@ -3,13 +3,18 @@
  *
  * "A steady grain sits over gloss finishes" — a defining signal, implemented
  * as a post-process so it is uniform across the whole image and never varies
- * within a character's fill. The scene renders to a target; a fullscreen
- * triangle then adds hash noise at GRAIN.amplitude after the sRGB conversion,
- * so the amplitude is perceptual.
+ * within a character's fill. A fullscreen triangle adds hash noise at
+ * GRAIN.amplitude after the sRGB conversion, so the amplitude is perceptual.
  *
  * The grain must read as paper, not video noise: the hash pattern is fixed
  * per pixel and the whole field slides a couple of pixels per second, paced
  * by t.ambient. Nothing re-randomizes per frame.
+ *
+ * Two entry points: render() draws a scene into an internal target and
+ * composes it (the original P0 path), compose() takes an already-rendered
+ * texture — the ink pass feeds it, keeping grain the final paper layer
+ * (scene → ink composite → grain). The internal target is allocated lazily
+ * so the ink path never pays for it.
  */
 
 import {
@@ -22,7 +27,7 @@ import {
   Vector2,
   WebGLRenderTarget,
 } from 'three';
-import type { Camera, WebGLRenderer } from 'three';
+import type { Camera, Texture, WebGLRenderer } from 'three';
 import { GRAIN, MOTION } from '../taste/tokens';
 
 const VERTEX = /* glsl */ `
@@ -65,18 +70,18 @@ void main() {
 const DRIFT_PER_AMBIENT = new Vector2(5.3, 3.1);
 
 export class GrainPass {
-  private readonly target: WebGLRenderTarget;
+  private target: WebGLRenderTarget | null = null;
   private readonly quadScene = new Scene();
   private readonly quadCamera = new OrthographicCamera(-1, 1, 1, -1, 0, 1);
   private readonly drift = new Vector2();
   private readonly material: ShaderMaterial;
+  private width = 1;
+  private height = 1;
 
   constructor() {
-    // Multisampled so canvas antialiasing survives the indirection.
-    this.target = new WebGLRenderTarget(1, 1, { samples: 4 });
     this.material = new ShaderMaterial({
       uniforms: {
-        uScene: { value: this.target.texture },
+        uScene: { value: null },
         uAmplitude: { value: GRAIN.amplitude },
         uDrift: { value: this.drift },
       },
@@ -99,17 +104,29 @@ export class GrainPass {
   }
 
   setSize(width: number, height: number, pixelRatio: number): void {
-    this.target.setSize(Math.floor(width * pixelRatio), Math.floor(height * pixelRatio));
+    this.width = Math.floor(width * pixelRatio);
+    this.height = Math.floor(height * pixelRatio);
+    this.target?.setSize(this.width, this.height);
   }
 
-  render(renderer: WebGLRenderer, scene: Scene, camera: Camera, nowMs: number): void {
+  /** Compose an already-rendered (linear) texture to screen with grain. */
+  compose(renderer: WebGLRenderer, input: Texture, nowMs: number): void {
     // Wrapped so precision holds over long sessions.
     const t = (nowMs % (MOTION.ambientMs * 4096)) / MOTION.ambientMs;
     this.drift.set(t * DRIFT_PER_AMBIENT.x, t * DRIFT_PER_AMBIENT.y);
-
-    renderer.setRenderTarget(this.target);
-    renderer.render(scene, camera);
+    this.material.uniforms.uScene!.value = input;
     renderer.setRenderTarget(null);
     renderer.render(this.quadScene, this.quadCamera);
+  }
+
+  /** Original single-pass path: scene → internal target → grained screen. */
+  render(renderer: WebGLRenderer, scene: Scene, camera: Camera, nowMs: number): void {
+    if (!this.target) {
+      // Multisampled so canvas antialiasing survives the indirection.
+      this.target = new WebGLRenderTarget(this.width, this.height, { samples: 4 });
+    }
+    renderer.setRenderTarget(this.target);
+    renderer.render(scene, camera);
+    this.compose(renderer, this.target.texture, nowMs);
   }
 }
