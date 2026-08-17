@@ -46,6 +46,16 @@ export interface DevScatterApi {
   group?: Object3D;
 }
 
+/** Presentation-tour surface — matches src/world/tour.ts's Tour handle.
+ * Structural (not the Tour type itself) so this module keeps importing from
+ * node without pulling world modules in. */
+export interface DevTourApi {
+  setMode(mode: 'manual' | 'tour'): void;
+  mode(): 'manual' | 'tour';
+  setDwellRange(minMs: number, maxMs: number): void;
+  hatchAllMoment(hatchAll: () => void): void;
+}
+
 /** Weather names the environment workstream ships (src/world/environment.ts). */
 export const WEATHER_NAMES = ['clear', 'overcast', 'fog', 'rain', 'snow'] as const;
 
@@ -81,6 +91,9 @@ export interface DevHandles {
   /** Register per-frame work; runs before render (src/world/scene.ts). */
   onFrame(callback: (dt: number, nowMs: number) => void): void;
   creatures: CreatureManager;
+  /** Presentation tour (src/world/tour.ts) — camera mode, dwell length,
+   * and the hatch-all moment. Controls appear only when provided. */
+  tour?: DevTourApi;
   ink?: DevInkApi;
   scatter?: DevScatterApi;
   /** WorldHandles.environment when the weather workstream has landed —
@@ -230,6 +243,30 @@ export async function initDevPanel(
         id: 'pause-hatch-timers',
         onChange: (v) => creatures.pauseTimers(v),
       });
+      // ── camera — the presentation tour (folded into demo, same brief) ────
+      const tour = handles.tour;
+      if (tour) {
+        folder.addSelect('camera mode', {
+          options: ['manual', 'tour'],
+          value: tour.mode(),
+          id: 'camera-mode',
+          onChange: (v) => tour.setMode(v === 'tour' ? 'tour' : 'manual'),
+        });
+        // Dwell length in seconds: value is the shortest dwell, 2x the
+        // longest — the default 6 mirrors the tour's 6-12s range.
+        folder.addSlider('dwell length', {
+          min: 4,
+          max: 20,
+          step: 1,
+          value: 6,
+          suffix: 's',
+          id: 'tour-dwell',
+          onChange: (v) => tour.setDwellRange(v * 1000, v * 2000),
+        });
+        folder.addButton('hatch-all moment', () =>
+          tour.hatchAllMoment(() => creatures.hatchAll()),
+        );
+      }
       return { folder };
     },
     teardown: (panelUi) => panelUi.panel.removeFolder('demo'),

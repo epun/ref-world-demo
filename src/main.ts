@@ -6,7 +6,6 @@
  * MQTT feed — becomes an egg that paints itself, wobbles, cracks, and
  * hatches (press h to hatch all early). Phones draw at /draw/?room=xxxx
  * (the vendored kit UI); a mobile visitor to this page is routed there.
- * The test blob holds the frame only until the first egg exists.
  *
  * TASTE discipline: the overlay ENTERS AND EXITS BY SLIDING (translateY over
  * t.secondary on the settle curve — never popping, hard cuts are forbidden at
@@ -16,91 +15,18 @@
  * from src/taste/tokens.ts; all durations from MOTION tokens.
  */
 
-import { IcosahedronGeometry, Mesh, MeshPhysicalMaterial } from 'three';
-import type { BufferGeometry } from 'three';
-import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { installHoverNames } from './creatures/hover';
 import { createCreatureManager } from './creatures/manager';
 import { connectWorldFeed } from './net/drawFeed';
 import { EMOTE_NAMES, isRoomCode, roomCode } from './net/protocol';
 import { mountDrawScreen } from './draw/ui';
-import { sampleDrift } from './motion/ambient';
-import { CHARACTER, MOTION, SURFACE, WORLD } from './taste/tokens';
+import { MOTION, SURFACE, WORLD } from './taste/tokens';
 import { installWorldMinimap } from './ui/minimap';
-import { start, type WorldHandles } from './world/scene';
+import { start } from './world/scene';
+import { createTour } from './world/tour';
 
 /** Hatch timer — dev pacing; a live demo wants ~90s (PLAN §13). */
 export const HATCH_TIMER_MS = 20000;
-
-const BLOB_RADIUS = 1.8;
-const BLOB_NOISE = 0.09;
-const BLOB_SEED = 7.31;
-
-/** Smooth deterministic scalar field — a few low-frequency lobes, so the
- * displaced sphere reads as a hand-formed potato, never a primitive. */
-function organicNoise(x: number, y: number, z: number): number {
-  return (
-    Math.sin(x * 1.7 + y * 1.1 + 0.9) * 0.5 +
-    Math.sin(y * 1.9 + z * 1.3 + 2.1) * 0.3 +
-    Math.sin(z * 1.5 + x * 2.1 + 4.2) * 0.2
-  );
-}
-
-function createBlobGeometry(): BufferGeometry {
-  // mergeVertices welds the icosahedron's duplicated verts so
-  // computeVertexNormals yields smooth shading — no facets, no hard edges.
-  const geometry = mergeVertices(new IcosahedronGeometry(BLOB_RADIUS, 4));
-  const position = geometry.getAttribute('position');
-  for (let i = 0; i < position.count; i++) {
-    const x = position.getX(i);
-    const y = position.getY(i);
-    const z = position.getZ(i);
-    const scale = 1 + BLOB_NOISE * organicNoise(x, y, z);
-    position.setXYZ(i, x * scale, y * scale, z * scale);
-  }
-  geometry.computeVertexNormals();
-  geometry.computeBoundingBox();
-  return geometry;
-}
-
-interface TestBlob {
-  update(nowMs: number): void;
-  dispose(): void;
-}
-
-/** The P0 placeholder: the one near-black object on screen (TASTE §1) until
- * the first egg replaces it. */
-function createTestBlob(world: WorldHandles): TestBlob {
-  const geometry = createBlobGeometry();
-  const material = new MeshPhysicalMaterial({
-    color: CHARACTER.body,
-    roughness: 0.35,
-    metalness: 0,
-    clearcoat: 1,
-    clearcoatRoughness: 0.15,
-  });
-  const blob = new Mesh(geometry, material);
-  const restY = -(geometry.boundingBox?.min.y ?? -BLOB_RADIUS);
-  blob.position.set(0, restY, 0);
-  world.scene.add(blob);
-  const shadow = world.shadows.addShadow('test-blob', BLOB_RADIUS * 0.85);
-
-  return {
-    update(nowMs: number): void {
-      // Ambient drift only — no idle bob, no loops that read as bounce.
-      const drift = sampleDrift(nowMs, BLOB_SEED, BLOB_RADIUS * 2);
-      blob.position.set(drift.x, restY, drift.y);
-      blob.rotation.y = drift.rot;
-      shadow.setPosition(blob.position.x, blob.position.z);
-    },
-    dispose(): void {
-      world.scene.remove(blob);
-      world.shadows.removeShadow('test-blob');
-      geometry.dispose();
-      material.dispose();
-    },
-  };
-}
 
 // ── draw overlay chrome ──────────────────────────────────────────────────────
 // TASTE §4: icons, hairline rules, thin borders — and nothing else. The
@@ -260,11 +186,23 @@ function main(): void {
     return;
   }
 
-  // The test blob holds the frame only until the first egg spawns.
-  let testBlob: TestBlob | null = createTestBlob(world);
-
   const creatures = createCreatureManager(world);
   installHoverNames(canvas, world.cameraRig.camera, creatures);
+
+  // ── presentation tour (GENERATOR §scale+camera, PLAN §7.1) ────────────────
+  // Autonomous drift between clusters, lone wanderers, and wide scenic beats.
+  // Manual is the default; 't' toggles; the ghost panel has a mode select.
+  const tour = createTour({
+    cameraRig: world.cameraRig,
+    positions: () => creatures.positions(),
+  });
+  // Any camera input interrupts the tour instantly. Capture phase, no
+  // preventDefault — scene.ts's own pan/orbit/zoom handlers run untouched.
+  canvas.addEventListener('pointerdown', () => tour.notifyUserInput(), { capture: true });
+  canvas.addEventListener('wheel', () => tour.notifyUserInput(), {
+    capture: true,
+    passive: true,
+  });
 
   // World minimap, bottom-right. The join line moved bottom-left (beside the
   // pencil control) to leave the corner to the map.
@@ -279,7 +217,7 @@ function main(): void {
 
   const eggHint = document.createElement('div');
   eggHint.className = 'egg-hint';
-  eggHint.textContent = 'press h to hatch';
+  eggHint.textContent = 'press h to hatch · shift+h for the hatch moment';
 
   // Join line: restrained lowercase type, bottom-left beside the pencil
   // control (the minimap owns the bottom-right corner). Sparse type is the
@@ -289,17 +227,13 @@ function main(): void {
   joinLine.textContent = `draw at ${location.host}/draw/?room=${room}`;
 
   function firstSpawnHousekeeping(): void {
-    if (testBlob) {
-      testBlob.dispose();
-      testBlob = null;
-    }
-    eggHint.textContent = 'press h to hatch';
+    eggHint.textContent = 'press h to hatch · shift+h for the hatch moment';
     eggHint.classList.add('visible');
   }
 
   world.onFrame((dt, nowMs) => {
-    testBlob?.update(nowMs);
     creatures.update(dt, nowMs);
+    tour.update(dt, nowMs);
   });
 
   // ── ghost panel on shift+d ────────────────────────────────────────────────
@@ -319,6 +253,7 @@ function main(): void {
         renderer: world.renderer,
         onFrame: world.onFrame,
         creatures,
+        tour,
         ink: world.ink,
         scatter: world.scatter,
         // Weather handle from a parallel workstream — forwarded as-is and
@@ -385,12 +320,31 @@ function main(): void {
 
   openControl.addEventListener('click', openOverlay);
   window.addEventListener('keydown', (event) => {
-    // Shifted presses belong to the dev surface (ghost panel toggles on
-    // shift+d); plain d keeps the draw overlay.
+    // Shift+h — the hatch-all moment (GENERATOR set piece): pull wide over
+    // the population, burst every shell at once, hold, then resume.
+    if (
+      event.shiftKey &&
+      !event.metaKey &&
+      !event.ctrlKey &&
+      !event.altKey &&
+      (event.key === 'H' || event.key === 'h') &&
+      !overlayOpen
+    ) {
+      tour.hatchAllMoment(() => creatures.hatchAll());
+      eggHint.textContent = 'press 1-7 to emote';
+      return;
+    }
+    // Other shifted presses belong to the dev surface (ghost panel toggles
+    // on shift+d); plain d keeps the draw overlay.
     if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
     if (event.key === 'd') {
       if (overlayOpen) closeOverlay();
       else openOverlay();
+      return;
+    }
+    // Camera tour toggle. Manual stays the default on load.
+    if (event.key === 't' && !overlayOpen) {
+      tour.setMode(tour.mode() === 'tour' ? 'manual' : 'tour');
       return;
     }
     // Manual hatch — every ready egg, identical sequence to the timer.

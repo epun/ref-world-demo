@@ -58,6 +58,10 @@ export class CameraRig {
   /** Ortho zoom multiplier; wheel retargets (drift settle), pinch is 1:1. */
   private readonly zoomSpring: Spring;
   private zoomTarget = 1;
+  /** Continuous azimuth drift rate (rad/s), fed by the presentation tour.
+   * Applied to the orbit *target* each frame, so the damped follow smooths
+   * every start and stop — no step is representable. */
+  private orbitDriftRate = 0;
   private readonly lookTarget = new Vector3();
   private readonly offset = new Vector3();
 
@@ -93,6 +97,9 @@ export class CameraRig {
   update(dt: number, nowMs: number): void {
     const x = this.targetX.update(dt);
     const z = this.targetZ.update(dt);
+    // Tour azimuth drift: advance the target, let the damped follow carry
+    // the value — starts and stops glide, never step.
+    this.azimuthTarget += this.orbitDriftRate * (dt / 1000);
     // OrbitControls-equivalent damping (factor 0.05 per 60hz frame, the
     // cellshader default): an exponential approach with τ ≈ 325ms. Pure
     // decay — it cannot cross its target, so no overshoot is possible.
@@ -135,6 +142,24 @@ export class CameraRig {
   zoomBy(factor: number): void {
     this.zoomTarget = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, this.zoomTarget * factor));
     this.zoomSpring.retarget(this.zoomTarget);
+  }
+
+  /**
+   * Tour zoom: retarget the zoom spring to an absolute level. Always drifts
+   * in on the existing ζ≥1 spring — the tour has no direct-manipulation
+   * path, so a snap is unrepresentable here (TASTE §2.1).
+   */
+  zoomTo(target: number): void {
+    this.zoomTarget = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, target));
+    this.zoomSpring.retarget(this.zoomTarget);
+  }
+
+  /**
+   * Continuous azimuth drift (rad/s) for the presentation tour's dwells.
+   * Pass 0 to stop drifting; the damped orbit follow eases both edges.
+   */
+  orbitDrift(radPerSec: number): void {
+    this.orbitDriftRate = radPerSec;
   }
 
   /** Pinch zoom: direct 1:1 while the fingers move. */
