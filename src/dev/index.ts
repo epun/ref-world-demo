@@ -322,6 +322,18 @@ export async function initDevPanel(
             value: 1,
             onChange: (v) => kd('building', v),
           });
+          folder.addSlider('bush density', {
+            min: 0,
+            max: 2.5,
+            value: 1,
+            onChange: (v) => kd('bush', v),
+          });
+          folder.addSlider('stump density', {
+            min: 0,
+            max: 2.5,
+            value: 1,
+            onChange: (v) => kd('stump', v),
+          });
           folder.addSlider('grass density', {
             min: 0,
             max: 3,
