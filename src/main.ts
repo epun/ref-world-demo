@@ -19,6 +19,7 @@
 import { IcosahedronGeometry, Mesh, MeshPhysicalMaterial } from 'three';
 import type { BufferGeometry } from 'three';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
+import { installHoverNames } from './creatures/hover';
 import { createCreatureManager } from './creatures/manager';
 import { connectWorldFeed } from './net/drawFeed';
 import { EMOTE_NAMES, isRoomCode, roomCode } from './net/protocol';
@@ -262,6 +263,7 @@ function main(): void {
   let testBlob: TestBlob | null = createTestBlob(world);
 
   const creatures = createCreatureManager(world);
+  installHoverNames(canvas, world.cameraRig.camera, creatures);
 
   ensureOverlayStyle();
 

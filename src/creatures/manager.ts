@@ -143,6 +143,9 @@ export interface CreatureManager {
   hatchAll(): void;
   /** Most recently hatched character, for emote keys / camera framing. */
   latestCharacter(): Character | null;
+  /** Named, hit-testable live creatures for the hover-name overlay. Only
+   * creatures whose drawer entered a name appear. */
+  hoverTargets(): { name: string; object: Group }[];
   /** Positions of all live entities, for camera interest + exclusions. */
   positions(): { x: number; z: number; r: number }[];
   count(): number;
@@ -284,6 +287,16 @@ export function createCreatureManager(world: WorldHandles): CreatureManager {
       for (const slot of slots.values()) {
         if (slot.phase === 'egg') beginHatch(slot);
       }
+    },
+
+    hoverTargets() {
+      const out: { name: string; object: Group }[] = [];
+      for (const slot of slots.values()) {
+        if (slot.phase === 'alive' && slot.name && slot.characterRoot) {
+          out.push({ name: slot.name, object: slot.characterRoot });
+        }
+      }
+      return out;
     },
 
     latestCharacter(): Character | null {
