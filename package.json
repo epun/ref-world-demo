@@ -18,7 +18,7 @@
   },
   "devDependencies": {
     "@types/three": "0.180.0",
-    "ghost-panel": "github:epun/ghost-panel",
+    "ghost-panel": "git+https://github.com/epun/ghost-panel.git#2498c5bc4b75ae62504d080c5da8e84229ca8ffe",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vite": "^7.1.0",
