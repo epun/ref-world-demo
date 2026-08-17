@@ -2,7 +2,11 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <!-- user-scalable=no / maximum-scale=1: this is a drawing surface — pinch-zoom fights strokes -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+    />
     <title>ref — companion</title>
     <style>
       /* background matches SURFACE.canvas (src/taste/tokens.ts) — the light drawing ground */
@@ -11,6 +15,16 @@
         margin: 0;
         height: 100%;
         background: #e9ebe9;
+        overscroll-behavior: none;
+      }
+      /* fixed root: the page itself never scrolls or rubber-bands; screens own
+         their layout. avoids the ios url-bar 100vh problem entirely. */
+      body {
+        position: fixed;
+        inset: 0;
+        width: 100%;
+        overflow: hidden;
+        -webkit-text-size-adjust: 100%;
       }
     </style>
   </head>

@@ -1,22 +1,26 @@
 /**
- * State ② wait (PLAN §6.2): the egg as a 2D mark, painting itself with the
- * drawing; a lowercase countdown line; one hairline icon control (hatch now).
+ * State ② wait (PLAN §6.2): the egg, volumetric — the SAME module the world
+ * renders (src/egg/egg.ts), not a flat stand-in: seeded organic shell,
+ * paint-on reveal from the stroke list, clearcoat sheen under the world
+ * lighting recipe, continuous wobble ramping toward hatch. Below it, a
+ * lowercase countdown line and one hairline icon control (hatch now).
  *
- * No Three.js here — the egg is an ellipse in the palette's light role with
- * the stroke list replayed inside it via renderStrokesPartial over
- * MOTION.primaryMs, the same paint-on read as the world egg (PLAN §4). The
- * offscreen ground (SURFACE.canvas) and the egg fill (WORLD.light) are the
- * same value, so the composite reads as paint on shell, not a decal.
+ * The camera is NOT the iso rig — a simple perspective camera pulled to a
+ * slight three-quarter, looking gently down, so the shell reads as a body
+ * with a lit side and a turned side. The egg's painted front faces the
+ * world's 45° diagonal (FACE_CAMERA_Y in egg.ts); the camera sits a little
+ * off that diagonal so the mark stays readable while the form stays 3D.
  *
- * A gentle wobble (seeded sine pair, deterministic) runs continuously and
- * never stops — the ambient floor, plus a slow amplitude ramp as the hatch
- * approaches so the phone telegraphs what the world is about to do.
+ * Mobile discipline: one WebGL context per mount, devicePixelRatio capped
+ * at 2, ResizeObserver drives the backing store, and the loop pauses while
+ * document.hidden. Renderer and egg dispose on unmount.
  */
 
-import { renderStrokesPartial } from '../../draw/render';
+import { PerspectiveCamera, Scene, WebGLRenderer } from 'three';
+import { createEgg, EGG_HEIGHT } from '../../egg/egg';
 import type { StrokeList } from '../../shape/types';
-import { MOTION, SURFACE, WORLD } from '../../taste/tokens';
-import { hash01, strokeSeed } from '../seed';
+import { MOTION, WORLD, SURFACE } from '../../taste/tokens';
+import { createLighting } from '../../world/lighting';
 import type { Screen } from '../states';
 
 // ── Pure helpers (unit-tested in test/phone) ────────────────────────────────
@@ -29,15 +33,30 @@ export function countdownLabel(remainingMs: number | null): string {
 }
 
 /**
- * Continuous egg wobble, radians. Two incommensurate seeded sines — a rock
- * that drifts and never repeats crisply, and never stops. Deterministic per
- * seed, paced by t.ambient.
+ * Hatch progress 0→1 as the countdown advances — the same mapping the world
+ * uses (src/main.ts: elapsed / total). The phone holds a deadline and the
+ * timer's initial span, so progress is 1 - remaining/initial, clamped.
+ * Unknown timer → 0: the egg rests at its base wobble.
  */
-export function eggWobble(nowMs: number, seed: number): number {
-  const base = (Math.PI * 2 * nowMs) / MOTION.ambientMs;
-  const p1 = hash01(seed * 12.97) * Math.PI * 2;
-  const p2 = hash01(seed * 31.41) * Math.PI * 2;
-  return 0.03 * Math.sin(base * 0.42 + p1) + 0.017 * Math.sin(base * 0.19 + p2);
+export function hatchProgress(
+  remainingMs: number | null,
+  initialMs: number | null,
+): number {
+  if (remainingMs === null || initialMs === null || initialMs <= 0) return 0;
+  return Math.min(1, Math.max(0, 1 - remainingMs / initialMs));
+}
+
+/** Teaser ceiling for the pre-hatch cracks — mirrors the world's value. */
+export const CRACK_TEASER = 0.3;
+
+/**
+ * Hairline cracks tease in late, exactly as the world scrubs them:
+ * CRACK_TEASER · smoothstep(0.62, 1, p). Zero until the final stretch,
+ * drifting up to the teaser ceiling — never a step.
+ */
+export function crackTeaser(p: number): number {
+  const t = Math.min(1, Math.max(0, (p - 0.62) / (1 - 0.62)));
+  return CRACK_TEASER * t * t * (3 - 2 * t);
 }
 
 // ── Screen ──────────────────────────────────────────────────────────────────
@@ -58,7 +77,14 @@ export interface WaitScreenHandle extends Screen {
 }
 
 const STYLE_ID = 'wait-screen-style';
-const OFFSCREEN_SIZE = 512;
+
+/** Camera: slight three-quarter off the painted front (which faces the
+ * world's 45° diagonal), tipped gently down so the shell reads volumetric. */
+const CAMERA_FOV = 28;
+const CAMERA_AZIMUTH = Math.PI / 4 + 0.22;
+const CAMERA_ELEVATION = 0.3;
+const CAMERA_DISTANCE = 7.6;
+const LOOK_Y = EGG_HEIGHT * 0.5;
 
 // Stroke-only crack squiggle inside an egg outline — soft curves, no
 // rectilinear geometry (icon mark, TASTE §4).
@@ -77,15 +103,21 @@ function ensureStyle(): void {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 6vmin;
+  gap: 5vmin;
   width: 100%;
   height: 100%;
+  box-sizing: border-box;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 2vmin);
+  padding-left: env(safe-area-inset-left, 0px);
   background: ${SURFACE.ground};
 }
 .wait-egg {
-  width: min(52vmin, 320px);
-  aspect-ratio: 0.8;
+  width: min(60vmin, 380px);
+  aspect-ratio: 0.85;
   display: block;
+  touch-action: none;
 }
 .wait-countdown {
   color: ${WORLD.ink};
@@ -107,6 +139,7 @@ function ensureStyle(): void {
   border: 1px solid ${WORLD.ink};
   border-radius: 50%;
   cursor: pointer;
+  touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
   transition: opacity ${MOTION.tertiaryMs}ms ${MOTION.settleCurve};
 }
@@ -114,6 +147,9 @@ function ensureStyle(): void {
   opacity: 0.3;
   cursor: default;
   pointer-events: none;
+}
+.wait-hatch:active {
+  opacity: 0.55;
 }
 .wait-hatch svg {
   width: 24px;
@@ -160,20 +196,45 @@ export function mountWaitScreen(
   root.append(canvas, countdown, hatchButton);
   container.appendChild(root);
 
-  const ctx = canvas.getContext('2d');
-  const offscreen = document.createElement('canvas');
-  offscreen.width = OFFSCREEN_SIZE;
-  offscreen.height = OFFSCREEN_SIZE;
-  const offCtx = offscreen.getContext('2d');
+  // ── The 3D egg: same module, same lighting recipe as the world ────────────
+  // One WebGL context per mount — created here, disposed in destroy(), never
+  // recreated mid-slide.
+  const egg = createEgg(options.strokes);
+  const renderer = new WebGLRenderer({ canvas, antialias: true, alpha: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setClearAlpha(0); // the screen's ground shows through
 
-  const seed = strokeSeed(options.strokes);
+  const scene = new Scene();
+  scene.add(createLighting(), egg.group);
+
+  const camera = new PerspectiveCamera(CAMERA_FOV, 0.85, 0.1, 100);
+  camera.position.set(
+    Math.sin(CAMERA_AZIMUTH) * Math.cos(CAMERA_ELEVATION) * CAMERA_DISTANCE,
+    LOOK_Y + Math.sin(CAMERA_ELEVATION) * CAMERA_DISTANCE,
+    Math.cos(CAMERA_AZIMUTH) * Math.cos(CAMERA_ELEVATION) * CAMERA_DISTANCE,
+  );
+  camera.lookAt(0, LOOK_Y, 0);
+
+  const size = (): void => {
+    const rect = canvas.getBoundingClientRect();
+    const w = Math.max(1, Math.round(rect.width));
+    const h = Math.max(1, Math.round(rect.height));
+    renderer.setSize(w, h, false);
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+  };
+  size();
+  const observer = new ResizeObserver(size);
+  observer.observe(canvas);
+
+  // ── Countdown + loop ──────────────────────────────────────────────────────
   const mountedAt = performance.now();
   let deadline = options.hatchInMs === null ? null : mountedAt + options.hatchInMs;
   let initialMs = options.hatchInMs;
   let fired = false;
   let lastLabel = '';
-  let lastPaintT = -1;
   let raf = 0;
+  let last = mountedAt;
 
   const fireHatch = (): void => {
     if (fired) return;
@@ -186,6 +247,8 @@ export function mountWaitScreen(
 
   const frame = (now: number): void => {
     raf = requestAnimationFrame(frame);
+    const dt = Math.min(now - last, 100);
+    last = now;
 
     // Countdown line + auto-hatch.
     const remaining = deadline === null ? null : deadline - now;
@@ -196,71 +259,33 @@ export function mountWaitScreen(
     }
     if (remaining !== null && remaining <= 0) fireHatch();
 
-    // Paint-on progress over t.primary — the same reveal the world plays.
-    const paintT = Math.min(1, (now - mountedAt) / MOTION.primaryMs);
-    if (offCtx && paintT !== lastPaintT) {
-      renderStrokesPartial(offCtx, options.strokes, OFFSCREEN_SIZE, paintT);
-      lastPaintT = paintT;
-    }
+    // The world's mapping: wobble ramps with progress, cracks tease in late.
+    const p = hatchProgress(remaining, initialMs);
+    egg.setHatchProgress(p);
+    egg.crack(crackTeaser(p));
 
-    if (!ctx) return;
-    const rect = canvas.getBoundingClientRect();
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const w = Math.max(1, rect.width);
-    const h = Math.max(1, rect.height);
-    const bw = Math.round(w * dpr);
-    const bh = Math.round(h * dpr);
-    if (canvas.width !== bw || canvas.height !== bh) {
-      canvas.width = bw;
-      canvas.height = bh;
-    }
-
-    // Wobble ramps up as the hatch approaches (PLAN §4: the world
-    // telegraphs what's coming; the phone echoes it).
-    let urgency = 0;
-    if (remaining !== null && initialMs !== null && initialMs > 0) {
-      urgency = Math.min(1, Math.max(0, 1 - remaining / initialMs));
-    }
-    const rot = eggWobble(now, seed) * (1 + 0.9 * urgency);
-
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, w, h);
-
-    // Pivot at the egg's base so it rocks like a shell on the ground.
-    ctx.save();
-    ctx.translate(w / 2, h * 0.96);
-    ctx.rotate(rot);
-
-    const rx = w * 0.42;
-    const ry = h * 0.44;
-    const cy = -(ry + h * 0.03);
-
-    const eggPath = (): void => {
-      ctx.beginPath();
-      ctx.ellipse(0, cy, rx, ry, 0, 0, Math.PI * 2);
-    };
-
-    eggPath();
-    ctx.fillStyle = WORLD.light;
-    ctx.fill();
-
-    // The drawing, clipped to the shell. Offscreen ground and shell fill
-    // share the same value, so only the ink reads — paint on shell.
-    ctx.save();
-    eggPath();
-    ctx.clip();
-    const s = rx * 1.9;
-    ctx.drawImage(offscreen, -s / 2, cy - s / 2, s, s);
-    ctx.restore();
-
-    eggPath();
-    ctx.strokeStyle = WORLD.ink;
-    ctx.lineWidth = 1.25;
-    ctx.stroke();
-
-    ctx.restore();
+    egg.update(dt, now);
+    renderer.render(scene, camera);
   };
-  raf = requestAnimationFrame(frame);
+
+  // Pause the loop while hidden (battery); resume without a dt lurch.
+  const running = (): boolean => raf !== 0;
+  const start = (): void => {
+    if (running()) return;
+    last = performance.now();
+    raf = requestAnimationFrame(frame);
+  };
+  const stop = (): void => {
+    if (!running()) return;
+    cancelAnimationFrame(raf);
+    raf = 0;
+  };
+  const onVisibility = (): void => {
+    if (document.hidden) stop();
+    else start();
+  };
+  document.addEventListener('visibilitychange', onVisibility);
+  if (!document.hidden) start();
 
   return {
     setHatchIn(ms: number): void {
@@ -273,7 +298,11 @@ export function mountWaitScreen(
       }
     },
     destroy(): void {
-      cancelAnimationFrame(raf);
+      stop();
+      document.removeEventListener('visibilitychange', onVisibility);
+      observer.disconnect();
+      egg.dispose();
+      renderer.dispose();
       root.remove();
     },
   };

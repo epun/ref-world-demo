@@ -7,6 +7,9 @@ import { describe, expect, it } from 'vitest';
 import {
   BORDER_WAVER,
   MAP_INSET,
+  MAP_MARK_BASE_PX,
+  mapBorderInset,
+  mapMarkScale,
   nearestAngleTarget,
   peerDotRadius,
   wavyBorderPoints,
@@ -60,6 +63,43 @@ describe('peerDotRadius', () => {
   it('caps so a busy room cannot flood the field', () => {
     expect(peerDotRadius(10_000)).toBeLessThanOrEqual(8);
     expect(peerDotRadius(0)).toBeCloseTo(peerDotRadius(1));
+  });
+
+  it('shrinks proportionally with the mark scale', () => {
+    expect(peerDotRadius(1, 0.5)).toBeCloseTo(peerDotRadius(1) * 0.5);
+    expect(peerDotRadius(4, 0.6)).toBeCloseTo(peerDotRadius(4) * 0.6);
+    // default scale is the tuned size
+    expect(peerDotRadius(3)).toBeCloseTo(peerDotRadius(3, 1));
+  });
+});
+
+describe('mapMarkScale', () => {
+  it('is 1 at and above the tuned baseline — a big map never inflates', () => {
+    expect(mapMarkScale(MAP_MARK_BASE_PX)).toBe(1);
+    expect(mapMarkScale(MAP_MARK_BASE_PX * 2)).toBe(1);
+  });
+
+  it('shrinks proportionally below the baseline', () => {
+    expect(mapMarkScale(MAP_MARK_BASE_PX * 0.75)).toBeCloseTo(0.75);
+    expect(mapMarkScale(160)).toBeCloseTo(160 / MAP_MARK_BASE_PX);
+  });
+
+  it('floors at 0.5 so the smallest inset stays legible', () => {
+    expect(mapMarkScale(40)).toBe(0.5);
+    expect(mapMarkScale(0)).toBe(0.5);
+  });
+});
+
+describe('mapBorderInset', () => {
+  it('shrinks with the mark scale from the full inset', () => {
+    expect(mapBorderInset(1)).toBeCloseTo(MAP_INSET);
+    expect(mapBorderInset(0.8)).toBeLessThan(mapBorderInset(1));
+  });
+
+  it('never dips below the waver amplitude plus hairline clearance', () => {
+    for (const scale of [0.5, 0.2, 0.01, 0]) {
+      expect(mapBorderInset(scale)).toBeGreaterThan(BORDER_WAVER);
+    }
   });
 });
 

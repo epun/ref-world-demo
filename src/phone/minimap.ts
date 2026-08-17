@@ -39,11 +39,33 @@ export function worldToMap(
 /**
  * Peer marks scale with the cluster count they fold in (RosterEntry.n):
  * clusters read bigger, sqrt keeps the growth gentle, and a cap keeps a busy
- * room from flooding the field.
+ * room from flooding the field. `scale` shrinks every mark proportionally
+ * when the map draws small (the corner inset) — quiet, still legible.
  */
-export function peerDotRadius(n: number): number {
+export function peerDotRadius(n: number, scale = 1): number {
   const count = Math.max(1, n);
-  return Math.min(8, 2.2 + 1.5 * Math.sqrt(count - 1));
+  return Math.min(8, 2.2 + 1.5 * Math.sqrt(count - 1)) * scale;
+}
+
+/** Map width the mark sizes above were tuned at, CSS px. */
+export const MAP_MARK_BASE_PX = 240;
+
+/**
+ * Mark scale for a map drawn `mapPx` wide: proportional below the tuned
+ * baseline, capped at 1 (a big map never inflates its marks), floored at
+ * 0.5 so dots and the self-marker ring stay legible on the smallest inset.
+ */
+export function mapMarkScale(mapPx: number): number {
+  return Math.min(1, Math.max(0.5, mapPx / MAP_MARK_BASE_PX));
+}
+
+/**
+ * Border inset for a scaled map — shrinks with the marks so the small inset
+ * map keeps its field, but never dips below the waver amplitude plus a
+ * hairline's clearance (the border must not clip the canvas).
+ */
+export function mapBorderInset(scale: number): number {
+  return Math.max(BORDER_WAVER + 2.4, MAP_INSET * scale);
 }
 
 /**

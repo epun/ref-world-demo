@@ -9,14 +9,18 @@
  *   portrait, hairline circular borders, ≥44px hit areas. A tap thickens the
  *   tapped ring briefly on the tertiary token — acknowledgement without a
  *   bounce.
- * - MINIMAP: top-down canvas — ground field inside a deterministic
- *   hand-wavering border, peers as neutral dots (clusters read bigger), you
- *   as the near-black dot with the accent ring: the single accent element on
- *   this screen (TASTE §6). Pose updates settle through ζ≥1 springs so the
- *   marker never jitters or snaps.
+ * - MINIMAP: a SMALL corner inset (~24vmin) — the portrait is the screen,
+ *   the map is a glance. Top-down canvas: ground field inside a
+ *   deterministic hand-wavering border, peers as neutral dots (clusters
+ *   read bigger), you as the near-black dot inside a near-black halo ring —
+ *   the map's most distinct marker without hue (the warm accent is retired:
+ *   TASTE §6, black-and-white ruling). Pose updates settle through ζ≥1
+ *   springs so the marker never jitters or snaps. Mark sizes scale down
+ *   with the inset so it stays legible but quiet.
  *
- * One hairline rule divides the portrait region from the minimap region —
- * TASTE §4's "reserve a single hairline rule to divide the frame".
+ * No dividing rule in this layout: the inset floats in the portrait's
+ * field, so there are no two regions to divide. TASTE §4 *reserves* a
+ * single hairline rule — it does not demand one be shown.
  */
 
 import { OrthographicCamera, Scene, WebGLRenderer } from 'three';
@@ -33,7 +37,8 @@ import type { StrokeList } from '../../shape/types';
 import { CHARACTER, MOTION, SURFACE, WORLD } from '../../taste/tokens';
 import { createLighting } from '../../world/lighting';
 import {
-  MAP_INSET,
+  mapBorderInset,
+  mapMarkScale,
   nearestAngleTarget,
   peerDotRadius,
   wavyBorderPoints,
@@ -94,20 +99,25 @@ function ensureStyle(): void {
   style.id = STYLE_ID;
   style.textContent = `
 .alive-screen {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 4vmin;
+  gap: 3vmin;
   width: 100%;
-  min-height: 100%;
+  height: 100%;
   box-sizing: border-box;
-  padding: 5vmin 0;
+  overflow: hidden;
+  padding: calc(env(safe-area-inset-top, 0px) + 3vmin)
+    calc(env(safe-area-inset-right, 0px) + 3vmin)
+    calc(env(safe-area-inset-bottom, 0px) + 3vmin)
+    calc(env(safe-area-inset-left, 0px) + 3vmin);
   background: ${SURFACE.canvas};
 }
 .alive-wheel {
   position: relative;
-  width: min(78vmin, 460px);
+  width: min(80vmin, 460px);
   aspect-ratio: 1;
 }
 .alive-portrait {
@@ -118,6 +128,7 @@ function ensureStyle(): void {
   width: 52%;
   aspect-ratio: 1;
   display: block;
+  touch-action: none;
 }
 .alive-emote {
   position: absolute;
@@ -128,6 +139,7 @@ function ensureStyle(): void {
   border: none;
   color: ${WORLD.ink};
   cursor: pointer;
+  touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
 }
 .alive-emote svg {
@@ -138,7 +150,8 @@ function ensureStyle(): void {
 .alive-emote-ring {
   transition: stroke-width ${MOTION.tertiaryMs}ms ${MOTION.settleCurve};
 }
-.alive-emote-acked .alive-emote-ring {
+.alive-emote-acked .alive-emote-ring,
+.alive-emote:active .alive-emote-ring {
   stroke-width: 2.4;
 }
 .alive-name {
@@ -149,15 +162,14 @@ function ensureStyle(): void {
   letter-spacing: 0.02em;
   min-height: 1.2em;
 }
-.alive-rule {
-  width: min(64vmin, 400px);
-  height: 0;
-  border-top: 1px solid ${WORLD.ink};
-}
 .alive-map {
-  width: min(64vmin, 400px);
-  aspect-ratio: 1.4;
+  position: absolute;
+  right: calc(env(safe-area-inset-right, 0px) + 4vmin);
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 4vmin);
+  width: clamp(88px, 24vmin, 160px);
+  aspect-ratio: 1;
   display: block;
+  touch-action: none;
 }
 `;
   document.head.appendChild(style);
@@ -268,14 +280,11 @@ export function mountAliveScreen(
   const nameLine = document.createElement('div');
   nameLine.className = 'alive-name';
 
-  const rule = document.createElement('div');
-  rule.className = 'alive-rule';
-
   const mapCanvas = document.createElement('canvas');
   mapCanvas.className = 'alive-map';
   mapCanvas.setAttribute('aria-label', 'minimap');
 
-  root.append(wheel, nameLine, rule, mapCanvas);
+  root.append(wheel, nameLine, mapCanvas);
   container.appendChild(root);
 
   // ── Portrait: the local deterministic pipeline (PLAN §6.3) ────────────────
@@ -310,7 +319,10 @@ export function mountAliveScreen(
     renderer.setSize(size, size, false);
   };
   sizePortrait();
-  window.addEventListener('resize', sizePortrait);
+  // ResizeObserver, not window.resize: catches orientation changes and any
+  // layout-driven size shift, on the element that actually changed.
+  const portraitObserver = new ResizeObserver(sizePortrait);
+  portraitObserver.observe(portraitCanvas);
 
   // ── Minimap state ─────────────────────────────────────────────────────────
   const mapCtx = mapCanvas.getContext('2d');
@@ -340,13 +352,17 @@ export function mountAliveScreen(
     mapCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
     mapCtx.clearRect(0, 0, w, h);
 
+    // Marks and insets shrink with the small corner map (minimap.ts).
+    const scale = mapMarkScale(Math.min(w, h));
+    const inset = mapBorderInset(scale);
+
     // The ambient floor: the whole map drifts imperceptibly, forever.
-    const drift = sampleDrift(now, mapSeed, 140);
+    const drift = sampleDrift(now, mapSeed, 140 * scale);
     mapCtx.translate(drift.x, drift.y);
 
-    const border = wavyBorderPoints(w, h, MAP_INSET, mapSeed);
+    const border = wavyBorderPoints(w, h, inset, mapSeed);
     const extent = roster ? roster.extent : LOCAL_EXTENT;
-    const frame: MapFrame = { w, h, inset: MAP_INSET + 5 };
+    const frame: MapFrame = { w, h, inset: inset + 5 * scale };
 
     // Ground field inside the border — the mid-toned world value.
     traceLoop(mapCtx, border);
@@ -364,13 +380,14 @@ export function mountAliveScreen(
       for (const entry of roster.peers) {
         const at = worldToMap(entry.x, entry.z, extent, frame);
         mapCtx.beginPath();
-        mapCtx.arc(at.px, at.py, peerDotRadius(entry.n), 0, Math.PI * 2);
+        mapCtx.arc(at.px, at.py, peerDotRadius(entry.n, scale), 0, Math.PI * 2);
         mapCtx.fill();
       }
     }
 
-    // You: near-black dot + the accent ring — the single accent element on
-    // this screen (TASTE §6; nothing else here may use it).
+    // You: near-black dot + a near-black ring with a light gap between —
+    // the accent is retired (TASTE §6, black-and-white ruling), so the halo
+    // read alone keeps this the most distinct marker on the map.
     if (hasPose) {
       const x = springX.update(dt);
       const z = springZ.update(dt);
@@ -379,22 +396,28 @@ export function mountAliveScreen(
 
       mapCtx.fillStyle = CHARACTER.body;
       mapCtx.beginPath();
-      mapCtx.arc(at.px, at.py, 3.2, 0, Math.PI * 2);
+      mapCtx.arc(at.px, at.py, 3.2 * scale, 0, Math.PI * 2);
       mapCtx.fill();
 
       // Heading tick, just outside the ring.
       mapCtx.strokeStyle = CHARACTER.body;
-      mapCtx.lineWidth = 1.4;
+      mapCtx.lineWidth = Math.max(1, 1.4 * scale);
       mapCtx.lineCap = 'round';
       mapCtx.beginPath();
-      mapCtx.moveTo(at.px + Math.cos(heading) * 7.5, at.py + Math.sin(heading) * 7.5);
-      mapCtx.lineTo(at.px + Math.cos(heading) * 11, at.py + Math.sin(heading) * 11);
+      mapCtx.moveTo(
+        at.px + Math.cos(heading) * 7.5 * scale,
+        at.py + Math.sin(heading) * 7.5 * scale,
+      );
+      mapCtx.lineTo(
+        at.px + Math.cos(heading) * 11 * scale,
+        at.py + Math.sin(heading) * 11 * scale,
+      );
       mapCtx.stroke();
 
-      mapCtx.strokeStyle = CHARACTER.accent;
-      mapCtx.lineWidth = 1.4;
+      mapCtx.strokeStyle = CHARACTER.body;
+      mapCtx.lineWidth = Math.max(1, 1.4 * scale);
       mapCtx.beginPath();
-      mapCtx.arc(at.px, at.py, 6, 0, Math.PI * 2);
+      mapCtx.arc(at.px, at.py, 6 * scale, 0, Math.PI * 2);
       mapCtx.stroke();
     }
 
@@ -408,6 +431,7 @@ export function mountAliveScreen(
   };
 
   // ── One loop drives portrait drift and the minimap ────────────────────────
+  // Paused while document.hidden (battery); resumes without a dt lurch.
   let raf = 0;
   let last = performance.now();
   const frame = (now: number): void => {
@@ -421,7 +445,22 @@ export function mountAliveScreen(
     }
     drawMap(dt, now);
   };
-  raf = requestAnimationFrame(frame);
+  const start = (): void => {
+    if (raf !== 0) return;
+    last = performance.now();
+    raf = requestAnimationFrame(frame);
+  };
+  const stop = (): void => {
+    if (raf === 0) return;
+    cancelAnimationFrame(raf);
+    raf = 0;
+  };
+  const onVisibility = (): void => {
+    if (document.hidden) stop();
+    else start();
+  };
+  document.addEventListener('visibilitychange', onVisibility);
+  if (!document.hidden) start();
 
   return {
     setPose(msg: PoseMsg): void {
@@ -443,8 +482,9 @@ export function mountAliveScreen(
       nameLine.textContent = name.toLowerCase();
     },
     destroy(): void {
-      cancelAnimationFrame(raf);
-      window.removeEventListener('resize', sizePortrait);
+      stop();
+      document.removeEventListener('visibilitychange', onVisibility);
+      portraitObserver.disconnect();
       springX.dispose();
       springZ.dispose();
       springH.dispose();

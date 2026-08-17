@@ -1,10 +1,16 @@
 /**
- * Wait-screen pure logic: the lowercase countdown line and the deterministic
- * egg wobble (continuous, bounded, never zero-amplitude for long).
+ * Wait-screen pure logic: the lowercase countdown line, the countdown→hatch
+ * progress mapping (the same elapsed/total read the world uses), and the
+ * late crack teaser scrub.
  */
 
 import { describe, expect, it } from 'vitest';
-import { countdownLabel, eggWobble } from '../../src/phone/screens/wait';
+import {
+  countdownLabel,
+  crackTeaser,
+  CRACK_TEASER,
+  hatchProgress,
+} from '../../src/phone/screens/wait';
 
 describe('countdownLabel', () => {
   it('reads lowercase and rounds seconds up', () => {
@@ -27,24 +33,61 @@ describe('countdownLabel', () => {
   });
 });
 
-describe('eggWobble', () => {
-  it('is deterministic per seed and time', () => {
-    expect(eggWobble(1234, 7.7)).toBe(eggWobble(1234, 7.7));
-    expect(eggWobble(1234, 7.7)).not.toBe(eggWobble(1234, 8.8));
+describe('hatchProgress', () => {
+  it('is the world mapping: elapsed over total', () => {
+    expect(hatchProgress(20_000, 20_000)).toBe(0);
+    expect(hatchProgress(10_000, 20_000)).toBeCloseTo(0.5);
+    expect(hatchProgress(5_000, 20_000)).toBeCloseTo(0.75);
+    expect(hatchProgress(0, 20_000)).toBe(1);
   });
 
-  it('stays gentle — bounded well under a radian', () => {
-    for (let t = 0; t < 60_000; t += 250) {
-      expect(Math.abs(eggWobble(t, 7.7))).toBeLessThan(0.06);
+  it('clamps to [0, 1]', () => {
+    expect(hatchProgress(-3_000, 20_000)).toBe(1);
+    expect(hatchProgress(30_000, 20_000)).toBe(0);
+  });
+
+  it('rests at 0 while the timer is unknown or degenerate', () => {
+    expect(hatchProgress(null, 20_000)).toBe(0);
+    expect(hatchProgress(10_000, null)).toBe(0);
+    expect(hatchProgress(10_000, 0)).toBe(0);
+    expect(hatchProgress(null, null)).toBe(0);
+  });
+
+  it('is monotone as the countdown advances', () => {
+    let prev = -1;
+    for (let remaining = 20_000; remaining >= 0; remaining -= 500) {
+      const p = hatchProgress(remaining, 20_000);
+      expect(p).toBeGreaterThanOrEqual(prev);
+      prev = p;
+    }
+  });
+});
+
+describe('crackTeaser', () => {
+  it('holds zero until the final stretch (p < 0.62)', () => {
+    for (const p of [0, 0.2, 0.5, 0.62]) {
+      expect(crackTeaser(p)).toBe(0);
     }
   });
 
-  it('never stops — motion over any 2s idle window (stillness probe)', () => {
-    for (let start = 0; start < 30_000; start += 2000) {
-      const a = eggWobble(start, 7.7);
-      const b = eggWobble(start + 1000, 7.7);
-      const c = eggWobble(start + 2000, 7.7);
-      expect(a === b && b === c).toBe(false);
+  it('drifts up to the teaser ceiling at p = 1, never beyond', () => {
+    expect(crackTeaser(1)).toBeCloseTo(CRACK_TEASER);
+    expect(crackTeaser(2)).toBeCloseTo(CRACK_TEASER);
+    for (let p = 0; p <= 1; p += 0.01) {
+      expect(crackTeaser(p)).toBeLessThanOrEqual(CRACK_TEASER + 1e-9);
+      expect(crackTeaser(p)).toBeGreaterThanOrEqual(0);
     }
+  });
+
+  it('is monotone and smooth — no step at the threshold', () => {
+    let prev = 0;
+    for (let p = 0; p <= 1.0001; p += 0.005) {
+      const c = crackTeaser(p);
+      expect(c).toBeGreaterThanOrEqual(prev - 1e-12);
+      prev = c;
+    }
+    // smoothstep: zero slope entering the ramp — the value just past the
+    // threshold is still nearly zero.
+    expect(crackTeaser(0.63)).toBeLessThan(0.003);
   });
 });
