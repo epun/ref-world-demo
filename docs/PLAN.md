@@ -259,7 +259,7 @@ settle, so the marker never jitters or snaps.
 
 - **Camera**: orthographic, true isometric (35.264° elevation / 45° azimuth), holding an
   imperceptibly slow **continuous drift**. It never locks, never shakes, never cuts. Reframes
-  slide at `t.primary` and settle by drifting.
+  slide at `t.primary` and settle by drifting. Follow policy is in §7.1.
 - **Ground**: cream `#e9e5db`. Never pure white.
 - **Scatter**: repeated small hand-drawn units — trees, rocks, huts, birds, doodads —
   authored as silhouettes and run through the **same inflater** as the characters. Placement
@@ -274,9 +274,41 @@ settle, so the marker never jitters or snaps.
 - **Scale is the subject.** The world brief's whole thesis is a tiny inhabitant in an
   enormous field. Characters render small. Resist the urge to frame them close.
 
-### Flat map vs sphere planet
+### 7.1 A huge map, roamed freely — *(decided)*
 
-Build the flat isometric map first, behind a surface abstraction:
+No population cap. The map is large enough that characters naturally disperse and rarely
+share a frame, so the "tiny inhabitant in an enormous field" thesis holds locally at any
+point on it rather than being enforced by a despawn rule. Three things follow, and each is
+real work rather than a free consequence:
+
+**The camera has to choose.** With characters spread across a huge map, there's no single
+framing that contains them. The answer is a **slow continuous tour**: the camera drifts
+across the world on its own, easing near clusters and lone wanderers, dwelling, then moving
+on. It never cuts between subjects — a cut is forbidden anyway (TASTE §2.1), and the
+constraint turns out to be the feature. A tour *is* the world brief's reading order:
+one small figure, then a field, then another small figure.
+
+Hatches interrupt the tour by **sliding** the camera over at `t.primary`. That's the one
+event important enough to redirect it.
+
+**Wander behavior has to actively disperse.** Characters can't random-walk, or they clump
+around spawn. Each gets a roam target biased away from other characters and toward
+unvisited regions — dispersal is a gameplay system, not an emergent hope.
+
+**The world has to be chunked.** Spatial partitioning so only nearby characters simulate at
+full rate and only nearby scatter renders. Distant characters tick at a reduced rate and
+render as simplified silhouettes; the inflated mesh is LOD'd down. This is the main perf
+risk in the whole plan and it lands in P5.
+
+**The minimap absorbs the crowding.** This is where a busy world actually shows, so the
+minimap does the work: **you** are `#080808` with the `#fb5429` ring, always distinct at any
+zoom; everyone else is muted `#8e908d` and clusters into a single softer mark below a
+distance threshold. The map stays legible because it never tries to distinguish other
+players from each other.
+
+### 7.2 Flat map first, sphere behind a seam — *(decided)*
+
+Build the flat isometric map, but write locomotion against a surface abstraction from day one:
 
 ```ts
 interface Surface {
@@ -286,9 +318,13 @@ interface Surface {
 }
 ```
 
-`FlatSurface` and `SphereSurface` both implement it; locomotion never touches world-space Y.
-The planet then becomes a swap, not a rewrite — and a curved horizon suits the pixel-planet
-reference in the world brief well. P5, not P0.
+`FlatSurface` ships first; `SphereSurface` implements the same interface later. **Locomotion
+never touches world-space Y** — that discipline is the entire cost of keeping the planet
+available, and it's cheap if held from the start and expensive to retrofit.
+
+A curved horizon suits the world brief's pixel-planet reference well, and it interacts
+nicely with §7.1: on a sphere, the camera tour becomes an orbit and dispersal is bounded by
+the planet's surface area. P5, not P0.
 
 ---
 
@@ -306,6 +342,10 @@ input that makes §6.3 work.
 
 **Multiplayer falls out.** Many phones, one room, one world, N characters — which is what
 the minimap requirement implies and what makes this good in a room full of people.
+
+With no population cap (§7.1), `roster` is the message that grows. It carries only what the
+minimap needs — id, position, and whether it's you — at a low tick rate, with distant peers
+already clustered server-side so a busy room doesn't push per-character data to every phone.
 
 Fallback: a same-device draw modal that bypasses the network entirely. Worth keeping
 permanently — it's the offline demo and the fast dev loop.
@@ -371,8 +411,12 @@ API (§1); a spring library (§9); Three.js shadow mapping (§7).
 | **P2** Egg | Egg mesh, stroke-replay paint-on, wobble, crack shader, hatch sequence | Draw → egg paints itself → wobbles → cracks → character drifts out |
 | **P3** Life | Archetypes, gaits, waddle, idle behavior, eye SDF, emote set | Character walks the map, waddles, emotes on command, never fully stops |
 | **P4** Phone | Worker + DO, rooms, the three phone states, emote wheel, minimap | Two phones, one world, full loop end to end |
-| **P5** World | Scatter units, hard flat shadows, density gates, sphere `Surface` | Density and contrast probes pass; planet variant swaps in |
+| **P5** World | Scatter units, hard flat shadows, density gates, camera tour, dispersal AI, chunking + LOD, sphere `Surface` | Density and contrast probes pass; a busy room stays 60fps; planet variant swaps in |
 | **P6** Polish | QA, perf, mobile, safe areas | 60fps on a mid phone; every TASTE §8 gate green |
+
+P5 absorbed the cost of the huge-map decision (§7.1) — chunking, LOD, dispersal, and the
+camera tour all land there. It's now the second-heaviest phase after P1 and should not be
+treated as a polish pass.
 
 **P1 is the risk.** Everything downstream assumes silhouette inflation produces something
 that reads as a creature, and that the `fidelity` dial has a setting where people both
@@ -389,9 +433,18 @@ set before committing to P2.
    This is genuinely a taste call and should be made by looking at P1 output, not now.
 3. **Hatch pacing.** Needs a number. Tuned for a live demo, ~90s; unattended in front of an
    audience, much shorter.
-4. **Room lifetime and capacity.** How many characters share a world before it stops reading
-   as "a tiny inhabitant in an enormous field"? The world brief's whole thesis breaks if the
-   map gets crowded — this probably wants a cap plus a despawn policy.
+4. **Camera dwell timing.** The tour (§7.1) needs a dwell duration per subject and a rule for
+   what makes a spot worth easing toward. Both want tuning against a populated world, not
+   guessing now.
+5. **Room lifetime.** Rooms persist as long as anyone's connected — but do characters survive
+   an empty room and a later rejoin, or does the world reset? Affects whether the DO needs
+   durable storage or just in-memory state.
+
+### Decided
+
+- **Crowding** — huge map, no cap, characters roam free. Costs chunking, LOD, dispersal AI,
+  and a touring camera; see §7.1.
+- **Topology** — flat map first, `SphereSurface` behind the `Surface` seam; see §7.2.
 
 ---
 
