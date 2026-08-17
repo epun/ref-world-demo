@@ -27,17 +27,22 @@ const CAMERA_DISTANCE = 120;
 /** Stable seed for the camera's own ambient drift channel. */
 const DRIFT_SEED = 41.7;
 
+/** Zoom bounds: multiplier on the base frustum (higher = closer). */
+const ZOOM_MIN = 0.45;
+const ZOOM_MAX = 2.6;
+
 export class CameraRig {
   readonly camera: OrthographicCamera;
 
   private readonly targetX: Spring;
   private readonly targetZ: Spring;
+  /** View azimuth — rotatable by the user; elevation stays locked at iso. */
+  private readonly azimuthSpring: Spring;
+  /** Ortho zoom multiplier; wheel retargets (drift settle), pinch is 1:1. */
+  private readonly zoomSpring: Spring;
+  private zoomTarget = 1;
   private readonly lookTarget = new Vector3();
-  private readonly offset = new Vector3(
-    Math.cos(ELEVATION) * Math.sin(AZIMUTH),
-    Math.sin(ELEVATION),
-    Math.cos(ELEVATION) * Math.cos(AZIMUTH),
-  ).multiplyScalar(CAMERA_DISTANCE);
+  private readonly offset = new Vector3();
 
   constructor(aspect: number) {
     const halfH = FRUSTUM_HEIGHT / 2;
@@ -46,7 +51,14 @@ export class CameraRig {
     // Reframes slide at t.primary — never snap, never cut (TASTE §2.1).
     this.targetX = new Spring(0, { settleMs: MOTION.primaryMs });
     this.targetZ = new Spring(0, { settleMs: MOTION.primaryMs });
+    // User-driven view changes settle faster than reframes but still drift.
+    this.azimuthSpring = new Spring(AZIMUTH, { settleMs: MOTION.secondaryMs });
+    this.zoomSpring = new Spring(1, { settleMs: MOTION.secondaryMs });
     this.update(0, 0);
+  }
+
+  get azimuth(): number {
+    return this.azimuthSpring.value;
   }
 
   /**
@@ -61,12 +73,38 @@ export class CameraRig {
   update(dt: number, nowMs: number): void {
     const x = this.targetX.update(dt);
     const z = this.targetZ.update(dt);
+    const az = this.azimuthSpring.update(dt);
+    const zoom = this.zoomSpring.update(dt);
+    this.offset
+      .set(Math.cos(ELEVATION) * Math.sin(az), Math.sin(ELEVATION), Math.cos(ELEVATION) * Math.cos(az))
+      .multiplyScalar(CAMERA_DISTANCE);
+    if (Math.abs(this.camera.zoom - zoom) > 1e-4) {
+      this.camera.zoom = zoom;
+      this.camera.updateProjectionMatrix();
+    }
     // The ambient floor: the look-target drifts at ~0.3% of the frame height,
     // forever. Imperceptible frame to frame; nonzero over any 2s idle sample.
     const drift = sampleDrift(nowMs, DRIFT_SEED, FRUSTUM_HEIGHT);
     this.lookTarget.set(x + drift.x, 0, z + drift.y);
     this.camera.position.copy(this.lookTarget).add(this.offset);
     this.camera.lookAt(this.lookTarget);
+  }
+
+  /** Rotate the view around the look-target (drag): direct 1:1, no rebound. */
+  rotateBy(dxPx: number): void {
+    this.azimuthSpring.reset(this.azimuthSpring.value + dxPx * 0.006);
+  }
+
+  /** Wheel zoom: retargets the spring so steps drift in — never a snap. */
+  zoomBy(factor: number): void {
+    this.zoomTarget = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, this.zoomTarget * factor));
+    this.zoomSpring.retarget(this.zoomTarget);
+  }
+
+  /** Pinch zoom: direct 1:1 while the fingers move. */
+  zoomDirect(factor: number): void {
+    this.zoomTarget = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, this.zoomTarget * factor));
+    this.zoomSpring.reset(this.zoomTarget);
   }
 
   /**
@@ -78,12 +116,13 @@ export class CameraRig {
    * keeps the frame alive. No overshoot is possible by construction.
    */
   panBy(dxPx: number, dyPx: number, viewportHeight: number): void {
-    const unitsPerPx = FRUSTUM_HEIGHT / Math.max(1, viewportHeight);
+    const az = this.azimuthSpring.value;
+    const unitsPerPx = FRUSTUM_HEIGHT / Math.max(1, viewportHeight) / Math.max(0.01, this.camera.zoom);
     // Content follows the finger: dragging right moves the look-target left.
-    const rightX = Math.cos(AZIMUTH);
-    const rightZ = -Math.sin(AZIMUTH);
-    const fwdX = -Math.sin(AZIMUTH);
-    const fwdZ = -Math.cos(AZIMUTH);
+    const rightX = Math.cos(az);
+    const rightZ = -Math.sin(az);
+    const fwdX = -Math.sin(az);
+    const fwdZ = -Math.cos(az);
     const dx = -dxPx * unitsPerPx;
     // Vertical screen distance foreshortens by sin(elevation) on the ground.
     const dy = (dyPx * unitsPerPx) / Math.sin(ELEVATION);

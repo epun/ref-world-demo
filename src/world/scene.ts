@@ -60,32 +60,61 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
   window.addEventListener('resize', resize);
   resize();
 
-  // ── panning: drag the isometric view ─────────────────────────────────────
+  // ── view controls: pan, rotate, zoom ─────────────────────────────────────
   // Direct manipulation on the world canvas; the rig converts pixels to
-  // ground-plane units. Interruptible and 1:1 — reframes (frameAt) still
-  // slide on the springs, and the ambient drift floor runs regardless.
-  let panPointer = -1;
-  let panLastX = 0;
-  let panLastY = 0;
+  // ground-plane units. All 1:1 and interruptible — reframes (frameAt) still
+  // slide on the springs, wheel zoom drifts in on its spring, and the ambient
+  // floor runs regardless. Desktop: drag pans, shift-drag or right-drag
+  // rotates, wheel zooms. Touch: one finger pans, two fingers pinch-zoom and
+  // twist-rotate.
+  const pointers = new Map<number, { x: number; y: number }>();
+  let rotating = false;
   canvas.style.touchAction = 'none';
+  canvas.addEventListener('contextmenu', (event) => event.preventDefault());
   canvas.addEventListener('pointerdown', (event) => {
-    if (!event.isPrimary) return;
-    panPointer = event.pointerId;
-    panLastX = event.clientX;
-    panLastY = event.clientY;
+    pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    rotating = event.shiftKey || event.button === 2;
     canvas.setPointerCapture(event.pointerId);
   });
   canvas.addEventListener('pointermove', (event) => {
-    if (event.pointerId !== panPointer) return;
-    cameraRig.panBy(event.clientX - panLastX, event.clientY - panLastY, window.innerHeight);
-    panLastX = event.clientX;
-    panLastY = event.clientY;
+    const prev = pointers.get(event.pointerId);
+    if (!prev) return;
+    if (pointers.size === 1) {
+      const dx = event.clientX - prev.x;
+      const dy = event.clientY - prev.y;
+      if (rotating) cameraRig.rotateBy(dx);
+      else cameraRig.panBy(dx, dy, window.innerHeight);
+      pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    } else if (pointers.size === 2) {
+      // Pinch: zoom by distance ratio; twist: rotate by angle delta.
+      const entries = [...pointers.entries()];
+      const other = entries.find(([id]) => id !== event.pointerId);
+      if (other) {
+        const [, o] = other;
+        const beforeD = Math.hypot(prev.x - o.x, prev.y - o.y);
+        const beforeA = Math.atan2(prev.y - o.y, prev.x - o.x);
+        const afterD = Math.hypot(event.clientX - o.x, event.clientY - o.y);
+        const afterA = Math.atan2(event.clientY - o.y, event.clientX - o.x);
+        if (beforeD > 12) cameraRig.zoomDirect(afterD / beforeD);
+        cameraRig.rotateBy(((afterA - beforeA) * 180) / Math.PI);
+        pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      }
+    }
   });
-  const endPan = (event: PointerEvent): void => {
-    if (event.pointerId === panPointer) panPointer = -1;
+  const releasePointer = (event: PointerEvent): void => {
+    pointers.delete(event.pointerId);
+    if (pointers.size === 0) rotating = false;
   };
-  canvas.addEventListener('pointerup', endPan);
-  canvas.addEventListener('pointercancel', endPan);
+  canvas.addEventListener('pointerup', releasePointer);
+  canvas.addEventListener('pointercancel', releasePointer);
+  canvas.addEventListener(
+    'wheel',
+    (event) => {
+      event.preventDefault();
+      cameraRig.zoomBy(Math.exp(-event.deltaY * 0.0016));
+    },
+    { passive: false },
+  );
 
   const frameCallbacks: FrameCallback[] = [];
   let last = performance.now();
