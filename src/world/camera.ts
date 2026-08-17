@@ -69,6 +69,30 @@ export class CameraRig {
     this.camera.lookAt(this.lookTarget);
   }
 
+  /**
+   * Pan by a screen-pixel delta (user drag). Screen x maps to the camera's
+   * ground-plane right vector; screen y maps to ground-plane forward,
+   * unforeshortened by the iso elevation. Direct manipulation tracks the
+   * finger 1:1 — the springs are reset to the dragged value (velocity zero),
+   * so release simply rests where the hand left it and the ambient floor
+   * keeps the frame alive. No overshoot is possible by construction.
+   */
+  panBy(dxPx: number, dyPx: number, viewportHeight: number): void {
+    const unitsPerPx = FRUSTUM_HEIGHT / Math.max(1, viewportHeight);
+    // Content follows the finger: dragging right moves the look-target left.
+    const rightX = Math.cos(AZIMUTH);
+    const rightZ = -Math.sin(AZIMUTH);
+    const fwdX = -Math.sin(AZIMUTH);
+    const fwdZ = -Math.cos(AZIMUTH);
+    const dx = -dxPx * unitsPerPx;
+    // Vertical screen distance foreshortens by sin(elevation) on the ground.
+    const dy = (dyPx * unitsPerPx) / Math.sin(ELEVATION);
+    const wx = rightX * dx + fwdX * dy;
+    const wz = rightZ * dx + fwdZ * dy;
+    this.targetX.reset(this.targetX.value + wx);
+    this.targetZ.reset(this.targetZ.value + wz);
+  }
+
   /** Preserve the iso frustum on resize: height fixed, width follows aspect. */
   resize(width: number, height: number): void {
     const aspect = width / Math.max(1, height);

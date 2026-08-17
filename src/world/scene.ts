@@ -21,6 +21,8 @@ export type FrameCallback = (dt: number, nowMs: number) => void;
 export interface WorldHandles {
   scene: Scene;
   cameraRig: CameraRig;
+  /** The renderer, for dev-panel pixel readbacks. */
+  renderer: WebGLRenderer;
   shadows: FlatShadows;
   /** Prop scatter: exclusions come from the creature coordinator. */
   scatter: Scatter;
@@ -58,6 +60,33 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
   window.addEventListener('resize', resize);
   resize();
 
+  // ── panning: drag the isometric view ─────────────────────────────────────
+  // Direct manipulation on the world canvas; the rig converts pixels to
+  // ground-plane units. Interruptible and 1:1 — reframes (frameAt) still
+  // slide on the springs, and the ambient drift floor runs regardless.
+  let panPointer = -1;
+  let panLastX = 0;
+  let panLastY = 0;
+  canvas.style.touchAction = 'none';
+  canvas.addEventListener('pointerdown', (event) => {
+    if (!event.isPrimary) return;
+    panPointer = event.pointerId;
+    panLastX = event.clientX;
+    panLastY = event.clientY;
+    canvas.setPointerCapture(event.pointerId);
+  });
+  canvas.addEventListener('pointermove', (event) => {
+    if (event.pointerId !== panPointer) return;
+    cameraRig.panBy(event.clientX - panLastX, event.clientY - panLastY, window.innerHeight);
+    panLastX = event.clientX;
+    panLastY = event.clientY;
+  });
+  const endPan = (event: PointerEvent): void => {
+    if (event.pointerId === panPointer) panPointer = -1;
+  };
+  canvas.addEventListener('pointerup', endPan);
+  canvas.addEventListener('pointercancel', endPan);
+
   const frameCallbacks: FrameCallback[] = [];
   let last = performance.now();
 
@@ -79,6 +108,7 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
   return {
     scene,
     cameraRig,
+    renderer,
     shadows,
     scatter,
     ink,
