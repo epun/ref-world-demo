@@ -55,6 +55,9 @@ export interface DevScatterApi {
   setExclusions(points: { x: number; z: number; r: number }[]): void;
   /** Live prop placements (non-tick) — the density probe samples these. */
   positions?(): { x: number; z: number; r: number }[];
+  /** Color grade: tint prop albedos (hue 0–1, saturation 0–1) keeping each
+   * material's token lightness. Saturation 0 restores the exact greys. */
+  setTint?(hue: number, saturation: number): void;
   group?: Object3D;
 }
 
@@ -117,6 +120,9 @@ export interface DevHandles {
   setGrainAmplitude?(v: number): void;
   /** Live grain amplitude readback, for the grain gate (QA audit D6). */
   getGrainAmplitude?(): number;
+  /** Color grade for the paper field (scene background + ground disc):
+   * hue 0–1, saturation 0–1, token lightness held. */
+  setBackgroundTint?(hue: number, saturation: number): void;
   /** Spawn n deterministic fixture drawings. Defaults to an internal
    * implementation over FALLBACK_DRAWINGS when absent. */
   spawnFallback?(n: number): void;
@@ -469,9 +475,17 @@ export async function initDevPanel(
           onChange: (v) => scatter.setDensity(v),
         });
       }
+
+      // Shader style properties in their own section (user ask): the render
+      // look — grain, the ink pass, and the color grade — separated from the
+      // environment's density and scale variables.
       const setGrain = handles.setGrainAmplitude;
+      const ink = handles.ink;
+      const setBackgroundTint = handles.setBackgroundTint;
+      const setObjectTint = scatter?.setTint?.bind(scatter);
+      const style = panelUi.addFolder('shader style');
       if (setGrain) {
-        folder.addSlider('grain amplitude', {
+        style.addSlider('grain amplitude', {
           min: 0,
           max: 0.12,
           step: 0.002,
@@ -480,10 +494,9 @@ export async function initDevPanel(
           onChange: (v) => setGrain(v),
         });
       }
-      const ink = handles.ink;
       if (ink) {
         const params = ink.getParams();
-        folder.addSlider('ink edge threshold', {
+        style.addSlider('ink edge threshold', {
           min: 0.0002,
           max: 0.004,
           step: 0.0001,
@@ -491,7 +504,7 @@ export async function initDevPanel(
           id: 'ink-edge-threshold',
           onChange: (v) => ink.setParams({ edgeThreshold: v }),
         });
-        folder.addSlider('ink line width', {
+        style.addSlider('ink line width', {
           min: 0.5,
           max: 6,
           step: 0.1,
@@ -499,7 +512,7 @@ export async function initDevPanel(
           id: 'ink-line-width',
           onChange: (v) => ink.setParams({ lineWidth: v }),
         });
-        folder.addSlider('ink wobble', {
+        style.addSlider('ink wobble', {
           min: 0,
           max: 8,
           step: 0.1,
@@ -507,7 +520,7 @@ export async function initDevPanel(
           id: 'ink-wobble',
           onChange: (v) => ink.setParams({ wobble: v }),
         });
-        folder.addSlider('ink hatch strength', {
+        style.addSlider('ink hatch strength', {
           min: 0,
           max: 1,
           step: 0.05,
@@ -516,12 +529,73 @@ export async function initDevPanel(
           onChange: (v) => ink.setParams({ hatchStrength: v }),
         });
       }
+      // Color grade (user ask): hue + saturation dials for the object
+      // shaders and the paper field. Lightness is pinned to the tokens, so
+      // the measured value structure (and the toon bands) never move —
+      // saturation 0 is exactly the shipped achromatic look. No hex enters:
+      // colors are derived via setHSL around the token lightness.
+      if (setObjectTint) {
+        let objectHue = 0;
+        let objectSat = 0;
+        style.addSlider('object hue', {
+          min: 0,
+          max: 1,
+          step: 0.01,
+          value: 0,
+          id: 'object-hue',
+          onChange: (v) => {
+            objectHue = v;
+            setObjectTint(objectHue, objectSat);
+          },
+        });
+        style.addSlider('object saturation', {
+          min: 0,
+          max: 1,
+          step: 0.01,
+          value: 0,
+          id: 'object-saturation',
+          onChange: (v) => {
+            objectSat = v;
+            setObjectTint(objectHue, objectSat);
+          },
+        });
+      }
+      if (setBackgroundTint) {
+        let paperHue = 0;
+        let paperSat = 0;
+        style.addSlider('background hue', {
+          min: 0,
+          max: 1,
+          step: 0.01,
+          value: 0,
+          id: 'background-hue',
+          onChange: (v) => {
+            paperHue = v;
+            setBackgroundTint(paperHue, paperSat);
+          },
+        });
+        style.addSlider('background saturation', {
+          min: 0,
+          max: 1,
+          step: 0.01,
+          value: 0,
+          id: 'background-saturation',
+          onChange: (v) => {
+            paperSat = v;
+            setBackgroundTint(paperHue, paperSat);
+          },
+        });
+      }
+
       if (!scatter && !setGrain && !ink) {
         folder.addInfo('no environment handles were provided', 'env-empty');
       }
       return { folder };
     },
-    teardown: (panelUi) => panelUi.panel.removeFolder('environment'),
+    teardown: (panelUi) => {
+      panelUi.panel.removeFolder('environment');
+      panelUi.panel.removeFolder('shader style');
+    },
   });
 
   // ── refworld.weather — environment/weather controls (defensive) ───────────

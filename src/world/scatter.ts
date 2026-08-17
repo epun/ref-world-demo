@@ -740,6 +740,16 @@ export interface Scatter {
   nudge(x: number, z: number, strength: number): void;
   /** Live nudge slots (tests / dev panel). */
   nudgeState(): { x: number; z: number; strength: number; t0: number }[];
+  /**
+   * Dev color grade: tint every prop albedo by hue [0,1) and saturation
+   * [0,1], keeping each material's token lightness so the value structure
+   * (and the toon bands downstream) never move. Saturation 0 restores the
+   * exact achromatic tokens. Shadow stamps are deliberately excluded — the
+   * sun re-derives their one flat value every frame.
+   */
+  setTint(hue: number, saturation: number): void;
+  /** Live tint values (dev panel / tests). */
+  tintState(): { hue: number; saturation: number };
   dispose(): void;
 }
 
@@ -788,6 +798,24 @@ export function createScatter(): Scatter {
   });
   // Ticks are unlit ink marks — the only dark the environment carries.
   const tickMaterial = new MeshBasicMaterial({ color: WORLD.ink, side: DoubleSide });
+
+  // Dev color grade (see Scatter.setTint): the tintable albedos and each
+  // one's token lightness, captured once so re-tints never drift.
+  const gradedMaterials = [
+    propMaterial,
+    rockMaterial,
+    swayMaterial,
+    palmMaterial,
+    cactusMaterial,
+    tickMaterial,
+  ];
+  const gradeLightness = gradedMaterials.map((m) => {
+    const hsl = { h: 0, s: 0, l: 0 };
+    m.color.getHSL(hsl);
+    return hsl.l;
+  });
+  let tintHue = 0;
+  let tintSaturation = 0;
 
   // One shared uniform set drives every wind-injected material; setWind is
   // three value writes, never a recompile.
@@ -1033,7 +1061,10 @@ export function createScatter(): Scatter {
                   ? swayMaterial
                   : propMaterial;
         const mesh = new InstancedMesh(variants[v]!.geometry, material, of.length);
-        mesh.name = `${kind}-${v}`;
+        // Named so the ghost-panel scene outliner represents environment
+        // objects legibly, like it does each created character (user ask).
+        // The `kind-` prefix stays machine-parseable (tests split on it).
+        mesh.name = `${kind}-${v + 1} (${of.length})`;
         mesh.frustumCulled = false;
         const kMult = scaleOf(kind);
         // Rocks squash flat and wide — the anti-egg silhouette bias.
@@ -1060,7 +1091,7 @@ export function createScatter(): Scatter {
     const ticks = visible.filter((p) => p.kind === 'tick');
     if (ticks.length > 0) {
       const mesh = new InstancedMesh(tickGeometry, tickMaterial, ticks.length);
-      mesh.name = 'tick';
+      mesh.name = `grass (${ticks.length})`;
       mesh.frustumCulled = false;
       const tickMult = scaleOf('tick');
       // Ticks ride the same variation path — for them it reads as blade
@@ -1213,6 +1244,16 @@ export function createScatter(): Scatter {
       return nudgeUniforms.uNudge.value
         .filter((v) => v.z > 0)
         .map((v) => ({ x: v.x, z: v.y, strength: v.z, t0: v.w }));
+    },
+    setTint(hue: number, saturation: number): void {
+      tintHue = ((hue % 1) + 1) % 1;
+      tintSaturation = Math.min(1, Math.max(0, saturation));
+      gradedMaterials.forEach((m, i) =>
+        m.color.setHSL(tintHue, tintSaturation, gradeLightness[i]!),
+      );
+    },
+    tintState(): { hue: number; saturation: number } {
+      return { hue: tintHue, saturation: tintSaturation };
     },
     dispose(): void {
       clearMeshes();

@@ -438,9 +438,10 @@ describe('scatter placement', () => {
         expect(swayShader.uniforms['uWindStrength']).toBeDefined();
       }
 
-      // Ticks bend too — full-blade, no attribute needed.
+      // Ticks bend too — full-blade, no attribute needed. The tick mesh is
+      // named `grass (n)` for the scene outliner.
       const tick = scatter.group.children.find(
-        (o): o is InstancedMesh => o instanceof InstancedMesh && o.name === 'tick',
+        (o): o is InstancedMesh => o instanceof InstancedMesh && o.name.startsWith('grass'),
       );
       expect(tick).toBeDefined();
       const tickShader = fakeShader();
@@ -757,8 +758,9 @@ describe('instance variation', () => {
       );
 
       // Ticks reuse the same path (their length/bend jitter) plus their wind.
+      // The tick mesh carries the outliner name `grass (n)`.
       const tick = fakeShader();
-      materialFor((k) => k === 'tick').onBeforeCompile(tick as never, undefined as never);
+      materialFor((k) => k.startsWith('grass')).onBeforeCompile(tick as never, undefined as never);
       expect(tick.vertexShader).toContain('aVariation');
       expect(tick.vertexShader).toContain('uWindStrength');
     } finally {

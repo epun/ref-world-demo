@@ -6,7 +6,7 @@
  * → grain (the final paper layer). GENERATOR §ink rendering pass.
  */
 
-import { Color, Scene, WebGLRenderer } from 'three';
+import { Color, Scene, WebGLRenderer, type MeshBasicMaterial } from 'three';
 import { SURFACE } from '../taste/tokens';
 import { CameraRig } from './camera';
 import { createEnvironment, type Environment } from './environment';
@@ -42,6 +42,13 @@ export interface WorldHandles {
   grain: GrainPass;
   /** Time-of-day + weather engine (spring-glided; drives lights + ink). */
   environment: Environment;
+  /**
+   * Dev color grade for the paper field: tint the scene background and the
+   * ground disc by hue [0,1) / saturation [0,1], keeping the ground token's
+   * lightness — the value structure (and groundLuma 0.74) never moves.
+   * Saturation 0 restores the exact achromatic token.
+   */
+  setBackgroundTint(hue: number, saturation: number): void;
   /** Register per-frame work (entity drift, gaits, …). Runs before render. */
   onFrame(callback: FrameCallback): void;
 }
@@ -58,6 +65,13 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
   const backgroundBase = new Color(SURFACE.ground);
   const background = backgroundBase.clone();
   scene.background = background;
+  // Paper tint (dev color grade): the token's lightness is the anchor; the
+  // tint re-derives backgroundBase (and the ground disc) around it so the
+  // night dimming below keeps scaling a hue-true base.
+  const paperHsl = { h: 0, s: 0, l: 0 };
+  backgroundBase.getHSL(paperHsl);
+  const paperLightness = paperHsl.l;
+  let backgroundLumaScale = 1;
 
   const cameraRig = new CameraRig(window.innerWidth / window.innerHeight);
   const shadows = new FlatShadows();
@@ -66,7 +80,8 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
   const scatter = createScatter();
   const lighting = createLighting();
 
-  scene.add(createGround(), lighting.group, shadows.group, scatter.group);
+  const ground = createGround();
+  scene.add(ground, lighting.group, shadows.group, scatter.group);
 
   // Time-of-day + weather. All its setters glide through ζ≥1 springs; the
   // per-frame update pushes sun direction, light balance, exposure, fog and
@@ -75,6 +90,7 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
     lighting,
     ink,
     setBackground: (lumaScale: number): void => {
+      backgroundLumaScale = lumaScale;
       background.copy(backgroundBase).multiplyScalar(lumaScale);
     },
   });
@@ -197,6 +213,13 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
     ink,
     grain,
     environment,
+    setBackgroundTint: (hue: number, saturation: number): void => {
+      const h = ((hue % 1) + 1) % 1;
+      const s = Math.min(1, Math.max(0, saturation));
+      backgroundBase.setHSL(h, s, paperLightness);
+      background.copy(backgroundBase).multiplyScalar(backgroundLumaScale);
+      (ground.material as MeshBasicMaterial).color.copy(backgroundBase);
+    },
     onFrame: (callback: FrameCallback): void => {
       frameCallbacks.push(callback);
     },
