@@ -31,13 +31,25 @@ const DRIFT_SEED = 41.7;
 const ZOOM_MIN = 0.45;
 const ZOOM_MAX = 2.6;
 
+/** OrbitControls dampingFactor 0.05 at 60hz ≈ exp decay with this τ. */
+const ORBIT_DAMPING_TAU_MS = 325;
+/** Elevation clamps: never under the ground plane, never over the pole. */
+const ELEVATION_MIN = 0.12;
+const ELEVATION_MAX = 1.45;
+
 export class CameraRig {
   readonly camera: OrthographicCamera;
 
   private readonly targetX: Spring;
   private readonly targetZ: Spring;
-  /** View azimuth — rotatable by the user; elevation stays locked at iso. */
-  private readonly azimuthSpring: Spring;
+  /** Orbit rotation, OrbitControls-style (the cellshader reference feel):
+   * drag adjusts targets 1:1, values approach on exponential damping —
+   * overshoot-free by construction. Both axes rotate; elevation clamps so
+   * the view never dives under the ground or over the pole. */
+  private azimuthValue = AZIMUTH;
+  private azimuthTarget = AZIMUTH;
+  private elevationValue = ELEVATION;
+  private elevationTarget = ELEVATION;
   /** Ortho zoom multiplier; wheel retargets (drift settle), pinch is 1:1. */
   private readonly zoomSpring: Spring;
   private zoomTarget = 1;
@@ -51,14 +63,17 @@ export class CameraRig {
     // Reframes slide at t.primary — never snap, never cut (TASTE §2.1).
     this.targetX = new Spring(0, { settleMs: MOTION.primaryMs });
     this.targetZ = new Spring(0, { settleMs: MOTION.primaryMs });
-    // User-driven view changes settle faster than reframes but still drift.
-    this.azimuthSpring = new Spring(AZIMUTH, { settleMs: MOTION.secondaryMs });
+    // User-driven zoom settles faster than reframes but still drifts.
     this.zoomSpring = new Spring(1, { settleMs: MOTION.secondaryMs });
     this.update(0, 0);
   }
 
   get azimuth(): number {
-    return this.azimuthSpring.value;
+    return this.azimuthValue;
+  }
+
+  get elevation(): number {
+    return this.elevationValue;
   }
 
   /**
@@ -73,10 +88,17 @@ export class CameraRig {
   update(dt: number, nowMs: number): void {
     const x = this.targetX.update(dt);
     const z = this.targetZ.update(dt);
-    const az = this.azimuthSpring.update(dt);
+    // OrbitControls-equivalent damping (factor 0.05 per 60hz frame, the
+    // cellshader default): an exponential approach with τ ≈ 325ms. Pure
+    // decay — it cannot cross its target, so no overshoot is possible.
+    const k = 1 - Math.exp(-dt / ORBIT_DAMPING_TAU_MS);
+    this.azimuthValue += (this.azimuthTarget - this.azimuthValue) * k;
+    this.elevationValue += (this.elevationTarget - this.elevationValue) * k;
+    const az = this.azimuthValue;
+    const el = this.elevationValue;
     const zoom = this.zoomSpring.update(dt);
     this.offset
-      .set(Math.cos(ELEVATION) * Math.sin(az), Math.sin(ELEVATION), Math.cos(ELEVATION) * Math.cos(az))
+      .set(Math.cos(el) * Math.sin(az), Math.sin(el), Math.cos(el) * Math.cos(az))
       .multiplyScalar(CAMERA_DISTANCE);
     if (Math.abs(this.camera.zoom - zoom) > 1e-4) {
       this.camera.zoom = zoom;
@@ -90,9 +112,18 @@ export class CameraRig {
     this.camera.lookAt(this.lookTarget);
   }
 
-  /** Rotate the view around the look-target (drag): direct 1:1, no rebound. */
-  rotateBy(dxPx: number): void {
-    this.azimuthSpring.reset(this.azimuthSpring.value + dxPx * 0.006);
+  /**
+   * Orbit both axes from a drag delta, OrbitControls-mapped (the cellshader
+   * reference): a full viewport-height drag sweeps 2π at rotateSpeed 1.
+   * Values follow on the damped approach in update().
+   */
+  rotateBy(dxPx: number, dyPx: number, viewportHeight: number): void {
+    const per = (2 * Math.PI) / Math.max(1, viewportHeight);
+    this.azimuthTarget -= dxPx * per;
+    this.elevationTarget = Math.min(
+      ELEVATION_MAX,
+      Math.max(ELEVATION_MIN, this.elevationTarget + dyPx * per),
+    );
   }
 
   /** Wheel zoom: retargets the spring so steps drift in — never a snap. */
@@ -116,7 +147,7 @@ export class CameraRig {
    * keeps the frame alive. No overshoot is possible by construction.
    */
   panBy(dxPx: number, dyPx: number, viewportHeight: number): void {
-    const az = this.azimuthSpring.value;
+    const az = this.azimuthValue;
     const unitsPerPx = FRUSTUM_HEIGHT / Math.max(1, viewportHeight) / Math.max(0.01, this.camera.zoom);
     // Content follows the finger: dragging right moves the look-target left.
     const rightX = Math.cos(az);
@@ -125,7 +156,7 @@ export class CameraRig {
     const fwdZ = -Math.cos(az);
     const dx = -dxPx * unitsPerPx;
     // Vertical screen distance foreshortens by sin(elevation) on the ground.
-    const dy = (dyPx * unitsPerPx) / Math.sin(ELEVATION);
+    const dy = (dyPx * unitsPerPx) / Math.max(0.25, Math.sin(this.elevationValue));
     const wx = rightX * dx + fwdX * dy;
     const wz = rightZ * dx + fwdZ * dy;
     this.targetX.reset(this.targetX.value + wx);

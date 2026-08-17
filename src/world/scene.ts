@@ -87,24 +87,29 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
   resize();
 
   // ── view controls (user-specified scheme) ────────────────────────────────
-  // Click and hold rotates. Trackpad pinch zooms (macOS delivers pinch as a
-  // ctrl-modified wheel event). Two-finger scroll / mouse wheel pans. On
-  // touch, one finger rotates (matching click-hold) and two fingers
-  // pinch-zoom and twist-rotate. All 1:1 and interruptible; wheel deltas
-  // drive spring retargets so motion drifts in, never snaps.
+  // Plain click-drag orbits BOTH axes with the cellshader reference feel
+  // (OrbitControls mapping + damping); shift+drag pans. Trackpad pinch
+  // zooms (macOS delivers pinch as ctrl+wheel); two-finger scroll / wheel
+  // pans. On touch, one finger orbits and two fingers pinch-zoom and
+  // twist-rotate. Wheel deltas drive spring retargets so motion drifts.
   const pointers = new Map<number, { x: number; y: number }>();
   canvas.style.touchAction = 'none';
   canvas.addEventListener('contextmenu', (event) => event.preventDefault());
+  let panning = false;
   canvas.addEventListener('pointerdown', (event) => {
     pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    // Shift+drag pans; plain drag orbits (user scheme, cellshader feel).
+    panning = event.shiftKey;
     canvas.setPointerCapture(event.pointerId);
   });
   canvas.addEventListener('pointermove', (event) => {
     const prev = pointers.get(event.pointerId);
     if (!prev) return;
     if (pointers.size === 1) {
-      // Click and hold → rotate.
-      cameraRig.rotateBy(event.clientX - prev.x);
+      const dx = event.clientX - prev.x;
+      const dy = event.clientY - prev.y;
+      if (panning) cameraRig.panBy(dx, dy, window.innerHeight);
+      else cameraRig.rotateBy(dx, dy, window.innerHeight);
       pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
     } else if (pointers.size === 2) {
       // Pinch: zoom by distance ratio; twist: rotate by angle delta.
@@ -117,13 +122,14 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
         const afterD = Math.hypot(event.clientX - o.x, event.clientY - o.y);
         const afterA = Math.atan2(event.clientY - o.y, event.clientX - o.x);
         if (beforeD > 12) cameraRig.zoomDirect(afterD / beforeD);
-        cameraRig.rotateBy(((afterA - beforeA) * 180) / Math.PI);
+        cameraRig.rotateBy(((afterA - beforeA) * 180) / Math.PI, 0, window.innerHeight);
         pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
       }
     }
   });
   const releasePointer = (event: PointerEvent): void => {
     pointers.delete(event.pointerId);
+    if (pointers.size === 0) panning = false;
   };
   canvas.addEventListener('pointerup', releasePointer);
   canvas.addEventListener('pointercancel', releasePointer);
