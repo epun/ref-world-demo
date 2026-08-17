@@ -200,3 +200,103 @@ describe('live population — nothing ever interpenetrates', () => {
     manager.clearAll();
   });
 });
+
+// ── manual move (dev panel gizmo) ────────────────────────────────────────────
+
+describe('manual move — the gizmo owns a held creature', () => {
+  /** A rock the resolve pass must eject anyone standing inside. */
+  const ROCK: Collider = { x: 14, z: -6, r: 1.6, hard: true };
+
+  function hatchOne(): {
+    manager: ReturnType<typeof createCreatureManager>;
+    root: Group;
+  } {
+    const manager = createCreatureManager(stubWorld([ROCK]));
+    let now = performance.now();
+    manager.spawn('held', snowman, { name: 'held', hatchMs: 0 });
+    for (let i = 0; i < 200 && manager.hoverTargets().length < 1; i++) {
+      now += 50;
+      manager.update(50, now);
+    }
+    const root = manager.hoverTargets()[0]!.object;
+    return { manager, root };
+  }
+
+  it('holds the dragged spot, then hands the root back to physics on release', () => {
+    const { manager, root } = hatchOne();
+    const radius = rootRadius(root);
+    let now = performance.now();
+    expect(manager.beginManualMove(root)).toBe(true);
+
+    // The "drag": park the creature INSIDE the rock. While held, nothing —
+    // not behavior, not the hard resolve — may move it: the gizmo is the
+    // only authority, so a user can place a creature anywhere they like.
+    root.position.set(ROCK.x, 0, ROCK.z);
+    for (let i = 0; i < 60; i++) {
+      now += 33;
+      manager.update(33, now);
+      expect(root.position.x).toBeCloseTo(ROCK.x, 6);
+      expect(root.position.z).toBeCloseTo(ROCK.z, 6);
+    }
+
+    // Released: the root is grounded and physics owns it again, so the rock
+    // it was parked in ejects it within a few frames.
+    root.position.y = 1.4; // a gizmo drag can lift off the ground plane
+    manager.endManualMove(root);
+    expect(root.position.y).toBe(0);
+    for (let i = 0; i < 30; i++) {
+      now += 33;
+      manager.update(33, now);
+    }
+    const d = Math.hypot(root.position.x - ROCK.x, root.position.z - ROCK.z);
+    expect(d, 'physics owns the root again after release').toBeGreaterThanOrEqual(
+      radius + ROCK.r - 0.03,
+    );
+    manager.clearAll();
+  });
+
+  it('a held creature is still an obstacle: neighbors part around it', () => {
+    const manager = createCreatureManager(stubWorld([]));
+    let now = performance.now();
+    manager.spawn('held', snowman, { name: 'held', hatchMs: 0 });
+    manager.spawn('free', circleBlob, { name: 'free', hatchMs: 0 });
+    for (let i = 0; i < 300 && manager.hoverTargets().length < 2; i++) {
+      now += 50;
+      manager.update(50, now);
+    }
+    const [a, b] = manager.hoverTargets();
+    const held = a!.object;
+    const free = b!.object;
+    const rHeld = rootRadius(held);
+    const rFree = rootRadius(free);
+
+    manager.beginManualMove(held);
+    // Park the held creature right on top of its neighbor: the resolve pass
+    // must push the FREE one out, never the held one.
+    held.position.set(free.position.x, 0, free.position.z);
+    const parkedX = held.position.x;
+    const parkedZ = held.position.z;
+    for (let i = 0; i < 90; i++) {
+      now += 33;
+      manager.update(33, now);
+    }
+    expect(held.position.x).toBeCloseTo(parkedX, 6);
+    expect(held.position.z).toBeCloseTo(parkedZ, 6);
+    const gap = Math.hypot(free.position.x - parkedX, free.position.z - parkedZ);
+    expect(gap, 'neighbor pushed clear of the held body').toBeGreaterThanOrEqual(
+      rHeld + rFree - 0.03,
+    );
+    manager.clearAll();
+  });
+
+  it('is a no-op for anything that is not a live creature root', () => {
+    const { manager } = hatchOne();
+    expect(manager.beginManualMove(new Mesh())).toBe(false);
+    // Releasing an unheld object must not throw or ground it.
+    const stranger = new Mesh();
+    stranger.position.y = 3;
+    manager.endManualMove(stranger);
+    expect(stranger.position.y).toBe(3);
+    manager.clearAll();
+  });
+});

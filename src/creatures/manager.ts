@@ -204,6 +204,10 @@ interface Slot {
   agent: BehaviorAgent | null;
   /** Last pose the agent reported, for expression edge-detection. */
   pose: 'sit' | 'sleep' | null;
+  /** Manual move (dev panel gizmo): while held the agent is bypassed and the
+   * root's dragged x/z is the truth — physics reads it as a still body so
+   * neighbors part around it, but never writes it back. */
+  manualHold: boolean;
   /** retire animation state */
   retireStartMs: number;
   order: number;
@@ -245,6 +249,16 @@ export interface CreatureManager {
   pauseAi(paused: boolean): void;
   /** Wander speed multiplier (demo panel tuning). 1 = spec speed. */
   setWanderSpeed(mult: number): void;
+  /**
+   * Manual move (dev panel gizmo). beginManualMove marks the creature whose
+   * root is `root` as held: behavior is bypassed, the gait settles, and the
+   * dragged root position is authoritative (neighbors still part around it).
+   * endManualMove releases the hold, re-grounds the root (gizmo drags can
+   * leave the y axis), and hands the new spot back to the agent. Returns
+   * false when the object is not a live creature root.
+   */
+  beginManualMove(root: Object3D): boolean;
+  endManualMove(root: Object3D): void;
 }
 
 export function createCreatureManager(world: WorldHandles): CreatureManager {
@@ -265,7 +279,14 @@ export function createCreatureManager(world: WorldHandles): CreatureManager {
   let eggColliderCount = 0;
   const bodyPool: CreatureBody[] = [];
   const stepBodies: CreatureBody[] = [];
-  const aliveScratch: { slot: Slot; root: Group; body: CreatureBody; heading: number }[] = [];
+  const aliveScratch: {
+    slot: Slot;
+    root: Group;
+    body: CreatureBody;
+    heading: number;
+    /** Gizmo-held: the body is an obstacle but the root is never written. */
+    held?: boolean;
+  }[] = [];
 
   /** Lazily (re)index the scatter's prop colliders — shared by the per-frame
    * update AND spawn placement, so an egg placed before the first frame
@@ -450,6 +471,7 @@ export function createCreatureManager(world: WorldHandles): CreatureManager {
         personalityChoice: opts.personality ?? null,
         agent: null,
         pose: null,
+        manualHold: false,
         retireStartMs: 0,
         order: orderCounter++,
       };
@@ -577,7 +599,30 @@ export function createCreatureManager(world: WorldHandles): CreatureManager {
           // Autonomous behavior: the agent owns the root's x/z and heading.
           // Never world-space Y — locomotion stays on the Surface seam.
           const root = slot.characterRoot;
-          if (root && slot.agent && slot.phase === 'alive' && !aiPaused) {
+          if (root && slot.phase === 'alive' && slot.manualHold) {
+            // Gizmo-held (dev panel): the dragged root position is the
+            // truth. The body still enters the physics pass, motionless, so
+            // neighbors part around it — but nothing writes it back. The
+            // gait sees speed 0 and settles to the ambient floor.
+            let body = bodyPool[aliveScratch.length];
+            if (!body) {
+              body = { x: 0, z: 0, vx: 0, vz: 0, r: 0 };
+              bodyPool[aliveScratch.length] = body;
+            }
+            body.x = root.position.x;
+            body.z = root.position.z;
+            body.vx = 0;
+            body.vz = 0;
+            body.r = slot.bodyR > 0 ? slot.bodyR : slot.character.radius;
+            aliveScratch.push({
+              slot,
+              root,
+              body,
+              heading: root.rotation.y,
+              held: true,
+            });
+            slot.character.setLocomotion(0, root.rotation.y);
+          } else if (root && slot.agent && slot.phase === 'alive' && !aiPaused) {
             const peers: AgentPeer[] = [];
             for (const other of slots.values()) {
               if (other === slot || other.phase !== 'alive' || !other.characterRoot) {
@@ -685,6 +730,15 @@ export function createCreatureManager(world: WorldHandles): CreatureManager {
         stepCreatures(stepBodies, dt, gatherNear, { hardPadFrac: HARD_PAD_FRAC });
         for (const entry of aliveScratch) {
           const { slot, root, body } = entry;
+          if (entry.held) {
+            // The gizmo owns this root; the resolved body position is
+            // discarded (neighbors carried their half of any separation).
+            slot.characterShadow?.setPosition(
+              root.position.x + (slot.character?.group.position.x ?? 0),
+              root.position.z + (slot.character?.group.position.z ?? 0),
+            );
+            continue;
+          }
           root.position.x = body.x;
           root.position.z = body.z;
           const character = slot.character;
@@ -721,6 +775,27 @@ export function createCreatureManager(world: WorldHandles): CreatureManager {
       wanderSpeedMult = Math.max(0, mult);
       for (const slot of slots.values()) {
         slot.agent?.setSpeedMultiplier(wanderSpeedMult);
+      }
+    },
+
+    beginManualMove(root): boolean {
+      for (const slot of slots.values()) {
+        if (slot.characterRoot === root && slot.phase === 'alive') {
+          slot.manualHold = true;
+          return true;
+        }
+      }
+      return false;
+    },
+
+    endManualMove(root): void {
+      for (const slot of slots.values()) {
+        if (slot.characterRoot !== root || !slot.manualHold) continue;
+        slot.manualHold = false;
+        // Re-ground: locomotion never uses world-space Y (Surface seam), so
+        // any vertical the gizmo introduced is dropped on release.
+        root.position.y = 0;
+        slot.spot = { x: root.position.x, z: root.position.z };
       }
     },
   };

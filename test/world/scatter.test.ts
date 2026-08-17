@@ -4,6 +4,7 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  Group,
   InstancedMesh,
   Matrix4,
   Quaternion,
@@ -22,6 +23,7 @@ import {
   createScatter,
   filterExcluded,
   instanceVariation,
+  KIND_GROUP_LABELS,
   ROCK_SQUASH_Y,
   ROCK_WIDEN_XZ,
   VARIATION_BULGE,
@@ -45,6 +47,17 @@ import {
   colliderFor,
   TRUNK_FOOTPRINT,
 } from '../../src/world/scatter';
+
+/** Collect the named prop InstancedMeshes wherever they sit — variant meshes
+ * now live inside per-kind container groups (KIND_GROUP_LABELS), one level
+ * below the scatter root. Shadow stamps are unnamed and excluded. */
+function namedMeshes(root: { traverse(cb: (o: unknown) => void): void }): InstancedMesh[] {
+  const out: InstancedMesh[] = [];
+  root.traverse((o) => {
+    if (o instanceof InstancedMesh && o.name.length > 0) out.push(o);
+  });
+  return out;
+}
 
 describe('scatter placement', () => {
   it('is deterministic (positions and variants alike)', () => {
@@ -368,9 +381,7 @@ describe('scatter placement', () => {
     expect([...WIND_SWAY_KINDS].sort()).toEqual(['bush', 'cactus', 'conifer', 'palm', 'tree']);
     const scatter = createScatter();
     try {
-      const meshes = scatter.group.children.filter(
-        (o): o is InstancedMesh => o instanceof InstancedMesh && o.name.length > 0,
-      );
+      const meshes = namedMeshes(scatter.group);
       const kindOf = (name: string): string => name.split('-')[0]!;
       const swaySet = new Set<string>(WIND_SWAY_KINDS);
       const rigid = ['building', 'rock', 'stump', 'picnicTable', 'waterTower', 'monolith'];
@@ -440,9 +451,7 @@ describe('scatter placement', () => {
 
       // Ticks bend too — full-blade, no attribute needed. The tick mesh is
       // named `grass (n)` for the scene outliner.
-      const tick = scatter.group.children.find(
-        (o): o is InstancedMesh => o instanceof InstancedMesh && o.name.startsWith('grass'),
-      );
+      const tick = namedMeshes(scatter.group).find((m) => m.name.startsWith('grass'));
       expect(tick).toBeDefined();
       const tickShader = fakeShader();
       (tick!.material as Material).onBeforeCompile(tickShader as never, undefined as never);
@@ -688,9 +697,7 @@ describe('instance variation', () => {
   it('every instanced prop and tick mesh carries a matching aVariation attribute', () => {
     const scatter = createScatter();
     try {
-      const meshes = scatter.group.children.filter(
-        (o): o is InstancedMesh => o instanceof InstancedMesh && o.name.length > 0,
-      );
+      const meshes = namedMeshes(scatter.group);
       expect(meshes.length).toBeGreaterThan(5);
       const matrix = new Matrix4();
       const pos = new Vector3();
@@ -724,9 +731,7 @@ describe('instance variation', () => {
   it('all three scatter materials inject the variation into the vertex stage', () => {
     const scatter = createScatter();
     try {
-      const meshes = scatter.group.children.filter(
-        (o): o is InstancedMesh => o instanceof InstancedMesh && o.name.length > 0,
-      );
+      const meshes = namedMeshes(scatter.group);
       const kindOf = (name: string): string => name.split('-')[0]!;
       const swaySet = new Set<string>(WIND_SWAY_KINDS);
       const fakeShader = () => ({
@@ -775,9 +780,7 @@ describe('rock legibility', () => {
   it('rocks render mid-toned, squashed and widened; other rigid kinds stay light', () => {
     const scatter = createScatter();
     try {
-      const meshes = scatter.group.children.filter(
-        (o): o is InstancedMesh => o instanceof InstancedMesh && o.name.length > 0,
-      );
+      const meshes = namedMeshes(scatter.group);
       const rock = meshes.find((m) => m.name.startsWith('rock-'));
       const otherRigid = meshes.find(
         (m) => m.name.startsWith('building-') || m.name.startsWith('stump-'),
@@ -846,9 +849,7 @@ describe('zero kind density', () => {
     const scatter = createScatter();
     try {
       const rockMeshCount = (): number =>
-        scatter.group.children.filter(
-          (o) => o instanceof InstancedMesh && o.name.startsWith('rock-'),
-        ).length;
+        namedMeshes(scatter.group).filter((m) => m.name.startsWith('rock-')).length;
       const baseColliders = scatter.colliders().map((c) => ({ ...c }));
       const basePositions = scatter.positions();
       const rocks = basePositions.filter((p) => p.kind === 'rock');
@@ -877,6 +878,42 @@ describe('zero kind density', () => {
       scatter.setKindDensity('rock', 1);
       expect(scatter.positions()).toEqual(basePositions);
       expect(scatter.colliders()).toEqual(baseColliders);
+    } finally {
+      scatter.dispose();
+    }
+  });
+});
+
+// ── scene-outliner grouping (one row per kind) ───────────────────────────────
+
+describe('kind grouping', () => {
+  it('every kind is one named container group, stable at density zero', () => {
+    const scatter = createScatter();
+    try {
+      const groups = scatter.group.children.filter(
+        (o): o is Group => o instanceof Group && o.name.length > 0,
+      );
+      // Exactly one row per kind, labelled for the outliner.
+      const labels = groups.map((g) => g.name).sort();
+      expect(labels).toEqual([...Object.values(KIND_GROUP_LABELS)].sort());
+
+      // Every named variant mesh lives INSIDE its kind's group — the panel
+      // shows "trees", never "tree-1 (7)".
+      for (const mesh of namedMeshes(scatter.group)) {
+        const parent = mesh.parent as Group | null;
+        expect(parent, mesh.name).not.toBeNull();
+        expect(Object.values(KIND_GROUP_LABELS), mesh.name).toContain(parent!.name);
+      }
+      const trees = groups.find((g) => g.name === KIND_GROUP_LABELS.tree)!;
+      expect(trees.children.length).toBeGreaterThan(0);
+
+      // Zeroing a kind empties its group but never removes the row: the
+      // controller must stay clickable to bring the kind back.
+      scatter.setKindDensity('tree', 0);
+      expect(trees.parent).toBe(scatter.group);
+      expect(trees.children.length).toBe(0);
+      scatter.setKindDensity('tree', 1);
+      expect(trees.children.length).toBeGreaterThan(0);
     } finally {
       scatter.dispose();
     }

@@ -108,8 +108,18 @@ export function groundLookTarget(
 
 // ── canvas inset ─────────────────────────────────────────────────────────────
 
-/** Corner inset size, CSS px (square). */
-const MAP_SIZE_PX = 200;
+/**
+ * Corner inset size (square), scaled to the browser window (user ask): a
+ * fraction of the smaller viewport axis, clamped so it stays a glance on a
+ * huge display and stays legible on a small one. The draw loop re-reads the
+ * element's box every frame and re-derives the mark scale from it, so the
+ * map redraws correctly at any size with no resize listener.
+ */
+const MAP_SIZE_MIN_PX = 132;
+const MAP_SIZE_MAX_PX = 264;
+/** Share of the smaller viewport axis (vmin). */
+const MAP_SIZE_VMIN = 17;
+const MAP_SIZE_CSS = `clamp(${MAP_SIZE_MIN_PX}px, ${MAP_SIZE_VMIN}vmin, ${MAP_SIZE_MAX_PX}px)`;
 /** Draw cadence — the map is a glance, not a viewport. */
 const DRAW_INTERVAL_MS = 1000 / 30;
 /** Prop subsampling stride: every ~5th mark keeps the field quiet. */
@@ -131,8 +141,8 @@ function ensureStyle(): void {
   right: calc(env(safe-area-inset-right, 0px) + 20px);
   bottom: calc(env(safe-area-inset-bottom, 0px) + 20px);
   z-index: 5;
-  width: ${MAP_SIZE_PX}px;
-  height: ${MAP_SIZE_PX}px;
+  width: ${MAP_SIZE_CSS};
+  height: ${MAP_SIZE_CSS};
   display: block;
   cursor: pointer;
   touch-action: none;

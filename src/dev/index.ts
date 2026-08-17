@@ -34,7 +34,7 @@ import {
 } from '../taste/gates';
 import { WIND_OVERRIDE_MAX } from '../world/environment';
 import { SCATTER_STEP } from '../world/scatter';
-import { GRAIN, SURFACE } from '../taste/tokens';
+import { GRAIN, MOTION, SURFACE } from '../taste/tokens';
 import { FALLBACK_DRAWINGS, FALLBACK_HATCH_MS } from './fixtures';
 import { DEV_SKILLS_META } from './skills-meta';
 
@@ -123,6 +123,9 @@ export interface DevHandles {
   /** Color grade for the paper field (scene background + ground disc):
    * a css color string from the panel's picker. */
   setBackgroundColor?(color: string): void;
+  /** Slide the camera's look-target to a ground point (the minimap's
+   * click-to-pan spring) — selection focus rides the same rail. */
+  focusAt?(x: number, z: number): void;
   /** Spawn n deterministic fixture drawings. Defaults to an internal
    * implementation over FALLBACK_DRAWINGS when absent. */
   spawnFallback?(n: number): void;
@@ -220,11 +223,38 @@ export async function initDevPanel(
   // Lazy: the only ghost-panel touchpoint in the repo.
   const { createGhostPanel } = await import('ghost-panel');
 
+  // Forward handle for callbacks captured by createGhostPanel's options —
+  // assigned right after creation, used only from user-driven events.
+  let uiRef: import('ghost-panel').GhostPanelUi | null = null;
+
+  // Creature roots are the ONLY gizmo-movable objects (user ask): the
+  // environment rows are controllers, not transforms.
+  const isCreatureRoot = (obj: unknown): obj is Object3D =>
+    !!obj &&
+    typeof obj === 'object' &&
+    typeof (obj as { name?: unknown }).name === 'string' &&
+    (obj as { name: string }).name.startsWith('creature ');
+
   const ui = createGhostPanel({
     title: 'ref world',
     scene: handles.scene,
     camera: handles.camera,
     ...(handles.renderer ? { renderer: handles.renderer } : {}),
+    // The gizmo appears ONLY when the panel is open and the click landed on
+    // a creature (user ask) — never on environment rows, never while the
+    // panel is hidden and the world is just being watched.
+    beforeGizmoAttach: (obj) =>
+      isCreatureRoot(obj) && (uiRef?.isVisible() ?? false) ? undefined : false,
+    // Gizmo drag ↔ behavior handshake: while dragging, the manager holds
+    // the creature (agent bypassed, neighbors part around it); on release
+    // the new spot is committed back to its behavior.
+    onDraggingChanged: (dragging) => {
+      const om = uiRef?.objectManager;
+      const active = om?.activeName ? om.objects[om.activeName]?.object : undefined;
+      if (!isCreatureRoot(active)) return;
+      if (dragging) handles.creatures.beginManualMove(active);
+      else handles.creatures.endManualMove(active);
+    },
     // One panel only, docked right (the inspector's locked side).
     // Left outliner ON (user ask): creatures appear in the scene panel by
     // their named roots; the right panel keeps the refworld skills.
@@ -240,9 +270,31 @@ export async function initDevPanel(
     visible: false,
   });
 
+  uiRef = ui;
+  // Selection/gizmo probe for the panel smokes (dev-only, like the panel
+  // itself — this whole module tree-shakes out of a non-dev build).
+  (window as Window & { __refworldOm?: unknown }).__refworldOm = ui.objectManager;
+
   // Ghost Panel's own toggle convention: shift+d (README "Press Shift+D").
   ui.bindToggleKey('D', { shift: true });
   if (options.showOnMount) ui.show();
+
+  // Hiding the panel drops the selection with it, so the gizmo can never
+  // linger over a world nobody is inspecting (user ask). hide() and
+  // toggle() are separate routes in ghost-panel (toggle drives the panel
+  // directly), so both are wrapped; the outliner sync below carries a
+  // backstop for any route neither covers.
+  const dropSelection = (): void => ui.objectManager?.deselect();
+  const rawHide = ui.hide.bind(ui);
+  ui.hide = (): void => {
+    dropSelection();
+    rawHide();
+  };
+  const rawToggle = ui.toggle.bind(ui);
+  ui.toggle = (): void => {
+    if (ui.isVisible()) dropSelection();
+    rawToggle();
+  };
 
   // ── scene outliner sync (user ask): creatures AND environment objects ─────
   // appear as named rows. The panel mounts with autoRegister off, and a
@@ -292,12 +344,79 @@ export async function initDevPanel(
     };
     let outlinerClockMs = 0;
     handles.onFrame((dt) => {
+      // Backstop for the hide/toggle wraps: a hidden panel never holds a
+      // selection, so no gizmo can survive into the plain world view.
+      if (!ui.isVisible() && om.activeName) om.deselect();
       outlinerClockMs += dt;
       if (outlinerClockMs < 1000) return;
       outlinerClockMs = 0;
       syncOutliner();
     });
     syncOutliner();
+
+    // ── selection behavior (user ask) ────────────────────────────────────
+    // Environment rows are CONTROLLERS: clicking `trees` opens the tree
+    // variables in the right panel (expand + scroll + a brief hairline
+    // flash on the matching sliders). Creature rows are INDIVIDUALS:
+    // clicking one slides the camera to it, and the transform gizmo —
+    // permitted only on creature roots — makes it movable by hand.
+    const ENV_ROW_SLIDERS: Record<string, readonly string[]> = {
+      trees: ['tree density', 'tree scale'],
+      conifers: ['tree density', 'tree scale'],
+      rocks: ['rock density', 'rock scale'],
+      buildings: ['building density'],
+      bushes: ['bush density'],
+      stumps: ['stump density'],
+      palms: ['palm density'],
+      cacti: ['cactus density'],
+      monoliths: ['monolith density'],
+      'picnic tables': ['structure density'],
+      'water towers': ['structure density'],
+      grass: ['grass density', 'grass scale'],
+    };
+    const flashTimers = new Map<HTMLElement, number>();
+    const flash = (el: HTMLElement): void => {
+      el.style.outline = '1px solid currentcolor';
+      el.style.outlineOffset = '2px';
+      const prior = flashTimers.get(el);
+      if (prior !== undefined) window.clearTimeout(prior);
+      flashTimers.set(
+        el,
+        window.setTimeout(() => {
+          el.style.outline = '';
+          el.style.outlineOffset = '';
+          flashTimers.delete(el);
+        }, MOTION.primaryMs),
+      );
+    };
+    let lastActive: string | null = null;
+    om.on('change', (activeName) => {
+      // Gizmo drags re-fire 'change' with the same primary — react only to
+      // actual selection changes.
+      if (activeName === lastActive) return;
+      lastActive = activeName;
+      if (!activeName) return;
+      const obj = om.objects[activeName]?.object;
+      if (isCreatureRoot(obj)) {
+        handles.focusAt?.(obj.position.x, obj.position.z);
+        return;
+      }
+      const sliders = ENV_ROW_SLIDERS[activeName];
+      if (!sliders) return;
+      const envFolder = ui.getFolder('environment');
+      if (!envFolder) return;
+      envFolder.expand();
+      let first = true;
+      for (const label of sliders) {
+        const handle = envFolder.get(label);
+        if (!handle) continue;
+        if (first) {
+          handle.element.scrollIntoView({ block: 'center', behavior: 'smooth' });
+          first = false;
+        }
+        flash(handle.element);
+      }
+    });
   }
 
   const { creatures } = handles;

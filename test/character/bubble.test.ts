@@ -13,6 +13,7 @@ import {
   toGrayscaleLuma,
 } from '../../src/character/bubble';
 import { EMOTE_NAMES } from '../../src/net/protocol';
+import { OVERLAY_LAYER } from '../../src/world/layers';
 
 describe('bubble emoji map', () => {
   it('covers all protocol emotes exactly', () => {
@@ -90,6 +91,22 @@ describe('grayscale luma pass', () => {
     const input = new Uint8ClampedArray([255, 0, 0, 255]);
     toGrayscaleLuma(input);
     expect([...input]).toEqual([255, 0, 0, 255]);
+  });
+});
+
+describe('ink exemption (taste §6 emoji carve-out)', () => {
+  it('lives only on the overlay layer, never the default scene layer', () => {
+    const bubble = createBubble({ seed: 1.5, anchorY: 3.5 });
+    // set(), not enable(): membership in layer 0 would put the sprite back
+    // into the beauty render, where the ink quantize/exposure chain would
+    // wash the emoji's native color.
+    expect(bubble.object.layers.mask).toBe(1 << OVERLAY_LAYER);
+    expect(bubble.object.layers.mask & 1).toBe(0);
+    bubble.dispose();
+  });
+
+  it('overlay layer is not the default camera layer', () => {
+    expect(OVERLAY_LAYER).not.toBe(0);
   });
 });
 

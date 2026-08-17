@@ -15,6 +15,7 @@
  * from src/taste/tokens.ts; all durations from MOTION tokens.
  */
 
+import { Vector3 } from 'three';
 import { installHoverNames } from './creatures/hover';
 import { createCreatureManager } from './creatures/manager';
 import { connectWorldFeed } from './net/drawFeed';
@@ -262,6 +263,8 @@ function main(): void {
         getGrainAmplitude: () => world.grain.getAmplitude(),
         // Paper color grade (shader style section): background + ground.
         setBackgroundColor: (c) => world.setBackgroundColor(c),
+        // Outliner selection focus — the minimap's click-to-pan spring.
+        focusAt: (x, z) => world.cameraRig.frameAt(new Vector3(x, 0, z)),
         // Weather handle from a parallel workstream — forwarded as-is and
         // feature-detected inside the panel, so this compiles either way.
         environment: (world as { environment?: unknown }).environment,

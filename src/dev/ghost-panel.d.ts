@@ -104,6 +104,12 @@ declare module 'ghost-panel' {
     remove(name: string): void;
     getNames(): string[];
     objects: Record<string, { object?: unknown } | undefined>;
+    /** Primary (most recent) selection, or null. */
+    activeName?: string | null;
+    select(name: string, opts?: { additive?: boolean }): void;
+    deselect(): void;
+    /** 'change' fires on select/deselect/rename and during gizmo drags. */
+    on(event: 'change' | 'register' | 'remove' | 'rename', cb: (name: string | null, object: unknown) => void): void;
   }
 
   export interface GhostPanelUi {
@@ -144,6 +150,11 @@ declare module 'ghost-panel' {
     workflowPicker?: boolean | string;
     diagnostics?: boolean;
     augment?: boolean;
+    /** Per-object gizmo routing: return false to keep the built-in
+     * transform gizmo off this object (three-extensions.js select()). */
+    beforeGizmoAttach?(obj: unknown): boolean | void;
+    /** Fires when the built-in gizmo starts/stops dragging. */
+    onDraggingChanged?(dragging: boolean): void;
   }
 
   export function createGhostPanel(opts?: GhostPanelOptions): GhostPanelUi;

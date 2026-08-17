@@ -100,6 +100,8 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
   ).__refworldColliders = () => scatter.colliders();
   // And the scatter handle itself, for density/variation smokes.
   (window as Window & { __refworldScatter?: Scatter }).__refworldScatter = scatter;
+  // The live camera, for framing/focus smokes.
+  (window as Window & { __refworldCamera?: unknown }).__refworldCamera = cameraRig.camera;
 
   const resize = (): void => {
     const width = window.innerWidth;

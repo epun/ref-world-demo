@@ -13,7 +13,10 @@
  * then one fullscreen composite that does, in order:
  *   toon quantize → hatch → wobbled edge lines,
  * writing into an output target the grain pass composes to screen (grain
- * stays the final paper layer).
+ * stays the final paper layer). Ink-exempt overlay marks (OVERLAY_LAYER —
+ * speech bubbles, whose emoji keep native color per the TASTE §6 carve-out)
+ * are skipped by both scene renders and drawn once on top of the composite,
+ * so the quantize/exposure/weather chain never touches them.
  *
  * Toon quantization: scene luma snaps to the nearest of the six measured
  * palette lumas (linear), so every surface collapses into flat cel bands
@@ -50,6 +53,7 @@ import {
 } from 'three';
 import type { Camera, Texture, WebGLRenderer } from 'three';
 import { CHARACTER, MOTION, SURFACE, WORLD } from '../taste/tokens';
+import { OVERLAY_LAYER } from './layers';
 import { KEY_DIRECTION } from './lighting';
 
 /**
@@ -474,6 +478,25 @@ export class InkPass {
 
     renderer.setRenderTarget(this.outTarget);
     renderer.render(this.quadScene, this.quadCamera);
+
+    // ── overlay pass: ink-exempt marks over the composite ────────────────
+    // Objects living only on OVERLAY_LAYER (the speech bubbles — emoji keep
+    // native color, TASTE §6 carve-out) were invisible to the beauty and
+    // normal renders above, so the quantize/exposure/fog chain never touched
+    // them. Draw them once here, straight onto the composed frame: true
+    // color at any time of day or weather. The grain pass still composes
+    // over this, so the full-frame paper layer stays uniform (TASTE §2.7).
+    const prevMask = camera.layers.mask;
+    const prevAutoClear = renderer.autoClear;
+    const bg = scene.background;
+    camera.layers.set(OVERLAY_LAYER);
+    renderer.autoClear = false;
+    scene.background = null;
+    renderer.render(scene, camera);
+    scene.background = bg;
+    renderer.autoClear = prevAutoClear;
+    camera.layers.mask = prevMask;
+
     renderer.setRenderTarget(null);
     return this.outTarget.texture;
   }

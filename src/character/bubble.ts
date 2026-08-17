@@ -8,11 +8,13 @@
  * wobbly organic ellipse with a small curved tail, never a constructed
  * rounded-rect. The outline waver is seeded per character and deterministic,
  * so the same drawing grows the same bubble on every device. The emoji is
- * rendered as text into the same canvas in its native color (user carve-out;
- * a per-pixel luma pass (§6: the experience is fully black and white; a
- * platform color emoji must not smuggle hue past the achromatic gate —
- * ctx.filter support varies across workers/tests, so the getImageData pass
- * is the implementation, not a fallback).
+ * rendered as text into the same canvas in its native color — an explicit
+ * user carve-out from the black-and-white ruling (TASTE §6 note). To keep
+ * that color true on screen, the sprite lives on OVERLAY_LAYER: the ink
+ * composite (toon quantize, exposure ramp, fog/weather washes) never touches
+ * it — the ink pass draws it on top of the composed frame, under the grain.
+ * The toGrayscaleLuma helper stays exported for the achromatic gate's
+ * bookkeeping and any future flip back to a fully monochrome bubble.
  *
  * Motion (TASTE §2.1): the bubble SLIDES up from the head over
  * MOTION.secondaryMs on ζ≥1 springs (position + scale 0.75→1 — never from
@@ -28,10 +30,11 @@
  * canvas is created lazily inside createBubble.
  */
 
-import { CanvasTexture, Sprite, SpriteMaterial } from 'three';
+import { CanvasTexture, SRGBColorSpace, Sprite, SpriteMaterial } from 'three';
 import { Spring } from '../motion/spring';
 import type { EmoteName } from '../net/protocol';
 import { MOTION, WORLD } from '../taste/tokens';
+import { OVERLAY_LAYER } from '../world/layers';
 
 // ── pure data + helpers (node-safe, tested) ─────────────────────────────────
 
@@ -200,13 +203,19 @@ export function createBubble(options: BubbleOptions): Bubble {
   sprite.onBeforeRender = (_renderer, scene) => {
     material.opacity = scene?.overrideMaterial ? 0 : visibleOpacity;
   };
+  // Ink exemption (TASTE §6 emoji carve-out): the sprite lives ONLY on the
+  // overlay layer, so the beauty/normal renders (camera layer 0) skip it —
+  // no quantize, no exposure ramp, no fog wash, and by construction no false
+  // edges either (the override guards above stay as belt-and-braces). The
+  // ink pass draws this layer on top of its composite, before the grain.
+  sprite.layers.set(OVERLAY_LAYER);
   sprite.scale.set(BUBBLE_SIZE * ENTER_SCALE, BUBBLE_SIZE * ENTER_SCALE, 1);
   sprite.position.set(0, restY - ENTER_DROP, 0);
   sprite.visible = false;
   // Draw above the body so the light fill never z-fights the head.
   sprite.renderOrder = 2;
 
-  /** Paint the bubble + emoji, then flatten the whole thing to grayscale. */
+  /** Paint the bubble chrome (ink on paper) + the emoji in native color. */
   function draw(emoji: string): void {
     // DOM guard: headless (node) callers get a working state machine with no
     // texture — nothing here may throw without a document.
@@ -217,6 +226,11 @@ export function createBubble(options: BubbleOptions): Bubble {
       ctx = canvas.getContext('2d', { willReadFrequently: true });
       if (ctx) {
         texture = new CanvasTexture(canvas);
+        // The canvas holds sRGB pixels. Declaring that here makes the
+        // sample→linear→final-encode round trip exact, so the emoji lands on
+        // screen at its true color — untagged, the pixels would be treated
+        // as linear and the grain pass's sRGB encode would wash them bright.
+        texture.colorSpace = SRGBColorSpace;
         material.map = texture;
         material.needsUpdate = true;
       }

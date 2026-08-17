@@ -753,8 +753,37 @@ export interface Scatter {
   dispose(): void;
 }
 
+/** Scene-outliner labels for the per-kind container groups (user ask: ONE
+ * row per kind — "all the trees in the scene should be one object"). */
+export const KIND_GROUP_LABELS: Record<ScatterKind, string> = {
+  tree: 'trees',
+  conifer: 'conifers',
+  rock: 'rocks',
+  building: 'buildings',
+  bush: 'bushes',
+  stump: 'stumps',
+  palm: 'palms',
+  cactus: 'cacti',
+  monolith: 'monoliths',
+  picnicTable: 'picnic tables',
+  waterTower: 'water towers',
+  tick: 'grass',
+};
+
 export function createScatter(): Scatter {
   const group = new Group();
+  // One named container group per kind, created up front and never removed:
+  // the outliner row is stable even at density zero, so the kind stays
+  // clickable as a controller. Variant meshes live inside their kind group;
+  // only the shadow stamps stay directly on the root.
+  const kindGroups = new Map<ScatterKind, Group>();
+  for (const kind of Object.keys(KIND_GROUP_LABELS) as ScatterKind[]) {
+    const g = new Group();
+    g.name = KIND_GROUP_LABELS[kind];
+    kindGroups.set(kind, g);
+    group.add(g);
+  }
+  const groupFor = (kind: ScatterKind): Group => kindGroups.get(kind) ?? group;
   const geometries = buildPropGeometries();
 
   const variantOf = (p: Placement) => geometries.get(p.kind as PropKind)![p.variant]!;
@@ -1004,7 +1033,7 @@ export function createScatter(): Scatter {
 
   function clearMeshes(): void {
     for (const mesh of meshes) {
-      group.remove(mesh);
+      mesh.removeFromParent();
       mesh.dispose();
     }
     meshes = [];
@@ -1084,7 +1113,7 @@ export function createScatter(): Scatter {
         mesh.geometry.setAttribute('aVariation', new InstancedBufferAttribute(variation, 4));
         mesh.instanceMatrix.needsUpdate = true;
         meshes.push(mesh);
-        group.add(mesh);
+        groupFor(kind).add(mesh);
       }
     }
 
@@ -1107,7 +1136,7 @@ export function createScatter(): Scatter {
       mesh.geometry.setAttribute('aVariation', new InstancedBufferAttribute(variation, 4));
       mesh.instanceMatrix.needsUpdate = true;
       meshes.push(mesh);
-      group.add(mesh);
+      groupFor('tick').add(mesh);
     }
 
     // One shadow disc per large/medium prop — ticks get none. Matrices are
