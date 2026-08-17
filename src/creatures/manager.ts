@@ -146,8 +146,10 @@ export interface CreatureManager {
   /** Named, hit-testable live creatures for the hover-name overlay. Only
    * creatures whose drawer entered a name appear. */
   hoverTargets(): { name: string; object: Group }[];
-  /** Positions of all live entities, for camera interest + exclusions. */
-  positions(): { x: number; z: number; r: number }[];
+  /** Positions of all live entities, for camera interest + exclusions +
+   * the world minimap. `kind` is additive: egg until the hatch burst hands
+   * the slot a character root, character after. */
+  positions(): { x: number; z: number; r: number; kind: 'egg' | 'character' }[];
   count(): number;
   update(dt: number, nowMs: number): void;
   clear(id: string): void;
@@ -314,10 +316,17 @@ export function createCreatureManager(world: WorldHandles): CreatureManager {
     },
 
     positions() {
-      const out: { x: number; z: number; r: number }[] = [];
+      const out: { x: number; z: number; r: number; kind: 'egg' | 'character' }[] = [];
       for (const slot of slots.values()) {
         const p = worldPositionOf(slot);
-        if (p) out.push({ x: p.x, z: p.z, r: slot.character?.radius ?? slot.egg?.radius ?? 1 });
+        if (p) {
+          out.push({
+            x: p.x,
+            z: p.z,
+            r: slot.character?.radius ?? slot.egg?.radius ?? 1,
+            kind: slot.characterRoot ? 'character' : 'egg',
+          });
+        }
       }
       return out;
     },

@@ -26,6 +26,7 @@ import { EMOTE_NAMES, isRoomCode, roomCode } from './net/protocol';
 import { mountDrawScreen } from './draw/ui';
 import { sampleDrift } from './motion/ambient';
 import { CHARACTER, MOTION, SURFACE, WORLD } from './taste/tokens';
+import { installWorldMinimap } from './ui/minimap';
 import { start, type WorldHandles } from './world/scene';
 
 /** Hatch timer — dev pacing; a live demo wants ~90s (PLAN §13). */
@@ -172,8 +173,8 @@ function ensureOverlayStyle(): void {
 }
 .join-line {
   position: fixed;
-  right: 20px;
-  bottom: 20px;
+  left: 84px;
+  bottom: 38px;
   z-index: 4;
   color: ${WORLD.ink};
   font: 400 13px/1.4 ui-sans-serif, system-ui, sans-serif;
@@ -265,14 +266,24 @@ function main(): void {
   const creatures = createCreatureManager(world);
   installHoverNames(canvas, world.cameraRig.camera, creatures);
 
+  // World minimap, bottom-right. The join line moved bottom-left (beside the
+  // pencil control) to leave the corner to the map.
+  installWorldMinimap({
+    manager: creatures,
+    cameraRig: world.cameraRig,
+    scatter: world.scatter,
+    mount: document.body,
+  });
+
   ensureOverlayStyle();
 
   const eggHint = document.createElement('div');
   eggHint.className = 'egg-hint';
   eggHint.textContent = 'press h to hatch';
 
-  // Join line: restrained lowercase type, bottom-right (sparse type is the
-  // taste's one allowance; the image still leads).
+  // Join line: restrained lowercase type, bottom-left beside the pencil
+  // control (the minimap owns the bottom-right corner). Sparse type is the
+  // taste's one allowance; the image still leads.
   const joinLine = document.createElement('div');
   joinLine.className = 'join-line';
   joinLine.textContent = `draw at ${location.host}/draw/?room=${room}`;
