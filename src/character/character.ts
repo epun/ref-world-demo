@@ -21,6 +21,7 @@ import { Spring } from '../motion/spring';
 import type { EmoteName } from '../net/protocol';
 import type { ShapeAnalysis, StrokeList } from '../shape/types';
 import { MOTION } from '../taste/tokens';
+import { createBubble } from './bubble';
 import { applyDeform, deformPoint, heightFrac, type DeformState } from './deform';
 import { runEmote, type EmoteRun } from './emotes';
 import { createEyes } from './eyes';
@@ -199,6 +200,13 @@ export function createCharacter(
   const seed = driftSeed(strokes);
   const worldHeight = height * scale;
 
+  // Speech bubble (./bubble.ts): the legible emote signal at world scale.
+  // Anchored above the bounding-box top; seeded with the drift seed so the
+  // hand-drawn outline is deterministic per character. Billboards on its own.
+  // Joins the group only while showing (it detaches itself once hidden), so
+  // an idle character's bounds stay exactly the body's.
+  const bubble = createBubble({ seed, anchorY: worldHeight });
+
   return {
     group,
     radius,
@@ -212,6 +220,10 @@ export function createCharacter(
       emoteRun = runEmote(springs, name, {
         onExpression: (e) => eyes.setExpression(e),
       });
+      // The bubble is the legible signal; its own springs retarget cleanly
+      // when one emote interrupts another. It removes itself once hidden.
+      if (bubble.object.parent !== group) group.add(bubble.object);
+      bubble.show(name);
     },
     update(dt: number, nowMs: number): void {
       // Ambient drift only — no idle bob, nothing that reads as bounce.
@@ -233,8 +245,11 @@ export function createCharacter(
       });
 
       eyes.update(dt);
+      bubble.update(dt, nowMs);
     },
     dispose(): void {
+      group.remove(bubble.object);
+      bubble.dispose();
       group.remove(eyes.group);
       eyes.dispose();
       group.remove(mesh);
