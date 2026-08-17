@@ -9,10 +9,17 @@
  * "small grove surrounded by empty land"). No Math.random anywhere — the
  * same world grows on every device.
  *
- * Rendering: one InstancedMesh per kind. Inflated props carry the LIGHT
- * paper albedo (the ink pass draws their form); ticks are the ONLY dark
- * environment marks — tiny crossed ink quads doing the ground-texture work
- * of the reference, numerous relative to the props.
+ * VARIANCE: every kind carries several authored variants. Each cluster
+ * picks a cluster variant; neighbors bias ~60% toward it, so a grove reads
+ * as one species with strays — matching the forest reference, where a
+ * stand is mostly one crown build plus outliers. Buildings are rare
+ * (capped across the region), stand alone, and no two of the same variant
+ * sit near each other.
+ *
+ * Rendering: one InstancedMesh per (kind, variant) — ~20 draws. Inflated
+ * props carry the LIGHT paper albedo (the ink pass draws their form);
+ * ticks are the ONLY dark environment marks — tiny crossed ink quads doing
+ * the ground-texture work of the reference, numerous relative to the props.
  */
 
 import {
@@ -30,12 +37,19 @@ import {
 } from 'three';
 import { sampleDrift } from '../motion/ambient';
 import { SURFACE, WORLD } from '../taste/tokens';
-import { buildPropGeometries, INFLATED_PROP_KINDS, type InflatedPropKind } from './props';
+import {
+  buildPropGeometries,
+  INFLATED_PROP_KINDS,
+  PROP_VARIANT_COUNTS,
+  type InflatedPropKind,
+} from './props';
 
 export type ScatterKind = InflatedPropKind | 'tick';
 
 export interface Placement {
   kind: ScatterKind;
+  /** Variant index within the kind's authored set (0 for ticks). */
+  variant: number;
   x: number;
   z: number;
   /** Uniform instance scale, 0.7–1.3. */
@@ -66,7 +80,7 @@ const ORIGIN_CLEAR_PROPS = 11;
 const ORIGIN_CLEAR_TICKS = 6;
 
 /** Per-cell cluster-seed probability at density 1. Ticks common, trees /
- * conifers / rocks medium, landmark rare (and hard-capped). */
+ * conifers / rocks medium, buildings rare (and hard-capped). */
 const SEED_PROB: Record<ScatterKind, number> = {
   tick: 0.16,
   bush: 0.014,
@@ -74,13 +88,22 @@ const SEED_PROB: Record<ScatterKind, number> = {
   conifer: 0.009,
   rock: 0.011,
   stump: 0.004,
-  landmark: 0.0012,
+  building: 0.004,
 };
 
-/** At most this many landmarks in the whole region, in cell iteration order. */
-const LANDMARK_MAX = 3;
+/** At most this many buildings in the whole region, in cell iteration order. */
+export const BUILDING_MAX = 4;
+/** No two buildings of the same variant within this many world units. */
+export const BUILDING_ADJ_RADIUS = SCATTER_STEP * 8;
 
-const PROP_ROLL_ORDER: InflatedPropKind[] = ['bush', 'tree', 'conifer', 'rock', 'stump', 'landmark'];
+/** A cluster neighbor repeats its cluster's variant with this probability;
+ * otherwise it rerolls uniformly (so a grove is one species plus strays). */
+export const CLUSTER_VARIANT_BIAS = 0.6;
+
+const PROP_ROLL_ORDER: InflatedPropKind[] = ['bush', 'tree', 'conifer', 'rock', 'stump', 'building'];
+
+/** Every controllable scatter kind, for generic dev-panel controls. */
+export const SCATTER_KINDS: ScatterKind[] = [...INFLATED_PROP_KINDS, 'tick'];
 
 function cellHash(ix: number, iz: number, salt: number): number {
   const x =
@@ -89,8 +112,12 @@ function cellHash(ix: number, iz: number, salt: number): number {
 }
 
 export interface PlacementOptions {
-  /** Density multiplier — scales every seed probability. */
+  /** Global density multiplier — scales every seed probability. */
   density?: number;
+  /** Per-kind density multipliers, layered on the global one. Each kind
+   * rolls independently (own hash salt), so changing one kind's multiplier
+   * never moves another kind's placements. */
+  kindDensity?: Partial<Record<ScatterKind, number>>;
 }
 
 /**
@@ -102,54 +129,96 @@ export interface PlacementOptions {
  */
 export function computePlacements(opts: PlacementOptions = {}): Placement[] {
   const density = Math.max(0, opts.density ?? 1);
+  const kindDensity = opts.kindDensity ?? {};
   const out: Placement[] = [];
   const cells = Math.floor(SCATTER_EXTENT / SCATTER_STEP);
-  let landmarks = 0;
+  const buildings: { x: number; z: number; variant: number }[] = [];
 
-  const push = (kind: ScatterKind, x: number, z: number, salt: number): void => {
+  const push = (kind: ScatterKind, variant: number, x: number, z: number, salt: number): void => {
     const clear = kind === 'tick' ? ORIGIN_CLEAR_TICKS : ORIGIN_CLEAR_PROPS;
     if (x * x + z * z < clear * clear) return;
+    // Buildings face the default iso camera (azimuth π/4) with a hand-placed
+    // jitter: their silhouettes are directional (gate arch, hut doorway) and
+    // must read from the frame, where trees and rocks read from any side.
+    const rotY =
+      kind === 'building'
+        ? Math.PI / 4 + (cellHash(Math.round(x * 8), Math.round(z * 8), salt + 4.2) - 0.5) * 0.5
+        : cellHash(Math.round(x * 8), Math.round(z * 8), salt + 4.2) * Math.PI * 2;
     out.push({
       kind,
+      variant,
       x,
       z,
       scale: 0.7 + cellHash(Math.round(x * 8), Math.round(z * 8), salt + 3.1) * 0.6,
-      rotY: cellHash(Math.round(x * 8), Math.round(z * 8), salt + 4.2) * Math.PI * 2,
+      rotY,
     });
   };
 
-  const cluster = (kind: ScatterKind, ix: number, iz: number, extras: number): void => {
-    // Seed instance: cell center + jitter (the grid places, never forms).
+  /** Jittered seed position for the cell (the grid places, never forms). */
+  const seedPos = (ix: number, iz: number): { sx: number; sz: number } => {
     const jx = (cellHash(ix, iz, 11.7) - 0.5) * 0.84 * SCATTER_STEP;
     const jz = (cellHash(ix, iz, 12.9) - 0.5) * 0.84 * SCATTER_STEP;
-    const sx = ix * SCATTER_STEP + jx;
-    const sz = iz * SCATTER_STEP + jz;
-    push(kind, sx, sz, 1);
+    return { sx: ix * SCATTER_STEP + jx, sz: iz * SCATTER_STEP + jz };
+  };
+
+  const cluster = (kind: ScatterKind, ix: number, iz: number, extras: number): void => {
+    const { sx, sz } = seedPos(ix, iz);
+    const count = kind === 'tick' ? 1 : PROP_VARIANT_COUNTS[kind];
+    // The cluster's species: uniform over the kind's variants.
+    const clusterVariant = Math.min(count - 1, Math.floor(cellHash(ix, iz, 31.1) * count));
+    push(kind, clusterVariant, sx, sz, 1);
     for (let n = 0; n < extras; n++) {
       const a = cellHash(ix, iz, 21.3 + n * 5.7) * Math.PI * 2;
       const r = (0.6 + cellHash(ix, iz, 22.5 + n * 5.7)) * SCATTER_STEP;
-      push(kind, sx + Math.cos(a) * r, sz + Math.sin(a) * r, 2 + n);
+      // Neighbor bias: mostly the cluster's variant, sometimes a stray.
+      const variant =
+        cellHash(ix, iz, 32.2 + n * 5.7) < CLUSTER_VARIANT_BIAS
+          ? clusterVariant
+          : Math.min(count - 1, Math.floor(cellHash(ix, iz, 33.3 + n * 5.7) * count));
+      push(kind, variant, sx + Math.cos(a) * r, sz + Math.sin(a) * r, 2 + n);
     }
+  };
+
+  /** A building stands alone; its variant hashes uniformly, then advances
+   * cyclically until it differs from every already-placed building nearby. */
+  const placeBuilding = (ix: number, iz: number): void => {
+    const { sx, sz } = seedPos(ix, iz);
+    if (sx * sx + sz * sz < ORIGIN_CLEAR_PROPS * ORIGIN_CLEAR_PROPS) return;
+    const count = PROP_VARIANT_COUNTS.building;
+    let variant = Math.min(count - 1, Math.floor(cellHash(ix, iz, 31.1) * count));
+    for (let tries = 0; tries < count; tries++) {
+      const clash = buildings.some(
+        (b) =>
+          b.variant === variant &&
+          (b.x - sx) * (b.x - sx) + (b.z - sz) * (b.z - sz) <
+            BUILDING_ADJ_RADIUS * BUILDING_ADJ_RADIUS,
+      );
+      if (!clash) break;
+      variant = (variant + 1) % count;
+    }
+    buildings.push({ x: sx, z: sz, variant });
+    push('building', variant, sx, sz, 1);
   };
 
   for (let iz = -cells; iz <= cells; iz++) {
     for (let ix = -cells; ix <= cells; ix++) {
       // Tick layer: independent roll — ticks are ground texture, not props.
-      if (cellHash(ix, iz, 1.1) < SEED_PROB.tick * density) {
+      if (cellHash(ix, iz, 1.1) < SEED_PROB.tick * density * Math.max(0, kindDensity.tick ?? 1)) {
         const extras = 1 + Math.floor(cellHash(ix, iz, 2.2) * 3); // 2–4 total
         cluster('tick', ix, iz, extras);
       }
-      // Prop layer: one roll against the cumulative kind weights. Neighbor
-      // count hashes independently of the chosen kind (monotonicity).
-      const roll = cellHash(ix, iz, 3.3);
-      let cum = 0;
-      for (const kind of PROP_ROLL_ORDER) {
-        cum += SEED_PROB[kind] * density;
-        if (roll < cum) {
-          if (kind === 'landmark') {
-            if (landmarks >= LANDMARK_MAX) break;
-            landmarks++;
-            cluster(kind, ix, iz, 0); // a landmark stands alone
+      // Prop layer: every kind rolls INDEPENDENTLY (own salt), so a per-kind
+      // density change never moves another kind's placements. First passing
+      // kind (in roll order) claims the cell — at most one cluster per cell,
+      // and collisions are ~1e-4 rare at these probabilities. Neighbor count
+      // hashes independently of the chosen kind (monotonicity).
+      for (let k = 0; k < PROP_ROLL_ORDER.length; k++) {
+        const kind = PROP_ROLL_ORDER[k]!;
+        const prob = SEED_PROB[kind] * density * Math.max(0, kindDensity[kind] ?? 1);
+        if (cellHash(ix, iz, 3.3 + k * 17.77) < prob) {
+          if (kind === 'building') {
+            if (buildings.length >= BUILDING_MAX) break;
+            placeBuilding(ix, iz);
           } else {
             const extras = 1 + Math.floor(cellHash(ix, iz, 4.4) * 4); // 1–4
             cluster(kind, ix, iz, extras);
@@ -226,8 +295,13 @@ export interface Scatter {
   positions(): { x: number; z: number; kind: InflatedPropKind; r: number }[];
   /** Hide instances inside the circles. Rebuilds visibility on call. */
   setExclusions(points: Exclusion[]): void;
-  /** Rebuild with a density multiplier (dev panel). */
+  /** Rebuild with a global density multiplier (dev panel). */
   setDensity(mult: number): void;
+  /** Per-kind density multiplier, layered on the global one. Independent per
+   * kind: changing one kind never moves another kind's placements. */
+  setKindDensity(kind: ScatterKind, mult: number): void;
+  /** Per-kind uniform scale multiplier on every instance of the kind. */
+  setKindScale(kind: ScatterKind, mult: number): void;
   /** Barely-perceptible whole-group sway. Call once per frame. */
   update(nowMs: number): void;
   dispose(): void;
@@ -242,6 +316,8 @@ const SWAY_SCALE = 1.6;
 export function createScatter(): Scatter {
   const group = new Group();
   const geometries = buildPropGeometries();
+
+  const variantOf = (p: Placement) => geometries.get(p.kind as InflatedPropKind)![p.variant]!;
 
   // Light paper albedo, fully matte — the ink pass draws the form. Never a
   // grey mass (GENERATOR §ink rendering pass).
@@ -264,9 +340,18 @@ export function createScatter(): Scatter {
   const shadowGeometry = new CircleGeometry(1, 40);
   shadowGeometry.rotateX(-Math.PI / 2);
 
+  let globalDensity = 1;
+  const kindDensity: Partial<Record<ScatterKind, number>> = {};
+  const kindScale: Partial<Record<ScatterKind, number>> = {};
   let placements = computePlacements();
   let exclusions: Exclusion[] = [];
   let meshes: InstancedMesh[] = [];
+
+  const scaleOf = (kind: ScatterKind): number => Math.max(0, kindScale[kind] ?? 1);
+
+  function replace(): void {
+    placements = computePlacements({ density: globalDensity, kindDensity });
+  }
 
   const matrix = new Matrix4();
   const quat = new Quaternion();
@@ -288,30 +373,36 @@ export function createScatter(): Scatter {
     clearMeshes();
     const visible = filterExcluded(placements, exclusions);
 
+    // One InstancedMesh per (kind, variant) — ~20 draws total.
     for (const kind of INFLATED_PROP_KINDS) {
-      const of = visible.filter((p) => p.kind === kind);
-      if (of.length === 0) continue;
-      const mesh = new InstancedMesh(geometries[kind].geometry, propMaterial, of.length);
-      mesh.frustumCulled = false;
-      of.forEach((p, i) => {
-        quat.setFromAxisAngle(axisY, p.rotY);
-        pos.set(p.x, 0, p.z);
-        scl.setScalar(p.scale);
-        mesh.setMatrixAt(i, matrix.compose(pos, quat, scl));
-      });
-      mesh.instanceMatrix.needsUpdate = true;
-      meshes.push(mesh);
-      group.add(mesh);
+      const variants = geometries.get(kind)!;
+      for (let v = 0; v < variants.length; v++) {
+        const of = visible.filter((p) => p.kind === kind && p.variant === v);
+        if (of.length === 0) continue;
+        const mesh = new InstancedMesh(variants[v]!.geometry, propMaterial, of.length);
+        mesh.frustumCulled = false;
+        const kMult = scaleOf(kind);
+        of.forEach((p, i) => {
+          quat.setFromAxisAngle(axisY, p.rotY);
+          pos.set(p.x, 0, p.z);
+          scl.setScalar(p.scale * kMult);
+          mesh.setMatrixAt(i, matrix.compose(pos, quat, scl));
+        });
+        mesh.instanceMatrix.needsUpdate = true;
+        meshes.push(mesh);
+        group.add(mesh);
+      }
     }
 
     const ticks = visible.filter((p) => p.kind === 'tick');
     if (ticks.length > 0) {
       const mesh = new InstancedMesh(tickGeometry, tickMaterial, ticks.length);
       mesh.frustumCulled = false;
+      const tickMult = scaleOf('tick');
       ticks.forEach((p, i) => {
         quat.setFromAxisAngle(axisY, p.rotY);
         pos.set(p.x, TICK_LIFT, p.z);
-        scl.setScalar(p.scale);
+        scl.setScalar(p.scale * tickMult);
         mesh.setMatrixAt(i, matrix.compose(pos, quat, scl));
       });
       mesh.instanceMatrix.needsUpdate = true;
@@ -326,7 +417,7 @@ export function createScatter(): Scatter {
       mesh.frustumCulled = false;
       mesh.renderOrder = 1;
       shadowed.forEach((p, i) => {
-        const r = geometries[p.kind as InflatedPropKind].radius * p.scale * SHADOW_FIT;
+        const r = variantOf(p).radius * p.scale * scaleOf(p.kind) * SHADOW_FIT;
         quat.identity();
         pos.set(p.x, PROP_SHADOW_LIFT, p.z);
         scl.set(r, 1, r);
@@ -349,7 +440,7 @@ export function createScatter(): Scatter {
           x: p.x,
           z: p.z,
           kind: p.kind as InflatedPropKind,
-          r: geometries[p.kind as InflatedPropKind].radius * p.scale,
+          r: variantOf(p).radius * p.scale * scaleOf(p.kind),
         }));
     },
     setExclusions(points: Exclusion[]): void {
@@ -357,7 +448,17 @@ export function createScatter(): Scatter {
       rebuild();
     },
     setDensity(mult: number): void {
-      placements = computePlacements({ density: mult });
+      globalDensity = mult;
+      replace();
+      rebuild();
+    },
+    setKindDensity(kind: ScatterKind, mult: number): void {
+      kindDensity[kind] = mult;
+      replace();
+      rebuild();
+    },
+    setKindScale(kind: ScatterKind, mult: number): void {
+      kindScale[kind] = mult;
       rebuild();
     },
     update(nowMs: number): void {
@@ -367,7 +468,8 @@ export function createScatter(): Scatter {
     },
     dispose(): void {
       clearMeshes();
-      for (const kind of INFLATED_PROP_KINDS) geometries[kind].geometry.dispose();
+      for (const variants of geometries.values())
+        for (const v of variants) v.geometry.dispose();
       tickGeometry.dispose();
       shadowGeometry.dispose();
       propMaterial.dispose();
