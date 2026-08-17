@@ -65,9 +65,9 @@ export function distanceTransform(mask: Mask): DistanceField {
   const out = new Float32Array(size * size);
   let max = 0;
   for (let i = 0; i < out.length; i++) {
-    const dist = Math.sqrt(sq[i]!);
-    out[i] = dist;
-    if (dist > max) max = dist;
+    out[i] = Math.sqrt(sq[i]!);
+    // Read back the stored float32 so max is exactly the maximum of data.
+    if (out[i]! > max) max = out[i]!;
   }
   return { size, data: out, max };
 }

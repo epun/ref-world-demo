@@ -10,8 +10,50 @@
 import type { DistanceField, Mask, Point, SkeletonLeaf } from './types';
 
 /**
- * Ridge detection on the distance field. Returns a binary skeleton mask.
- * Thresholding at a fraction of local max keeps spurs down before pruning.
+ * Zhang–Suen thinning: erode the ridge set down to 1-px-wide curves while
+ * preserving connectivity and endpoints. The raw ridge test marks whole
+ * plateaus (uniform tubes, disc interiors) as ridge, so without this pass
+ * endpoints never have exactly one neighbor and leaf detection finds nothing.
+ */
+function thinSkeleton(skel: Uint8Array, size: number): Uint8Array {
+  const at = (x: number, y: number): number =>
+    x >= 0 && x < size && y >= 0 && y < size ? skel[y * size + x]! : 0;
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (let pass = 0; pass < 2; pass++) {
+      const kill: number[] = [];
+      for (let y = 0; y < size; y++) {
+        for (let x = 0; x < size; x++) {
+          if (at(x, y) !== 1) continue;
+          // Neighbors in Zhang–Suen order: p2..p9 clockwise from north.
+          const p2 = at(x, y - 1), p3 = at(x + 1, y - 1), p4 = at(x + 1, y);
+          const p5 = at(x + 1, y + 1), p6 = at(x, y + 1), p7 = at(x - 1, y + 1);
+          const p8 = at(x - 1, y), p9 = at(x - 1, y - 1);
+          const b = p2 + p3 + p4 + p5 + p6 + p7 + p8 + p9;
+          if (b < 2 || b > 6) continue; // endpoint or interior — keep
+          const seq = [p2, p3, p4, p5, p6, p7, p8, p9, p2];
+          let a = 0;
+          for (let k = 0; k < 8; k++) if (seq[k] === 0 && seq[k + 1] === 1) a++;
+          if (a !== 1) continue; // removal would split the skeleton
+          if (pass === 0) {
+            if (p2 * p4 * p6 !== 0 || p4 * p6 * p8 !== 0) continue;
+          } else {
+            if (p2 * p4 * p8 !== 0 || p2 * p6 * p8 !== 0) continue;
+          }
+          kill.push(y * size + x);
+        }
+      }
+      for (const i of kill) skel[i] = 0;
+      if (kill.length > 0) changed = true;
+    }
+  }
+  return skel;
+}
+
+/**
+ * Ridge detection on the distance field, thinned to a 1-px skeleton.
+ * Returns a binary skeleton mask.
  */
 export function extractRidges(dist: DistanceField, mask: Mask): Uint8Array {
   const { size, data } = dist;
@@ -31,7 +73,7 @@ export function extractRidges(dist: DistanceField, mask: Mask): Uint8Array {
       if (ridge) out[i] = 1;
     }
   }
-  return out;
+  return thinSkeleton(out, size);
 }
 
 /** Count 8-neighbors that are skeleton pixels. */
@@ -51,8 +93,13 @@ function neighborCount(skel: Uint8Array, size: number, i: number): number {
 /**
  * Find skeleton leaves: endpoints of the ridge set, with their path reach.
  * Walks from each endpoint along the skeleton until hitting a junction
- * (neighborCount > 2) or exceeding maxWalk. Short spurs (reach < minReach)
- * are pruned — they're rasterization noise, not limbs.
+ * (neighborCount > 2) or exceeding maxWalk. Pruned as noise, not limbs:
+ *   - short spurs (reach < minReach) — rasterization noise;
+ *   - branches subsumed by their junction's inscribed disc
+ *     (thickness + reach ≈ junction DT) — the radial spokes a round lobe's
+ *     medial axis degenerates into, not protrusions;
+ *   - stubs thicker than they are long (reach ≤ 1.5 × thickness) — a limb
+ *     sticks out.
  */
 export function findLeaves(
   skel: Uint8Array,
@@ -90,10 +137,16 @@ export function findLeaves(
       if (branches > 2) break; // reached a junction
     }
 
-    if (reach >= minReach) {
+    const thickness = dist.data[i]!;
+    const junction = dist.data[cur]!;
+    if (
+      reach >= minReach &&
+      thickness + reach > junction * 1.2 &&
+      reach > thickness * 1.5
+    ) {
       leaves.push({
         at: { x: i % size, y: (i / size) | 0 },
-        thickness: dist.data[i]!,
+        thickness,
         reach,
       });
     }
