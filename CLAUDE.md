@@ -1,49 +1,56 @@
 # ref-world — agent notes
 
-Isometric Three.js world. A drawing becomes an egg, hatches, and walks around.
+Shared isometric Three.js world. Phones draw characters; drawings become eggs; eggs hatch;
+phones emote and track their character on a minimap.
 
-## Before any visual work
+## Before any visual or motion work
 
-Read [`docs/TASTE.md`](docs/TASTE.md). Its **Constraints** section is a hard gate, not a
-suggestion. The three that get violated most easily:
+Read [`docs/TASTE.md`](docs/TASTE.md) — the arbitration between two briefs
+([character](docs/taste/character.md), [world](docs/taste/world.md)) that conflict in six
+places. **The arbitration wins over either brief.** The traps, in order of how easily they
+get violated:
 
-- **No midtones.** Solid `#080808` on `#f4f3ef`. No gradients across the silhouette, no
-  cast shadows smeared over the ground, no motion blur or particle spray. Contrast is
-  scored 88/100 and everything must survive a grayscale test.
-- **No rectilinear or engineered geometry.** Forms stay organic and softened. If a shape
-  looks constructed from primitives, it's wrong.
-- **Nothing packed.** Density sits at ~20/100. Open ground is the design, not an
-  unfinished area to fill.
-
-`#fb5429` is the only warm accent, and at most one accent element is on screen at a time.
+- **No overshoot, no bounce, no hard cuts, no abrupt stops.** Every spring runs at damping
+  ratio **ζ ≥ 1.0** — the solver clamps this at the API boundary so underdamped motion is
+  unrepresentable. Entrances **slide**; they never `scale: 0 → 1` or pop. Primary movements
+  are **1823ms**. Nothing ever fully arrests — an ambient drift floor runs under everything.
+  ⚠️ This directly contradicts the vendored `apple-design` skill. The arbitration wins.
+- **`#080808` belongs to characters only.** The character is the *only* high-contrast object
+  on screen (88); the world sits muted at 32. That differential is the composition, not an
+  inconsistency to smooth out.
+- **Shadows are hard-edged and flat-filled.** Single value, cut sharp, no penumbra, no PCF,
+  no AO. Not Three.js default shadow mapping.
+- **No rectilinear or engineered geometry.** The isometric grid governs *placement*, never
+  *form*. If a shape looks constructed from primitives, it's wrong.
+- **No uppercase type. Anywhere.** Room codes render `xkcd`, not `XKCD`.
 
 ## Architecture
 
 [`docs/PLAN.md`](docs/PLAN.md) is the source of truth. Key invariants:
 
-- **The user's drawn silhouette is inviolable.** Viewed head-on, the character must match
-  the drawing exactly. Nothing — not a vision model, not a smoothing pass, not a stylizer —
-  may alter it.
-- **No skeletal animation.** Characters are generated blobs deformed in a vertex shader
-  from a few uniforms. There are no bones and no GLTF rigs.
-- **`src/shape/` is pure.** Contour tracing, distance transform, skeletonization, and
-  feature extraction take data in and return data out. No Three.js imports, no DOM. It's
-  the highest-value test surface in the repo.
-- **Locomotion goes through the `Surface` interface**, never through world-space Y. That
-  seam is what lets the flat map become a sphere planet without a rewrite.
+- **`src/shape/` and `src/inflate/` are pure and deterministic.** No Three.js, no DOM. Same
+  strokes → identical mesh on every device. That determinism is load-bearing: it's why the
+  phone can render the character locally instead of streaming video from the world. Don't
+  introduce nondeterminism (unseeded random, time, float-order drift) into these.
+- **The drawing is reproportioned, never replaced.** The `fidelity` dial controls how loosely
+  the character interprets the drawing, but no code path generates a new shape.
+- **No skeletal animation.** Characters are generated blobs deformed in a vertex shader from
+  a few uniforms. No bones, no GLTF rigs.
+- **Locomotion goes through the `Surface` interface**, never world-space Y. That seam is what
+  lets the flat map become a sphere planet without a rewrite.
+- **Durations come from motion tokens**, never literals.
 - **Everything in `src/dev/` is gated on `isDev`** and must tree-shake out of the demo build.
 
-## Motion
+## Taste gates
 
-The source corpus is static. The resolution: every frame of every animation must still read
-as a valid still from the corpus — one solid silhouette, eyes as the only interior detail.
-Animate the whole shape (squash, bob, hop, lean); never animate interior detail into
-existence. Springs, not linear tweens. The camera holds still.
-
-`.claude/skills/apple-design` and `.claude/skills/animate` are the references for this.
+TASTE §8 defines six verification gates (grayscale, contrast histogram, damping audit,
+uppercase scan, stillness probe, density probe). They ship as Ghost Panel controls and
+build-time checks, not as review checklists — a constraint that isn't a button doesn't
+survive a build. Keep them working.
 
 ## Skills
 
-`.claude/skills/` is vendored — see its README for provenance. One caution:
-`threejs-aaa-graphics-builder` pushes photoreal/AAA art direction, which is directly against
-this project's taste. Use it for render budgets and LOD only.
+`.claude/skills/` is vendored — see its README for provenance. Two cautions:
+`apple-design` recommends overshoot (forbidden here — see above), and
+`threejs-aaa-graphics-builder` pushes photoreal art direction (use for render budgets and
+LOD only).

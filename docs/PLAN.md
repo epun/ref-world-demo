@@ -1,223 +1,282 @@
 # ref-world — build plan
 
-An isometric WebGL world where a drawing you make on your phone becomes an egg, hatches,
-and walks around as a character.
+A shared isometric WebGL world. You draw on your phone; the drawing becomes the pattern on
+an egg in the world; the egg hatches into a character loosely derived from what you drew;
+you emote to it and track it on a minimap — all from your phone.
 
-Everything here sits inside [`docs/TASTE.md`](./TASTE.md). Read that first — it is not
-decoration, it drives real technical choices below.
+Art direction is governed by [`docs/TASTE.md`](./TASTE.md) and the two briefs under
+[`docs/taste/`](./taste/). Read the arbitration first — it drives real technical choices
+below, especially §2.1 on motion.
 
 ---
 
 ## 1. The load-bearing insight
 
-The taste is **flat single-color silhouettes with eyes as the only interior detail**.
+The character taste is **flat single-color silhouettes with eyes as the only interior
+detail**. A person drawing with a black brush on a white phone canvas is *already producing
+art in the target style*.
 
-A person drawing with a black brush on a white canvas is *already producing art in the
-target style*. That collapses the hardest part of the brief.
-
-So "infer a character from that drawing" does **not** need a generative 3D model in the
-critical path. It needs a **silhouette-inflation pipeline**: take the drawn shape, puff it
-into a rounded volume, find its extremities, and drive it procedurally.
+That means the drawing→character step needs **no generative 3D model in the critical path**.
+It needs a **silhouette-inflation pipeline**: puff the drawn shape into a rounded volume,
+find its limbs from the medial axis, and drive it procedurally.
 
 Consequences, all good:
 
-- **Head-on, the character is pixel-exact the user's drawing.** No "the AI changed my
-  drawing" disappointment — the single worst failure mode of this kind of demo.
-- Runs **on-device in well under a second**. No API round-trip between "done drawing" and
-  "egg appears".
-- **Deterministic and testable.** The pipeline is pure functions over a bitmap.
-- **Free.** No per-generation cost, no rate limit, works offline.
-- Automatically **on-taste** — a puffed silhouette with a clearcoat is exactly the
-  "gloss sheen on a flat mark" the brief asks for.
+- **Under a second, on-device.** No API round-trip between "done drawing" and "egg appears."
+- **Deterministic.** Same strokes → same mesh, every time, on every device. This is what
+  lets the phone render the character locally instead of streaming video from the world
+  (§6.3). It's a large architectural win that falls out for free.
+- **Testable.** The pipeline is pure functions over a bitmap.
+- **Free and offline.** No per-generation cost, no rate limit, no failure mode where the
+  demo can't start.
+- **On-taste by construction** — a puffed silhouette with a clearcoat is exactly the "quiet
+  gloss on a flat black mark" both briefs pair with muted saturation.
 
-A vision model still has a job, just not that one. See §5.
+A vision model still has a job, just not this one. See §5.
+
+### How "loosely based" gets implemented
+
+The character should be *loosely* based on the drawing, not a literal extrusion of it. That
+lives in one tunable, `fidelity ∈ [0,1]`:
+
+| `fidelity` | Behavior |
+|---|---|
+| `0.0` | Pure inflation. Head-on silhouette is pixel-identical to the drawing. |
+| `0.4` *(default)* | Silhouette proportions, limb topology, and distinctive protrusions preserved. Stance, eye placement, ground-contact feet, and a light pull toward bilateral symmetry are applied. |
+| `1.0` | Archetype dominates — the drawing supplies proportions and features, the character brief's creature anatomy (beak, wing, waddle, perched pose) supplies the rest. |
+
+The tradeoff is real and worth naming: **low fidelity maximizes "that's *my* drawing"
+recognition; high fidelity maximizes "that's a real creature."** Both are the point of the
+demo and they pull against each other. It ships as a dial, tuned in P1 against real drawings
+rather than guessed at now.
+
+Invariant regardless of `fidelity`: **interpretation may reproportion the silhouette, never
+replace it.** Nothing generates a new shape.
 
 ---
 
-## 2. Architecture at a glance
+## 2. Architecture
 
 ```
-┌─ phone ───────────────┐        ┌─ big screen ──────────────────────────────┐
-│  /draw?room=XKCD      │        │  /                                        │
-│                       │        │                                           │
-│  stroke capture       │ ─ws─▶  │  ingest ─▶ inflate ─▶ rig ─▶ spawn        │
-│  emote wheel          │ ─ws─▶  │                                           │
-│  hatch button         │ ─ws─▶  │  ortho iso world · egg · character        │
-└───────────────────────┘        └───────────────────────────────────────────┘
-                                          ▲
-                                   Ghost Panel (dev only, Shift+D)
+┌─ phone · /r/xkcd ────────┐          ┌─ big screen · /r/xkcd/world ───────────┐
+│                          │          │                                        │
+│  ① draw    stroke pad    │──ws──▶   │  ingest → inflate → rig → spawn egg    │
+│  ② wait    egg + timer   │◀─ws──    │                                        │
+│  ③ alive   character     │◀─ws──    │  iso world · eggs · characters ·       │
+│            emote wheel   │──ws──▶   │  scatter units · hard flat shadows     │
+│            minimap       │◀─ws──    │                                        │
+└──────────────────────────┘          └────────────────────────────────────────┘
+        many phones ──────────────────▶ one shared world
+                                                 ▲
+                                        Ghost Panel (dev only, shift+d)
 ```
-
-Packages:
 
 | Path | Contents |
 |---|---|
-| `src/draw/` | Stroke capture, pressure/velocity width, canvas rasterizer |
-| `src/shape/` | **Pure geometry.** Mask → contour → distance transform → skeleton → features |
-| `src/inflate/` | Silhouette → `BufferGeometry`. The Teddy-style puff |
+| `src/draw/` | Pointer capture, velocity-modulated stroke width, rasterizer |
+| `src/shape/` | **Pure.** mask → contour → distance transform → skeleton → features |
+| `src/inflate/` | Silhouette → `BufferGeometry`. Teddy-style puff. **Pure + deterministic** |
 | `src/character/` | Archetype, gait, locomotion, emotes, eye SDF |
 | `src/egg/` | Egg mesh, drawing wrap, wobble, crack shader, hatch sequence |
-| `src/world/` | Camera rig, ground, props, spawn management, surface abstraction |
-| `src/net/` | Room codes, WebSocket client |
-| `src/ui/` | HUD, emote wheel, room code display |
-| `src/dev/` | Ghost Panel skills, gated behind `isDev` |
-| `worker/` | Cloudflare Worker + Durable Object (one per room) |
+| `src/world/` | Camera rig, ground, `Surface`, scatter placement, shadow pass |
+| `src/motion/` | Drift-settle solver, ambient-drift floor, the ζ≥1 spring |
+| `src/net/` | Room protocol, WebSocket client, state sync |
+| `src/phone/` | The companion app — draw, wait, alive, emote wheel, minimap |
+| `src/ui/` | Shared HUD primitives, type scale |
+| `src/dev/` | Ghost Panel skills. Gated on `isDev`, tree-shaken from the demo build |
+| `worker/` | Cloudflare Worker + Durable Object, one per room |
+
+`src/shape/` and `src/inflate/` import **nothing** from Three.js or the DOM. That purity is
+what lets both the phone and the world run them and get byte-identical results.
 
 ---
 
-## 3. The drawing → character pipeline
+## 3. Drawing → character
 
-This is the technical core and the thing to build first, because it is the only part with
-real risk.
+The technical core, and the only part with real risk. Build it first.
 
 ### 3.1 Capture (`src/draw/`)
 
-- Pointer Events on a 2D canvas. Coalesced events (`getCoalescedEvents`) so fast strokes
-  on a phone don't go polygonal.
-- **Velocity-modulated stroke width** — slow strokes thicken, fast strokes thin. This is
-  what produces the folk-woodcut, hand-carved edge quality the brief calls for. A constant
-  round brush reads as clip-art and fails the 22/100 structure score.
-- Store as a **stroke list** (`{points: [x,y,pressure][], width}[]`), not a bitmap. Small
-  enough to send over the wire, and it lets the world replay the drawing as an animation.
-- Undo/clear. Nothing else — no colors, no shapes, no fill tool. The palette is one black
-  brush, which is the constraint that keeps every user's output on-taste.
+- Pointer Events with `getCoalescedEvents` so fast phone strokes don't go polygonal.
+- **Velocity-modulated stroke width** — slow strokes thicken, fast thin. This produces the
+  hand-carved woodcut edge the character brief calls for. A constant round brush reads as
+  clip-art and fails the 22/100 structure score.
+- Stored as a **stroke list** (`{ pts: [x,y,t][], w }[]`), not a bitmap: tiny on the wire,
+  replayable as an animation, and the deterministic input both devices share.
+- One black brush. Undo, clear. **No colors, no shapes, no fill tool.** The single-brush
+  constraint is what keeps every user's output on-taste without moderating anything.
 
 ### 3.2 Shape analysis (`src/shape/`) — pure, unit-tested
 
-1. **Rasterize** strokes to a 512² binary mask.
-2. **Largest connected component.** Discard components under ~0.5% of total ink — kills
-   stray dots and lets people scribble without breaking the result.
-3. **Euclidean distance transform** (two-pass Felzenszwalb). Gives interior "thickness" at
-   every pixel. This one array drives inflation, skeletonization, and eye placement.
-4. **Contour trace** the boundary (marching squares) → **Ramer–Douglas–Peucker** simplify to
-   ~120 points → resample uniformly → **Chaikin smoothing** pass. The smoothing pass is
-   the hard constraint "no rectilinear geometry with hard edges" enforced in code.
-5. **Medial axis** from DT local maxima, pruned into a skeleton graph.
+1. **Rasterize** to a 512² binary mask.
+2. **Largest connected component.** Drop components under ~0.5% of ink — kills stray dots,
+   lets people scribble without wrecking the result.
+3. **Euclidean distance transform** (two-pass Felzenszwalb). Interior thickness at every
+   pixel. This one array drives inflation, skeletonization, and eye placement.
+4. **Contour trace** (marching squares) → **Ramer–Douglas–Peucker** to ~120 points →
+   uniform resample → **Chaikin smoothing**. That smoothing pass is the hard constraint
+   *"no rectilinear geometry with hard edges"* enforced in code rather than in review.
+5. **Medial axis** from DT ridges, pruned to a skeleton graph.
 6. **Feature extraction** from skeleton leaves:
-   - Leaves in the top 35% of the bbox → head / ears / antennae
-   - Leaves in the bottom 30% → **feet** (locomotion attach points)
-   - Lateral mid-height leaves → **arms / wings** (emote attach points)
-   - Largest DT maximum in the upper region → **head lobe**, the eye anchor
-7. **Archetype classification** from foot count, aspect ratio, and symmetry:
-   `blob` (0 feet, hops) · `biped` (2) · `quadruped` (4) · `bird` (2 feet + lateral leaves + tall)
+   - top 35% of bbox → head / ears / antennae
+   - bottom 30% → **feet** (locomotion attach points)
+   - lateral mid-height → **arms / wings** (emote attach points)
+   - largest DT maximum in the upper region → **head lobe**, the eye anchor
+7. **Archetype**: `blob` (0 feet) · `biped` (2) · `quadruped` (4) · `bird` (2 + lateral + tall)
 
-Golden tests: a fixture set of hand-made drawings with asserted archetype and feature counts.
-This is where regressions will hide, so it gets the test coverage.
+Golden tests against a fixture set of real drawings — including deliberately bad ones (a
+single line, a scribble, a disconnected sketch, a drawing that fills the whole canvas).
 
 ### 3.3 Inflation (`src/inflate/`)
 
-Simplified [Teddy (Igarashi '99)](https://dl.acm.org/doi/10.1145/311535.311602) inflation:
+Simplified [Teddy (Igarashi '99)](https://dl.acm.org/doi/10.1145/311535.311602):
 
-- Triangulate the simplified contour (earcut), then subdivide for enough vertices to deform.
-- Displace each vertex on **both** front and back by `z = ±k · sqrt(dt / dtMax)`.
-  The `sqrt` matters — it gives a pillowy spherical cross-section. Linear gives a cone-tent,
-  which reads as origami and violates the "organic, softened" constraint.
-- Weld the rim, recompute smooth normals, light rim bevel.
-- Result is a closed manifold whose head-on silhouette is exactly the drawing.
+- Triangulate the smoothed contour (earcut), subdivide for deformation headroom.
+- Displace front and back by `z = ±k · sqrt(dt / dtMax)`. The `sqrt` matters — it gives a
+  pillowy spherical cross-section. Linear gives a cone-tent that reads as origami and
+  violates "organic or softened."
+- Weld the rim, smooth normals, light rim bevel.
+- Apply the `fidelity` interpretation pass (§1) — reproportion, stance, symmetry pull.
 
-Material: `MeshPhysicalMaterial`, `color #080808`, `roughness ~0.35`, `clearcoat 1`,
-`clearcoatRoughness ~0.15`, with a small studio env map. That is the brief's "quiet gloss
-or reflective highlight on the black fill" — 38/100 material realism, not a chrome ball.
+Material: `MeshPhysicalMaterial`, `#080808`, `roughness ~0.35`, `clearcoat 1`,
+`clearcoatRoughness ~0.15`, small studio env map. That's the gloss both briefs pair with
+muted saturation — 38/100 material realism, not a chrome ball.
+
+**The character is the only object in the scene allowed near `#080808`.** See TASTE §1.
 
 ### 3.4 Eyes
 
-Not geometry-heavy. Two small caps sitting just proud of the body surface at the head
-anchor, with the **eye shape evaluated as a 2D SDF in the fragment shader**. One set of
-uniforms morphs dot ↔ crescent ↔ wide oval ↔ closed line ↔ angry wedge.
+Two small caps just proud of the body at the head anchor, with the **eye shape evaluated as
+a 2D SDF in the fragment shader**. One uniform set morphs dot ↔ crescent ↔ wide oval ↔
+closed line ↔ angry wedge.
 
-That single shader is the entire emotional range of the character, which is exactly what
-the brief mandates: *"Eyes are always the expressive anchor... never fully rendered features."*
+That shader is the character's entire emotional range, which is exactly what the brief
+mandates: *"eyes are always the expressive anchor... never fully rendered features."*
+Fill `#f4f3ef` so they read as **knockout**.
 
-Fill `#f4f3ef` so they read as **knockout** — negative space punched through the mark.
+### 3.5 Locomotion — no skeleton, no bones, no bounce
 
-### 3.5 Locomotion — no skeleton, no bones
-
-Because the body is a generated blob, we skip skeletal rigging entirely and deform the
-whole mesh in a vertex shader from a handful of uniforms (bend, twist, squash, lean).
+The body is a generated blob, so we skip skeletal rigging entirely and deform the whole mesh
+in a vertex shader from a few uniforms (bend, twist, squash, lean).
 
 | Archetype | Gait |
 |---|---|
-| `blob` | Sinusoidal hop; squash on land, stretch at apex |
-| `biped` | Two foot IK targets on a cycloid path; body bobs at 2× step frequency; **roll toward the planted foot** — that roll is the Chao/penguin waddle |
+| `blob` | Undulating **glide** — a travelling sine through the body. *Not* a hop: repeated hopping reads as bounce, which is forbidden. |
+| `biped` | Two foot targets on a cycloid; body bobs at 2× step frequency; **rolls toward the planted foot** — that roll is the waddle |
 | `quadruped` | Four targets, diagonal gait |
-| `bird` | Biped gait + lateral leaves flap on turns and emotes |
+| `bird` | Biped gait; lateral leaves flap on turns and emotes |
 
-One `phase` scalar drives everything. Turning is a spring on heading, so direction changes
-overshoot slightly and settle — interruptible and velocity-aware, per the `apple-design`
-skill's posture on fluid motion.
+One `phase` scalar drives all of it. **Heading changes are critically damped (ζ = 1.0)** —
+they settle without ever crossing the target, per TASTE §2.1. Characters decelerate into
+idle; they never hard-stop. Idle is not rest — the ambient drift floor keeps them alive.
 
 ---
 
 ## 4. Egg and hatching
 
-- **Mesh**: ellipsoid, base `#f4f3ef`.
-- **Pattern**: the user's drawing wrapped onto the shell — the raw mark centered on the
-  front face, plus a rotated, scaled repeat band around the sides so it reads as a
-  *painted* egg rather than a sticker. Rendered from the stroke list to a texture, so it
-  stays crisp at any egg scale.
-- **Reveal**: on spawn, replay the strokes onto the egg texture over ~1.2s. The egg
-  visibly gets painted with what you just drew. Cheap to build, disproportionately good.
-- **Wobble**: spring-driven rocking on the base. Amplitude and frequency ramp up as the
-  hatch timer approaches zero, so the world telegraphs what's about to happen.
-- **Cracks**: animated crack SDF in the shell fragment shader, growing in `#080808`.
-  Progress is a single 0→1 uniform, so it's scrubbable in Ghost Panel.
-- **Hatch**: shell splits into 2–3 pieces, they arc away and dissolve. Character pops out
-  with an overshoot spring and does a `surprised` emote. This is the one moment `#fb5429`
-  is allowed a flash.
-- **Trigger**: auto after a configurable timer (default ~90s for demo pacing), plus a
-  manual hatch from the phone or a dev key. Both paths run the identical sequence.
+- **Mesh**: ellipsoid, cream `#e9e5db`.
+- **Pattern**: the drawing wrapped onto the shell — the mark centered on the front face plus
+  a rotated, scaled repeat band around the sides, so it reads as a *painted* egg rather than
+  a decal. Rendered from the stroke list, so it stays crisp at any scale.
+- **Paint-on reveal**: on spawn, replay the strokes onto the egg texture over `t.primary`
+  (1823ms). The egg visibly gets painted with what you just drew. Cheap; disproportionately
+  good.
+- **Wobble**: continuous rocking that **never stops** — amplitude and frequency ramp up as
+  the hatch approaches, so the world telegraphs what's coming. Drift-settle, no rebound.
+- **Cracks**: animated crack SDF in the shell fragment shader, growing in `#44413c`. Single
+  0→1 uniform, so it's scrubbable in Ghost Panel.
+- **Hatch**: shell parts in 2–3 pieces that **slide** away and dissolve; the character
+  **rises and drifts** to rest. No pop, no overshoot, no scale-in — those are all forbidden.
+  It plays a `surprised` eye morph on arrival. This is the one moment `#fb5429` gets a flash.
+- **Trigger**: auto after a configurable timer, plus manual hatch from the phone or a dev
+  key. Both paths run the identical sequence.
 
 ---
 
-## 5. Where a vision model *does* earn its place
+## 5. Where a vision model earns its place
 
-Geometry gives us the mesh and the rig. It cannot give us **character**. That's the model's job:
-
-Send the drawing to Claude (vision) → get back a small structured descriptor:
+Geometry gives us the mesh and the rig. It can't give us **character**. That's the model's job:
 
 ```jsonc
 {
-  "name": "Pebble",              // shown once, in restrained type
-  "archetypeHint": "bird",       // corroborates or overrides geometric guess
-  "personality": "skittish",     // biases idle behavior + emote frequency
+  "name": "pebble",              // lowercase — TASTE §5, no uppercase anywhere
+  "archetypeHint": "bird",       // corroborates or overrides the geometric guess
+  "personality": "skittish",     // biases idle behavior and emote frequency
   "idleBias": ["look-around", "preen"],
   "emoteBias": { "surprised": 1.4, "sleepy": 0.6 },
   "walkSpeed": 1.15
 }
 ```
 
-Design rules for this:
+Rules:
 
 - **Off the critical path.** The egg spawns immediately from geometry. The descriptor
   arrives whenever it arrives and enriches the character in place.
-- **Never touches the mesh.** The user's drawn silhouette is inviolable.
+- **Never touches the mesh.** Interpretation is the `fidelity` pass, and it's geometric.
 - **Degrades to nothing.** No key, no network, rate-limited → geometric defaults, and the
   demo is still complete.
 
-This split is the honest one: deterministic geometry for the thing that must be exact,
-a model for the thing that benefits from taste and surprise.
+---
+
+## 6. The phone app (`src/phone/`)
+
+The phone is a **persistent companion screen**, not a one-shot drawing pad. Three states,
+each sliding into the next — never cutting.
+
+### 6.1 ① draw
+
+Full-bleed canvas, cream ground, one black brush. Undo / clear / done. No chrome competing
+with the drawing surface.
+
+### 6.2 ② wait
+
+The egg, rendered on the phone, painting itself with your strokes. A hatch countdown in
+restrained lowercase type. A manual **hatch now** button.
+
+### 6.3 ③ alive — your character, on your phone
+
+Because `src/shape/` and `src/inflate/` are pure and deterministic, **the phone runs the
+identical pipeline on the stroke list it already has and gets the identical mesh.** No
+geometry crosses the wire. The phone shows a head-on portrait — which, at low `fidelity`,
+*is* the drawing, closing the loop visually.
+
+The world streams only lightweight state: position, heading, current emote, name.
+
+**Emote wheel** — radial, touch, icon-only (the graphic layer both briefs specify is `icon`;
+and labels would violate the no-uppercase rule anyway). Chao-inspired set: `happy`, `sad`,
+`sleepy`, `angry`, `surprised`, `dance`, `wave`. Each is (eye SDF params + body deform curve
++ optional `#fb5429` glyph that **slides** in above the head and drifts).
+
+**Minimap** — top-down, cream ground, hand-drawn feel with jittered linework and `ruleLine`
+graphics. Scatter units render as tiny muted marks. Other players are `#8e908d`. **You** are
+`#080808` with the `#fb5429` ring — that ring is your one accent, so nothing else on the
+minimap may use it. Position updates throttled to ~10Hz and interpolated with a drift
+settle, so the marker never jitters or snaps.
 
 ---
 
-## 6. The world
+## 7. The world (`src/world/`)
 
-- **Camera**: orthographic, locked at true isometric (35.264° elevation, 45° azimuth).
-  It does not shake, dolly, or hand-hold. The world moves under a still frame — that is
-  how a game keeps the corpus's stillness.
-- **Ground**: `#f4f3ef`. The "field of white". Near-white, never pure `#fff`.
-- **Shadows**: soft blurred contact discs in `#bcbab7` under each entity. **No cast
-  shadows from a directional light** — cast shadows smear midtones across the ground and
-  would drop the 88/100 contrast score.
-- **Props**: rocks, arches, trees — all authored as silhouettes and run through the *same*
-  inflater. The world and the characters are consistent by construction, and props cost
-  almost nothing to add.
-- **Density**: the taste says 18–22/100. The world stays sparse. A handful of props and a
-  lot of open ground. Resist filling it.
+- **Camera**: orthographic, true isometric (35.264° elevation / 45° azimuth), holding an
+  imperceptibly slow **continuous drift**. It never locks, never shakes, never cuts. Reframes
+  slide at `t.primary` and settle by drifting.
+- **Ground**: cream `#e9e5db`. Never pure white.
+- **Scatter**: repeated small hand-drawn units — trees, rocks, huts, birds, doodads —
+  authored as silhouettes and run through the **same inflater** as the characters. Placement
+  on the isometric grid with jitter; **grid governs placement, never form** (TASTE §2.5).
+  Muted values only, so frame contrast lands near 32.
+- **Density**: global ≈45. Each character carries a **negative-space exclusion radius** that
+  scatter won't enter, keeping local density ≈18 (TASTE §2.3). Both scores satisfied by a
+  placement rule.
+- **Shadows**: **hard-edged, flat-filled** — a single value cut sharp, no penumbra, no PCF,
+  no AO smear (TASTE §2.4). Shadow as a stamped graphic shape. This is a custom pass, not
+  Three.js's default shadow mapping.
+- **Scale is the subject.** The world brief's whole thesis is a tiny inhabitant in an
+  enormous field. Characters render small. Resist the urge to frame them close.
 
 ### Flat map vs sphere planet
 
-Build the flat isometric map first, but write locomotion against a **surface abstraction**
-from day one:
+Build the flat isometric map first, behind a surface abstraction:
 
 ```ts
 interface Surface {
@@ -227,107 +286,118 @@ interface Surface {
 }
 ```
 
-`FlatSurface` and `SphereSurface` both implement it. Then the planet is a swap, not a
-rewrite. A curved horizon suits the taste well — but it is a Phase 5 upgrade, not a
-Phase 0 commitment.
+`FlatSurface` and `SphereSurface` both implement it; locomotion never touches world-space Y.
+The planet then becomes a swap, not a rewrite — and a curved horizon suits the pixel-planet
+reference in the world brief well. P5, not P0.
 
 ---
 
-## 7. Cross-device
+## 8. Networking (`src/net/`, `worker/`)
 
-Room-code pairing:
-
-1. Big screen opens `/`, gets a 4-character room code, displays it in restrained type.
-2. Phone opens `/draw?room=XXXX` (QR code on screen).
-3. Cloudflare Worker + **one Durable Object per room**, WebSocket both directions.
+Cloudflare Worker + **one Durable Object per room**. WebSocket both directions.
 
 | Direction | Messages |
 |---|---|
-| phone → world | `drawing` (stroke list), `emote`, `hatch` |
-| world → phone | `state` (`egg` / `hatching` / `alive`), `name`, `ack` |
+| phone → world | `join`, `drawing` (stroke list), `emote`, `hatch` |
+| world → phone | `state` (`draw`/`egg`/`hatching`/`alive`), `pose` (pos + heading, ~10Hz), `roster` (minimap peers), `name` |
 
-Sending the **stroke list** rather than a PNG keeps payloads tiny and is what enables the
-paint-on-reveal in §4.
+Stroke lists rather than PNGs: tiny payloads, replayable paint-on, and the deterministic
+input that makes §6.3 work.
 
-Fallback path: a same-device drawing modal that bypasses the network entirely. Worth
-keeping permanently — it's the offline demo and the dev loop.
+**Multiplayer falls out.** Many phones, one room, one world, N characters — which is what
+the minimap requirement implies and what makes this good in a room full of people.
+
+Fallback: a same-device draw modal that bypasses the network entirely. Worth keeping
+permanently — it's the offline demo and the fast dev loop.
 
 ---
 
-## 8. Ghost Panel as the dev surface
+## 9. Motion (`src/motion/`)
 
-[`epun/ghost-panel`](https://github.com/epun/ghost-panel) drops into the Three.js scene and
-auto-mounts. We extend it with project skills via `ui.skills.register`:
+TASTE §3 is the spec. Implementation notes:
+
+- One solver. **Damping ratio ζ is clamped to ≥ 1.0 at the API boundary** — underdamped
+  springs are unrepresentable, so bounce cannot be written into the codebase by accident.
+- The **ambient drift floor** is a scene-wide system, not per-element: low-frequency noise
+  at ~0.3% of scale applied to everything, forever. Nothing ever fully arrests.
+- Durations come from tokens (`t.tertiary` 456 / `t.secondary` 912 / `t.primary` 1823 /
+  `t.ambient` 3646), never from literals.
+- Entrances translate in. There is no `scale: 0 → 1` helper, and no opacity-only pop.
+
+---
+
+## 10. Ghost Panel as the dev surface
+
+[`epun/ghost-panel`](https://github.com/epun/ghost-panel) auto-mounts against the Three.js
+scene. We extend it via `ui.skills.register`:
 
 | Skill | Controls |
 |---|---|
-| `refworld.inflater` | Puff depth, contour simplify tolerance, smoothing passes, live re-inflate |
-| `refworld.character` | Archetype override, gait, step length, waddle amount, body scale |
+| `refworld.inflater` | Puff depth, simplify tolerance, smoothing passes, **`fidelity` dial**, live re-inflate |
+| `refworld.character` | Archetype override, gait, step length, waddle amount, scale |
 | `refworld.eyes` | Eye SDF params, spacing, size, live emote preview |
 | `refworld.egg` | Hatch timer, wobble amplitude, **crack progress scrub**, force hatch |
-| `refworld.taste` | Palette swatches + a **grayscale-test toggle** that desaturates the frame so we can verify nothing but `#fb5429` depends on hue |
+| `refworld.world` | Scatter density, exclusion radius, grid jitter, shadow hardness |
+| `refworld.taste` | **The verification gates from TASTE §8** — grayscale toggle, contrast histogram, damping audit, uppercase scan, stillness probe, density probe |
 
-That last one turns a taste constraint into a button, which is the only way a constraint
-actually survives a build.
-
-Ghost Panel's graph editor authors the emote curves; we export them as data and ship the
-data, not the panel. All of `src/dev/` is gated on `isDev` and tree-shaken from the
-demo build.
+That last row is the important one: a taste constraint that isn't a button doesn't survive a
+build. Ghost Panel's graph editor authors the emote curves; we ship the exported data, not
+the panel. All of `src/dev/` is gated on `isDev`.
 
 ---
 
-## 9. Stack
+## 11. Stack
 
 | Choice | Why |
 |---|---|
-| Vite + TypeScript | Fast, and the geometry pipeline genuinely benefits from types |
+| Vite + TypeScript | Fast; the geometry pipeline genuinely benefits from types |
 | `three` (pinned) | Direct, no R3F — we own the render loop and Ghost Panel drops in clean |
-| `motion` (vanilla) | DOM/UI transitions without pulling in React |
-| Custom spring solver | 3D motion must be interruptible and velocity-aware; tweens aren't |
-| Vitest | The `src/shape/` pipeline is pure functions — high-value test surface |
-| Cloudflare Workers + DO | Room state, WebSockets, no server to run |
+| Custom drift solver | The motion constraints rule out every off-the-shelf spring library's defaults |
+| Vitest | `src/shape/` and `src/inflate/` are pure — the highest-value test surface here |
+| Cloudflare Workers + DO | Room state and WebSockets with no server to run |
 
-Deliberately **not** using: React (the UI is a canvas, a HUD, and an emote wheel), a physics
-engine (locomotion is kinematic), skeletal animation (there is no skeleton), a 3D-generation
-API (§1).
+Deliberately **not** using: React (the UI is a canvas, a wheel, and a minimap); a physics
+engine (locomotion is kinematic); skeletal animation (there is no skeleton); a 3D-generation
+API (§1); a spring library (§9); Three.js shadow mapping (§7).
 
 ---
 
-## 10. Phasing
+## 12. Phasing
 
 | Phase | Deliverable | Done when |
 |---|---|---|
-| **P0** Scaffold | Vite + TS + Three, iso camera, ground, taste tokens, Ghost Panel wired | Empty white world renders, panel opens on `Shift+D` |
-| **P1** Pipeline ⚠️ | Draw canvas → mask → contour → DT → features → inflated glossy mesh | Draw a blob, see it puffed and glossy in-world, head-on silhouette pixel-matches |
-| **P2** Egg | Egg mesh, stroke-replay paint-on, wobble, crack shader, hatch sequence | Draw → egg paints itself → wobbles → cracks → character pops out |
-| **P3** Life | Archetypes, gaits, waddle, idle behavior, eye SDF, emote set | Character walks the map, waddles, and emotes on command |
-| **P4** Phone | Worker + DO, room codes, QR, phone draw/emote/hatch | Two devices, one world, full loop from a phone |
-| **P5** Polish | Props, sphere-planet surface, QA, perf, mobile | 60fps on a mid phone; grayscale test passes |
+| **P0** Scaffold | Vite + TS + Three, iso camera, cream ground, motion tokens, Ghost Panel, taste gates | Empty world renders and passes the grayscale + damping gates |
+| **P1** Pipeline ⚠️ | Draw → mask → contour → DT → features → inflated glossy mesh, `fidelity` dial | Draw a blob, see it puffed and glossy in-world; dial tuned against ~15 real drawings |
+| **P2** Egg | Egg mesh, stroke-replay paint-on, wobble, crack shader, hatch sequence | Draw → egg paints itself → wobbles → cracks → character drifts out |
+| **P3** Life | Archetypes, gaits, waddle, idle behavior, eye SDF, emote set | Character walks the map, waddles, emotes on command, never fully stops |
+| **P4** Phone | Worker + DO, rooms, the three phone states, emote wheel, minimap | Two phones, one world, full loop end to end |
+| **P5** World | Scatter units, hard flat shadows, density gates, sphere `Surface` | Density and contrast probes pass; planet variant swaps in |
+| **P6** Polish | QA, perf, mobile, safe areas | 60fps on a mid phone; every TASTE §8 gate green |
 
 **P1 is the risk.** Everything downstream assumes silhouette inflation produces something
-that reads as a creature. Build it first, standalone, against a fixture set of ~15 real
-drawings — including deliberately bad ones (a single line, a scribble, a disconnected
-sketch) — before committing to P2.
+that reads as a creature, and that the `fidelity` dial has a setting where people both
+recognize their drawing *and* accept it as alive. Build it standalone against a real fixture
+set before committing to P2.
 
 ---
 
-## 11. Open decisions
+## 13. Open decisions
 
-1. **World topology** — flat iso map first with a `Surface` seam for the planet (recommended),
-   or commit to the sphere from P0?
-2. **Cross-device** — is phone-as-controller required for the demo (P4 as scoped), or is a
-   same-device draw modal enough, with pairing as a stretch?
-3. **Vision descriptor** — include the Claude-vision character descriptor (§5), or keep the
-   whole thing deterministic and offline?
-4. **Hatch pacing** — ~90s auto-hatch is tuned for a live demo. If this is going in front of
-   an audience unattended, that number wants to be much shorter.
+1. **World brief token block is truncated** (TASTE §7). The pastel palette is currently
+   inferred from prose. Worth getting the real values before P5.
+2. **`fidelity` default.** Proposing 0.4 — recognizably your drawing, but standing and alive.
+   This is genuinely a taste call and should be made by looking at P1 output, not now.
+3. **Hatch pacing.** Needs a number. Tuned for a live demo, ~90s; unattended in front of an
+   audience, much shorter.
+4. **Room lifetime and capacity.** How many characters share a world before it stops reading
+   as "a tiny inhabitant in an enormous field"? The world brief's whole thesis breaks if the
+   map gets crowded — this probably wants a cap plus a despawn policy.
 
 ---
 
 ## Appendix — installed skills
 
-Vendored into `.claude/skills/`. See [`.claude/skills/README.md`](../.claude/skills/README.md)
-for provenance and licensing.
+Vendored into `.claude/skills/`; provenance in [`.claude/skills/README.md`](../.claude/skills/README.md).
 
 - **Motion & design engineering** (Emil Kowalski) — `animate`, `animation-vocabulary`,
   `review-animations`, `improve-animations`, `find-animation-opportunities`, `apple-design`,
@@ -337,6 +407,14 @@ for provenance and licensing.
   `-postprocessing`
 - **Game systems** (Majid Manzarpour) — `threejs-game-director`, `threejs-gameplay-systems`,
   `threejs-game-ui-designer`, `threejs-aaa-graphics-builder`, `threejs-debug-profiler`,
-  `threejs-qa-release`, plus the `-3d-generator` / `-image-generator` / `-audio-generator`
-  skills (these need third-party API keys; unused by the plan above)
-- **3D vocabulary** (from `epun/ghost-panel`) — `3d-vocabulary`
+  `threejs-qa-release`, plus `-3d-generator` / `-image-generator` / `-audio-generator`
+  (need third-party API keys; unused by this plan)
+- **3D vocabulary** (from `epun/ghost-panel`)
+
+> ⚠️ Two vendored skills push directly against this project's taste and must be used
+> selectively:
+> - **`apple-design`** recommends springs with overshoot. Overshoot is a hard constraint
+>   violation here (TASTE §2.1). Take its interruptibility and gesture guidance; reject its
+>   curves.
+> - **`threejs-aaa-graphics-builder`** pushes photoreal/AAA art direction. Use it for render
+>   budgets and LOD only.
