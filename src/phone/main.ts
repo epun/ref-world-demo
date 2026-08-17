@@ -107,11 +107,16 @@ async function boot(): Promise<void> {
     },
   });
 
-  // Kit-page handoff: open on the egg, not the draw pad.
+  // Kit-page handoff: open on the egg, not the draw pad. The MQTT publish
+  // already happened on the draw page; driving the LOCAL session here only
+  // starts its egg timer, so the wait screen counts down and hatching
+  // advances to the alive screen — the character in the ui (user ask).
+  // (The local session never reaches the MQTT feed, so no duplicate egg.)
   const handedOff = readHandoff();
   if (handedOff) {
     strokes = handedOff;
     hatchInMs = 20000;
+    session.sendDrawing(handedOff);
     machine.goTo('wait');
   }
 
