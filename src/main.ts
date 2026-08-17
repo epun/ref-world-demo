@@ -1,29 +1,47 @@
 /**
  * World entry point.
  *
- * Starts the P0 world with the test blob, and adds the P1 same-device draw
- * loop: press d (or the hairline pencil control in the corner) to slide a
- * draw overlay over the world, draw, hit done — the drawing runs the pure
- * pipeline (analyze → inflate) and stands in the world as a puffed, glossy
- * character. The test blob holds the frame only until the first character
- * exists, then is disposed. One character per device for now; a new drawing
- * replaces the old one (until the egg lands, PLAN §4).
+ * P0 world + P1 draw loop + P2 egg lifecycle (PLAN §4): press d (or the
+ * hairline pencil control) to slide the draw overlay over the world, draw,
+ * hit done — an egg slides into the world and visibly paints itself with the
+ * drawing, wobbles harder as its hatch timer runs down, cracks, and hatches
+ * into the puffed glossy character (press h to hatch early). The test blob
+ * holds the frame only until the first egg exists, then is disposed. One
+ * creature per device: a new drawing replaces the previous egg or character.
  *
  * TASTE discipline: the overlay ENTERS AND EXITS BY SLIDING (translateY over
  * t.secondary on the settle curve — never popping, hard cuts are forbidden at
- * confidence 1.00). The corner control is icon + hairline border only, no
- * filled button. All colors come from src/taste/tokens.ts.
+ * confidence 1.00). The egg slides down from slightly above the ground; the
+ * hatch shell slides apart and the character rises on ζ≥1 springs. The corner
+ * control is icon + hairline border only, no filled button. All colors come
+ * from src/taste/tokens.ts; all durations from MOTION tokens.
  */
 
-import { IcosahedronGeometry, Mesh, MeshPhysicalMaterial } from 'three';
-import type { BufferGeometry } from 'three';
+import { IcosahedronGeometry, Mesh, MeshPhysicalMaterial, Vector3 } from 'three';
+import type { BufferGeometry, Group } from 'three';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { createCharacter, type Character } from './character/character';
 import { mountDrawScreen } from './draw/ui';
+import { createEgg, type Egg } from './egg/egg';
+import { startHatch, type HatchHandle } from './egg/hatch';
 import { sampleDrift } from './motion/ambient';
 import { CHARACTER, MOTION, SURFACE, WORLD } from './taste/tokens';
 import { start, type WorldHandles } from './world/scene';
 import type { ShadowHandle } from './world/shadows';
+
+/** Hatch timer — dev pacing; a live demo wants ~90s (PLAN §13). */
+export const HATCH_TIMER_MS = 20000;
+
+/** Where eggs land: a spot near the world origin (PLAN §4). */
+const EGG_SPOT = { x: 2.2, z: -1.4 } as const;
+
+/** Egg shadow sits a touch inside the shell footprint — smaller than the
+ * character's, like the stamp under the test blob. */
+const EGG_SHADOW_FIT = 0.85;
+
+/** Pre-hatch crack teaser: hairlines appear late in the timer, then the
+ * hatch sequence springs the same uniform the rest of the way. */
+const CRACK_TEASER = 0.3;
 
 const BLOB_RADIUS = 1.8;
 const BLOB_NOISE = 0.09;
@@ -37,6 +55,11 @@ function organicNoise(x: number, y: number, z: number): number {
     Math.sin(y * 1.9 + z * 1.3 + 2.1) * 0.3 +
     Math.sin(z * 1.5 + x * 2.1 + 4.2) * 0.2
   );
+}
+
+function smoothstep(edge0: number, edge1: number, x: number): number {
+  const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0)));
+  return t * t * (3 - 2 * t);
 }
 
 function createBlobGeometry(): BufferGeometry {
@@ -62,7 +85,7 @@ interface TestBlob {
 }
 
 /** The P0 placeholder: the one near-black object on screen (TASTE §1) until
- * the first drawn character replaces it. */
+ * the first egg replaces it. */
 function createTestBlob(world: WorldHandles): TestBlob {
   const geometry = createBlobGeometry();
   const material = new MeshPhysicalMaterial({
@@ -144,6 +167,26 @@ function ensureOverlayStyle(): void {
   opacity: 1;
   transform: translateY(0);
 }
+.egg-hint {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 4vmin;
+  z-index: 4;
+  text-align: center;
+  color: ${WORLD.ink};
+  font: 400 13px/1.4 ui-sans-serif, system-ui, sans-serif;
+  opacity: 0;
+  transform: translateY(6px);
+  transition:
+    opacity ${MOTION.tertiaryMs}ms ${MOTION.settleCurve},
+    transform ${MOTION.tertiaryMs}ms ${MOTION.settleCurve};
+  pointer-events: none;
+}
+.egg-hint.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
 .draw-open {
   position: fixed;
   left: 24px;
@@ -207,22 +250,111 @@ function main(): void {
 
   const world = start(canvas);
 
-  // The test blob holds the frame only until the first character is drawn.
+  // The test blob holds the frame only until the first egg spawns.
   let testBlob: TestBlob | null = createTestBlob(world);
+
+  // ── creature lifecycle state (PLAN §4) ────────────────────────────────────
+  let egg: Egg | null = null;
+  let eggShadow: ShadowHandle | null = null;
+  let eggBornMs = 0;
+  /** Built at draw-done (validates the strokes), spawned at the burst. */
+  let pendingCharacter: Character | null = null;
+  let hatch: HatchHandle | null = null;
   let character: Character | null = null;
+  /** The hatch wrapper that owns the entrance; main owns it after onBurst. */
+  let characterRoot: Group | null = null;
   let characterShadow: ShadowHandle | null = null;
+
+  ensureOverlayStyle();
+
+  const eggHint = document.createElement('div');
+  eggHint.className = 'egg-hint';
+  eggHint.textContent = 'press h to hatch';
+
+  function beginHatch(): void {
+    if (!egg || hatch || !pendingCharacter) return;
+    const next = pendingCharacter;
+    const hatchingEgg = egg;
+    eggHint.classList.remove('visible');
+    hatch = startHatch(world.scene, hatchingEgg, next, {
+      onBurst: (root) => {
+        character = next;
+        pendingCharacter = null;
+        characterRoot = root;
+        // The character's shadow appears with the character; the egg's
+        // smaller stamp retires with the shell.
+        characterShadow = world.shadows.addShadow('character', next.radius);
+        world.shadows.removeShadow('egg');
+        eggShadow = null;
+        egg = null; // the hatch owns the egg's disposal from here
+        world.cameraRig.frameAt(root.position);
+      },
+      onDone: () => {
+        hatch = null;
+      },
+    });
+  }
+
+  /** Replace-previous behavior: one creature per device, at any stage. */
+  function clearCreature(): void {
+    if (hatch) {
+      hatch.dispose();
+      hatch = null;
+    }
+    if (egg) {
+      world.scene.remove(egg.group);
+      egg.dispose();
+      egg = null;
+    }
+    world.shadows.removeShadow('egg');
+    eggShadow = null;
+    if (characterRoot) {
+      world.scene.remove(characterRoot);
+      characterRoot = null;
+    }
+    if (character) {
+      character.dispose();
+      character = null;
+    }
+    if (pendingCharacter) {
+      pendingCharacter.dispose();
+      pendingCharacter = null;
+    }
+    world.shadows.removeShadow('character');
+    characterShadow = null;
+    eggHint.classList.remove('visible');
+  }
 
   world.onFrame((dt, nowMs) => {
     testBlob?.update(nowMs);
+
+    if (egg) {
+      egg.update(dt, nowMs);
+      eggShadow?.setPosition(egg.group.position.x, egg.group.position.z);
+      if (!hatch) {
+        const p = Math.min(1, (nowMs - eggBornMs) / HATCH_TIMER_MS);
+        egg.setHatchProgress(p);
+        // Hairline cracks tease in late; the hatch sequence springs the
+        // same uniform the rest of the way — one continuous scrub.
+        egg.crack(CRACK_TEASER * smoothstep(0.62, 1, p));
+        if (p >= 1) beginHatch();
+      }
+    }
+
+    hatch?.update(dt, nowMs);
+
     if (character) {
       character.update(dt, nowMs);
-      characterShadow?.setPosition(character.group.position.x, character.group.position.z);
+      if (characterRoot && characterShadow) {
+        characterShadow.setPosition(
+          characterRoot.position.x + character.group.position.x,
+          characterRoot.position.z + character.group.position.z,
+        );
+      }
     }
   });
 
   // ── overlay ───────────────────────────────────────────────────────────────
-  ensureOverlayStyle();
-
   const overlay = document.createElement('div');
   overlay.className = 'draw-overlay';
 
@@ -231,7 +363,7 @@ function main(): void {
   hint.textContent = 'draw a solid shape — it becomes a creature';
 
   const openControl = createOpenControl();
-  document.body.append(overlay, openControl);
+  document.body.append(overlay, openControl, eggHint);
 
   let overlayOpen = false;
   const openOverlay = (): void => {
@@ -246,13 +378,20 @@ function main(): void {
 
   openControl.addEventListener('click', openOverlay);
   window.addEventListener('keydown', (event) => {
-    if (event.key !== 'd' || event.metaKey || event.ctrlKey || event.altKey) return;
-    if (overlayOpen) closeOverlay();
-    else openOverlay();
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+    if (event.key === 'd') {
+      if (overlayOpen) closeOverlay();
+      else openOverlay();
+      return;
+    }
+    // Manual hatch — runs the identical sequence as the timer (PLAN §4).
+    if (event.key === 'h' && !overlayOpen) beginHatch();
   });
 
   const drawScreen = mountDrawScreen(overlay, {
     onDone: (strokes) => {
+      // Validate the ink by building the character now; it stays offstage
+      // until the shell bursts (deterministic — same strokes, same mesh).
       const next = createCharacter(strokes);
       if (!next) {
         // No usable ink — keep the overlay open with one small lowercase line.
@@ -261,22 +400,22 @@ function main(): void {
       }
       hint.classList.remove('visible');
 
-      // First character retires the test blob for good.
+      // First egg retires the test blob for good.
       if (testBlob) {
         testBlob.dispose();
         testBlob = null;
       }
-      // One character per device until the egg lands: replace the previous.
-      if (character) {
-        world.scene.remove(character.group);
-        character.dispose();
-      }
+      // One creature per device: replace egg or character, at any stage.
+      clearCreature();
 
-      character = next;
-      world.scene.add(next.group);
-      // addShadow replaces the stamp under the same id, so redraws swap clean.
-      characterShadow = world.shadows.addShadow('character', next.radius);
-      world.cameraRig.frameAt(next.group.position);
+      pendingCharacter = next;
+      egg = createEgg(strokes, { x: EGG_SPOT.x, z: EGG_SPOT.z });
+      eggBornMs = performance.now();
+      world.scene.add(egg.group);
+      eggShadow = world.shadows.addShadow('egg', egg.radius * EGG_SHADOW_FIT);
+      eggShadow.setPosition(EGG_SPOT.x, EGG_SPOT.z);
+      world.cameraRig.frameAt(new Vector3(EGG_SPOT.x, 0, EGG_SPOT.z));
+      eggHint.classList.add('visible');
 
       drawScreen.capture.clear();
       closeOverlay();
