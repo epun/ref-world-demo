@@ -1,0 +1,22 @@
+# The room relay — Cloudflare Worker + one Durable Object per room (PLAN §8).
+# Deploy from the repo root:
+#
+#   npx wrangler deploy --config worker/wrangler.toml
+#
+# wrangler bundles relay.ts itself (esbuild), including the relative import
+# into src/net/ — no project build step involved, and wrangler stays out of
+# package.json (run it via npx).
+
+name = "ref-world-relay"
+main = "relay.ts"
+compatibility_date = "2026-08-01"
+
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "RoomDO"
+
+# Rooms are in-memory only (PLAN open decision #4) — the sqlite class flavor is
+# required on the free plan, but no storage is ever written.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RoomDO"]

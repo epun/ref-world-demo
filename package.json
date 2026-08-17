@@ -11,17 +11,20 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "gate:static": "tsx scripts/gates/static.ts"
+    "gate:static": "tsx scripts/gates/static.ts",
+    "relay:dev": "tsx src/net/devRelay.ts"
   },
   "dependencies": {
     "three": "0.180.0"
   },
   "devDependencies": {
     "@types/three": "0.180.0",
+    "@types/ws": "^8.18.1",
     "ghost-panel": "git+https://github.com/epun/ghost-panel.git#2498c5bc4b75ae62504d080c5da8e84229ca8ffe",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vite": "^7.1.0",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.4",
+    "ws": "^8.21.3"
   }
 }

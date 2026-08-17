@@ -1,0 +1,7 @@
+{
+  // Typecheck the worker standalone: npx tsc --noEmit -p worker
+  // (the root tsconfig only includes src/scripts/test, so the worker gets its
+  // own program; cf-types.d.ts supplies the Workers runtime ambients)
+  "extends": "../tsconfig.json",
+  "include": ["."]
+}
