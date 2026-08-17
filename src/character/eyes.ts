@@ -19,7 +19,7 @@
  * same character at the same moments.
  */
 
-import { CircleGeometry, Color, Group, Mesh, ShaderMaterial } from 'three';
+import { CircleGeometry, Color, Group, Mesh, ShaderMaterial, Vector2 } from 'three';
 import type { IUniform } from 'three';
 import { Spring } from '../motion/spring';
 import type { ShapeAnalysis } from '../shape/types';
@@ -64,6 +64,7 @@ uniform float uWedge;
 uniform float uSize;
 uniform float uSide;
 uniform vec3 uPupil;
+uniform vec2 uGaze;
 varying vec2 vUv;
 
 void main() {
@@ -103,7 +104,7 @@ void main() {
   // The pupil (avatar spec: every eye has a single solid dark pupil, no
   // highlight): a centered dark disc that squashes with the lid so it stays
   // inside crescents and closed lines. Clipped by the mark's own SDF.
-  float dp = length(vec2(p.x, p.y / open)) - ${MARK_R} * 0.44;
+  float dp = length(vec2(p.x - uGaze.x, (p.y - uGaze.y) / open)) - ${MARK_R} * 0.44;
   float pupil = 1.0 - smoothstep(-aa, aa, max(dp, d));
   vec3 shade = mix(uColor, uPupil, pupil);
   gl_FragColor = vec4(shade, alpha);
@@ -161,6 +162,7 @@ export function createEyes(analysis: ShapeAnalysis, meshScale: number): Eyes {
   const shared: Record<string, IUniform> = {
     uColor: { value: new Color(CHARACTER.eye) },
     uPupil: { value: new Color(CHARACTER.body) },
+    uGaze: { value: new Vector2(0, 0) },
     uOpenness: { value: EXPRESSIONS.neutral.openness },
     uCurve: { value: EXPRESSIONS.neutral.curve },
     uWedge: { value: EXPRESSIONS.neutral.wedge },
@@ -221,6 +223,25 @@ export function createEyes(analysis: ShapeAnalysis, meshScale: number): Eyes {
 
     update(dt: number): void {
       timeMs += dt;
+
+      // Glancing pupil (docs/reference/character-designs.md): the pupil
+      // drifts off-center on a slow seeded wander — mostly sideways, a
+      // touch of vertical — so the mark reads deadpan-alive, never locked
+      // centered. Smoothstepped between held glances; same seed family as
+      // the blink so every device agrees.
+      const gt = timeMs / 4400;
+      const g0 = Math.floor(gt);
+      const gf = gt - g0;
+      const ge = gf * gf * (3 - 2 * gf);
+      const gxa = (hash(g0 * 3.7 + seed) - 0.5) * 2;
+      const gxb = (hash((g0 + 1) * 3.7 + seed) - 0.5) * 2;
+      const gya = (hash(g0 * 9.1 + seed + 5) - 0.5) * 2;
+      const gyb = (hash((g0 + 1) * 9.1 + seed + 5) - 0.5) * 2;
+      const gaze = shared['uGaze']!.value as Vector2;
+      gaze.set(
+        (gxa + (gxb - gxa) * ge) * MARK_R * 0.34,
+        (gya + (gyb - gya) * ge) * MARK_R * 0.12,
+      );
 
       // Blink: down over one tertiary settle, then retarget up — each leg is
       // a clean ζ≥1 spring settle, so there is no rebound anywhere.
