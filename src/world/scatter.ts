@@ -42,14 +42,15 @@ import {
 import type { Collider } from '../physics/colliders';
 import { MOTION, SURFACE, WORLD } from '../taste/tokens';
 import {
+  BUILDING_COURTYARD_VARIANT,
   buildPropGeometries,
-  INFLATED_PROP_KINDS,
+  PROP_KINDS,
   PROP_VARIANT_COUNTS,
-  type InflatedPropKind,
+  type PropKind,
 } from './props';
 import { stampEllipse, stampRotationY, type StampEllipse } from './shadows';
 
-export type ScatterKind = InflatedPropKind | 'tick';
+export type ScatterKind = PropKind | 'tick';
 
 export interface Placement {
   kind: ScatterKind;
@@ -85,7 +86,10 @@ const ORIGIN_CLEAR_PROPS = 11;
 const ORIGIN_CLEAR_TICKS = 6;
 
 /** Per-cell cluster-seed probability at density 1. Ticks common, trees /
- * conifers / rocks medium, buildings rare (and hard-capped). */
+ * conifers / rocks medium, buildings rare (and hard-capped), the new
+ * hidden-folks kinds rare: palm groves like conifer stands, cacti sparse
+ * loners, picnic tables scarce, water towers landmark-capped, monoliths in
+ * rare pairs. */
 const SEED_PROB: Record<ScatterKind, number> = {
   tick: 0.16,
   bush: 0.014,
@@ -94,6 +98,11 @@ const SEED_PROB: Record<ScatterKind, number> = {
   rock: 0.011,
   stump: 0.004,
   building: 0.008,
+  palm: 0.006,
+  cactus: 0.0045,
+  picnicTable: 0.003,
+  waterTower: 0.004,
+  monolith: 0.004,
 };
 
 /** At most this many buildings in the whole region, in cell iteration order.
@@ -104,14 +113,32 @@ export const BUILDING_MAX = 10;
 /** No two buildings of the same variant within this many world units. */
 export const BUILDING_ADJ_RADIUS = SCATTER_STEP * 8;
 
+/** At most this many water towers in the region — the same landmark-rarity
+ * family as buildings, spaced by the building adjacency radius. */
+export const WATER_TOWER_MAX = 2;
+
 /** A cluster neighbor repeats its cluster's variant with this probability;
  * otherwise it rerolls uniformly (so a grove is one species plus strays). */
 export const CLUSTER_VARIANT_BIAS = 0.6;
 
-const PROP_ROLL_ORDER: InflatedPropKind[] = ['bush', 'tree', 'conifer', 'rock', 'stump', 'building'];
+/** Roll order — new kinds APPEND so the pre-existing kinds keep their hash
+ * salts (the same world grows, plus new inhabitants in freed cells). */
+const PROP_ROLL_ORDER: PropKind[] = [
+  'bush',
+  'tree',
+  'conifer',
+  'rock',
+  'stump',
+  'building',
+  'palm',
+  'cactus',
+  'picnicTable',
+  'waterTower',
+  'monolith',
+];
 
 /** Every controllable scatter kind, for generic dev-panel controls. */
-export const SCATTER_KINDS: ScatterKind[] = [...INFLATED_PROP_KINDS, 'tick'];
+export const SCATTER_KINDS: ScatterKind[] = [...PROP_KINDS, 'tick'];
 
 function cellHash(ix: number, iz: number, salt: number): number {
   const x =
@@ -141,6 +168,7 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
   const out: Placement[] = [];
   const cells = Math.floor(SCATTER_EXTENT / SCATTER_STEP);
   const buildings: { x: number; z: number; variant: number }[] = [];
+  const towers: { x: number; z: number; variant: number }[] = [];
 
   const push = (kind: ScatterKind, variant: number, x: number, z: number, salt: number): void => {
     const clear = kind === 'tick' ? ORIGIN_CLEAR_TICKS : ORIGIN_CLEAR_PROPS;
@@ -195,17 +223,42 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
     const count = PROP_VARIANT_COUNTS.building;
     let variant = Math.min(count - 1, Math.floor(cellHash(ix, iz, 31.1) * count));
     for (let tries = 0; tries < count; tries++) {
-      const clash = buildings.some(
-        (b) =>
-          b.variant === variant &&
-          (b.x - sx) * (b.x - sx) + (b.z - sz) * (b.z - sz) <
-            BUILDING_ADJ_RADIUS * BUILDING_ADJ_RADIUS,
-      );
+      const clash =
+        buildings.some(
+          (b) =>
+            b.variant === variant &&
+            (b.x - sx) * (b.x - sx) + (b.z - sz) * (b.z - sz) <
+              BUILDING_ADJ_RADIUS * BUILDING_ADJ_RADIUS,
+        ) ||
+        // The walled courtyard is the pack's largest landmark: one, ever.
+        (variant === BUILDING_COURTYARD_VARIANT &&
+          buildings.some((b) => b.variant === BUILDING_COURTYARD_VARIANT));
       if (!clash) break;
       variant = (variant + 1) % count;
     }
     buildings.push({ x: sx, z: sz, variant });
     push('building', variant, sx, sz, 1);
+  };
+
+  /** A water tower is a landmark: capped at WATER_TOWER_MAX, spaced by the
+   * building adjacency radius (against other towers only — per-kind
+   * independence), never repeating a variant among the placed towers. */
+  const placeWaterTower = (ix: number, iz: number): void => {
+    const { sx, sz } = seedPos(ix, iz);
+    if (sx * sx + sz * sz < ORIGIN_CLEAR_PROPS * ORIGIN_CLEAR_PROPS) return;
+    if (
+      towers.some(
+        (t) =>
+          (t.x - sx) * (t.x - sx) + (t.z - sz) * (t.z - sz) <
+          BUILDING_ADJ_RADIUS * BUILDING_ADJ_RADIUS,
+      )
+    )
+      return;
+    const count = PROP_VARIANT_COUNTS.waterTower;
+    let variant = Math.min(count - 1, Math.floor(cellHash(ix, iz, 31.1) * count));
+    if (towers.some((t) => t.variant === variant)) variant = (variant + 1) % count;
+    towers.push({ x: sx, z: sz, variant });
+    push('waterTower', variant, sx, sz, 1);
   };
 
   for (let iz = -cells; iz <= cells; iz++) {
@@ -227,6 +280,14 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
           if (kind === 'building') {
             if (buildings.length >= BUILDING_MAX) break;
             placeBuilding(ix, iz);
+          } else if (kind === 'waterTower') {
+            if (towers.length >= WATER_TOWER_MAX) break;
+            placeWaterTower(ix, iz);
+          } else if (kind === 'cactus' || kind === 'picnicTable') {
+            cluster(kind, ix, iz, 0); // sparse loners
+          } else if (kind === 'monolith') {
+            // Standing stones come mostly in pairs, sometimes alone.
+            cluster(kind, ix, iz, cellHash(ix, iz, 4.4) < 0.65 ? 1 : 0);
           } else {
             const extras = 1 + Math.floor(cellHash(ix, iz, 4.4) * 4); // 1–4
             cluster(kind, ix, iz, extras);
@@ -332,10 +393,18 @@ export function filterExcluded(placements: Placement[], exclusions: Exclusion[])
 
 export type { Collider } from '../physics/colliders';
 
-/** Trunk footprint radius at instance scale 1, world units. */
-export const TRUNK_FOOTPRINT: Partial<Record<InflatedPropKind, number>> = {
+/** Fixed hard-footprint radius at instance scale 1, world units. Trunk
+ * kinds (tree/conifer/palm) block small under an overhanging crown; the
+ * built kinds carry authored footprints: cactus column, picnic table's
+ * bench extent, the water tower's leg square, the monolith's base. */
+export const TRUNK_FOOTPRINT: Partial<Record<PropKind, number>> = {
   tree: 0.65,
   conifer: 0.55,
+  palm: 0.5,
+  cactus: 0.6,
+  picnicTable: 1.2,
+  waterTower: 1.4,
+  monolith: 1.6,
 };
 
 /** Soft bush footprint at instance scale 1, world units. */
@@ -409,11 +478,19 @@ function buildTickGeometry(): BufferGeometry {
 // Motion law (TASTE §2.1): gusts are smooth 2-octave value noise — no
 // jitter, no shiver, nothing linear. Displacement bends vertices by height
 // fraction squared (roots pinned, crowns sway) along the wind direction,
-// plus a small perpendicular flutter. Rigid kinds (building, rock, stump)
-// get NO injection at all — stone and timber don't lean with the weather.
+// plus a small perpendicular flutter. Rigid kinds (building, rock, stump,
+// picnicTable, waterTower, monolith) get NO injection at all — stone and
+// timber don't lean with the weather.
 
-/** Kinds whose foliage bends in the wind. Everything else is rigid. */
-export const WIND_SWAY_KINDS: readonly InflatedPropKind[] = ['tree', 'conifer', 'bush'];
+/** Kinds whose foliage bends in the wind. Everything else is rigid. Palms
+ * sway hardest (drooping fronds); cacti barely register a gust. */
+export const WIND_SWAY_KINDS: readonly PropKind[] = [
+  'tree',
+  'conifer',
+  'bush',
+  'palm',
+  'cactus',
+];
 
 /** setWind clamps into this range. The floor keeps the world breathing —
  * nothing ever fully still (TASTE §3) — the cap keeps it composed. */
@@ -502,6 +579,29 @@ const WIND_PROFILE_TICK: WindProfile = {
   heightExpr: '1.0',
 };
 
+/** Palms: the fronds carry the strongest sway in the frame — over twice
+ * the trees' bend with a livelier (still smooth) flutter. heightFrac²
+ * keeps the trunk base near-still while the crown rides the gust. */
+const WIND_PROFILE_PALM: WindProfile = {
+  bend: 0.11,
+  gustHz: 0.45,
+  flutter: 0.045,
+  flutterHz: 0.9,
+  phaseJitter: 1.9,
+  heightExpr: 'aWindHeight',
+};
+
+/** Cacti: barely — a column of water hardly acknowledges the gust, but the
+ * stillness floor never lets it freeze entirely. */
+const WIND_PROFILE_CACTUS: WindProfile = {
+  bend: 0.008,
+  gustHz: 0.3,
+  flutter: 0.003,
+  flutterHz: 0.5,
+  phaseJitter: 1.2,
+  heightExpr: 'aWindHeight',
+};
+
 const glslFloat = (v: number): string => v.toFixed(5);
 
 /** Top-level declarations appended after <common>. */
@@ -583,6 +683,10 @@ const PROP_SHADOW_LIFT = 0.018;
 const TICK_LIFT = 0.015;
 /** Shadow stamp sits a touch inside the footprint, like the creatures'. */
 const SHADOW_FIT = 0.8;
+/** No stamp beyond this radius: the walled courtyard's footprint would
+ * flood its own open interior with one giant disc — a building that large
+ * is its own ground figure. */
+export const SHADOW_MAX_RADIUS = 4;
 
 /** Re-lay the instanced shadow matrices only when the sun has moved beyond
  * ~1° in azimuth or altitude — it glides slowly, so most frames are just the
@@ -592,7 +696,7 @@ export const SHADOW_SUN_EPS = Math.PI / 180;
 export interface Scatter {
   group: Group;
   /** Currently visible non-tick props, for behavior affordances. */
-  positions(): { x: number; z: number; kind: InflatedPropKind; r: number }[];
+  positions(): { x: number; z: number; kind: PropKind; r: number }[];
   /** Hide instances inside the circles. Rebuilds visibility on call. */
   setExclusions(points: Exclusion[]): void;
   /** Rebuild with a global density multiplier (dev panel). */
@@ -643,19 +747,20 @@ export function createScatter(): Scatter {
   const group = new Group();
   const geometries = buildPropGeometries();
 
-  const variantOf = (p: Placement) => geometries.get(p.kind as InflatedPropKind)![p.variant]!;
+  const variantOf = (p: Placement) => geometries.get(p.kind as PropKind)![p.variant]!;
 
   // Light paper albedo, fully matte — the ink pass draws the form. Never a
-  // grey mass (GENERATOR §ink rendering pass). Rigid kinds (building, stump)
-  // render with this stock material: no wind injection at all.
+  // grey mass (GENERATOR §ink rendering pass). Rigid kinds (building, stump,
+  // picnicTable, waterTower) render with this stock material: no wind
+  // injection at all.
   const propMaterial = new MeshStandardMaterial({
     color: WORLD.light,
     roughness: 1,
     metalness: 0,
   });
-  // Rocks step down to the MID band: eggs are the palette's light role and
-  // must be the only light-shelled lumps on the field (user report: light
-  // rocks read as eggs). Mid-tone stone masses, like the corpus's stones.
+  // Rocks (and monoliths) step down to the MID band: eggs are the palette's
+  // light role and must be the only light-shelled lumps on the field (user
+  // report: light rocks read as eggs). Mid-tone stone masses.
   const rockMaterial = new MeshStandardMaterial({
     color: WORLD.neutral,
     roughness: 1,
@@ -663,6 +768,20 @@ export function createScatter(): Scatter {
   });
   // Swaying kinds share the same look plus the vertex wind.
   const swayMaterial = new MeshStandardMaterial({
+    color: WORLD.light,
+    roughness: 1,
+    metalness: 0,
+  });
+  // Palms carry their own (stronger) wind — and thin frond blades need both
+  // faces drawn.
+  const palmMaterial = new MeshStandardMaterial({
+    color: WORLD.light,
+    roughness: 1,
+    metalness: 0,
+    side: DoubleSide,
+  });
+  // Cacti barely sway — their own near-still wind profile.
+  const cactusMaterial = new MeshStandardMaterial({
     color: WORLD.light,
     roughness: 1,
     metalness: 0,
@@ -699,6 +818,8 @@ export function createScatter(): Scatter {
   };
   injectWind(swayMaterial, WIND_PROFILE_SWAY, 'scatter-wind-sway-v1');
   injectWind(tickMaterial, WIND_PROFILE_TICK, 'scatter-wind-tick-v1');
+  injectWind(palmMaterial, WIND_PROFILE_PALM, 'scatter-wind-palm-v1');
+  injectWind(cactusMaterial, WIND_PROFILE_CACTUS, 'scatter-wind-cactus-v1');
 
   // ── soft-body nudge impulses (colliders section) ─────────────────────────
   // [seam: wind agent] A creature brushing through a bush kicks a brief
@@ -788,10 +909,12 @@ export function createScatter(): Scatter {
   chainVariation(rockMaterial, 'scatter-rock-variation-v1');
   chainVariation(swayMaterial);
   chainVariation(tickMaterial);
+  chainVariation(palmMaterial);
+  chainVariation(cactusMaterial);
 
   // Bake the height-fraction attribute the sway shader bends by. Rigid kinds
   // deliberately never get this attribute (taste guard: tests assert it).
-  const swayKindSet = new Set<InflatedPropKind>(WIND_SWAY_KINDS);
+  const swayKindSet = new Set<PropKind>(WIND_SWAY_KINDS);
   for (const kind of WIND_SWAY_KINDS) {
     for (const variant of geometries.get(kind)!) {
       const position = variant.geometry.getAttribute('position');
@@ -893,14 +1016,22 @@ export function createScatter(): Scatter {
     colliderVersion++;
     const visible = filterExcluded(placements, exclusions);
 
-    // One InstancedMesh per (kind, variant) — ~20 draws total.
-    for (const kind of INFLATED_PROP_KINDS) {
+    // One InstancedMesh per (kind, variant) — ~30 draws total.
+    for (const kind of PROP_KINDS) {
       const variants = geometries.get(kind)!;
       for (let v = 0; v < variants.length; v++) {
         const of = visible.filter((p) => p.kind === kind && p.variant === v);
         if (of.length === 0) continue;
         const material =
-          kind === 'rock' ? rockMaterial : swayKindSet.has(kind) ? swayMaterial : propMaterial;
+          kind === 'rock' || kind === 'monolith'
+            ? rockMaterial
+            : kind === 'palm'
+              ? palmMaterial
+              : kind === 'cactus'
+                ? cactusMaterial
+                : swayKindSet.has(kind)
+                  ? swayMaterial
+                  : propMaterial;
         const mesh = new InstancedMesh(variants[v]!.geometry, material, of.length);
         mesh.name = `${kind}-${v}`;
         mesh.frustumCulled = false;
@@ -951,11 +1082,8 @@ export function createScatter(): Scatter {
     // One shadow disc per large/medium prop — ticks get none. Matrices are
     // laid by layShadows from the current sun ellipse.
     const shadowed = visible.filter((p) => p.kind !== 'tick');
-    if (shadowed.length > 0) {
-      const mesh = new InstancedMesh(shadowGeometry, shadowMaterial, shadowed.length);
-      mesh.frustumCulled = false;
-      mesh.renderOrder = 1;
-      shadowSpots = shadowed.map((p) => ({
+    const spots = shadowed
+      .map((p) => ({
         x: p.x,
         z: p.z,
         r:
@@ -964,7 +1092,13 @@ export function createScatter(): Scatter {
           scaleOf(p.kind) *
           (p.kind === 'rock' ? ROCK_WIDEN_XZ : 1) *
           SHADOW_FIT,
-      }));
+      }))
+      .filter((s) => s.r <= SHADOW_MAX_RADIUS);
+    if (spots.length > 0) {
+      const mesh = new InstancedMesh(shadowGeometry, shadowMaterial, spots.length);
+      mesh.frustumCulled = false;
+      mesh.renderOrder = 1;
+      shadowSpots = spots;
       shadowMesh = mesh;
       meshes.push(mesh);
       group.add(mesh);
@@ -982,7 +1116,7 @@ export function createScatter(): Scatter {
         .map((p) => ({
           x: p.x,
           z: p.z,
-          kind: p.kind as InflatedPropKind,
+          kind: p.kind as PropKind,
           r:
             variantOf(p).radius *
             p.scale *
@@ -1089,6 +1223,8 @@ export function createScatter(): Scatter {
       propMaterial.dispose();
       rockMaterial.dispose();
       swayMaterial.dispose();
+      palmMaterial.dispose();
+      cactusMaterial.dispose();
       tickMaterial.dispose();
       shadowMaterial.dispose();
     },

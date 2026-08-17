@@ -334,6 +334,35 @@ export async function initDevPanel(
             value: 1,
             onChange: (v) => kd('stump', v),
           });
+          folder.addSlider('palm density', {
+            min: 0,
+            max: 2.5,
+            value: 1,
+            onChange: (v) => kd('palm', v),
+          });
+          folder.addSlider('cactus density', {
+            min: 0,
+            max: 2.5,
+            value: 1,
+            onChange: (v) => kd('cactus', v),
+          });
+          folder.addSlider('monolith density', {
+            min: 0,
+            max: 2.5,
+            value: 1,
+            onChange: (v) => kd('monolith', v),
+          });
+          // Picnic tables + water towers grouped: the built small-structure
+          // pair, both rare — zeroing this leaves only nature standing.
+          folder.addSlider('structure density', {
+            min: 0,
+            max: 4,
+            value: 1,
+            onChange: (v) => {
+              kd('picnicTable', v);
+              kd('waterTower', v);
+            },
+          });
           folder.addSlider('grass density', {
             min: 0,
             max: 3,

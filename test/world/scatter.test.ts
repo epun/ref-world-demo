@@ -12,7 +12,7 @@ import {
   type MeshStandardMaterial,
 } from 'three';
 import { WORLD } from '../../src/taste/tokens';
-import { PROP_VARIANT_COUNTS } from '../../src/world/props';
+import { BUILDING_COURTYARD_VARIANT, PROP_VARIANT_COUNTS } from '../../src/world/props';
 import {
   applyInstanceVariation,
   BUILDING_ADJ_RADIUS,
@@ -31,6 +31,7 @@ import {
   SCATTER_EXTENT,
   SCATTER_KINDS,
   SCATTER_STEP,
+  WATER_TOWER_MAX,
   WIND_AZIMUTH_PERIOD_MS,
   WIND_STRENGTH_MAX,
   WIND_STRENGTH_MIN,
@@ -88,7 +89,7 @@ describe('scatter placement', () => {
 
   it('uses every authored variant of the grove kinds', () => {
     const placements = computePlacements();
-    for (const kind of ['tree', 'conifer', 'bush', 'rock', 'stump'] as const) {
+    for (const kind of ['tree', 'conifer', 'bush', 'rock', 'stump', 'palm'] as const) {
       const of = placements.filter((p) => p.kind === kind);
       const used = new Set(of.map((p) => p.variant));
       expect(used.size, `${kind} variants used`).toBe(PROP_VARIANT_COUNTS[kind]);
@@ -158,6 +159,13 @@ describe('scatter placement', () => {
     const buildings = computePlacements().filter((p) => p.kind === 'building');
     expect(buildings.length).toBeGreaterThan(0);
     expect(buildings.length).toBeLessThanOrEqual(BUILDING_MAX);
+    // The walled courtyard is capped at ONE — even at cranked density.
+    for (const density of [1, 4]) {
+      const courtyards = computePlacements({ kindDensity: { building: density } }).filter(
+        (p) => p.kind === 'building' && p.variant === BUILDING_COURTYARD_VARIANT,
+      );
+      expect(courtyards.length, `courtyards at density ${density}`).toBeLessThanOrEqual(1);
+    }
     // Buildings face the default iso camera (directional silhouettes).
     for (const b of buildings) {
       expect(Math.abs(b.rotY - Math.PI / 4)).toBeLessThanOrEqual(0.25 + 1e-9);
@@ -217,8 +225,66 @@ describe('scatter placement', () => {
     expect(SCATTER_KINDS).toContain('tree');
     expect(SCATTER_KINDS).toContain('tick');
     expect(SCATTER_KINDS).toContain('building');
+    // The hidden-folks register kinds ride the same generic density api.
+    for (const kind of ['palm', 'cactus', 'picnicTable', 'waterTower', 'monolith'] as const) {
+      expect(SCATTER_KINDS).toContain(kind);
+    }
     expect(new Set(SCATTER_KINDS).size).toBe(SCATTER_KINDS.length);
-    expect(SCATTER_KINDS.length).toBe(7);
+    expect(SCATTER_KINDS.length).toBe(12);
+  });
+
+  it('new kinds land at their authored rarities and cluster shapes', () => {
+    const placements = computePlacements();
+    const of = (kind: Placement['kind']): Placement[] =>
+      placements.filter((p) => p.kind === kind);
+
+    // Palms grove like conifers: plural, clustered, every variant in play.
+    const palms = of('palm');
+    expect(palms.length).toBeGreaterThan(8);
+    const near = SCATTER_STEP * 2;
+    const withNeighbor = palms.filter((p) =>
+      palms.some((q) => q !== p && Math.hypot(q.x - p.x, q.z - p.z) < near),
+    ).length;
+    expect(withNeighbor / palms.length).toBeGreaterThan(0.8);
+
+    // Cacti are sparse loners: never a same-kind neighbor in cluster range.
+    const cacti = of('cactus');
+    expect(cacti.length).toBeGreaterThan(3);
+    expect(cacti.length).toBeLessThan(palms.length);
+    for (const c of cacti) {
+      const lonely = cacti.every(
+        (q) => q === c || Math.hypot(q.x - c.x, q.z - c.z) >= SCATTER_STEP * 1.7,
+      );
+      expect(lonely, `cactus at ${c.x.toFixed(1)},${c.z.toFixed(1)}`).toBe(true);
+    }
+
+    // Picnic tables: rare loners.
+    const tables = of('picnicTable');
+    expect(tables.length).toBeGreaterThan(1);
+    expect(tables.length).toBeLessThan(10);
+
+    // Water towers: landmark-capped and spaced like buildings, never the
+    // same variant twice while the cap allows distinct ones.
+    const towersPlaced = of('waterTower');
+    expect(towersPlaced.length).toBeGreaterThan(0);
+    expect(towersPlaced.length).toBeLessThanOrEqual(WATER_TOWER_MAX);
+    for (let i = 0; i < towersPlaced.length; i++) {
+      for (let j = i + 1; j < towersPlaced.length; j++) {
+        const a = towersPlaced[i]!;
+        const b = towersPlaced[j]!;
+        expect(Math.hypot(a.x - b.x, a.z - b.z)).toBeGreaterThanOrEqual(BUILDING_ADJ_RADIUS);
+        expect(a.variant).not.toBe(b.variant);
+      }
+    }
+
+    // Monoliths: rare, mostly standing in pairs.
+    const monoliths = of('monolith');
+    expect(monoliths.length).toBeGreaterThan(1);
+    expect(monoliths.length).toBeLessThan(12);
+    const paired = monoliths.filter((p) =>
+      monoliths.some((q) => q !== p && Math.hypot(q.x - p.x, q.z - p.z) < near),
+    ).length;
+    expect(paired / monoliths.length).toBeGreaterThan(0.5);
   });
 
   it('per-kind density is independent: one kind never moves another', () => {
@@ -299,7 +365,7 @@ describe('scatter placement', () => {
   });
 
   it('wind touches only vegetation: sway kinds carry the height attribute, rigid kinds none', () => {
-    expect([...WIND_SWAY_KINDS].sort()).toEqual(['bush', 'conifer', 'tree']);
+    expect([...WIND_SWAY_KINDS].sort()).toEqual(['bush', 'cactus', 'conifer', 'palm', 'tree']);
     const scatter = createScatter();
     try {
       const meshes = scatter.group.children.filter(
@@ -307,7 +373,7 @@ describe('scatter placement', () => {
       );
       const kindOf = (name: string): string => name.split('-')[0]!;
       const swaySet = new Set<string>(WIND_SWAY_KINDS);
-      const rigid = ['building', 'rock', 'stump'];
+      const rigid = ['building', 'rock', 'stump', 'picnicTable', 'waterTower', 'monolith'];
       expect(meshes.some((m) => swaySet.has(kindOf(m.name)))).toBe(true);
       expect(meshes.some((m) => rigid.includes(kindOf(m.name)))).toBe(true);
 
@@ -346,28 +412,31 @@ describe('scatter placement', () => {
         vertexShader: '#include <common>\nvoid main() {\n#include <begin_vertex>\n}',
         fragmentShader: '',
       });
-      // Rigid kinds split into two materials now (rocks carry the mid-tone
-      // stone albedo; building/stump keep the light paper) — but NEITHER
-      // gets a wind injection.
+      // Rigid kinds split into two materials (rocks + monoliths carry the
+      // mid-tone stone albedo; building/stump/picnicTable/waterTower keep
+      // the light paper) — but NEITHER gets a wind injection. Sway kinds
+      // split into three (shared vegetation, palm-strong, cactus-barely) —
+      // ALL of them inject the wind.
       const rigidMaterials = materialsOf((k) => rigid.includes(k));
       const swayMaterials = materialsOf((k) => swaySet.has(k));
       expect(rigidMaterials.size).toBe(2);
-      expect(swayMaterials.size).toBe(1);
-      const [swayMat] = swayMaterials;
+      expect(swayMaterials.size).toBe(3);
 
       for (const rigidMat of rigidMaterials) {
-        expect(rigidMat).not.toBe(swayMat);
+        expect(swayMaterials.has(rigidMat)).toBe(false);
         const rigidShader = fakeShader();
         rigidMat.onBeforeCompile(rigidShader as never, undefined as never);
         expect(rigidShader.vertexShader).not.toContain('uWindStrength');
         expect(rigidShader.uniforms['uWindStrength']).toBeUndefined();
       }
 
-      const swayShader = fakeShader();
-      swayMat!.onBeforeCompile(swayShader as never, undefined as never);
-      expect(swayShader.vertexShader).toContain('uWindStrength');
-      expect(swayShader.vertexShader).toContain('aWindHeight');
-      expect(swayShader.uniforms['uWindStrength']).toBeDefined();
+      for (const swayMat of swayMaterials) {
+        const swayShader = fakeShader();
+        swayMat.onBeforeCompile(swayShader as never, undefined as never);
+        expect(swayShader.vertexShader).toContain('uWindStrength');
+        expect(swayShader.vertexShader).toContain('aWindHeight');
+        expect(swayShader.uniforms['uWindStrength']).toBeDefined();
+      }
 
       // Ticks bend too — full-blade, no attribute needed.
       const tick = scatter.group.children.find(
@@ -444,6 +513,24 @@ describe('scatter colliders', () => {
     for (const kind of ['building', 'stump'] as const) {
       expect(colliderFor(at(kind), 1.5)!.hard).toBe(true);
     }
+
+    // New kinds: fixed hard footprints from the reference-sheet integration.
+    const palm = colliderFor(at('palm', 1.2), 2.9)!;
+    expect(palm.hard).toBe(true);
+    expect(palm.r).toBeCloseTo(TRUNK_FOOTPRINT.palm! * 1.2, 9); // trunk, not fronds
+    expect(palm.r).toBeLessThan(2.9);
+    const cactus = colliderFor(at('cactus'), 0.9)!;
+    expect(cactus.hard).toBe(true);
+    expect(cactus.r).toBeCloseTo(TRUNK_FOOTPRINT.cactus!, 9);
+    const picnic = colliderFor(at('picnicTable'), 1.3)!;
+    expect(picnic.hard).toBe(true);
+    expect(picnic.r).toBeCloseTo(TRUNK_FOOTPRINT.picnicTable!, 9);
+    const tower = colliderFor(at('waterTower', 0.9), 1.3)!;
+    expect(tower.hard).toBe(true);
+    expect(tower.r).toBeCloseTo(TRUNK_FOOTPRINT.waterTower! * 0.9, 9);
+    const monolith = colliderFor(at('monolith'), 1.25)!;
+    expect(monolith.hard).toBe(true);
+    expect(monolith.r).toBeCloseTo(TRUNK_FOOTPRINT.monolith!, 9);
   });
 
   it('handle: one collider per visible non-tick prop, hard/soft split by kind', () => {
@@ -727,7 +814,15 @@ describe('rock legibility', () => {
 describe('zero kind density', () => {
   it('multiplier 0 → no placements of the kind, seeds and cluster neighbors alike', () => {
     const base = computePlacements();
-    for (const kind of ['tree', 'rock'] as const) {
+    for (const kind of [
+      'tree',
+      'rock',
+      'palm',
+      'cactus',
+      'picnicTable',
+      'waterTower',
+      'monolith',
+    ] as const) {
       const none = computePlacements({ kindDensity: { [kind]: 0 } });
       expect(none.filter((p) => p.kind === kind)).toHaveLength(0);
       // Ticks roll on their own layer: byte-identical.
@@ -765,11 +860,16 @@ describe('zero kind density', () => {
       expect(rockMeshCount()).toBe(0);
       // One collider per visible prop — with rocks gone, none of the rock
       // colliders may linger (creatures must not steer around ghosts).
+      // A freed rock cell MAY be re-claimed by a later-rolling kind at the
+      // same seed position (documented per-kind independence), so the ghost
+      // check pairs colliders 1:1 with the visible props instead of
+      // asserting the spot is empty.
       expect(colliders).toHaveLength(positions.length);
-      const rockSpots = new Set(rocks.map((r) => `${r.x},${r.z}`));
-      for (const c of colliders) {
-        expect(rockSpots.has(`${c.x},${c.z}`)).toBe(false);
-      }
+      positions.forEach((p, i) => {
+        expect(colliders[i]!.x).toBe(p.x);
+        expect(colliders[i]!.z).toBe(p.z);
+        expect(p.kind).not.toBe('rock');
+      });
 
       // Restoring the multiplier restores the original set exactly.
       scatter.setKindDensity('rock', 1);
