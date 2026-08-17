@@ -40,6 +40,8 @@ export interface DevInkApi {
 /** Scatter tuning surface — matches src/world/scatter.ts's Scatter handle. */
 export interface DevScatterApi {
   setDensity(mult: number): void;
+  setKindDensity?(kind: string, mult: number): void;
+  setKindScale?(kind: string, mult: number): void;
   setExclusions(points: { x: number; z: number; r: number }[]): void;
   group?: Object3D;
 }
@@ -241,6 +243,43 @@ export async function initDevPanel(
       const folder = panelUi.addFolder('environment');
       const scatter = handles.scatter;
       if (scatter) {
+        // Trees and grass as independent properties (user ask). 'tree'
+        // covers deciduous; conifers ride their own kind but follow the
+        // tree slider here so 'trees' means the forest as a whole.
+        if (scatter.setKindDensity && scatter.setKindScale) {
+          const kd = scatter.setKindDensity.bind(scatter);
+          const ks = scatter.setKindScale.bind(scatter);
+          folder.addSlider('tree density', {
+            min: 0,
+            max: 2.5,
+            value: 1,
+            onChange: (v) => {
+              kd('tree', v);
+              kd('conifer', v);
+            },
+          });
+          folder.addSlider('tree scale', {
+            min: 0.5,
+            max: 1.8,
+            value: 1,
+            onChange: (v) => {
+              ks('tree', v);
+              ks('conifer', v);
+            },
+          });
+          folder.addSlider('grass density', {
+            min: 0,
+            max: 3,
+            value: 1,
+            onChange: (v) => kd('tick', v),
+          });
+          folder.addSlider('grass scale', {
+            min: 0.5,
+            max: 2,
+            value: 1,
+            onChange: (v) => ks('tick', v),
+          });
+        }
         folder.addSlider('scatter density', {
           min: 0.3,
           max: 2,
