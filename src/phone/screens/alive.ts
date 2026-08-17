@@ -23,7 +23,7 @@
  * single hairline rule — it does not demand one be shown.
  */
 
-import { OrthographicCamera, Scene, WebGLRenderer } from 'three';
+import { Box3, OrthographicCamera, Scene, Vector3, WebGLRenderer } from 'three';
 import { CHARACTER_HEIGHT, createCharacter, type Character } from '../../character/character';
 import { sampleDrift } from '../../motion/ambient';
 import { Spring } from '../../motion/spring';
@@ -302,11 +302,18 @@ export function mountAliveScreen(
     scene.add(createLighting(), character.group);
 
     // Head-on, NOT isometric: straight down the z axis so the silhouette is
-    // the drawing (PLAN §1 invariant). Generous negative space in frame.
-    const half = CHARACTER_HEIGHT * 0.72;
+    // the drawing (PLAN §1 invariant). Frame from the character's measured
+    // bounds, not an assumed height — the mesh is normalized to a height of
+    // CHARACTER_HEIGHT but a wide drawing can be much wider than tall, and a
+    // fixed frustum crops it (user-reported). Fit the larger extent plus
+    // breathing room; the canvas is square so one half-extent serves both.
+    const bounds = new Box3().setFromObject(character.group);
+    const size = bounds.getSize(new Vector3());
+    const center = bounds.getCenter(new Vector3());
+    const half = Math.max(size.x, size.y, CHARACTER_HEIGHT) * 0.72;
     camera = new OrthographicCamera(-half, half, half, -half, 0.1, 100);
-    camera.position.set(0, CHARACTER_HEIGHT / 2, 12);
-    camera.lookAt(0, CHARACTER_HEIGHT / 2, 0);
+    camera.position.set(center.x, center.y, 12);
+    camera.lookAt(center.x, center.y, 0);
   } else {
     // Degenerate drawing survived to here: hold the space, skip the render.
     portraitCanvas.style.display = 'none';
