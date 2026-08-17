@@ -30,21 +30,28 @@ another sleeping, two sitting together. Success is "that little one is mine" fol
 
 ## Rulings on the two real divergences [D]
 
-### 1. Drawing as silhouette vs. drawing as decal — hybrid, silhouette-led
+### 1. Drawing → creature: motifs, not replica *(updated by user decision)*
 
-The brief describes a shared species anatomy (irregular blob torso, tiny legs/arms,
-optional appendages) with the participant drawing applied as **markings/decal**. The
-existing pipeline makes the drawing the **silhouette** (inflation), which is the repo's
-load-bearing insight and satisfies the brief's own requirements: "imperfect hand-drawn
-silhouette" and "preserve enough of the original mark that the participant can recognize
-their creature."
+> User: "The hatched 3D figure should not be an exact replica of what they drew, but it
+> should be inspired and have the motifs of what the user drew."
 
-**Ruling: the silhouette stays the genesis of the body.** The species reading comes from
-the interpretation pass (the `fidelity` dial): stance, grounded feet, proportion pull
-toward the species band, eye placement. On top of that, the drawing is **also** applied as
-a shell/back marking (same painted treatment as the egg), so recognition survives even
-heavy reinterpretation. The "same drawing, different Ref → different creature" core feature
-lives in the interpretation pass + material/palette layer, which are Ref-owned.
+**Ruling: the creature is a species body synthesized from the drawing's measured motifs.**
+The pipeline still runs the drawing through analyze() — but what it extracts (archetype,
+foot/limb/head leaves with their angles and reach, aspect ratio, thickness profile, contour
+lumpiness) now parameterizes a **species template** (irregular blob/egg torso, tiny legs,
+optional ears/antennae/horns/tail per the generator brief) instead of being inflated
+verbatim. The synthesized silhouette goes through the *same* inflate pipeline — pure,
+deterministic, same strokes → same creature on every device.
+
+Recognition is carried by two channels:
+- **Motif echo** — your drawing's proportions, limb count and placement, and top-of-head
+  appendages recur in the creature's anatomy. Draw something tall with antennae and two
+  legs → a tall two-legged creature with antennae.
+- **Marking** — the drawing itself is painted onto the body shell (the egg's painted
+  treatment), so the literal mark travels with the creature.
+
+The egg still wears the raw drawing. The verbatim-inflation path stays in the codebase as
+the `fidelity 0` end of the dial (dev-tunable), but the shipped default is interpretation.
 
 ### 2. Creature color — none. Black and white, by user decision
 
@@ -109,12 +116,26 @@ Soft rolling elevation through the existing `Surface` seam (`RollingSurface`: lo
 value-noise heightfield, gentle enough that locomotion needs no gait change). Large open
 fields; organic silhouettes; emptiness as material.
 
-### Ink rendering pass
+### Ink rendering pass *(reference-locked by user)*
 
-The corpus reads as linework. Add loose ink outlines (inverted-hull pass on creatures and
-props — slightly jittered so lines feel drawn, not extracted) and keep prop surfaces matte.
-The character keeps its *restrained* sheen — the briefs' muted-saturation+gloss pairing
-holds at low intensity — but no glossy game-art rendering anywhere else.
+The user supplied three reference frames and the instruction: *"the 3D version in the world
+should look more hand-drawn and illustrated, with rough edges, exactly like the reference."*
+The reference read, which is now the render target:
+
+- **Forms are light, paper-filled shapes** — trees are near-white blobs — carried entirely
+  by **rough, wobbly dark ink outlines** and interior hatch/scribble marks. Not solid
+  grey masses.
+- **The character is the only solid black mass** in the frame (both game references agree).
+- **Steep/shaded faces read as hatching** (the cliff sides in reference 2) — line density
+  does the work of shading. No smooth gradients.
+- **Ground is paper**: light, with tiny tick marks and stipple; the existing grain pass
+  supplies the paper tooth.
+- **Edges are rough.** Outlines wobble like a pen line, not like a extracted contour.
+
+Implementation: screen-space edge detection over depth+normals composited in the existing
+post chain, with the edge line distorted by low-frequency noise for the hand wobble;
+procedural hatching keyed to face orientation; prop albedos at the light token so the
+outline carries the form. The character keeps its restrained sheen and near-black fill.
 
 ### Audience inputs (phone)
 
