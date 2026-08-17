@@ -232,7 +232,7 @@ World values are **[M]** from the measured export. Assignments are **[D]**.
 | Highlights, light-struck | `#e9ebe9` | Light role — highlights, not ground |
 | **Character body** | `#080808` | The only near-black. Matches the world's rare `#0c0d0d`. Clearcoat gloss. |
 | **Character eye** | `#f4f3ef` | Knockout — negative space punched through the fill |
-| Accent | `#fb5429` | **Retired for now — user decision (2026-08-17): the experience is fully black and white.** Token stays defined; nothing may reference it until color returns. Former uses (hatch ring, minimap self-marker) render in ink/light values. |
+| Accent | `#fb5429` | **Retired for now — user decision (2026-08-17): the experience is fully black and white.** Token stays defined; nothing may reference it until color returns. Former uses (hatch ring, minimap self-marker) render in ink/light values. **Exception (user decision, same day): emoji inside speech bubbles render in native color.** |
 
 **On `#fb5429`:** it appears in the character brief's palette and nowhere in the world's.
 Both briefs constrain neon saturation, and the character brief's own wording — *"the palette

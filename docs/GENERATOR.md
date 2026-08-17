@@ -42,6 +42,13 @@ a fish stays a fish. Species membership comes from what gets *added*: tiny stubb
 (when the drawing has none), the single pupil eye, stance and grounding — the reference
 sheet's grammar, where a house with legs and an eye is a creature.
 
+**Silhouette variety (user decision):** bodies are not all round. Triangle bodies, square
+bodies, boxy masses, stars — strong primitive silhouettes are first-class species members
+(the reference sheet's house/T/figure-8 grammar). Simplification must be
+**corner-preserving**: a drawn triangle keeps its three shoulders, softened by hand-wobble
+rather than rounded into a blob. The taste ban is on *engineered* hard edges; a wobbled
+corner reads drawn and passes. Dev-fallback creatures sample the primitive range too.
+
 Robustness rules (the "not exactly" and "no vector characters" halves):
 - **Outline drawings fill**: enclosed regions become solid mass, not inflated rings.
 - **Thin/stray lines thicken** to a chunky minimum body thickness (avatar spec: strong,

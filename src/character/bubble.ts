@@ -8,7 +8,7 @@
  * wobbly organic ellipse with a small curved tail, never a constructed
  * rounded-rect. The outline waver is seeded per character and deterministic,
  * so the same drawing grows the same bubble on every device. The emoji is
- * rendered as text into the same canvas and then converted to grayscale with
+ * rendered as text into the same canvas in its native color (user carve-out;
  * a per-pixel luma pass (§6: the experience is fully black and white; a
  * platform color emoji must not smuggle hue past the achromatic gate —
  * ctx.filter support varies across workers/tests, so the getImageData pass
@@ -251,13 +251,11 @@ export function createBubble(options: BubbleOptions): Bubble {
     ctx.textBaseline = 'middle';
     ctx.fillText(emoji, OUTLINE_CX * s, (OUTLINE_CY + 0.02) * s);
 
-    // Achromatic gate (TASTE §6): flatten every pixel to its luma. This is
-    // the implementation, not a fallback — ctx.filter grayscale support
-    // varies across workers and test environments, and the pure pass is
-    // cheap at 192px.
-    const image = ctx.getImageData(0, 0, s, s);
-    image.data.set(toGrayscaleLuma(image.data));
-    ctx.putImageData(image, 0, 0);
+    // Emoji stay in COLOR — an explicit user carve-out from the
+    // black-and-white ruling (TASTE §6 note): the bubble chrome is ink on
+    // paper, but the emoji inside renders with its native palette. The
+    // toGrayscaleLuma helper remains exported for the achromatic gate's
+    // bookkeeping and any future flip back.
     texture.needsUpdate = true;
   }
 
