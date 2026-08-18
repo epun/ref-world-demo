@@ -73,22 +73,60 @@ optional ears/antennae/horns/tail per the generator brief) instead of being infl
 verbatim. The synthesized silhouette goes through the *same* inflate pipeline — pure,
 deterministic, same strokes → same creature on every device.
 
-Recognition is carried by the body itself *(revised 2026-08-18 — one channel, not two)*:
+Recognition is carried by two channels — the body, and a mark on its back:
+
 - **The silhouette IS the drawing** (§1a) — the creature's body is the drawing's own shape,
   filled, smoothed and chunkified, with the motif echo (proportions, limb count and
   placement, top-of-head appendages) shaping its anatomy. Draw something tall with antennae
-  and two legs → a tall two-legged creature with antennae.
-- **No painted marking on the creature.** *(user decision, 2026-08-18: "after the egg
-  hatches lets remove the actual drawing on the creature".)* The hatched body is the plain
-  character material — one solid near-black mass carrying a single eye and nothing else.
-  A drawing printed across the fill contradicts the avatar spec's "ONE uniform solid black
-  fill — no patches, spots, stripes, or two-tone markings anywhere; the only white is the
-  eyes" (`docs/reference/avatar-prompt.md`). `src/character/marking.ts` is deleted; both
-  construction paths (inflate and blend-shell) build the body with the eye as its only mark.
+  and two legs → a tall two-legged creature with antennae. This is the channel that reads
+  from any angle and at any distance; it carries the recognition on its own.
+- **The marking, on the BACK only** — the original drawing painted onto the rear face of the
+  body shell as a light knockout, so the literal mark travels with the creature without ever
+  facing the camera the eye faces. `src/character/marking.ts`.
 
-**The painted drawing is the egg's alone.** The egg still wears the raw drawing and paints
-it on over the primary token as it spawns — that is the egg's whole point, and it is what
-makes the hatch a reveal rather than a restatement. The verbatim-inflation path stays in the
+#### The marking's record — removed, then put back on the back *(both 2026-08-18)*
+
+Two user rulings on the same day. Both stay on the record; the second supersedes the first.
+
+1. **Removed** *(user: "after the egg hatches lets remove the actual drawing on the
+   creature")* — the front/belly marking went, and `src/character/marking.ts` with it.
+   Measured on the phone portrait at the time: pixels deviating from the body value by >0.10
+   luma fell 26.9% → 17.5%, and what remained was the eye (13.0%) plus the material's
+   stepped sheen (4.5%). The reason was composition, and it still holds for the FRONT: the
+   drawing printed across the face the eye is on made the hatch a restatement instead of a
+   reveal.
+2. **Reinstated, on the back** *(user: "actually let's add the drawing back but let's put it
+   on the creature's back")* — **superseding (1).** The mark returns, on rear-facing surfaces
+   only. It is the reward for watching a creature walk away from you; head-on, the creature
+   is still one solid near-black mass whose only mark is the eye, which is what (1) was
+   protecting.
+
+**Standing user override vs. `docs/reference/avatar-prompt.md`.** The avatar spec asks for
+"ONE uniform solid black fill — no patches, spots, stripes, or two-tone markings anywhere;
+the only white is the eyes." A back marking is a marking, so the conflict is real and is not
+resolved — it is **overridden by user ruling (2)**, recorded here the same way the shipped
+`SURFACE.ground` value is recorded as a standing override in `CLAUDE.md`. What the override
+does *not* touch: the mark is a knockout in the light role, never a darkening; it is
+black-and-white only; and it fades to nothing at the rim, so the avatar spec's actual
+subject — the head-on silhouette — is untouched. Measured on the rear-projection build:
+**0.000% of the front silhouette differs from a no-marking control** (max absolute luma
+delta 0.0000 over 102k and 139k silhouette pixels, two test drawings), while from behind the
+mark covers 7.1% and 15.8% of the silhouette, 100% of it lighter.
+
+Constraints the marking must keep holding:
+
+- **Rear-facing only.** The eye fades in on `+normal.z`; the marking fades in on `−normal.z`.
+  Local +z is the creature's travel direction (`behavior/agent.ts` emits
+  `vx = sin(heading), vz = cos(heading)`, and the manager sets `root.rotation.y = heading`).
+- **Mirrored `u`.** A rear box projection viewed from behind puts object +x on the viewer's
+  left, so the texture coordinate is flipped — otherwise the drawing reads reversed.
+- **Knockout, never a darkening.** The body is the one near-black on screen (TASTE §1).
+- **Rim fade.** `smoothstep(0.05, 0.5, −nz)` — nothing at the silhouette edge, so the
+  distant read is one solid mass.
+- **Seeded jitter.** Stamp offset and tilt come from the identity id, never `Math.random`.
+
+**The egg is untouched.** It still wears the raw drawing and paints it on over the primary
+token as it spawns — that is the egg's whole point. The verbatim-inflation path stays in the
 codebase as the `fidelity 0` end of the dial (dev-tunable), but the shipped default is
 interpretation.
 
@@ -104,7 +142,8 @@ since ruled: no color at all — the whole experience is black and white for now
   `tokens.ts` for when color returns; nothing may reference it until then.
 - Creature bodies are uniform dark ink (`CHARACTER.body`); identity comes from silhouette,
   stance, name, and behavior — which is truer to the corpus (solid black birds
-  distinguished by posture alone) anyway. No markings: see §1's revision.
+  distinguished by posture alone) anyway. The one exception is the back marking (§1), and it
+  is achromatic too: a knockout in the light role, no hue.
 
 Under a future chromatic Ref collection, color re-enters through the ref-config layer,
 not through per-creature inputs.

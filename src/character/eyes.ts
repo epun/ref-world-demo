@@ -1,17 +1,20 @@
 /**
  * The eye (PLAN §3.4) — the character's entire emotional range.
  *
- * The eye is PAINT ON THE BODY, not geometry: an onBeforeCompile hook
- * chained onto the character material composites the eye SDF into
- * diffuseColor, in a front projection derived from the UNDEFORMED
- * object-space position. No cap mesh floats proud of the surface, so a
- * free-orbit camera never catches a detached light ellipse edge-on: seen
- * from the side or behind, the mark simply fades with the surface normal.
- * And the eye is the ONLY mark on the body — nothing is printed on the
- * fill — so the silhouette stays one solid near-black mass from every
- * angle: the CDG-adjacent knockout read. And because the projection reads
- * the rest position, the mark rides every squash/lean/twist/gait exactly
- * where the vertex shader puts the surface — no CPU anchor tracking at all.
+ * The eye is PAINT ON THE BODY, not geometry. Like the marking
+ * (./marking.ts), an onBeforeCompile hook chained onto the character
+ * material composites the eye SDF into diffuseColor, in a front projection
+ * derived from the UNDEFORMED object-space position. No cap mesh floats
+ * proud of the surface, so a free-orbit camera never catches a detached
+ * light ellipse edge-on: seen from the side or behind, the mark simply
+ * fades with the surface normal (the same rim fade the marking uses) and
+ * the silhouette stays one solid near-black mass from every angle — the
+ * CDG-adjacent knockout read. And because the projection reads the rest
+ * position, the mark rides every squash/lean/twist/gait exactly where the
+ * vertex shader puts the surface — no CPU anchor tracking at all.
+ *
+ * The eye owns +z and the marking owns −z: the two knockouts are on
+ * opposite faces and never overlap, so neither can dilute the other.
  *
  * The SDF itself is unchanged from the cap era: a base lens squashed
  * vertically by `openness`, bent into an upper/lower crescent by
@@ -204,8 +207,8 @@ function hash(n: number): number {
 }
 
 /**
- * Paint the eye into the body material. Chain AFTER applyDeform — this
- * wraps the material's existing onBeforeCompile.
+ * Paint the eye into the body material. Chain AFTER applyDeform and
+ * applyMarking — this wraps the material's existing onBeforeCompile.
  *
  * @param material     the character's material (the hook chains onto it).
  * @param analysis     the shape analysis (headLobe anchors the mark).
@@ -279,7 +282,9 @@ export function applyEyes(
       );
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>\n${EYE_FRAG_DECL}`)
-      // After <color_fragment> — the eye paints over the body fill.
+      // After <color_fragment> (and therefore after the marking's chained
+      // composite, whatever the wrap order) — the eye paints over the fill.
+      // They sit on opposite faces regardless, so nothing is overpainted.
       .replace('#include <alphamap_fragment>', `${EYE_FRAG_BLOCK}\n#include <alphamap_fragment>`);
   };
   const previousKey = material.customProgramCacheKey.bind(material);

@@ -5,9 +5,10 @@
  * its motifs reproportion its own silhouette (GENERATOR §1a — the drawing's
  * shape, filled and chunkified), and THAT silhouette is inflated. The stored
  * analysis is of the processed body, so eyes and deformation land on the
- * actual mesh. The body itself is the recognition: one solid near-black mass
- * with a single eye, nothing printed on it. The verbatim path remains at
- * fidelity 0.
+ * actual mesh. The body is the primary recognition — one solid near-black
+ * mass with a single eye on its leading face — and the original drawing
+ * survives as a light knockout marking on its BACK (./marking.ts). The
+ * verbatim path remains at fidelity 0.
  *
  * The group rides the ambient drift floor exactly like the P0 test blob:
  * position x/z and rotation.y from sampleDrift, seeded deterministically
@@ -30,6 +31,7 @@ import { createGait } from './gait';
 import { applyEyes } from './eyes';
 import type { Expression, ExpressionName } from './expressions';
 import { identitySeedOf, interpretDrawing } from './interpret';
+import { applyMarking } from './marking';
 import { createCharacterMaterial, deformFrameOf, toBufferGeometry } from './mesh';
 
 /** Target character height in world units. Characters render small —
@@ -109,8 +111,9 @@ export interface CharacterOptions {
   construction?: 'inflate' | 'blendshell';
   /**
    * Stable identity id (the drawing's publish id / slot id). Salts the
-   * within-band synthesis jitter, eye shape/size, and the drift/bubble seed
-   * so no two submissions look the same — even from the SAME drawing. Motif counts and angles stay drawing-driven. The phone and
+   * within-band synthesis jitter, eye shape/size, marking placement, and the
+   * drift/bubble seed so no two submissions look the same — even from the
+   * SAME drawing. Motif counts and angles stay drawing-driven. The phone and
    * the world pass the same id for the same submission, so both render the
    * identical creature. Absent → seeded purely from the strokes (compat).
    */
@@ -165,10 +168,14 @@ export function createCharacter(
   // injected into the vertex shader, bending the mesh about its base.
   const frame = deformFrameOf(geometry);
   const deform = applyDeform(material, frame);
+  // Recognition channel 2: the ORIGINAL drawing, painted on the BACK as a
+  // quiet light knockout. Chains onto the deform hook — order matters.
+  const marking = applyMarking(material, strokes, box, identitySeed);
   // The eye: painted INTO the same material (no cap geometry to catch the
-  // free-orbit camera edge-on). Chained after deform; because its
+  // free-orbit camera edge-on). Chained after deform + marking; because its
   // projection reads the undeformed position, it rides every squash / lean /
-  // twist / gait exactly where the vertex shader puts the surface.
+  // twist / gait exactly where the vertex shader puts the surface. The two
+  // marks never meet: the eye fades in on +normal.z, the marking on −.
   const eyes = applyEyes(material, analysis, identitySeed);
 
   const mesh = new Mesh(geometry, material);
@@ -280,6 +287,7 @@ export function createCharacter(
       group.remove(mesh);
       geometry.dispose();
       material.dispose();
+      marking?.dispose();
       springs.squash.dispose();
       springs.leanX.dispose();
       springs.leanZ.dispose();
