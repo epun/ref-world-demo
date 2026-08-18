@@ -18,7 +18,8 @@
  * keeps the drawing on their own handset.
  */
 
-import { feedDrawingToStrokes, type FeedStroke } from '../net/drawFeed';
+import { feedDrawingToStrokes } from '../net/drawFeed';
+import type { FeedStroke } from '../net/vendor/draw-feed';
 import { screenDrawing, type ScreenResult } from './screen';
 
 export interface StandaloneScreen {
