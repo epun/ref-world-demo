@@ -121,6 +121,13 @@ The character brief's "field of white" describes how a character *mark* is prese
 page — generous negative space around it. It is not an instruction to paint the game world
 white. In-game the field is mid-toned and the negative space is spatial.
 
+**User override (2026-08-18) [D]:** the shipped ground is `#dfdfdf` — luma ~0.87, lighter
+than the measured 0.74 — chosen in the ghost panel's color picker and handed over as the
+default configuration. The measured token stays as recorded; `valueHistogramGate` measures
+the frame against the *configured* paper (its invariant is "the paper dominates the frame,
+near-black is rare") and prints the distance from the measured reference in every readout,
+so the drift is stated rather than buried.
+
 **There is no pastel green or pink.** The palette is six near-achromatic greys.
 
 ### 2.3 Density — global 0.39, local sparse **[M]** + **[D]**

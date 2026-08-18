@@ -33,7 +33,8 @@ import {
   type MarkSample,
 } from '../taste/gates';
 import { WIND_OVERRIDE_MAX } from '../world/environment';
-import { SCATTER_STEP } from '../world/scatter';
+import { WANDER_SPEED_DEFAULT } from '../creatures/manager';
+import { DEFAULT_KIND_DENSITY, SCATTER_STEP } from '../world/scatter';
 import { GRAIN, MOTION, SURFACE } from '../taste/tokens';
 import { FALLBACK_DRAWINGS, FALLBACK_HATCH_MS } from './fixtures';
 import { DEV_SKILLS_META } from './skills-meta';
@@ -168,8 +169,6 @@ function densityCoverageSamples(props: { x: number; z: number }[]): number[] {
  */
 const MARK_LINT_TARGETS: { selector: string; name: string; exemptReason?: string }[] = [
   { selector: '.draw-open', name: 'draw control' },
-  { selector: '.join-line', name: 'join line' },
-  { selector: '.egg-hint', name: 'egg hint' },
   { selector: '.draw-hint', name: 'draw hint' },
   { selector: '.hover-name', name: 'hover name' },
   {
@@ -332,6 +331,20 @@ export async function initDevPanel(
         if (!label) return;
         const flags = node as { isMesh?: boolean; isGroup?: boolean };
         if (!flags.isMesh && !flags.isGroup) return;
+        // Never surface gizmo/helper internals. TransformControls' own axis
+        // meshes are named x/y/z/xy/xyz/start/end, so once the gizmo
+        // attached they flooded the outliner (visible in a user's panel
+        // export). Same filter ghost-panel's own scan uses: helper types,
+        // transform controls, and the __duiIgnore opt-out — checked up the
+        // whole ancestor chain, since only the root carries the marker.
+        for (let p: Object3D | null = node; p; p = p.parent) {
+          const tag = p as Object3D & {
+            isTransformControls?: boolean;
+            userData?: { __duiIgnore?: unknown };
+          };
+          if (tag.isTransformControls || tag.userData?.__duiIgnore) return;
+          if (/Helper$/.test(p.type)) return;
+        }
         // Descendants of a registered node stay collapsed under it — no
         // sub-part spam from creature roots.
         for (let p = node.parent; p; p = p.parent) if (known.has(p)) return;
@@ -499,7 +512,7 @@ export async function initDevPanel(
         min: 0.2,
         max: 3,
         step: 0.05,
-        value: 1,
+        value: WANDER_SPEED_DEFAULT,
         id: 'wander-speed',
         onChange: (v) => creatures.setWanderSpeed(v),
       });
@@ -554,7 +567,7 @@ export async function initDevPanel(
           folder.addSlider('tree density', {
             min: 0,
             max: 2.5,
-            value: 1,
+            value: DEFAULT_KIND_DENSITY.tree ?? 1,
             onChange: (v) => {
               kd('tree', v);
               kd('conifer', v);

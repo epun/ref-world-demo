@@ -48,8 +48,15 @@ export const CHARACTER = {
 // Assignments are ours (TASTE §6); the values they point at are measured.
 
 export const SURFACE = {
-  /** World ground — mid-toned neutral targeting groundLuma 0.74 [M]. */
-  ground: '#c2c2bb',
+  /**
+   * World ground and sky field. The measured target is groundLuma 0.74 [M]
+   * (see COLOR_METRICS, left untouched — measured data is never rewritten);
+   * this value is a deliberate USER OVERRIDE picked in the panel's color
+   * picker and exported as the shipped default (luma ~0.87 — lighter paper
+   * than the ref). The value-histogram gate reports the drift against the
+   * measured reference rather than hiding it.
+   */
+  ground: '#dfdfdf',
   /** Flat shadow fill. One value, hard edge, no penumbra (TASTE §2.4). */
   shadow: '#92928e',
   /** Phone drawing canvas ground (light role). */

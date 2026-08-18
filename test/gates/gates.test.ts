@@ -15,7 +15,7 @@ import {
   stillnessGate,
   valueHistogramGate,
 } from '../../src/taste/gates';
-import { GRAIN } from '../../src/taste/tokens';
+import { GRAIN, SURFACE } from '../../src/taste/tokens';
 
 /** build an rgba buffer from a list of opaque rgb pixels. */
 function rgba(pixels: [number, number, number][]): Uint8ClampedArray {
@@ -59,12 +59,17 @@ describe('achromaticGate', () => {
 });
 
 describe('valueHistogramGate', () => {
-  // luma 0.74 as a grey value: 0.74 * 255 ≈ 189
-  const ground: [number, number, number] = [189, 189, 189];
+  // The gate measures against the CONFIGURED paper (SURFACE.ground), which
+  // the panel's color picker may move off the measured groundLuma — so the
+  // fixtures derive from the token rather than hardcoding a grey.
+  const paper = parseInt(SURFACE.ground.slice(1, 3), 16);
+  const ground: [number, number, number] = [paper, paper, paper];
   const nearBlack: [number, number, number] = [10, 10, 10];
-  const light: [number, number, number] = [230, 230, 230];
+  /** A value far enough from the paper to miss the ±0.08 window. */
+  const offPaper = paper > 128 ? paper - 60 : paper + 60;
+  const light: [number, number, number] = [offPaper, offPaper, offPaper];
 
-  it('passes 80% ground-luma grey with 5% near-black — small figure, huge field', () => {
+  it('passes 80% paper-value grey with 5% near-black — small figure, huge field', () => {
     const result = valueHistogramGate(
       rgba([...fill(80, ground), ...fill(5, nearBlack), ...fill(15, light)]),
     );
@@ -79,8 +84,8 @@ describe('valueHistogramGate', () => {
     expect(result.detail).toContain('near-black');
   });
 
-  it('fails when the histogram mode is nowhere near the ground luma', () => {
-    // a frame dominated by highlights — mode ≈ 0.9, far from 0.74
+  it('fails when the histogram mode is nowhere near the paper value', () => {
+    // a frame dominated by a value well outside the paper's ±0.08 window
     const result = valueHistogramGate(rgba(fill(100, light)));
     expect(result.pass).toBe(false);
   });

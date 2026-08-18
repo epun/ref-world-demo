@@ -164,7 +164,7 @@ export interface PlacementOptions {
  */
 export function computePlacements(opts: PlacementOptions = {}): Placement[] {
   const density = Math.max(0, opts.density ?? 1);
-  const kindDensity = opts.kindDensity ?? {};
+  const kindDensity = { ...DEFAULT_KIND_DENSITY, ...(opts.kindDensity ?? {}) };
   const out: Placement[] = [];
   const cells = Math.floor(SCATTER_EXTENT / SCATTER_STEP);
   const buildings: { x: number; z: number; variant: number }[] = [];
@@ -755,6 +755,16 @@ export interface Scatter {
 
 /** Scene-outliner labels for the per-kind container groups (user ask: ONE
  * row per kind — "all the trees in the scene should be one object"). */
+/**
+ * Shipped per-kind density defaults (panel export, user ask). Only the
+ * wooded kinds differ from 1: the world reads as open field with sparse
+ * groves rather than forest. Every one stays a live panel slider.
+ */
+export const DEFAULT_KIND_DENSITY: Partial<Record<ScatterKind, number>> = {
+  tree: 0.15,
+  conifer: 0.15,
+};
+
 export const KIND_GROUP_LABELS: Record<ScatterKind, string> = {
   tree: 'trees',
   conifer: 'conifers',
@@ -1008,7 +1018,7 @@ export function createScatter(): Scatter {
   let shadowSpots: { x: number; z: number; r: number }[] = [];
 
   let globalDensity = 1;
-  const kindDensity: Partial<Record<ScatterKind, number>> = {};
+  const kindDensity: Partial<Record<ScatterKind, number>> = { ...DEFAULT_KIND_DENSITY };
   const kindScale: Partial<Record<ScatterKind, number>> = {};
   let placements = computePlacements();
   let exclusions: Exclusion[] = [];

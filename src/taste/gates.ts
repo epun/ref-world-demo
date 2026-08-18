@@ -9,7 +9,7 @@
  */
 
 import { auditDamping } from '../motion/spring';
-import { CHARACTER, COLOR_METRICS, DENSITY, GRAIN, MARK_KINDS } from './tokens';
+import { CHARACTER, COLOR_METRICS, DENSITY, GRAIN, MARK_KINDS, SURFACE } from './tokens';
 
 export interface GateResult {
   pass: boolean;
@@ -181,13 +181,24 @@ export function valueHistogramGate(pixels: Uint8ClampedArray): GateResult {
     if ((histogram[b] ?? 0) > (histogram[modeBucket] ?? 0)) modeBucket = b;
   }
   const modeLuma = (modeBucket + 0.5) / HISTOGRAM_BUCKETS;
-  const groundOk = Math.abs(modeLuma - COLOR_METRICS.groundLuma) <= GROUND_LUMA_TOLERANCE;
+  // The gate's job is "the paper is the dominant value" — so it measures
+  // against the CONFIGURED ground (SURFACE.ground), which the panel's color
+  // picker may have moved off the measured reference. The measured value is
+  // never rewritten: the detail line prints both, so any drift from the ref
+  // is stated rather than hidden.
+  const paperLuma = lumaOf(...hexToRgb(SURFACE.ground));
+  const groundOk = Math.abs(modeLuma - paperLuma) <= GROUND_LUMA_TOLERANCE;
+  const paperDrift = Math.abs(paperLuma - COLOR_METRICS.groundLuma);
   const nearBlackFraction = nearBlack / counted;
   const nearBlackOk = nearBlackFraction < NEAR_BLACK_MAX_COVERAGE;
   const detail =
-    `histogram mode at luma ${modeLuma.toFixed(2)} (ground target ${COLOR_METRICS.groundLuma} ± ${GROUND_LUMA_TOLERANCE}), ` +
+    `histogram mode at luma ${modeLuma.toFixed(2)} (paper ${paperLuma.toFixed(2)} ± ${GROUND_LUMA_TOLERANCE}` +
+    (paperDrift > 0.01
+      ? `, ${paperDrift.toFixed(2)} off the measured groundLuma ${COLOR_METRICS.groundLuma}`
+      : '') +
+    '), ' +
     `near-black coverage ${(nearBlackFraction * 100).toFixed(1)}% (limit ${NEAR_BLACK_MAX_COVERAGE * 100}%)` +
-    (groundOk ? '' : ' — the mid-toned ground is not the dominant value') +
+    (groundOk ? '' : ' — the paper value is not the dominant value') +
     (nearBlackOk ? '' : ' — too much near-black; the character is small in the frame');
   return { pass: groundOk && nearBlackOk, detail };
 }

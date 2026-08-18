@@ -30,6 +30,10 @@ The traps, in order of how easily they get violated:
   the character.
 - **The ground is mid-toned grey (`groundLuma 0.74`), not cream or white.** There is **no
   pastel green or pink** in this taste; it is near-achromatic (`saturation 0.188`).
+  ⚠️ **Standing user override:** the shipped `SURFACE.ground` is `#dfdfdf` (luma ~0.87) —
+  lighter than the measured target — picked in the panel's color picker and exported as the
+  default. `COLOR_METRICS.groundLuma` keeps the measured 0.74; the value-histogram gate
+  measures against the configured paper and prints the drift. Don't "correct" it back.
 - **Grain is a full-frame post-process, never a material.** It must not vary across a
   character's fill or the silhouette stops reading as one solid shape.
 - **UI is `icon` + `ruleLine` + `border` only.** No filled panels, no cards, no shadows under

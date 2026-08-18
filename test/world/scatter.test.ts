@@ -21,6 +21,7 @@ import {
   clampWindStrength,
   computePlacements,
   createScatter,
+  DEFAULT_KIND_DENSITY,
   filterExcluded,
   instanceVariation,
   KIND_GROUP_LABELS,
@@ -101,7 +102,10 @@ describe('scatter placement', () => {
   });
 
   it('uses every authored variant of the grove kinds', () => {
-    const placements = computePlacements();
+    // Grove mechanics are exercised at full density: the SHIPPED tree /
+    // conifer default is sparse (DEFAULT_KIND_DENSITY), which is a
+    // composition choice, not a statement about variant coverage.
+    const placements = computePlacements({ kindDensity: { tree: 1, conifer: 1 } });
     for (const kind of ['tree', 'conifer', 'bush', 'rock', 'stump', 'palm'] as const) {
       const of = placements.filter((p) => p.kind === kind);
       const used = new Set(of.map((p) => p.variant));
@@ -142,7 +146,7 @@ describe('scatter placement', () => {
   });
 
   it('cluster neighbors bias toward one variant — present but not total', () => {
-    const placements = computePlacements();
+    const placements = computePlacements({ kindDensity: { tree: 1, conifer: 1 } });
     for (const kind of ['tree', 'conifer'] as const) {
       const of = placements.filter((p) => p.kind === kind);
       const near = SCATTER_STEP * 2;
@@ -474,7 +478,7 @@ describe('scatter placement', () => {
       scatter.setKindDensity('tree', 0);
       expect(trees()).toBe(0);
       expect(rocks()).toBe(rocksBefore); // rocks untouched
-      scatter.setKindDensity('tree', 1);
+      scatter.setKindDensity('tree', DEFAULT_KIND_DENSITY.tree ?? 1);
       expect(trees()).toBe(treesBefore);
 
       const rockR = scatter.positions().find((p) => p.kind === 'rock')!.r;

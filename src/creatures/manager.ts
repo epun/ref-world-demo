@@ -38,6 +38,10 @@ import { MOTION } from '../taste/tokens';
 import type { WorldHandles } from '../world/scene';
 import type { ShadowHandle } from '../world/shadows';
 
+/** Shipped wander-speed multiplier (panel export, user ask): a touch
+ * brisker than spec pace. The panel slider starts here. */
+export const WANDER_SPEED_DEFAULT = 1.4;
+
 /** Practical demo guard, not a design cap (see header). */
 export const MAX_POPULATION = 24;
 
@@ -266,7 +270,7 @@ export function createCreatureManager(world: WorldHandles): CreatureManager {
   let orderCounter = 0;
   let timersPaused = false;
   let aiPaused = false;
-  let wanderSpeedMult = 1;
+  let wanderSpeedMult = WANDER_SPEED_DEFAULT;
 
   // ── physics scratch (allocation-free per frame) ───────────────────────────
   // The prop spatial hash rebuilds only when the scatter's collider version

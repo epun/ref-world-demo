@@ -96,7 +96,7 @@ const DEFAULTS: InkParams = {
   // 3.0 detached lines visibly from small silhouettes (user report);
   // 1.6 keeps the pen roughness with the line still riding the mesh.
   wobble: 1.6,
-  hatchStrength: 0.7,
+  hatchStrength: 0.15,
 };
 
 /** Linear-space luma of an srgb token — the cel band anchors. Color
