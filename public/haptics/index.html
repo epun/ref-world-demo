@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+    />
+    <title>ref — haptics check</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path d='M12.3 4.6c3.9.2 6.9 3.4 7 7.3.1 4.1-3 7.6-7.1 7.7-4 .1-7.4-3-7.5-7.1-.1-4.2 3.4-8.1 7.6-7.9z' fill='%23353534'/></svg>" />
+    <style>
+      /*
+       * A diagnostic, not a product screen — but it still obeys the taste:
+       * one paper (SURFACE.ground), ink marks, rule lines and borders only,
+       * no filled panels, no uppercase. Values mirror src/taste/tokens.ts.
+       */
+      :root {
+        --paper: #dfdfdf;
+        --ink: #353534;
+        --line: #92928e;
+        --settle: cubic-bezier(0.17, 0.72, 0.24, 1);
+        --t-tertiary: 456ms;
+      }
+      html, body {
+        margin: 0;
+        min-height: 100%;
+        background: var(--paper);
+        color: var(--ink);
+        font: 15px/1.5 "helvetica neue", helvetica, arial, sans-serif;
+        -webkit-text-size-adjust: 100%;
+      }
+      main {
+        max-width: 34em;
+        margin: 0 auto;
+        padding: calc(env(safe-area-inset-top, 0px) + 7vmin) 7vmin
+          calc(env(safe-area-inset-bottom, 0px) + 7vmin);
+      }
+      h1 { font-size: 17px; font-weight: 400; margin: 0 0 1.5em; }
+      h2 { font-size: 15px; font-weight: 400; margin: 2em 0 0.75em; }
+      dl { margin: 0; }
+      .row {
+        display: flex;
+        justify-content: space-between;
+        gap: 1em;
+        padding: 0.7em 0;
+        border-bottom: 1px solid var(--line);
+      }
+      .row dt { color: var(--line); }
+      .row dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+      .verdict { margin: 1.5em 0 0; padding: 0.9em 0; border-top: 1px solid var(--ink); border-bottom: 1px solid var(--ink); }
+      button {
+        font: inherit;
+        display: block;
+        width: 100%;
+        margin: 0.6em 0 0;
+        padding: 0.95em 1em;
+        text-align: left;
+        color: var(--ink);
+        background: transparent;
+        border: 1px solid var(--ink);
+        border-radius: 13px;
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+        transition: opacity var(--t-tertiary) var(--settle);
+      }
+      button:active { opacity: 0.55; }
+      button:disabled { opacity: 0.3; pointer-events: none; }
+      p.note { color: var(--line); font-size: 13px; margin: 1.2em 0 0; }
+      code { font-family: ui-monospace, menlo, monospace; font-size: 13px; }
+      /* the switch under test — rendered, but parked out of sight */
+      #probe { position: fixed; left: -9999px; top: 0; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>haptics check</h1>
+
+      <h2>what this handset has</h2>
+      <dl id="facts"></dl>
+      <div class="verdict" id="verdict">measuring…</div>
+
+      <h2>try them</h2>
+      <button id="tryVibrate">1 · vibration api — the hatch pattern</button>
+      <button id="trySwitch">2 · ios switch — one tick</button>
+      <button id="tryReal">3 · exactly what the hatch runs</button>
+      <p class="note" id="result"></p>
+
+      <p class="note">
+        if 2 does nothing on an iphone, check settings → sounds &amp; haptics →
+        system haptics is on, and that low power mode is off — both silence it.
+        haptics also need a tap on the page first, which the buttons above are.
+      </p>
+
+      <label id="probe" aria-hidden="true"><input type="checkbox" switch tabindex="-1" /></label>
+    </main>
+
+    <script>
+      // Mirrors the detection in src/phone/haptics.ts — feature tests, never
+      // a user-agent sniff. The ua is reported for the record, not branched on.
+      var hasVibrate = typeof navigator.vibrate === 'function';
+      var hasSwitch = (function () {
+        try { return 'switch' in document.createElement('input'); } catch (e) { return false; }
+      })();
+      var transport = hasVibrate ? 'vibration api' : hasSwitch ? 'ios switch' : 'none';
+
+      var facts = document.getElementById('facts');
+      function row(k, v) {
+        var d = document.createElement('div');
+        d.className = 'row';
+        var dt = document.createElement('dt'); dt.textContent = k;
+        var dd = document.createElement('dd'); dd.textContent = v;
+        d.append(dt, dd); facts.appendChild(d);
+      }
+      row('navigator.vibrate', hasVibrate ? 'present' : 'absent');
+      row('input switch attribute', hasSwitch ? 'supported' : 'unsupported');
+      row('touch points', String(navigator.maxTouchPoints || 0));
+      row('screen', window.screen.width + '×' + window.screen.height + ' @' + (window.devicePixelRatio || 1) + 'x');
+      row('standalone', window.navigator.standalone === true ? 'yes (added to home screen)' : 'no (in browser)');
+
+      document.getElementById('verdict').textContent =
+        transport === 'vibration api'
+          ? 'transport: vibration api — full pattern, this should buzz.'
+          : transport === 'ios switch'
+            ? 'transport: ios switch — one tick only. no pattern is possible here.'
+            : 'transport: none — this handset cannot buzz from a web page at all.';
+
+      var ua = document.createElement('p');
+      ua.className = 'note';
+      ua.innerHTML = 'user agent: <code>' + String(navigator.userAgent).replace(/[<&]/g, '') + '</code>';
+      facts.parentNode.insertBefore(ua, document.getElementById('verdict').nextSibling);
+
+      var result = document.getElementById('result');
+      function say(s) { result.textContent = s; }
+
+      document.getElementById('tryVibrate').onclick = function () {
+        if (!hasVibrate) return say('1 · no vibration api on this handset — nothing was called.');
+        var ok = false;
+        try { ok = navigator.vibrate([16, 70, 34]) !== false; } catch (e) { ok = false; }
+        say('1 · vibrate([16,70,34]) returned ' + ok + '. did you feel two ticks?');
+      };
+
+      document.getElementById('trySwitch').onclick = function () {
+        if (!hasSwitch) return say('2 · no switch support — nothing was toggled.');
+        try {
+          document.getElementById('probe').click();
+          say('2 · switch toggled. did you feel one tick?');
+        } catch (e) { say('2 · toggle threw: ' + e.message); }
+      };
+
+      document.getElementById('tryReal').onclick = function () {
+        // The same order src/phone/haptics.ts pulse() uses.
+        if (hasVibrate) {
+          var ok = false;
+          try { ok = navigator.vibrate([16, 70, 34]) !== false; } catch (e) { ok = false; }
+          return say('3 · took the vibration-api path, returned ' + ok + '.');
+        }
+        if (hasSwitch) {
+          try { document.getElementById('probe').click(); } catch (e) {}
+          return say('3 · took the ios-switch path — one tick.');
+        }
+        say('3 · no transport. the hatch is silent on this handset, by platform.');
+      };
+    </script>
+  </body>
+</html>

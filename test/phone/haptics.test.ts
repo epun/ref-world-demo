@@ -5,7 +5,10 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  canSwitchHaptic,
   canVibrate,
+  describeHaptics,
+  hapticTransport,
   HATCH_PATTERN,
   hatchPulse,
   pulse,
@@ -73,5 +76,94 @@ describe('a handset that will not buzz', () => {
     const nav = recorder();
     expect(pulse([], nav)).toBe(false);
     expect(nav.calls).toHaveLength(0);
+  });
+});
+
+describe('the iphone route', () => {
+  /** A document stub: only what haptics.ts touches. */
+  function fakeDoc(opts: { switchSupported: boolean }) {
+    const clicks: string[] = [];
+    const created: any[] = [];
+    const byId: Record<string, any> = {};
+    const make = (tag: string): any => {
+      const el: any = {
+        tagName: tag,
+        id: '',
+        style: { cssText: '' },
+        children: [] as any[],
+        firstElementChild: null,
+        tabIndex: 0,
+        setAttribute(k: string, v: string) {
+          (el as any)[`attr:${k}`] = v;
+          if (k === 'type' && opts.switchSupported) el.switch = false;
+        },
+        appendChild(c: any) {
+          el.children.push(c);
+          el.firstElementChild = el.children[0];
+          return c;
+        },
+        click() {
+          clicks.push(el.id || el.tagName);
+        },
+      };
+      if (tag === 'input' && opts.switchSupported) el.switch = false;
+      created.push(el);
+      return el;
+    };
+    const body = make('body');
+    return {
+      clicks,
+      doc: {
+        createElement: make,
+        getElementById: (id: string) => byId[id] ?? null,
+        get body() {
+          return body;
+        },
+        _register(el: any) {
+          byId[el.id] = el;
+        },
+      } as unknown as Document,
+      body,
+      register: (el: any) => {
+        byId[el.id] = el;
+      },
+    };
+  }
+
+  it('detects the switch attribute rather than sniffing the user agent', () => {
+    expect(canSwitchHaptic(fakeDoc({ switchSupported: true }).doc)).toBe(true);
+    expect(canSwitchHaptic(fakeDoc({ switchSupported: false }).doc)).toBe(false);
+    expect(canSwitchHaptic({} as unknown as Document)).toBe(false);
+  });
+
+  it('names the transport a handset will actually use', () => {
+    const ios = fakeDoc({ switchSupported: true }).doc;
+    const android = recorder();
+    expect(hapticTransport(android, ios)).toBe('vibration-api');
+    expect(hapticTransport({}, ios)).toBe('ios-switch');
+    expect(hapticTransport({}, fakeDoc({ switchSupported: false }).doc)).toBe('none');
+    expect(describeHaptics({}, ios)).toContain('one tick');
+  });
+
+  it('falls back to the switch when there is no vibration api', () => {
+    const f = fakeDoc({ switchSupported: true });
+    expect(hatchPulse({}, f.doc)).toBe(true);
+    // The haptic rides the label's activation, so the LABEL is what clicks.
+    expect(f.clicks).toHaveLength(1);
+  });
+
+  it('prefers the vibration api when both exist — a pattern beats one tick', () => {
+    const f = fakeDoc({ switchSupported: true });
+    const nav = recorder();
+    expect(hatchPulse(nav, f.doc)).toBe(true);
+    expect(nav.calls).toEqual([[...HATCH_PATTERN]]);
+    expect(f.clicks).toHaveLength(0);
+  });
+
+  it('stays silent, and safe, when the handset has neither', () => {
+    const f = fakeDoc({ switchSupported: false });
+    expect(hatchPulse({}, f.doc)).toBe(false);
+    expect(f.clicks).toHaveLength(0);
+    expect(() => hatchPulse({}, undefined)).not.toThrow();
   });
 });
