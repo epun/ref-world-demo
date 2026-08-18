@@ -9,6 +9,14 @@
  * read as a pair. The modules themselves stay crisp ink squares snapped to
  * device pixels: a wobbled module is an unscannable module, and this mark
  * has a job. It is drawn once per size change, not per frame.
+ *
+ * Clicking it grows the code to the middle of the frame at QR_EXPANDED_VMIN
+ * of the smaller viewport axis, so a room full of phones can scan it at
+ * once; clicking again (or escape, or a click anywhere else) sends it back
+ * to its corner. Both directions SLIDE on the settle curve over t.secondary
+ * — never a cut, never a pop — and the canvas redraws at every intermediate
+ * size, so the code stays crisp the whole way rather than scaling up as a
+ * blurred bitmap.
  */
 
 import { MOTION, WORLD } from '../taste/tokens';
@@ -19,6 +27,13 @@ import { encodeQr } from './qr';
 const QUIET_MODULES = 4;
 /** Stable seed for this corner's border waver — not the map's. */
 const QR_SEED = 57.3;
+
+/** Expanded size, as a share of the smaller viewport axis (user ask: the
+ * code takes 60% of the view so it can be scanned from across a room). */
+export const QR_EXPANDED_VMIN = 60;
+
+/** Corner inset — the minimap's, so the two corners stay mirrored. */
+const QR_INSET_PX = 20;
 
 const STYLE_ID = 'join-qr-style';
 
@@ -35,18 +50,39 @@ function ensureStyle(): void {
   style.textContent = `
 .join-qr {
   position: fixed;
-  left: calc(env(safe-area-inset-left, 0px) + 20px);
-  bottom: calc(env(safe-area-inset-bottom, 0px) + 20px);
+  left: calc(env(safe-area-inset-left, 0px) + ${QR_INSET_PX}px);
+  bottom: calc(env(safe-area-inset-bottom, 0px) + ${QR_INSET_PX}px);
   z-index: 5;
   width: ${QR_SIZE_CSS};
   height: ${QR_SIZE_CSS};
   display: block;
   opacity: 0;
-  transition: opacity ${MOTION.secondaryMs}ms ${MOTION.settleCurve};
-  pointer-events: none;
+  cursor: pointer;
+  transform: translate(0px, 0px);
+  transition:
+    opacity ${MOTION.secondaryMs}ms ${MOTION.settleCurve},
+    width ${MOTION.secondaryMs}ms ${MOTION.settleCurve},
+    height ${MOTION.secondaryMs}ms ${MOTION.settleCurve},
+    transform ${MOTION.secondaryMs}ms ${MOTION.settleCurve};
+  -webkit-tap-highlight-color: transparent;
 }
 .join-qr.visible {
   opacity: 1;
+}
+/*
+ * Expanded: the box grows in place and TRANSLATES to the middle. The
+ * anchor stays the bottom-left corner, so the offset is the distance from
+ * that corner to the centred position — no percentage-to-pixel
+ * interpolation, and no scale transform (which would blur the modules).
+ */
+.join-qr.expanded {
+  z-index: 6;
+  width: ${QR_EXPANDED_VMIN}vmin;
+  height: ${QR_EXPANDED_VMIN}vmin;
+  transform: translate(
+    calc((100vw - ${QR_EXPANDED_VMIN}vmin) / 2 - env(safe-area-inset-left, 0px) - ${QR_INSET_PX}px),
+    calc(-1 * ((100vh - ${QR_EXPANDED_VMIN}vmin) / 2 - env(safe-area-inset-bottom, 0px) - ${QR_INSET_PX}px))
+  );
 }
 `;
   document.head.appendChild(style);
@@ -75,6 +111,10 @@ export interface JoinQrOptions {
 }
 
 export interface JoinQrHandle {
+  /** true while the code is enlarged in the middle of the frame. */
+  isExpanded(): boolean;
+  /** Drive the expand from elsewhere (tests, a future panel button). */
+  setExpanded(open: boolean): void;
   dispose(): void;
 }
 
@@ -88,9 +128,17 @@ export function installJoinQr(opts: JoinQrOptions): JoinQrHandle {
   const matrix = encodeQr(opts.url);
   const canvas = document.createElement('canvas');
   canvas.className = 'join-qr';
-  canvas.setAttribute('aria-label', 'draw with your phone');
+  canvas.setAttribute('role', 'button');
+  canvas.setAttribute('tabindex', '0');
+  canvas.setAttribute('aria-label', 'draw with your phone — click to enlarge');
   opts.mount.appendChild(canvas);
-  if (!matrix) return { dispose: () => canvas.remove() };
+  if (!matrix) {
+    return {
+      isExpanded: () => false,
+      setExpanded: () => {},
+      dispose: () => canvas.remove(),
+    };
+  }
 
   const ctx = canvas.getContext('2d');
   const modules = matrix.length;
@@ -149,17 +197,63 @@ export function installJoinQr(opts: JoinQrOptions): JoinQrHandle {
 
   draw();
   // Redraw on size changes only — the code is static, so there is no frame
-  // loop here (the minimap's is the only one this corner needs).
+  // loop here (the minimap's is the only one this corner needs). During the
+  // expand the observer fires per frame, which is exactly what keeps the
+  // modules crisp instead of stretched.
   const observer =
     typeof ResizeObserver === 'function' ? new ResizeObserver(() => draw()) : null;
   observer?.observe(canvas);
   const onResize = (): void => draw();
   window.addEventListener('resize', onResize);
 
+  // ── expand to the middle of the frame (user ask) ─────────────────────────
+  const setExpanded = (open: boolean): void => {
+    canvas.classList.toggle('expanded', open);
+    canvas.setAttribute(
+      'aria-label',
+      open ? 'draw with your phone — click to shrink' : 'draw with your phone — click to enlarge',
+    );
+    // The css transition drives the size; this redraw covers the browsers
+    // that batch the first resize notification.
+    draw();
+  };
+  const toggle = (): void => setExpanded(!canvas.classList.contains('expanded'));
+
+  const onClick = (event: MouseEvent): void => {
+    event.preventDefault();
+    event.stopPropagation();
+    toggle();
+  };
+  const onKeyDown = (event: KeyboardEvent): void => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    toggle();
+  };
+  // Escape, or a press anywhere else, returns it to the corner. Capture
+  // phase and never prevented, so the world's own orbit and pan handlers
+  // read the same press untouched.
+  const onDocKey = (event: KeyboardEvent): void => {
+    if (event.key === 'Escape') setExpanded(false);
+  };
+  const onDocPointerDown = (event: PointerEvent): void => {
+    if (event.target === canvas) return;
+    if (canvas.classList.contains('expanded')) setExpanded(false);
+  };
+  canvas.addEventListener('click', onClick);
+  canvas.addEventListener('keydown', onKeyDown);
+  window.addEventListener('keydown', onDocKey);
+  window.addEventListener('pointerdown', onDocPointerDown, { capture: true });
+
   return {
+    isExpanded: () => canvas.classList.contains('expanded'),
+    setExpanded,
     dispose(): void {
       observer?.disconnect();
       window.removeEventListener('resize', onResize);
+      canvas.removeEventListener('click', onClick);
+      canvas.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keydown', onDocKey);
+      window.removeEventListener('pointerdown', onDocPointerDown, { capture: true });
       canvas.remove();
     },
   };
