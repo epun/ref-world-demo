@@ -116,6 +116,28 @@ figure genuinely are that shape by these measures, so they wait for a
 person instead of being thrown away. Ink too small or sparse to measure is
 never held on this basis: no criteria is ignorance, not a near miss.
 
+## 1b. Where the screen runs
+
+**On the handset, at the send.** The draw pad screens the drawing before
+publishing it: an outright refusal never leaves the phone, and the person
+is told on the pad — *sorry, this goes against our content guidelines, it
+was not sent* — with a **draw something else** action. A **hold** does not
+stop the send: it is uncertain by design and goes to the world for a
+person to decide, and the drawer is told nothing about it.
+
+The pad is plain vendored html and cannot import from `src/`, so the real
+screen is built as its own entry (`src/moderation/standalone.ts` →
+`/screen.js`) and hangs itself on `window.__refworldScreen`. It screens
+the kit's wire strokes through the same conversion the world uses on
+ingest, so both are looking at exactly the same drawing. On the dev server
+the global is absent and the pad simply publishes — the world still
+refuses.
+
+**On the world, at ingest — and this is the authority.** Anyone can
+publish to the room's topic without ever loading the pad, so the handset
+check is a courtesy that saves a round trip, never a control. Nothing
+becomes a creature except through the gate below.
+
 ## 2. The ingest gate — the authoritative seam
 
 `src/moderation/gate.ts` is the single place a drawing becomes a creature. Both paths go

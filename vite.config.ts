@@ -8,6 +8,14 @@ export default defineConfig({
       input: {
         world: resolve(__dirname, 'index.html'),
         phone: resolve(__dirname, 'phone.html'),
+        // The content screen, for the vendored draw pad (which is plain
+        // html in public/ and cannot import from src/). Fixed filename so
+        // that page can script-tag it: src/moderation/standalone.ts.
+        screen: resolve(__dirname, 'src/moderation/standalone.ts'),
+      },
+      output: {
+        entryFileNames: (chunk) =>
+          chunk.name === 'screen' ? 'screen.js' : 'assets/[name]-[hash].js',
       },
     },
     target: 'es2022',

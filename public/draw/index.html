@@ -71,6 +71,14 @@
       opacity: 0; pointer-events: none; transition: all .3s; font-size: 15px; text-align: center; }
     .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
+    /* Refused on this handset: the drawing never leaves the phone. Same
+       words the companion uses, shown here instead of a send. */
+    .refused { position: fixed; inset: 0; z-index: 120; display: none; flex-direction: column;
+      align-items: center; justify-content: center; gap: 16px; padding: 10vmin; text-align: center;
+      background: var(--paper); color: var(--ink); }
+    .refused.show { display: flex; }
+    .refused p { margin: 0; font-size: 17px; line-height: 1.45; max-width: 22em; }
+    .refused .sub { font-size: 14px; color: var(--muted); }
     .namechip { font-size: 13px; color: var(--muted); text-align: center; }
     .namechip b { color: var(--ink); font-weight: 500; }
     .chip-change { color: var(--ink); text-decoration: underline; cursor: pointer; }
@@ -116,6 +124,12 @@
 
   <div class="toast" id="toast">sent</div>
 
+  <div class="refused" id="refused">
+    <p>sorry — this goes against our content guidelines.</p>
+    <p class="sub">it was not sent.</p>
+    <button class="clear" id="refusedBack" style="flex:0 0 auto">draw something else</button>
+  </div>
+
   <div class="sheet" id="sheet">
     <div class="sheet-card">
       <div class="sheet-title">sign your drawing</div>
@@ -128,6 +142,9 @@
   </div>
 
   <script src="./mqtt.min.js"></script>
+  <!-- the content screen, built from src/moderation/ (see standalone.ts).
+       absent on the dev server; the world's gate is the authority either way -->
+  <script type="module" src="/screen.js"></script>
   <script>
   (() => {
     // ── Config (must match the receiver's broker + topicPrefix) ─────────────
@@ -332,10 +349,31 @@
       signed = true; localStorage.setItem(NAME_KEY, userName); updateChip();
     }
 
+    /**
+     * Screen on THIS handset before anything is sent. The world screens
+     * again on arrival and remains the authority — this page can be
+     * bypassed entirely — but refusing here means an explicit drawing
+     * never leaves the phone, and the person is told on the pad instead
+     * of two screens later.
+     */
+    function refusedHere() {
+      const screen = window.__refworldScreen;
+      if (typeof screen !== 'function') return false;   // dev server, or not built
+      let verdict;
+      try { verdict = screen(strokes); } catch { return false; }
+      // Only an outright refusal stops the send. A 'hold' is uncertain by
+      // design — it goes to the world for a person to decide, and the
+      // drawer is told nothing about it.
+      if (!verdict || verdict.verdict !== 'refuse') return false;
+      document.getElementById('refused').classList.add('show');
+      return true;
+    }
+
     function publish() {
       if (!strokes.length || !connected) return;
       // Last gate: one handset, one creature — whatever route reached here.
       if (alreadyDrew()) { enforceSingleDrawing(); return; }
+      if (refusedHere()) return;
       const msg = { id: MY_ID, name: userName, strokes, ts: Date.now() };
       client.publish(TOPIC, JSON.stringify(msg), { qos: 0 });
       // Hand off to the companion's egg view: stash the drawing for the
@@ -358,6 +396,13 @@
           + (WORLD_EPOCH ? '&w=' + WORLD_EPOCH : '');
       }, 700);
     }
+
+    document.getElementById('refusedBack').onclick = () => {
+      document.getElementById('refused').classList.remove('show');
+      strokes = []; cur = null; redraw();
+      document.getElementById('hint').style.opacity = '1';
+      document.getElementById('send').disabled = true;
+    };
 
     document.getElementById('send').onclick = () => {
       if (!strokes.length || !connected) return;
