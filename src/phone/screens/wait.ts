@@ -2,8 +2,12 @@
  * State ② wait (PLAN §6.2): the egg, volumetric — the SAME module the world
  * renders (src/egg/egg.ts), not a flat stand-in: seeded organic shell,
  * paint-on reveal from the stroke list, clearcoat sheen under the world
- * lighting recipe, continuous wobble ramping toward hatch. Below it, a
- * lowercase countdown line and one hairline icon control (hatch now).
+ * lighting recipe, continuous wobble ramping toward hatch.
+ *
+ * It mounts into the STAGE's slots (docs/PHONE-STAGE.md §2), not into a
+ * full-bleed root of its own: the egg is the core — the same object the
+ * pad was — the lowercase countdown line is the brow, and the one hairline
+ * icon control (hatch now) is the tools row.
  *
  * The camera is NOT the iso rig — a simple perspective camera pulled to a
  * slight three-quarter, looking gently down, so the shell reads as a body
@@ -23,7 +27,7 @@ import { MOTION, WORLD, SURFACE } from '../../taste/tokens';
 import { GrainPass } from '../../world/grain';
 import { InkPass } from '../../world/ink';
 import { createLighting } from '../../world/lighting';
-import type { Screen } from '../states';
+import type { Screen, StageSlots } from '../states';
 
 // ── Pure helpers (unit-tested in test/phone) ────────────────────────────────
 
@@ -100,24 +104,11 @@ function ensureStyle(): void {
   const style = document.createElement('style');
   style.id = STYLE_ID;
   style.textContent = `
-.wait-screen {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 5vmin;
+/* The egg fills the core slot — the stage owns the measure (--core-side),
+   so nothing here declares a size that could disagree with it. */
+.wait-egg {
   width: 100%;
   height: 100%;
-  box-sizing: border-box;
-  padding-top: env(safe-area-inset-top, 0px);
-  padding-right: env(safe-area-inset-right, 0px);
-  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 2vmin);
-  padding-left: env(safe-area-inset-left, 0px);
-  background: ${SURFACE.ground};
-}
-.wait-egg {
-  width: min(60vmin, 380px);
-  aspect-ratio: 0.85;
   display: block;
   touch-action: none;
 }
@@ -163,13 +154,10 @@ function ensureStyle(): void {
 }
 
 export function mountWaitScreen(
-  container: HTMLElement,
+  slots: StageSlots,
   options: WaitScreenOptions,
 ): WaitScreenHandle {
   ensureStyle();
-
-  const root = document.createElement('div');
-  root.className = 'wait-screen';
 
   const canvas = document.createElement('canvas');
   canvas.className = 'wait-egg';
@@ -195,8 +183,10 @@ export function mountWaitScreen(
   svg.appendChild(path);
   hatchButton.appendChild(svg);
 
-  root.append(canvas, countdown, hatchButton);
-  container.appendChild(root);
+  // One part per slot. The corner stays empty — a state of the slot.
+  slots.core.appendChild(canvas);
+  slots.brow.appendChild(countdown);
+  slots.tools.appendChild(hatchButton);
 
   // ── The 3D egg: same module, same lighting recipe as the world ────────────
   // One WebGL context per mount — created here, disposed in destroy(), never
@@ -318,7 +308,9 @@ export function mountWaitScreen(
       egg.dispose();
       ink.dispose();
       renderer.dispose();
-      root.remove();
+      canvas.remove();
+      countdown.remove();
+      hatchButton.remove();
     },
   };
 }

@@ -23,6 +23,17 @@ export interface DrawScreenOptions {
   onDone: (strokes: StrokeList) => void;
   /** Forwarded to DrawCapture. */
   baseWidth?: number;
+  /**
+   * Split mount (docs/PHONE-STAGE.md §2): the phone stage owns the layout,
+   * so the pad goes into its core slot and the control row into its tools
+   * slot. The pad then fills whatever box it is handed instead of setting
+   * its own measure. Omitted — the world's draw overlay — keeps the single
+   * self-laid-out root.
+   */
+  hosts?: {
+    canvas: HTMLElement;
+    controls: HTMLElement;
+  };
 }
 
 export interface DrawScreenHandle {
@@ -105,6 +116,13 @@ function ensureStyle(): void {
   height: 22px;
   display: block;
 }
+/* Split mount: the stage's core slot is already the pad's measure, so the
+   pad fills it rather than declaring one of its own. */
+.draw-canvas-fill {
+  width: 100%;
+  height: 100%;
+  aspect-ratio: auto;
+}
 `;
   document.head.appendChild(style);
 }
@@ -140,11 +158,10 @@ export function mountDrawScreen(
 ): DrawScreenHandle {
   ensureStyle();
 
-  const root = document.createElement('div');
-  root.className = 'draw-screen';
+  const hosts = options.hosts;
 
   const canvas = document.createElement('canvas');
-  canvas.className = 'draw-canvas';
+  canvas.className = hosts ? 'draw-canvas draw-canvas-fill' : 'draw-canvas';
   canvas.setAttribute('aria-label', 'drawing canvas');
 
   const controls = document.createElement('div');
@@ -154,8 +171,18 @@ export function mountDrawScreen(
   const doneButton = iconButton('done', ICON_DONE);
   controls.append(undoButton, clearButton, doneButton);
 
-  root.append(canvas, controls);
-  container.appendChild(root);
+  // Split mount puts each part in the slot that owns it; the single mount
+  // keeps the self-laid-out root the world overlay expects.
+  let root: HTMLElement | null = null;
+  if (hosts) {
+    hosts.canvas.appendChild(canvas);
+    hosts.controls.appendChild(controls);
+  } else {
+    root = document.createElement('div');
+    root.className = 'draw-screen';
+    root.append(canvas, controls);
+    container.appendChild(root);
+  }
 
   const ctx = canvas.getContext('2d');
 
@@ -201,7 +228,11 @@ export function mountDrawScreen(
     destroy(): void {
       capture.detach();
       observer.disconnect();
-      root.remove();
+      if (root) root.remove();
+      else {
+        canvas.remove();
+        controls.remove();
+      }
     },
   };
 }

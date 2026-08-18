@@ -11,16 +11,23 @@
     <!-- inline ink-blob favicon (qa audit p1): a loose hand-drawn dot in the environment ink value, no binary asset -->
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path d='M12.3 4.6c3.9.2 6.9 3.4 7 7.3.1 4.1-3 7.6-7.1 7.7-4 .1-7.4-3-7.5-7.1-.1-4.2 3.4-8.1 7.6-7.9z' fill='%23353534'/></svg>" />
     <style>
-      /* background matches SURFACE.canvas (src/taste/tokens.ts) — the light drawing ground */
+      /*
+       * ONE PAPER for the whole mobile flow (docs/PHONE-STAGE.md §2/§4):
+       * SURFACE.ground (src/taste/tokens.ts), the value the draw page paints
+       * too. It is set here, inline, BEFORE any script runs — the seam
+       * between /draw/ and this document is invisible only if there is
+       * nothing different to flash to. The drawing pad's interior keeps
+       * SURFACE.canvas, so the figure/ground separation survives.
+       */
       html,
       body {
         margin: 0;
         height: 100%;
-        background: #e9ebe9;
+        background: #dfdfdf;
         overscroll-behavior: none;
       }
-      /* fixed root: the page itself never scrolls or rubber-bands; screens own
-         their layout. avoids the ios url-bar 100vh problem entirely. */
+      /* fixed root: the page itself never scrolls or rubber-bands; the stage
+         owns the layout. avoids the ios url-bar 100vh problem entirely. */
       body {
         position: fixed;
         inset: 0;

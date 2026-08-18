@@ -1,8 +1,9 @@
 /**
  * Phone entry (PLAN §6): the persistent companion screen.
  *
- * Three states sliding between each other — ① draw, ② wait, ③ alive —
- * driven by the state machine (states.ts) and fed by one NetLike session
+ * ONE STAGE, updated — ① draw, ② wait, ③ alive are three occupancies of
+ * the same surface, never three screens sliding past each other
+ * (docs/PHONE-STAGE.md). The stage (states.ts) is fed by one NetLike session
  * (session.ts): the room client when ?room=xxxx resolves, the same-device
  * flow otherwise. The latest pose/roster/name are cached here so the alive
  * screen mounts already warm.
@@ -19,12 +20,20 @@ import { mountWaitScreen, type WaitScreenHandle } from './screens/wait';
 import { hatchPulse } from './haptics';
 import { clearSubmission, drawerId, isStale, readSubmission } from './identity';
 import { createSession } from './session';
-import { createMachine } from './states';
+import {
+  createMachine,
+  type Entrance,
+  type PhoneState,
+  type ScreenMount,
+} from './states';
 
 document.documentElement.style.height = '100%';
 document.body.style.height = '100%';
 document.body.style.margin = '0';
-document.body.style.background = SURFACE.canvas;
+// One paper for the whole mobile flow (PHONE-STAGE §2) — the same value
+// phone.html paints inline before any script, and the same value /draw/
+// paints, so the navigation between them has nothing to flash to.
+document.body.style.background = SURFACE.ground;
 
 /**
  * The guideline notice — shown on the drawer's OWN handset when the world
@@ -51,7 +60,7 @@ function showGuidelineNotice(onDrawAgain: () => void): void {
   gap: 18px;
   padding: 10vmin;
   text-align: center;
-  background: ${SURFACE.canvas};
+  background: ${SURFACE.ground};
   color: ${WORLD.ink};
   font-family: "helvetica neue", helvetica, arial, sans-serif;
   transform: translateY(103%);
@@ -172,17 +181,61 @@ async function boot(): Promise<void> {
   const root = document.createElement('div');
   document.body.appendChild(root);
 
-  const machine = createMachine(root, {
-    draw: (section) =>
-      mountDraw(section, {
+  // Where the flow opens, and how it arrives. Decided BEFORE the stage is
+  // built: a state the person is already looking at must not play an
+  // entrance, and the seam must not play one for the stage itself.
+  const handedOff = readHandoff();
+  const acrossSeam = new URLSearchParams(location.search).get('handoff') === '1';
+  let initialState: PhoneState = 'draw';
+  let entrance: Entrance = 'settled';
+
+  if (handedOff) {
+    // Kit-page handoff: open on the egg, not the draw pad. The MQTT publish
+    // already happened on the draw page; driving the LOCAL session here only
+    // starts its egg timer, so the wait screen counts down and hatching
+    // advances to the alive state — the character in the ui (user ask).
+    // (The local session never reaches the MQTT feed, so no duplicate egg.)
+    strokes = handedOff.strokes;
+    identity = handedOff.id;
+    hatchInMs = 20000;
+    initialState = 'wait';
+    // ?handoff=1 is the draw page saying it left the core at the wait
+    // measure with its content already faded out; here the egg fades UP
+    // into that same box (PHONE-STAGE §4). The stash is one-shot, so a
+    // later reload cannot replay this.
+    entrance = acrossSeam ? 'seam' : 'settled';
+  } else if (room.length > 0 && stored) {
+    // No fresh handoff, but this handset already drew in this room: restore
+    // ITS creature rather than offering a second pad (user ruling — one
+    // drawing, one creature). Reloading the companion must not mint a new
+    // inhabitant, and the emote wheel must keep addressing the old one.
+    const restored: StrokeList = [];
+    for (const fs of stored.strokes) {
+      const stroke = feedStrokeToStroke(fs as { pts: [number, number][]; width?: number });
+      if (stroke) restored.push(stroke);
+    }
+    if (restored.length > 0) {
+      strokes = restored;
+      identity = stored.id;
+      hatchInMs = 0; // it hatched long ago in the world; skip the wait
+      initialState = 'alive';
+      // A plain restore replays nothing: an entrance for a state the person
+      // was already looking at reads as a glitch (PHONE-STAGE §4).
+      entrance = 'settled';
+    }
+  }
+
+  const mounts: Record<PhoneState, ScreenMount> = {
+    draw: (slots) =>
+      mountDraw(slots, {
         onDone(done): void {
           strokes = done;
           session.sendDrawing(done);
           machine.goTo('wait');
         },
       }),
-    wait: (section) => {
-      const handle = mountWaitScreen(section, {
+    wait: (slots) => {
+      const handle = mountWaitScreen(slots, {
         strokes,
         hatchInMs,
         onHatch: () => session.sendHatch(),
@@ -195,8 +248,8 @@ async function boot(): Promise<void> {
         },
       };
     },
-    alive: (section) => {
-      const handle = mountAliveScreen(section, {
+    alive: (slots) => {
+      const handle = mountAliveScreen(slots, {
         strokes,
         // Same identity the world spawned under → the identical creature.
         ...(identity !== null ? { identity } : {}),
@@ -220,13 +273,16 @@ async function boot(): Promise<void> {
         },
       };
     },
-  });
+  };
 
-  // Kit-page handoff: open on the egg, not the draw pad. The MQTT publish
-  // already happened on the draw page; driving the LOCAL session here only
-  // starts its egg timer, so the wait screen counts down and hatching
-  // advances to the alive screen — the character in the ui (user ask).
-  // (The local session never reaches the MQTT feed, so no duplicate egg.)
+  const machine = createMachine(root, mounts, initialState, { entrance });
+
+  // The stage is mounted; feed the session whatever the flow opened with,
+  // so the egg timer and the local echo agree with what is on screen. The
+  // drawing itself already reached the world over mqtt from the draw page
+  // — this only drives the LOCAL session, so no duplicate egg.
+  if (strokes.length > 0) session.sendDrawing(strokes);
+
   // ── what the world says back ─────────────────────────────────────────────
   const drawAgain = (): void => {
     if (room.length > 0) clearSubmission(room);
@@ -254,35 +310,6 @@ async function boot(): Promise<void> {
     clearSubmission(room);
     location.replace(`/draw/?room=${room}&w=${worldEpoch}`);
   });
-
-  const handedOff = readHandoff();
-  if (handedOff) {
-    strokes = handedOff.strokes;
-    identity = handedOff.id;
-    hatchInMs = 20000;
-    session.sendDrawing(handedOff.strokes);
-    machine.goTo('wait');
-  } else if (room.length > 0) {
-    // No fresh handoff, but this handset already drew in this room: restore
-    // ITS creature rather than offering a second pad (user ruling — one
-    // drawing, one creature). Reloading the companion must not mint a new
-    // inhabitant, and the emote wheel must keep addressing the old one.
-    const previous = stored;
-    if (previous) {
-      const restored: StrokeList = [];
-      for (const fs of previous.strokes) {
-        const stroke = feedStrokeToStroke(fs as { pts: [number, number][]; width?: number });
-        if (stroke) restored.push(stroke);
-      }
-      if (restored.length > 0) {
-        strokes = restored;
-        identity = previous.id;
-        hatchInMs = 0; // it hatched long ago in the world; skip the wait
-        session.sendDrawing(restored);
-        machine.goTo('alive');
-      }
-    }
-  }
 
   session.onState((msg) => {
     if (msg.phase === 'egg') {

@@ -21,6 +21,11 @@
  * No dividing rule in this layout: the inset floats in the portrait's
  * field, so there are no two regions to divide. TASTE §4 *reserves* a
  * single hairline rule — it does not demand one be shown.
+ *
+ * It mounts into the STAGE's slots (docs/PHONE-STAGE.md §2): the wheel is
+ * the core — the third face of the one object the pad and the egg were —
+ * the creature's name is the brow, and the minimap is the corner. The tools
+ * row is empty here, which is a state of the slot, not a removal.
  */
 
 import { Box3, OrthographicCamera, Scene, Vector3, WebGLRenderer } from 'three';
@@ -49,7 +54,7 @@ import {
 } from '../minimap';
 import { strokeSeed } from '../seed';
 import { LOCAL_EXTENT } from '../session';
-import type { Screen } from '../states';
+import type { Screen, StageSlots } from '../states';
 
 // ── Emote icon marks ────────────────────────────────────────────────────────
 // Stroke-only paths in a 24-unit box, all soft curves and round joins —
@@ -87,27 +92,12 @@ function ensureStyle(): void {
   const style = document.createElement('style');
   style.id = STYLE_ID;
   style.textContent = `
-.alive-screen {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 3vmin;
-  width: 100%;
-  height: 100%;
-  box-sizing: border-box;
-  overflow: hidden;
-  padding: calc(env(safe-area-inset-top, 0px) + 3vmin)
-    calc(env(safe-area-inset-right, 0px) + 3vmin)
-    calc(env(safe-area-inset-bottom, 0px) + 3vmin)
-    calc(env(safe-area-inset-left, 0px) + 3vmin);
-  background: ${SURFACE.canvas};
-}
+/* The wheel fills the core slot — the stage owns the measure
+   (--core-side), so nothing here declares a size that could disagree. */
 .alive-wheel {
   position: relative;
-  width: min(80vmin, 460px);
-  aspect-ratio: 1;
+  width: 100%;
+  height: 100%;
 }
 .alive-portrait {
   position: absolute;
@@ -177,11 +167,9 @@ function ensureStyle(): void {
   min-height: 1.2em;
 }
 .alive-map {
-  position: absolute;
-  right: calc(env(safe-area-inset-right, 0px) + 4vmin);
-  bottom: calc(env(safe-area-inset-bottom, 0px) + 4vmin);
-  width: clamp(88px, 24vmin, 160px);
-  aspect-ratio: 1;
+  /* The corner slot already carries the safe-area offsets and the measure. */
+  width: 100%;
+  height: 100%;
   display: block;
   touch-action: none;
 }
@@ -273,15 +261,12 @@ function traceLoop(ctx: CanvasRenderingContext2D, points: BorderPoint[]): void {
 }
 
 export function mountAliveScreen(
-  container: HTMLElement,
+  slots: StageSlots,
   options: AliveScreenOptions,
 ): AliveScreenHandle {
   ensureStyle();
 
-  const root = document.createElement('div');
-  root.className = 'alive-screen';
-
-  // ── DOM: wheel (portrait inside), name, rule, map ─────────────────────────
+  // ── DOM: wheel (portrait inside) → core, name → brow, map → corner ────────
   const wheel = document.createElement('div');
   wheel.className = 'alive-wheel';
 
@@ -301,8 +286,9 @@ export function mountAliveScreen(
   mapCanvas.className = 'alive-map';
   mapCanvas.setAttribute('aria-label', 'minimap');
 
-  root.append(wheel, nameLine, mapCanvas);
-  container.appendChild(root);
+  slots.core.appendChild(wheel);
+  slots.brow.appendChild(nameLine);
+  slots.corner.appendChild(mapCanvas);
 
   // ── Portrait: the local deterministic pipeline (PLAN §6.3) ────────────────
   let character: Character | null = null;
@@ -519,7 +505,9 @@ export function mountAliveScreen(
       springH.dispose();
       character?.dispose();
       renderer?.dispose();
-      root.remove();
+      wheel.remove();
+      nameLine.remove();
+      mapCanvas.remove();
     },
   };
 }
