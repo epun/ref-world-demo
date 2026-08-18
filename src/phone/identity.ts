@@ -23,6 +23,7 @@ export const SUBMISSION_PREFIX = 'refworld:submission:';
 export interface StorageLike {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
+  removeItem?(key: string): void;
 }
 
 function safeStorage(store?: StorageLike): StorageLike | null {
@@ -68,6 +69,26 @@ export interface Submission {
   /** The kit's wire strokes, exactly as published. */
   strokes: unknown[];
   ts: number;
+  /**
+   * The world session this drawing was sent INTO. A world that restarts
+   * mints a new one and loses every creature, so a record from an older
+   * session is stale: its creature no longer exists anywhere, and the
+   * handset must be allowed to draw again (see isStale).
+   */
+  epoch?: string | null;
+}
+
+/**
+ * Is a stored submission stale against the world now running? Only a
+ * KNOWN mismatch counts: with no current epoch (no world heard from yet)
+ * the record stands, so a phone offline or out of earshot never loses its
+ * creature by accident.
+ */
+export function isStale(submission: Submission | null, worldEpoch: string | null): boolean {
+  if (!submission || worldEpoch === null || worldEpoch === '') return false;
+  const mine = submission.epoch;
+  if (typeof mine !== 'string' || mine === '') return true;
+  return mine !== worldEpoch;
 }
 
 export function readSubmission(
@@ -89,9 +110,21 @@ export function readSubmission(
       name: typeof rec['name'] === 'string' ? rec['name'] : null,
       strokes: rec['strokes'],
       ts: typeof rec['ts'] === 'number' ? rec['ts'] : 0,
+      epoch: typeof rec['epoch'] === 'string' ? rec['epoch'] : null,
     };
   } catch {
     return null;
+  }
+}
+
+/** Forget this room's submission — the handset may draw again. */
+export function clearSubmission(room: string, deps: { store?: StorageLike } = {}): void {
+  const store = safeStorage(deps.store);
+  if (!store) return;
+  try {
+    (store as StorageLike & { removeItem?(k: string): void }).removeItem?.(submissionKey(room));
+  } catch {
+    /* blocked — the draw page's own guard still reads what is there */
   }
 }
 

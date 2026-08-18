@@ -169,15 +169,23 @@ function main(): void {
     history.replaceState(null, '', `${location.pathname}?${params}${location.hash}`);
   }
 
+  // ── world session ────────────────────────────────────────────────────────
+  // A world page load is a NEW world: nothing survives a refresh, so every
+  // creature drawn into the previous session is gone. The session id says
+  // which world is running; it travels in the join code and in every reply
+  // to a phone, so a handset holding a creature this world never knew is
+  // let in to draw again instead of being locked out forever (user ask).
+  const epoch = 'w' + Math.floor(Math.random() * 0xffffffff).toString(36);
+
   const creatures = createCreatureManager(world);
   installHoverNames(canvas, world.cameraRig.camera, creatures);
 
   // ── moderation gate (src/moderation/) ─────────────────────────────────────
   // EVERY drawing enters the world through this one call — the phone feed
   // below and the local overlay both offer here, never spawning directly.
-  // A refusal is silent: no text on the projection, no reply to the phone.
-  // The only trace is the ghost panel's moderation readout (user ask: never
-  // reward the drawing with attention).
+  // A refusal is silent ON THE PROJECTION — never reward the drawing with
+  // attention on the shared screen. The drawer IS told, privately, on their
+  // own handset (user ask), and the operator sees it in the panel readout.
   const gate = createIngestGate<IncomingDrawing & { hatchMs: number }>({
     spawn: (d) =>
       creatures.spawn(d.id, d.strokes, {
@@ -220,7 +228,7 @@ function main(): void {
   });
 
   installJoinQr({
-    url: `${location.origin}/draw/?room=${room}`,
+    url: `${location.origin}/draw/?room=${room}&w=${epoch}`,
     mount: document.body,
   });
 
@@ -294,17 +302,46 @@ function main(): void {
   });
 
   // ── phones: the draw-to-3d feed ───────────────────────────────────────────
+  // The world answers phones on the kit's down topic: a verdict for the
+  // drawer who asked, and the session id it belongs to.
+  let feed: Awaited<ReturnType<typeof connectWorldFeed>> = null;
+  const tellPhone = (to: string, entry: { disposition: string; reason: string | null }): void => {
+    feed?.publishToPhones({
+      type: 'verdict',
+      to,
+      disposition: entry.disposition,
+      // The screen's own wording is diagnostic, for the operator readout —
+      // the phone shows the guideline line, not this.
+      reason: entry.reason,
+      epoch,
+    });
+  };
+
   void connectWorldFeed({
     room,
     onDrawing: (d) => {
-      gate.offer({ ...d, hatchMs: HATCH_TIMER_MS });
+      const entry = gate.offer({ ...d, hatchMs: HATCH_TIMER_MS });
+      // Tell the drawer, on their own handset, when their drawing will
+      // never appear (user ask). Still nothing on the projection: the
+      // refusal is private to the person who made it.
+      if (entry.disposition !== 'admitted') tellPhone(d.id, entry);
     },
     // A phone tapped its emote wheel. The drawer id it sends is the id the
     // world spawned it under, so the emote lands on THAT creature — and on
-    // nobody else's (src/net/emoteUplink.ts).
+    // nobody else's (src/net/phoneLink.ts).
     onEmote: ({ from, emote }) => {
       creatures.emote(from, emote);
     },
+    // A phone announced itself: answer with what happened to its drawing,
+    // and with this world's session so a handset from a previous world
+    // learns its creature is gone.
+    onHello: ({ from }) => {
+      const seen = gate.log().find((e) => e.id === from);
+      if (seen && seen.disposition !== 'admitted') tellPhone(from, seen);
+      else feed?.publishToPhones({ type: 'world', epoch });
+    },
+  }).then((handle) => {
+    feed = handle;
   });
 
   // ── overlay (local, same-device drawing) ──────────────────────────────────

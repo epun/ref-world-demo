@@ -159,6 +159,20 @@
       }
     }
     const MY_ID = drawerId();
+    // Which world this pad is drawing into. The join code carries it, so a
+    // world that restarted (and lost every creature) hands out a new one —
+    // and a handset holding a record from the old world is let in to draw
+    // again rather than bounced to a creature that no longer exists.
+    const WORLD_EPOCH = (params.get('w') || '').replace(/[^a-z0-9]/gi, '').slice(0, 16);
+    function storedSubmission() {
+      try { return JSON.parse(localStorage.getItem(SUBMISSION_KEY) || 'null'); } catch { return null; }
+    }
+    function staleRecord(rec) {
+      // Only a KNOWN mismatch frees the handset: with no epoch in the url
+      // (an old bookmark, a hand-typed address) the record stands.
+      if (!rec || !WORLD_EPOCH) return false;
+      return typeof rec.epoch !== 'string' || rec.epoch !== WORLD_EPOCH;
+    }
     // Already drew in this room? The pad is not offered again — go straight
     // to the companion, which restores that creature from the same record.
     //
@@ -169,10 +183,17 @@
     // pageshow handler covers the restore, and the pad is disabled outright
     // as a second line of defence in case navigation is refused.
     function alreadyDrew() {
-      try { return !!localStorage.getItem(SUBMISSION_KEY); } catch { return false; }
+      const rec = storedSubmission();
+      if (!rec) return false;
+      if (staleRecord(rec)) {
+        // That world is gone; forget the creature it held.
+        try { localStorage.removeItem(SUBMISSION_KEY); } catch {}
+        return false;
+      }
+      return true;
     }
     function goToCompanion() {
-      location.replace('/phone.html?room=' + room);
+      location.replace('/phone.html?room=' + room + (WORLD_EPOCH ? '&w=' + WORLD_EPOCH : ''));
     }
     function enforceSingleDrawing() {
       if (!alreadyDrew()) return false;
@@ -327,12 +348,15 @@
         sessionStorage.setItem('refworld:handoff', JSON.stringify({ id: msg.id, name: userName || null, room, strokes: msg.strokes, ts: msg.ts }));
         // Persisted too: a reload (or coming back later) must land on the
         // creature this handset already made, never on an empty pad.
-        localStorage.setItem(SUBMISSION_KEY, JSON.stringify({ id: msg.id, name: userName || null, strokes: msg.strokes, ts: msg.ts }));
+        localStorage.setItem(SUBMISSION_KEY, JSON.stringify({ id: msg.id, name: userName || null, strokes: msg.strokes, ts: msg.ts, epoch: WORLD_EPOCH || null }));
       } catch {}
       strokes = []; cur = null; redraw();
       document.getElementById('send').disabled = true;
       showToast(userName ? `✨ ${userName}'s drawing is up!` : '✨ Sent!');
-      setTimeout(() => { location.href = '/phone.html?room=' + room + '&handoff=1'; }, 700);
+      setTimeout(() => {
+        location.href = '/phone.html?room=' + room + '&handoff=1'
+          + (WORLD_EPOCH ? '&w=' + WORLD_EPOCH : '');
+      }, 700);
     }
 
     document.getElementById('send').onclick = () => {

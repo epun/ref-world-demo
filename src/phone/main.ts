@@ -10,13 +10,13 @@
 
 import type { PoseMsg, RosterMsg } from '../net/protocol';
 import { feedStrokeToStroke } from '../net/drawFeed';
-import { createEmoteUplink } from '../net/emoteUplink';
+import { createPhoneLink } from '../net/phoneLink';
 import type { StrokeList } from '../shape/types';
-import { SURFACE } from '../taste/tokens';
+import { MOTION, SURFACE, WORLD } from '../taste/tokens';
 import { mountAliveScreen, type AliveScreenHandle } from './screens/alive';
 import { mountDraw } from './screens/draw';
 import { mountWaitScreen, type WaitScreenHandle } from './screens/wait';
-import { drawerId, readSubmission } from './identity';
+import { clearSubmission, drawerId, isStale, readSubmission } from './identity';
 import { createSession } from './session';
 import { createMachine } from './states';
 
@@ -24,6 +24,80 @@ document.documentElement.style.height = '100%';
 document.body.style.height = '100%';
 document.body.style.margin = '0';
 document.body.style.background = SURFACE.canvas;
+
+/**
+ * The guideline notice — shown on the drawer's OWN handset when the world
+ * refuses their drawing (user ask). It never appears on the projection:
+ * the shared screen must not reward the attempt, but the person deserves
+ * to know their egg is never going to hatch rather than being left to
+ * wait on it.
+ *
+ * It slides up over the companion on the settle curve, and its one action
+ * forgets this handset's submission so they can draw something else.
+ */
+function showGuidelineNotice(onDrawAgain: () => void): void {
+  if (document.querySelector('.guideline-notice')) return;
+  const style = document.createElement('style');
+  style.textContent = `
+.guideline-notice {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  padding: 10vmin;
+  text-align: center;
+  background: ${SURFACE.canvas};
+  color: ${WORLD.ink};
+  font-family: "helvetica neue", helvetica, arial, sans-serif;
+  transform: translateY(103%);
+  transition: transform ${MOTION.secondaryMs}ms ${MOTION.settleCurve};
+}
+.guideline-notice.open { transform: translateY(0); }
+.guideline-notice p {
+  margin: 0;
+  font-size: 17px;
+  line-height: 1.45;
+  max-width: 22em;
+}
+.guideline-notice .sub {
+  font-size: 14px;
+  color: ${WORLD.neutral};
+}
+.guideline-notice button {
+  font: inherit;
+  font-size: 16px;
+  padding: 14px 22px;
+  border-radius: 13px;
+  border: 1px solid ${WORLD.ink};
+  background: transparent;
+  color: ${WORLD.ink};
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform ${MOTION.tertiaryMs}ms ${MOTION.settleCurve};
+}
+.guideline-notice button:active { transform: scale(0.97); }
+`;
+  document.head.appendChild(style);
+
+  const notice = document.createElement('section');
+  notice.className = 'guideline-notice';
+  const line = document.createElement('p');
+  line.textContent = 'sorry — this goes against our content guidelines.';
+  const sub = document.createElement('p');
+  sub.className = 'sub';
+  sub.textContent = 'it was not added to the world.';
+  const again = document.createElement('button');
+  again.type = 'button';
+  again.textContent = 'draw something else';
+  again.addEventListener('click', onDrawAgain);
+  notice.append(line, sub, again);
+  document.body.appendChild(notice);
+  requestAnimationFrame(() => notice.classList.add('open'));
+}
 
 /**
  * Handoff from the kit draw page (public/draw/): after send it stashes the
@@ -79,9 +153,10 @@ async function boot(): Promise<void> {
   // is indistinguishable from a dead uplink: the tap simply does nothing.
   const stored = room.length > 0 ? readSubmission(room) : null;
   const me = stored?.id ?? drawerId();
-  // The uplink is what carries a tap to the world; null with no mqtt on the
-  // page (or no room), and every call site tolerates that.
-  const uplink = room.length > 0 ? createEmoteUplink(room, me) : null;
+  // The link carries a tap to the world and brings back what the world says
+  // about this handset; null with no mqtt on the page (or no room), and
+  // every call site tolerates that.
+  const uplink = room.length > 0 ? createPhoneLink(room, me) : null;
 
   let strokes: StrokeList = [];
   /** Publish id from the draw-page handoff — the creature's identity. */
@@ -151,6 +226,34 @@ async function boot(): Promise<void> {
   // starts its egg timer, so the wait screen counts down and hatching
   // advances to the alive screen — the character in the ui (user ask).
   // (The local session never reaches the MQTT feed, so no duplicate egg.)
+  // ── what the world says back ─────────────────────────────────────────────
+  const drawAgain = (): void => {
+    if (room.length > 0) clearSubmission(room);
+    location.href = `/draw/?room=${room}`;
+  };
+  // Once the person is being told something, nothing else navigates out
+  // from under them — the staleness check below would otherwise redirect on
+  // the very message that carries the refusal.
+  let told = false;
+  uplink?.onVerdict((verdict) => {
+    // 'held' means an operator has it — the drawer is not told off for a
+    // drawing that may yet be approved; they keep waiting. Anything else
+    // that is not an admission means it will never appear.
+    if (verdict.disposition === 'held' || verdict.disposition === 'admitted') return;
+    told = true;
+    showGuidelineNotice(drawAgain);
+  });
+  uplink?.onWorldEpoch((worldEpoch) => {
+    // The world running now is not the one this drawing went into: that
+    // world is gone and took every creature with it, so this handset is
+    // free to draw again rather than being held to a creature that no
+    // longer exists (user ask).
+    if (room.length === 0 || told) return;
+    if (!isStale(readSubmission(room), worldEpoch)) return;
+    clearSubmission(room);
+    location.replace(`/draw/?room=${room}&w=${worldEpoch}`);
+  });
+
   const handedOff = readHandoff();
   if (handedOff) {
     strokes = handedOff.strokes;

@@ -13,7 +13,7 @@
 
 import type { Stroke, StrokeList } from '../shape/types';
 import { EMOTE_NAMES, type EmoteName } from './protocol';
-import { readEmoteMessage } from './emoteUplink';
+import { readEmoteMessage, readHello } from './phoneLink';
 import type { DrawFeed, DrawFeedOptions, FeedDrawing, FeedStroke } from './vendor/draw-feed';
 
 const EMOTE_SET = new Set<string>(EMOTE_NAMES);
@@ -99,9 +99,13 @@ export interface WorldFeedOptions {
   room: string;
   onDrawing(d: IncomingDrawing): void;
   /** A phone tapped its emote wheel: `from` is the drawer id the world
-   * spawned that creature under (src/net/emoteUplink.ts). Optional — the
+   * spawned that creature under (src/net/phoneLink.ts). Optional — the
    * same-device flow never sees one. */
   onEmote?(e: { from: string; emote: EmoteName }): void;
+  /** A phone announced itself. The world answers on the down topic with
+   * that drawer's verdict and its own session id, which is how a phone
+   * learns its drawing was refused, or that this world never knew it. */
+  onHello?(e: { from: string }): void;
   onStatus?(state: 'on' | 'off' | '', text: string): void;
   broker?: string;
 }
@@ -127,6 +131,11 @@ export async function connectWorldFeed(opts: WorldFeedOptions): Promise<DrawFeed
         const emote = readEmoteMessage(d, isEmoteName);
         if (emote) {
           opts.onEmote?.(emote);
+          return;
+        }
+        const hello = readHello(d);
+        if (hello) {
+          opts.onHello?.(hello);
           return;
         }
         const normalized = normalizeDrawing(d);
