@@ -50,7 +50,8 @@ describe('hatch haptic', () => {
 describe('a handset that will not buzz', () => {
   it('reports no support rather than pretending (every iphone)', () => {
     expect(canVibrate({})).toBe(false);
-    expect(canVibrate({ vibrate: undefined })).toBe(false);
+    // A navigator that carries the key but not a function (older shims).
+    expect(canVibrate({ vibrate: 'nope' } as unknown as VibrateLike)).toBe(false);
     expect(hatchPulse({})).toBe(false);
   });
 

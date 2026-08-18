@@ -63,31 +63,86 @@ function candidateMasks(strokes: StrokeList, size: number): ReturnType<typeof sc
   return [whole, screenMask(strokes, { size, largestOnly: true })];
 }
 
+/**
+ * Screening resolutions.
+ *
+ * The criteria are ratios, so in principle resolution changes nothing —
+ * in practice it decides the verdict. The same doodle was measured hitting
+ * at 96, 128, 192 and 256 and MISSING at 160, which was the one size the
+ * screen actually ran (user report: it still let one through). Binning a
+ * hand-drawn shape into forty width bins puts several criteria on a knife
+ * edge, and which side they land is an artefact of the raster.
+ *
+ * So the shape is read at several scales and the STRONGEST verdict wins: a
+ * drawing that reads as a phallus at any scale is one, and is not admitted
+ * because one particular grid happened to smear a notch shut.
+ */
+const SCREEN_SIZES = [96, 128, 160, 224] as const;
+
+/**
+ * How many criteria a drawing may fail and still be HELD for a person
+ * rather than admitted. One. A shape that clears six of seven tests of
+ * "shaft with twin round lobes" is not something to wave through on the
+ * strength of the seventh — but neither is it certain enough to refuse
+ * outright, which is exactly what holding is for.
+ */
+const HOLD_WITHIN = 1;
+
+/** A near miss only counts when the detector actually measured the shape:
+ * an unmeasurable scrap reports no criteria and would otherwise clear the
+ * band trivially (a single dot held, before this). */
+const MIN_CRITERIA_FOR_HOLD = 3;
+
 export function screenDrawing(
   strokes: StrokeList,
   opts: ScreenOptions = {},
 ): ScreenResult {
-  const size = opts.size ?? SCREEN_SIZE;
+  // One explicit size means one size; otherwise read the shape at several
+  // (see SCREEN_SIZES) so a raster artefact cannot decide the verdict.
+  const sizes = opts.size === undefined ? SCREEN_SIZES : [opts.size];
   const detectors: DetectorScore[] = [];
   let refused: DetectorScore | null = null;
   let held: DetectorScore | null = null;
+  let nearMiss: DetectorScore | null = null;
   let nearest = 0;
 
-  for (const mask of candidateMasks(strokes, size)) {
-    for (const detect of REFUSING) {
-      const result = detect(mask);
-      detectors.push(result);
-      if (result.hit && !refused) refused = result;
-      // "Nearest" is measured in criteria cleared, not in margin: a
-      // drawing that clears six of seven tests is the interesting case.
-      const closeness = Math.max(0, (result.passed / result.total - 0.5) * 2);
-      if (!result.hit && closeness > nearest) nearest = closeness;
+  for (const size of sizes) {
+    for (const mask of candidateMasks(strokes, size)) {
+      for (const detect of REFUSING) {
+        const result = detect(mask);
+        detectors.push(result);
+        if (result.hit && !refused) refused = result;
+        // Short of a refusal by a single criterion: too close to admit.
+        // A detector that could not measure the shape at all reports no
+        // criteria — that is ignorance, not a near miss, and ink too small
+        // or too sparse to read must never be held on the strength of it.
+        if (
+          !result.hit &&
+          result.total >= MIN_CRITERIA_FOR_HOLD &&
+          result.passed >= result.total - HOLD_WITHIN &&
+          !nearMiss
+        ) {
+          nearMiss = result;
+        }
+        // "Nearest" is measured in criteria cleared, not in margin: a
+        // drawing that clears six of seven tests is the interesting case.
+        const closeness = Math.max(0, (result.passed / result.total - 0.5) * 2);
+        if (!result.hit && closeness > nearest) nearest = closeness;
+      }
+      for (const detect of HOLDING) {
+        const result = detect(mask);
+        detectors.push(result);
+        if (result.hit && !held) held = result;
+      }
     }
-    for (const detect of HOLDING) {
-      const result = detect(mask);
-      detectors.push(result);
-      if (result.hit && !held) held = result;
-    }
+  }
+  // A near miss holds — after the outright refusals and the holding
+  // detectors have had their say.
+  if (!refused && !held && nearMiss) {
+    held = {
+      ...nearMiss,
+      reason: `close to ${nearMiss.id} (${nearMiss.passed}/${nearMiss.total} criteria) — held for a person`,
+    };
   }
 
   if (refused) {

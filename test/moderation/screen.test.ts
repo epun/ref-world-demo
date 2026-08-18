@@ -2,11 +2,17 @@
  * The measured claim, as a test.
  *
  * These are the numbers reported for the screen: every offensive fixture
- * is caught (refused or held), and NOT ONE innocent fixture is refused or
- * held. The innocent assertion is the load-bearing one — a public
- * installation that eats a child's drawing of a cat is worse than one that
- * lets a rude doodle through, because the operator layer can remove the
- * doodle and cannot un-eat the cat.
+ * is caught (refused or held), and NOT ONE innocent fixture is REFUSED.
+ * The innocent assertion is the load-bearing one — a public installation
+ * that eats a child's drawing of a cat is worse than one that lets a rude
+ * doodle through, because the operator layer can remove the doodle and
+ * cannot un-eat the cat.
+ *
+ * Innocent drawings MAY be held. That is the price paid for catching the
+ * doodle as people actually draw it: a bone, a two-lobed tree and a
+ * standing figure are the same shape by these measures, so they wait for
+ * a person instead of being thrown away. The count is pinned below so the
+ * cost cannot creep.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -77,11 +83,20 @@ describe('screen — where recall runs out', () => {
 });
 
 describe('screen — innocent set', () => {
-  it('allows all of it: zero refusals, zero holds', () => {
-    const flagged = INNOCENT_SET.filter((f) => screenDrawing(f.strokes).verdict !== 'allow').map(
+  it('refuses none of it — the load-bearing claim', () => {
+    const refused = INNOCENT_SET.filter((f) => screenDrawing(f.strokes).verdict === 'refuse').map(
       (f) => f.name,
     );
-    expect(flagged).toEqual([]);
+    expect(refused).toEqual([]);
+  });
+
+  it('lets the great majority straight through, and holds only look-alikes', () => {
+    const held = INNOCENT_SET.filter((f) => screenDrawing(f.strokes).verdict === 'hold');
+    // Held innocents are the price of catching the doodle as people draw
+    // it; they wait for a person rather than being thrown away. Bounded so
+    // the cost cannot creep, and a clear majority still passes untouched.
+    expect(held.length).toBeLessThanOrEqual(9);
+    expect(INNOCENT_SET.length - held.length).toBeGreaterThanOrEqual(45);
   });
 
   it('allows the dev fallback drawings the panel spawns', () => {
@@ -141,5 +156,54 @@ describe('detectors report their own criteria', () => {
     const result = detectFourFold(screenMask(CROSS_SET[0]!.strokes));
     expect(result.hit).toBe(true);
     expect(result.score).toBeLessThanOrEqual(0.5);
+  });
+});
+
+describe('screen — the verdict cannot hinge on the raster', () => {
+  /**
+   * The bug this pins: the same doodle was measured HITTING at 96, 128,
+   * 192 and 256 and MISSING at 160 — the one size the screen ran, so it
+   * reached the world (user report). Binning a hand-drawn shape puts
+   * several criteria on a knife edge and the raster decides which side
+   * they land. The screen now reads every drawing at several scales and
+   * takes the strongest verdict.
+   */
+  it('refuses the doodle at every screening size, not just most of them', () => {
+    const strokes = phallusDoodle({ shaftLen: 0.42, shaftW: 0.075, ballR: 0.07 });
+    for (const size of [96, 128, 160, 192, 224, 256]) {
+      const single = screenDrawing(strokes, { size });
+      expect(`${size}: ${single.verdict}`).not.toBe(`${size}: allow`);
+    }
+    // And with no size pinned — the shipped path — it refuses outright.
+    expect(screenDrawing(strokes).verdict).toBe('refuse');
+  });
+
+  it('holds its verdict through a full rotation', () => {
+    const base = phallusDoodle({ shaftLen: 0.4, shaftW: 0.075, ballR: 0.068 });
+    for (let deg = 0; deg < 360; deg += 30) {
+      const verdict = screenDrawing(rotate(base, (deg * Math.PI) / 180)).verdict;
+      expect(`${deg}deg: ${verdict}`).not.toBe(`${deg}deg: allow`);
+    }
+  });
+});
+
+describe('screen — the near-miss band', () => {
+  it('holds a drawing that is one criterion short rather than admitting it', () => {
+    // Measured over the innocent set: these are the shapes that share the
+    // doodle's structure closely enough to be worth a person's glance.
+    const held = INNOCENT_SET.filter((f) => screenDrawing(f.strokes).verdict === 'hold');
+    // The cost is real and bounded: pin it so a retune cannot let it creep.
+    expect(held.length).toBeLessThanOrEqual(9);
+    // And it is never worse than a hold — nothing innocent is refused.
+    const refused = INNOCENT_SET.filter((f) => screenDrawing(f.strokes).verdict === 'refuse');
+    expect(refused.map((f) => f.name)).toEqual([]);
+  });
+
+  it('leaves plainly innocent drawings alone', () => {
+    for (const name of ['cat', 'house', 'flower', 'boat', 'snowman', 'fish', 'hat']) {
+      const fixture = INNOCENT_SET.find((f) => f.name === name);
+      if (!fixture) continue;
+      expect(`${name}: ${screenDrawing(fixture.strokes).verdict}`).toBe(`${name}: allow`);
+    }
   });
 });

@@ -89,6 +89,25 @@ the lobes all but closes. That is the deliberate trade: at a public
 installation, eating a child's drawing of a cat is worse than admitting a rude doodle,
 because the operator can remove the doodle in one tap and cannot un-eat the cat.
 
+## 1a. Two things that used to decide the verdict
+
+**The raster.** The criteria are ratios, so resolution should change
+nothing — in practice it decided the outcome. One doodle was measured
+hitting at 96, 128, 192 and 256 and *missing at 160*, which was the single
+size the screen ran: that is how one reached the world in front of the
+person who drew it (user report). Binning a hand-drawn shape into forty
+width bins puts several criteria on a knife edge and the grid picks the
+side. The screen now reads every drawing at four scales and takes the
+strongest verdict.
+
+**The last criterion.** Clearing six of seven tests of "shaft with twin
+round lobes" used to be an admission. It is now a **hold**: not certain
+enough to refuse, far too close to wave through. That is what the seven
+held innocents above pay for — a bone, a two-lobed tree and a standing
+figure genuinely are that shape by these measures, so they wait for a
+person instead of being thrown away. Ink too small or sparse to measure is
+never held on this basis: no criteria is ignorance, not a near miss.
+
 ## 2. The ingest gate — the authoritative seam
 
 `src/moderation/gate.ts` is the single place a drawing becomes a creature. Both paths go

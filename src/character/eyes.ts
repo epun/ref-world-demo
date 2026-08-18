@@ -28,6 +28,24 @@
  * derived from the shape itself (plus the identity salt, when the character
  * carries one) — no Math.random, so every device blinks the same character
  * at the same moments.
+ *
+ * THE PUPIL MOVES, ALWAYS. Its centre is the sum of three layers, all in
+ * lid space (the q-space the SDF is evaluated in — see expressions.ts):
+ *
+ *   1. the EXPRESSION's resting pupil (`pupilX`/`pupilY`) — happy rides up
+ *      into the lifted lower lid, sad casts down under the upper one;
+ *   2. the EMOTE's gaze script (`setGaze`, driven by emotes.ts keypoints) —
+ *      the deliberate movement that reads as the emotion;
+ *   3. the AMBIENT gaze drift — the slow seeded wander that never stops,
+ *      scaled per expression but never to zero (TASTE §2.1, the floor).
+ *
+ * Layers 1 and 2 ride one pair of ζ≥1 Springs, so a gaze change glides and
+ * is interruptible mid-flight; layer 3 is a smoothstepped drift added on
+ * top. The sum is then run through `clampPupil`, which keeps the pupil
+ * inside the slot the lids leave open — so no expression can swallow the
+ * character's whole face. Sleepy is the exception the geometry allows: it
+ * closes on `openness`, which squashes the pupil with the lid rather than
+ * cutting it away.
  */
 
 import { Color, Vector2 } from 'three';
@@ -36,15 +54,17 @@ import { Spring } from '../motion/spring';
 import type { ShapeAnalysis } from '../shape/types';
 import { CHARACTER, MOTION } from '../taste/tokens';
 import {
+  clampPupil,
   EXPRESSIONS,
+  MARK_R,
+  normalizeExpression,
+  PUPIL_FRAC,
   resolveExpression,
   type Expression,
   type ExpressionName,
+  type ResolvedExpression,
 } from './expressions';
 import { computeEyePlacement } from './placement';
-
-/** Radius of the visible mark inside the unit projection frame, at size 1. */
-const MARK_R = 0.62;
 
 /** Frame headroom over the mark (kept from the cap era so the mark's
  * physical size law is unchanged), so `size` up to ~1.4 never clips. */
@@ -59,6 +79,15 @@ const BLINK_SPAN_MS = 3000;
 
 /** Expressions this closed or below don't blink — the lid is already down. */
 const BLINK_SKIP_BELOW = 0.2;
+
+/** Ambient gaze-drift amplitude, lid space. Mostly sideways, a touch of
+ * vertical — the deadpan glance of the reference sheet. */
+const WANDER_X = MARK_R * 0.34;
+const WANDER_Y = MARK_R * 0.17;
+
+/** The floor under an expression's `wander`. Nothing on screen ever fully
+ * arrests (TASTE §2.1) — least of all the character's only feature. */
+const MIN_WANDER = 0.22;
 
 const EYE_VERT_DECL = /* glsl */ `
 varying vec2 vEyePos;
@@ -76,6 +105,7 @@ uniform float uEyeOpenness;
 uniform float uEyeCurve;
 uniform float uEyeWedge;
 uniform float uEyeSize;
+uniform float uEyePupilR;
 varying vec2 vEyePos;
 varying float vEyeNz;
 `;
@@ -112,8 +142,11 @@ const EYE_FRAG_BLOCK = /* glsl */ `
 
 	// The pupil (avatar spec: one solid dark pupil, no highlight): a dark
 	// disc that squashes with the lid and glances with uEyeGaze, clipped by
-	// the mark's own SDF.
-	float eyeDp = length(vec2(pEye.x - uEyeGaze.x, (pEye.y - uEyeGaze.y) / eyeOpen)) - ${MARK_R} * 0.44;
+	// the mark's own SDF. uEyeGaze is in LID SPACE (qEye) — the same frame
+	// the lids cut in — so the CPU can guarantee the lids never swallow it
+	// (expressions.clampPupil), and a blink squashes the pupil with the lid
+	// instead of flinging it out of the mark.
+	float eyeDp = length(qEye - uEyeGaze) - uEyePupilR;
 	float eyePupil = 1.0 - smoothstep(-eyeAa, eyeAa, max(eyeDp, dEye));
 	diffuseColor.rgb = mix(diffuseColor.rgb, mix(uEyeColor, uEyePupil, eyePupil), eyeMask);
 }
@@ -129,11 +162,33 @@ export interface EyeFrame {
   r: number;
 }
 
+/** A read of the eye's live uniforms — for tests and the taste gates. */
+export interface EyeState {
+  openness: number;
+  curve: number;
+  wedge: number;
+  size: number;
+  /** Pupil centre, lid space (post-clamp — what the shader actually draws). */
+  gazeX: number;
+  gazeY: number;
+  /** Pupil radius, lid space. */
+  pupilR: number;
+}
+
 export interface Eyes {
   /** Glide to an expression — springs retarget, never snap. */
   setExpression(e: ExpressionName | Expression): void;
+  /**
+   * Retarget the EMOTE gaze layer: a lid-space offset added to the current
+   * expression's resting pupil. Rides a ζ≥1 spring, so a glance glides in
+   * and can be interrupted mid-flight. (0, 0) is "no deliberate glance" —
+   * the expression's own pupil plus the ambient drift.
+   */
+  setGaze(x: number, y: number): void;
   /** Advance springs and the blink schedule. dt in ms. */
   update(dt: number): void;
+  /** The live uniform values, for tests and the taste gates. */
+  state(): EyeState;
   /** Vertical follow for constructions whose head lifts in-shader (the
    * blendshell bob). The inflate path never needs it — its projection
    * already rides the deform. */
@@ -209,6 +264,7 @@ export function applyEyes(
     uEyeCurve: { value: EXPRESSIONS.neutral.curve },
     uEyeWedge: { value: EXPRESSIONS.neutral.wedge },
     uEyeSize: { value: EXPRESSIONS.neutral.size },
+    uEyePupilR: { value: MARK_R * PUPIL_FRAC * EXPRESSIONS.neutral.pupilScale },
   };
 
   const previous = material.onBeforeCompile;
@@ -228,7 +284,7 @@ export function applyEyes(
       .replace('#include <alphamap_fragment>', `${EYE_FRAG_BLOCK}\n#include <alphamap_fragment>`);
   };
   const previousKey = material.customProgramCacheKey.bind(material);
-  material.customProgramCacheKey = () => `${previousKey()}/character-eye-v2`;
+  material.customProgramCacheKey = () => `${previousKey()}/character-eye-v3`;
 
   // One spring per SDF parameter — expressions glide, never snap.
   const settle = { settleMs: MOTION.tertiaryMs };
@@ -237,9 +293,19 @@ export function applyEyes(
     curve: new Spring(EXPRESSIONS.neutral.curve, settle),
     wedge: new Spring(EXPRESSIONS.neutral.wedge, settle),
     size: new Spring(EXPRESSIONS.neutral.size, settle),
+    // The pupil: radius, and the deliberate gaze (expression rest + emote
+    // glance). Same tertiary settle as the lids — the eye morph token.
+    pupil: new Spring(EXPRESSIONS.neutral.pupilScale, settle),
+    gazeX: new Spring(EXPRESSIONS.neutral.pupilX, settle),
+    gazeY: new Spring(EXPRESSIONS.neutral.pupilY, settle),
   };
 
-  let current: Expression = EXPRESSIONS.neutral;
+  let current: ResolvedExpression = normalizeExpression(EXPRESSIONS.neutral);
+  // The emote gaze layer, retargeted by setGaze and released to 0 when the
+  // emote ends. Kept apart from the expression's own resting pupil so the
+  // two compose instead of overwriting each other.
+  let emoteGazeX = 0;
+  let emoteGazeY = 0;
 
   // Deterministic blink/gaze schedule, seeded from the shape itself plus the
   // identity salt — two hatchlings of one drawing blink and glance apart.
@@ -254,15 +320,29 @@ export function applyEyes(
   let blinkT = 0;
   let nextBlinkAt = BLINK_MIN_MS + hash(seed * 7.13) * BLINK_SPAN_MS;
 
+  /** Re-aim the gaze springs at expression rest + the emote's glance. */
+  const retargetGaze = (): void => {
+    springs.gazeX.retarget(current.pupilX + emoteGazeX);
+    springs.gazeY.retarget(current.pupilY + emoteGazeY);
+  };
+
   return {
     setExpression(e: ExpressionName | Expression): void {
-      current = resolveExpression(e);
+      current = normalizeExpression(resolveExpression(e));
       // Openness is owned by the blink while its down-leg runs; it re-aims
       // at the new expression when the blink releases.
       if (!blinking) springs.openness.retarget(current.openness);
       springs.curve.retarget(current.curve);
       springs.wedge.retarget(current.wedge);
       springs.size.retarget(current.size);
+      springs.pupil.retarget(current.pupilScale);
+      retargetGaze();
+    },
+
+    setGaze(x: number, y: number): void {
+      emoteGazeX = x;
+      emoteGazeY = y;
+      retargetGaze();
     },
 
     update(dt: number): void {
@@ -281,11 +361,12 @@ export function applyEyes(
       const gxb = (hash((g0 + 1) * 3.7 + seed) - 0.5) * 2;
       const gya = (hash(g0 * 9.1 + seed + 5) - 0.5) * 2;
       const gyb = (hash((g0 + 1) * 9.1 + seed + 5) - 0.5) * 2;
-      const gaze = uniforms['uEyeGaze']!.value as Vector2;
-      gaze.set(
-        (gxa + (gxb - gxa) * ge) * MARK_R * 0.34,
-        (gya + (gyb - gya) * ge) * MARK_R * 0.12,
-      );
+      // Scaled by the expression's own wander, floored well above zero: an
+      // eye that fully arrests is a hard stop (TASTE §2.1). Even the fixed
+      // stare of `surprised` keeps drifting, just barely.
+      const wander = Math.max(current.wander, MIN_WANDER);
+      const driftX = (gxa + (gxb - gxa) * ge) * WANDER_X * wander;
+      const driftY = (gya + (gyb - gya) * ge) * WANDER_Y * wander;
 
       // Blink: down over one tertiary settle, then retarget up — each leg is
       // a clean ζ≥1 spring settle, so there is no rebound anywhere.
@@ -307,10 +388,42 @@ export function applyEyes(
         }
       }
 
-      uniforms['uEyeOpenness']!.value = springs.openness.update(dt);
-      uniforms['uEyeCurve']!.value = springs.curve.update(dt);
-      uniforms['uEyeWedge']!.value = springs.wedge.update(dt);
+      const openness = springs.openness.update(dt);
+      const curve = springs.curve.update(dt);
+      const wedge = springs.wedge.update(dt);
+      uniforms['uEyeOpenness']!.value = openness;
+      uniforms['uEyeCurve']!.value = curve;
+      uniforms['uEyeWedge']!.value = wedge;
       uniforms['uEyeSize']!.value = springs.size.update(dt);
+
+      // The pupil, last: expression rest + emote glance (one spring pair)
+      // plus the ambient drift, then held inside the slot the LIVE lids
+      // leave open. Clamping against the springs' current curve/wedge — not
+      // their targets — means the pupil rides a moving lid continuously
+      // instead of being cut away mid-glide.
+      const pupilR = MARK_R * PUPIL_FRAC * springs.pupil.update(dt);
+      uniforms['uEyePupilR']!.value = pupilR;
+      const aimed = clampPupil(
+        curve,
+        wedge,
+        pupilR,
+        springs.gazeX.update(dt) + driftX,
+        springs.gazeY.update(dt) + driftY,
+      );
+      (uniforms['uEyeGaze']!.value as Vector2).set(aimed.x, aimed.y);
+    },
+
+    state(): EyeState {
+      const gaze = uniforms['uEyeGaze']!.value as Vector2;
+      return {
+        openness: uniforms['uEyeOpenness']!.value as number,
+        curve: uniforms['uEyeCurve']!.value as number,
+        wedge: uniforms['uEyeWedge']!.value as number,
+        size: uniforms['uEyeSize']!.value as number,
+        gazeX: gaze.x,
+        gazeY: gaze.y,
+        pupilR: uniforms['uEyePupilR']!.value as number,
+      };
     },
 
     setLift(y: number): void {
@@ -322,6 +435,9 @@ export function applyEyes(
       springs.curve.dispose();
       springs.wedge.dispose();
       springs.size.dispose();
+      springs.pupil.dispose();
+      springs.gazeX.dispose();
+      springs.gazeY.dispose();
     },
   };
 }
