@@ -188,18 +188,38 @@ function ensureStyle(): void {
   grid-template-rows: var(--stage-band) 1fr var(--stage-band);
   justify-items: center;
   align-items: center;
-  padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px)
-    env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+  /* NO padding here. The core has to land in the same place on both sides
+     of the /draw/ seam, and the draw page centres it on the VIEWPORT. Pad
+     the stage instead and the core's centre shifts by (top - bottom) / 2 —
+     which is 0 in a headless viewport and 6.5px on a notched handset, so it
+     passes every desktop probe and jumps on the actual device. The insets
+     live on the slots, exactly as the draw page puts them. */
 }
 .stage-slot {
   position: relative;
   min-width: 0;
   min-height: 0;
+  box-sizing: border-box;
 }
-.stage-brow { grid-row: 1; width: 100%; height: 100%; }
-.stage-tools { grid-row: 3; width: 100%; height: 100%; }
+.stage-brow {
+  grid-row: 1;
+  width: 100%;
+  height: 100%;
+  padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) 0
+    env(safe-area-inset-left, 0px);
+}
+.stage-tools {
+  grid-row: 3;
+  width: 100%;
+  height: 100%;
+  padding: 0 env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px)
+    env(safe-area-inset-left, 0px);
+}
 .stage-core {
-  grid-row: 2;
+  /* Centred on the viewport, out of the grid flow — see the note above. */
+  position: absolute;
+  inset: 0;
+  margin: auto;
   width: var(--core-side);
   height: var(--core-side);
   transition:
