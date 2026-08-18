@@ -22,6 +22,7 @@ import { connectWorldFeed } from './net/drawFeed';
 import { EMOTE_NAMES, isRoomCode, roomCode } from './net/protocol';
 import { mountDrawScreen } from './draw/ui';
 import { MOTION, SURFACE, WORLD } from './taste/tokens';
+import { installJoinQr, QR_SIZE_CSS } from './ui/joinqr';
 import { installWorldMinimap } from './ui/minimap';
 import { start } from './world/scene';
 import { createTour } from './world/tour';
@@ -80,8 +81,9 @@ function ensureOverlayStyle(): void {
 }
 .draw-open {
   position: fixed;
-  left: 24px;
-  bottom: 24px;
+  left: calc(env(safe-area-inset-left, 0px) + 20px);
+  /* Sits directly above the join code, which owns the bottom-left corner. */
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 20px + ${QR_SIZE_CSS} + 12px);
   z-index: 5;
   width: 48px;
   height: 48px;
@@ -184,12 +186,19 @@ function main(): void {
     passive: true,
   });
 
-  // World minimap, bottom-right — with the join line gone it is the only
-  // persistent chrome besides the pencil control.
+  // The two corners: the world minimap bottom-right, and the join code —
+  // a qr of this room's drawing url — mirroring it bottom-left at the same
+  // size (user ask). Together with the pencil control above the code, that
+  // is the whole of the world's persistent chrome.
   installWorldMinimap({
     manager: creatures,
     cameraRig: world.cameraRig,
     scatter: world.scatter,
+    mount: document.body,
+  });
+
+  installJoinQr({
+    url: `${location.origin}/draw/?room=${room}`,
     mount: document.body,
   });
 

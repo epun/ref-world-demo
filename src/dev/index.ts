@@ -170,6 +170,11 @@ function densityCoverageSamples(props: { x: number; z: number }[]): number[] {
 const MARK_LINT_TARGETS: { selector: string; name: string; exemptReason?: string }[] = [
   { selector: '.draw-open', name: 'draw control' },
   { selector: '.draw-hint', name: 'draw hint' },
+  {
+    selector: '.join-qr',
+    name: 'join code',
+    exemptReason: 'qr modules are a machine-read mark, not ui chrome',
+  },
   { selector: '.hover-name', name: 'hover name' },
   {
     selector: '.world-minimap',
