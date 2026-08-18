@@ -116,6 +116,37 @@ describe('emote scripts', () => {
     }
   });
 
+  it('gives every emote a gaze track: the pupil is never left parked', () => {
+    for (const name of EMOTE_NAMES) {
+      const gaze = EMOTES[name].gaze;
+      // Two keypoints minimum — one offset held for the whole emote is a
+      // still frame, and the user report is that the pupil stays put.
+      expect(gaze.length, `${name} gaze keypoints`).toBeGreaterThanOrEqual(2);
+      let prev = 0;
+      for (const kp of gaze) {
+        expect(kp.atMs, `${name} gaze atMs ${kp.atMs}`).toBeGreaterThan(0);
+        expect(isTokenSum(kp.atMs), `${name} gaze atMs is a token sum`).toBe(true);
+        expect(kp.atMs, `${name} gaze sorted`).toBeGreaterThan(prev);
+        prev = kp.atMs;
+        // Lid-space offsets, on top of the expression's own resting pupil:
+        // a small excursion, never a launch out of the mark.
+        expect(Math.abs(kp.x), `${name} gaze x`).toBeLessThanOrEqual(0.35);
+        expect(Math.abs(kp.y), `${name} gaze y`).toBeLessThanOrEqual(0.35);
+      }
+      // And the track actually goes somewhere.
+      const moved = gaze.some((kp) => kp.x !== gaze[0]!.x || kp.y !== gaze[0]!.y);
+      expect(moved, `${name} gaze track moves`).toBe(true);
+    }
+  });
+
+  it('gaze deadlines end no later than the body envelope (release owns the rest)', () => {
+    for (const name of EMOTE_NAMES) {
+      const { envelope, gaze } = EMOTES[name];
+      const last = envelope[envelope.length - 1]!.atMs;
+      for (const kp of gaze) expect(kp.atMs, `${name} gaze inside emote`).toBeLessThanOrEqual(last);
+    }
+  });
+
   it('stays inside sane whole-body bounds (single arcs, not contortions)', () => {
     for (const name of EMOTE_NAMES) {
       for (const kp of EMOTES[name].envelope) {
@@ -207,6 +238,49 @@ describe('runEmote scheduler', () => {
 // ---------------------------------------------------------------------------
 // deformPoint — the CPU twin of the vertex shader
 // ---------------------------------------------------------------------------
+
+describe('runEmote gaze track', () => {
+  it('emits the first gaze offset at trigger and releases it to zero', () => {
+    const { springs } = makeRecorder();
+    const seen: Array<[number, number]> = [];
+    const run = runEmote(springs, 'wave', { onGaze: (x, y) => seen.push([x, y]) });
+    const track = EMOTES.wave.gaze;
+    expect(seen[0]).toEqual([track[0]!.x, track[0]!.y]);
+    run.update(EMOTES.wave.envelope[EMOTES.wave.envelope.length - 1]!.atMs + 1);
+    expect(seen[seen.length - 1]).toEqual([0, 0]);
+  });
+
+  it('walks each emote through its whole gaze track, in order', () => {
+    for (const name of EMOTE_NAMES) {
+      const { springs } = makeRecorder();
+      const seen: Array<[number, number]> = [];
+      const run = runEmote(springs, name, { onGaze: (x, y) => seen.push([x, y]) });
+      const last = EMOTES[name].envelope[EMOTES[name].envelope.length - 1]!.atMs;
+      let t = 0;
+      while (t < last + MOTION.tertiaryMs) {
+        run.update(MOTION.tertiaryMs / 4);
+        t += MOTION.tertiaryMs / 4;
+      }
+      const expected = [
+        ...EMOTES[name].gaze.map((kp): [number, number] => [kp.x, kp.y]),
+        [0, 0] as [number, number],
+      ];
+      expect(seen, name).toEqual(expected);
+    }
+  });
+
+  it('fires a gaze keypoint only once its predecessor deadline has passed', () => {
+    const { springs } = makeRecorder();
+    const seen: Array<[number, number]> = [];
+    const track = EMOTES.dance.gaze;
+    const run = runEmote(springs, 'dance', { onGaze: (x, y) => seen.push([x, y]) });
+    run.update(track[0]!.atMs - 1);
+    expect(seen).toHaveLength(1);
+    run.update(2);
+    expect(seen).toHaveLength(2);
+    expect(seen[1]).toEqual([track[1]!.x, track[1]!.y]);
+  });
+});
 
 describe('deformPoint', () => {
   const samples = [

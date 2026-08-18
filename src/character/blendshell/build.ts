@@ -145,6 +145,7 @@ export function createBlendshellCharacter(
     emote(name: EmoteName): void {
       emoteRun = runEmote(springs, name, {
         onExpression: (e) => eyes.setExpression(e),
+        onGaze: (x, y) => eyes.setGaze(x, y),
       });
       if (bubble.object.parent !== group) group.add(bubble.object);
       bubble.show(name);

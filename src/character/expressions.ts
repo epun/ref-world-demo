@@ -125,7 +125,7 @@ export const EXPRESSIONS = {
     pupilX: 0,
     pupilY: 0.2,
     pupilScale: 1,
-    wander: 1,
+    wander: 0.75,
   },
   sad: {
     openness: 0.7,
@@ -135,7 +135,7 @@ export const EXPRESSIONS = {
     pupilX: 0,
     pupilY: -0.26,
     pupilScale: 1,
-    wander: 0.8,
+    wander: 0.7,
   },
   sleepy: {
     openness: 0.14,
@@ -145,7 +145,7 @@ export const EXPRESSIONS = {
     pupilX: 0,
     pupilY: -0.16,
     pupilScale: 1,
-    wander: 1.15,
+    wander: 1.1,
   },
   angry: {
     openness: 0.58,

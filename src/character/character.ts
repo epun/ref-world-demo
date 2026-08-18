@@ -233,6 +233,7 @@ export function createCharacter(
       // same springs mid-flight, so position and velocity carry over.
       emoteRun = runEmote(springs, name, {
         onExpression: (e) => eyes.setExpression(e),
+        onGaze: (x, y) => eyes.setGaze(x, y),
       });
       // The bubble is the legible signal; its own springs retarget cleanly
       // when one emote interrupts another. It removes itself once hidden.
