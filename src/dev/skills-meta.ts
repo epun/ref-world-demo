@@ -34,6 +34,13 @@ export const DEV_SKILLS_META: readonly DevSkillMeta[] = [
       'operator controls for what may become a creature — hold arrivals for approval, approve or discard the queue, remove a creature in one tap, block a drawer. the automatic screen (src/moderation/) sits under it.',
   },
   {
+    id: 'refworld.session',
+    name: 'session',
+    category: 'refworld',
+    description:
+      'the recorded session log (docs/session.md) — event counts, download the session as json, and replay a saved log back into this world. the recorder itself ships in every build; only these buttons are dev-only.',
+  },
+  {
     id: 'refworld.environment',
     name: 'environment',
     category: 'refworld',

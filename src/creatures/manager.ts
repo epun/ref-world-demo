@@ -228,6 +228,28 @@ export interface SpawnOptions {
   hatchMs: number;
 }
 
+/**
+ * A passive witness to the creature lifecycle. Structural on purpose: the
+ * session recorder implements it (src/session/wire.ts) so this module needs
+ * no import and stays a leaf of the world. Every call sits on a discrete
+ * seam — an egg placed, a shell opened, a slot leaving, an emote played —
+ * so NOTHING here runs per frame.
+ */
+export interface CreatureObserver {
+  /** An egg was placed. The spot is deterministic from the spawn order; it
+   * is recorded as a cross-check, never as a replay input. */
+  egg(id: string, x: number, z: number): void;
+  /** A shell opened, by its own timer or because someone forced it. */
+  hatch(id: string, cause: 'timer' | 'forced'): void;
+  retire(id: string, cause: 'population' | 'operator' | 'replaced' | 'cleared'): void;
+  emote(id: string, emote: EmoteName, source: 'phone' | 'key' | 'panel'): void;
+}
+
+export interface CreatureManagerOptions {
+  /** Session recorder (or any witness). Optional. */
+  observer?: CreatureObserver;
+}
+
 export interface CreatureManager {
   /** Validate + spawn (replacing any existing slot with the same id).
    * Returns false when the ink is unusable. */
@@ -241,9 +263,13 @@ export interface CreatureManager {
    * holds no hatched character yet (still an egg, or never arrived), so the
    * caller can tell "not mine" from "played".
    */
-  emote(id: string, emote: EmoteName): boolean;
+  emote(id: string, emote: EmoteName, source?: 'phone' | 'key' | 'panel'): boolean;
   /** Most recently hatched character, for emote keys / camera framing. */
   latestCharacter(): Character | null;
+  /** Id of the most recently hatched character — the emote keys and the
+   * panel's emote row address a creature by id so the session log knows
+   * which one played (src/session/). */
+  latestId(): string | null;
   /** Named, hit-testable live creatures for the hover-name overlay. Only
    * creatures whose drawer entered a name appear. */
   hoverTargets(): { name: string; object: Group }[];
@@ -277,7 +303,11 @@ export interface CreatureManager {
   endManualMove(root: Object3D): void;
 }
 
-export function createCreatureManager(world: WorldHandles): CreatureManager {
+export function createCreatureManager(
+  world: WorldHandles,
+  options: CreatureManagerOptions = {},
+): CreatureManager {
+  const observer = options.observer;
   const slots = new Map<string, Slot>();
   let orderCounter = 0;
   let timersPaused = false;
@@ -404,12 +434,14 @@ export function createCreatureManager(world: WorldHandles): CreatureManager {
     if (slot.phase === 'retiring') return;
     slot.phase = 'retiring';
     slot.retireStartMs = nowMs;
+    observer?.retire(slot.id, 'population');
   }
 
-  function beginHatch(slot: Slot): void {
+  function beginHatch(slot: Slot, cause: 'timer' | 'forced'): void {
     if (!slot.egg || slot.hatch || !slot.pending) return;
     const next = slot.pending;
     slot.phase = 'hatching';
+    observer?.hatch(slot.id, cause);
     slot.hatch = startHatch(world.scene, slot.egg, next, {
       onBurst: (root) => {
         slot.character = next;
@@ -452,7 +484,11 @@ export function createCreatureManager(world: WorldHandles): CreatureManager {
       if (!next) return false;
 
       const existing = slots.get(id);
-      if (existing) disposeSlot(existing);
+      if (existing) {
+        // One drawer, one slot: their new drawing replaces the old creature.
+        observer?.retire(id, 'replaced');
+        disposeSlot(existing);
+      }
 
       // Population guard: retire the oldest live slot beyond the cap.
       if (slots.size >= MAX_POPULATION) {
@@ -495,6 +531,7 @@ export function createCreatureManager(world: WorldHandles): CreatureManager {
       world.scene.add(egg.group);
       world.cameraRig.frameAt(new Vector3(spot.x, 0, spot.z));
       slots.set(id, slot);
+      observer?.egg(id, spot.x, spot.z);
       return true;
     },
 
@@ -504,19 +541,20 @@ export function createCreatureManager(world: WorldHandles): CreatureManager {
         return;
       }
       const slot = slots.get(id);
-      if (slot && slot.phase === 'egg') beginHatch(slot);
+      if (slot && slot.phase === 'egg') beginHatch(slot, 'forced');
     },
 
     hatchAll(): void {
       for (const slot of slots.values()) {
-        if (slot.phase === 'egg') beginHatch(slot);
+        if (slot.phase === 'egg') beginHatch(slot, 'forced');
       }
     },
 
-    emote(id, emote): boolean {
+    emote(id, emote, source = 'phone'): boolean {
       const slot = slots.get(id);
       if (!slot || slot.phase !== 'alive' || !slot.character) return false;
       slot.character.emote(emote);
+      observer?.emote(id, emote, source);
       return true;
     },
 
@@ -538,6 +576,16 @@ export function createCreatureManager(world: WorldHandles): CreatureManager {
         }
       }
       return best?.character ?? null;
+    },
+
+    latestId(): string | null {
+      let best: Slot | null = null;
+      for (const slot of slots.values()) {
+        if (slot.character && slot.phase === 'alive') {
+          if (!best || slot.order > best.order) best = slot;
+        }
+      }
+      return best?.id ?? null;
     },
 
     positions() {
@@ -609,7 +657,7 @@ export function createCreatureManager(world: WorldHandles): CreatureManager {
             const p = total <= 0 ? 1 : Math.min(1, (nowMs - slot.bornMs) / total);
             slot.egg.setHatchProgress(p);
             slot.egg.crack(CRACK_TEASER * smoothstep(0.62, 1, p));
-            if (p >= 1) beginHatch(slot);
+            if (p >= 1) beginHatch(slot, 'timer');
           }
         }
 
@@ -783,11 +831,18 @@ export function createCreatureManager(world: WorldHandles): CreatureManager {
 
     clear(id): void {
       const slot = slots.get(id);
-      if (slot) disposeSlot(slot);
+      if (!slot) return;
+      // The only way a single creature leaves on purpose: an operator's
+      // remove/block through the gate, or a replay driving the same removal.
+      observer?.retire(id, 'operator');
+      disposeSlot(slot);
     },
 
     clearAll(): void {
-      for (const slot of [...slots.values()]) disposeSlot(slot);
+      for (const slot of [...slots.values()]) {
+        observer?.retire(slot.id, 'cleared');
+        disposeSlot(slot);
+      }
     },
 
     pauseTimers(paused): void {

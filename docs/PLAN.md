@@ -84,6 +84,7 @@ replace it.** Nothing generates a new shape.
 | `src/phone/` | The companion app — draw, wait, alive, emote wheel, minimap |
 | `src/ui/` | Shared HUD primitives, type scale |
 | `src/moderation/` | **Pure.** What may become a creature — the screen, and the ingest gate |
+| `src/session/` | **Pure.** The session event log and its replay ([`SESSION.md`](./SESSION.md)) |
 | `src/dev/` | Ghost Panel skills. Gated on `isDev`, tree-shaken from the demo build |
 | `worker/` | Cloudflare Worker + Durable Object, one per room |
 
@@ -94,6 +95,12 @@ results — and, for moderation, what makes a decision reproducible after the ev
 Every drawing enters the world through **one** call: the ingest gate
 (`src/moderation/gate.ts`). Nothing spawns around it. What it screens, what it cannot, and
 what the operator has to do instead is [`MODERATION.md`](./MODERATION.md).
+
+That single seam is also what makes the session recorder honest: the gate and the creature
+manager each hand a structural observer everything they decide, so a session log cannot miss
+a drawing, a hatch or an operator's removal. The log holds inputs and decisions — never
+per-frame state, because generation is deterministic and replay re-derives the rest.
+See [`SESSION.md`](./SESSION.md).
 
 ---
 

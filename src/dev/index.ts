@@ -37,6 +37,8 @@ import { WIND_OVERRIDE_MAX } from '../world/environment';
 import { WANDER_SPEED_DEFAULT } from '../creatures/manager';
 import { DEFAULT_KIND_DENSITY, SCATTER_STEP } from '../world/scatter';
 import { GRAIN, MOTION, SURFACE } from '../taste/tokens';
+import { countByKind } from '../session';
+import type { SessionRecorder } from '../session';
 import { FALLBACK_DRAWINGS, FALLBACK_HATCH_MS } from './fixtures';
 import { DEV_SKILLS_META } from './skills-meta';
 
@@ -135,6 +137,16 @@ export interface DevHandles {
    * folder appears only when this is wired; without it the panel says so
    * rather than pretending there is a screen. */
   moderation?: ModerationConsole;
+  /**
+   * The world's session recorder (src/session/). NOTE the asymmetry: the
+   * recorder itself ships in every build — a live event is exactly when you
+   * want the log — and only this ui for it is dev-gated. The panel reads it,
+   * writes world-control changes into it, and downloads it.
+   */
+  session?: SessionRecorder;
+  /** Replay a session log json into this world (src/main.ts). Returns false
+   * when the text is not a log this build understands. */
+  replaySession?(json: string): boolean;
 }
 
 /** Offscreen readback resolution for the pixel gates. */
@@ -517,6 +529,11 @@ export async function initDevPanel(
 
   const { creatures } = handles;
 
+  // The session recorder (src/session/). Every world-control handler below
+  // writes one sample through this; the recorder coalesces a slider drag into
+  // a single event, so a log never grows per pointermove.
+  const session = handles.session;
+
   let fallbackIndex = 0;
   const spawnFallback =
     handles.spawnFallback ??
@@ -597,7 +614,10 @@ export async function initDevPanel(
         step: 0.05,
         value: WANDER_SPEED_DEFAULT,
         id: 'wander-speed',
-        onChange: (v) => creatures.setWanderSpeed(v),
+        onChange: (v) => {
+          creatures.setWanderSpeed(v);
+          session?.world('wanderSpeed', v);
+        },
       });
       folder.addCheckbox('pause hatch timers', {
         value: false,
@@ -728,6 +748,85 @@ export async function initDevPanel(
     },
   });
 
+  // ── refworld.session — the recorded session log (docs/SESSION.md) ─────────
+  // The RECORDER is not dev-gated: it runs in every build, wired at the gate
+  // and the creature manager (src/main.ts). Only this readout and the
+  // download/replay buttons live here.
+
+  ui.skills.register({
+    ...metaOf('refworld.session'),
+    apply: (panelUi) => {
+      const folder = panelUi.addFolder('session');
+      const recorder = handles.session;
+      if (!recorder) {
+        folder.addInfo('no session recorder in this world build', 'session-missing');
+        return { folder };
+      }
+
+      folder.addInfo('', 'session-readout');
+      const render = (): void => {
+        const counts = countByKind(recorder.snapshot());
+        const seconds = Math.round(recorder.durationMs() / 1000);
+        folder.get('session-readout')?.setText?.(
+          [
+            `${recorder.count()} events`,
+            `${seconds}s`,
+            `drawings ${counts['drawing'] ?? 0}`,
+            `hatches ${counts['hatch'] ?? 0}`,
+            `emotes ${counts['emote'] ?? 0}`,
+            `operator ${counts['operator'] ?? 0}`,
+            ...(recorder.overflowed() ? ['log full — later events dropped'] : []),
+          ].join(' · '),
+        );
+      };
+      render();
+
+      folder.addButton('download session log', () => {
+        const blob = new Blob([recorder.toJson()], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        // Lowercase everywhere (TASTE §5), and the epoch keeps two sessions
+        // from overwriting each other in a downloads folder.
+        anchor.download = `session-${recorder.snapshot().epoch}.json`;
+        anchor.click();
+        URL.revokeObjectURL(url);
+      });
+
+      const replayLog = handles.replaySession;
+      if (replayLog) {
+        folder.addButton('replay a session log', () => {
+          const input = document.createElement('input');
+          input.type = 'file';
+          input.accept = 'application/json,.json';
+          input.addEventListener('change', () => {
+            const file = input.files?.[0];
+            if (!file) return;
+            void file.text().then((text) => {
+              const ok = replayLog(text);
+              folder
+                .get('session-readout')
+                ?.setText?.(ok ? 'replaying…' : 'not a session log this build reads');
+            });
+          });
+          input.click();
+        });
+      }
+
+      // Low cadence, like the moderation list: the log changes only on
+      // discrete events, so once a second is plenty and costs nothing.
+      let clockMs = 0;
+      handles.onFrame((dt) => {
+        clockMs += dt;
+        if (clockMs < 1000) return;
+        clockMs = 0;
+        render();
+      });
+      return { folder };
+    },
+    teardown: (panelUi) => panelUi.panel.removeFolder('session'),
+  });
+
   // ── refworld.environment — the right-hand environment variables ───────────
 
   ui.skills.register({
@@ -749,6 +848,7 @@ export async function initDevPanel(
             onChange: (v) => {
               kd('tree', v);
               kd('conifer', v);
+              session?.world('kindDensity', v, 'tree');
             },
           });
           folder.addSlider('tree scale', {
@@ -758,55 +858,80 @@ export async function initDevPanel(
             onChange: (v) => {
               ks('tree', v);
               ks('conifer', v);
+              session?.world('kindScale', v, 'tree');
             },
           });
           folder.addSlider('rock density', {
             min: 0,
             max: 2.5,
             value: 1,
-            onChange: (v) => kd('rock', v),
+            onChange: (v) => {
+              kd('rock', v);
+              session?.world('kindDensity', v, 'rock');
+            },
           });
           folder.addSlider('rock scale', {
             min: 0.4,
             max: 1.8,
             value: 1,
-            onChange: (v) => ks('rock', v),
+            onChange: (v) => {
+              ks('rock', v);
+              session?.world('kindScale', v, 'rock');
+            },
           });
           folder.addSlider('building density', {
             min: 0,
             max: 4,
             value: 1,
-            onChange: (v) => kd('building', v),
+            onChange: (v) => {
+              kd('building', v);
+              session?.world('kindDensity', v, 'building');
+            },
           });
           folder.addSlider('bush density', {
             min: 0,
             max: 2.5,
             value: 1,
-            onChange: (v) => kd('bush', v),
+            onChange: (v) => {
+              kd('bush', v);
+              session?.world('kindDensity', v, 'bush');
+            },
           });
           folder.addSlider('stump density', {
             min: 0,
             max: 2.5,
             value: 1,
-            onChange: (v) => kd('stump', v),
+            onChange: (v) => {
+              kd('stump', v);
+              session?.world('kindDensity', v, 'stump');
+            },
           });
           folder.addSlider('palm density', {
             min: 0,
             max: 2.5,
             value: 1,
-            onChange: (v) => kd('palm', v),
+            onChange: (v) => {
+              kd('palm', v);
+              session?.world('kindDensity', v, 'palm');
+            },
           });
           folder.addSlider('cactus density', {
             min: 0,
             max: 2.5,
             value: 1,
-            onChange: (v) => kd('cactus', v),
+            onChange: (v) => {
+              kd('cactus', v);
+              session?.world('kindDensity', v, 'cactus');
+            },
           });
           folder.addSlider('monolith density', {
             min: 0,
             max: 2.5,
             value: 1,
-            onChange: (v) => kd('monolith', v),
+            onChange: (v) => {
+              kd('monolith', v);
+              session?.world('kindDensity', v, 'monolith');
+            },
           });
           // Picnic tables + water towers grouped: the built small-structure
           // pair, both rare — zeroing this leaves only nature standing.
@@ -817,19 +942,26 @@ export async function initDevPanel(
             onChange: (v) => {
               kd('picnicTable', v);
               kd('waterTower', v);
+              session?.world('kindDensity', v, 'structure');
             },
           });
           folder.addSlider('grass density', {
             min: 0,
             max: 3,
             value: 1,
-            onChange: (v) => kd('tick', v),
+            onChange: (v) => {
+              kd('tick', v);
+              session?.world('kindDensity', v, 'grass');
+            },
           });
           folder.addSlider('grass scale', {
             min: 0.5,
             max: 2,
             value: 1,
-            onChange: (v) => ks('tick', v),
+            onChange: (v) => {
+              ks('tick', v);
+              session?.world('kindScale', v, 'grass');
+            },
           });
         }
         folder.addSlider('scatter density', {
@@ -838,7 +970,10 @@ export async function initDevPanel(
           step: 0.05,
           value: 1,
           id: 'scatter-density',
-          onChange: (v) => scatter.setDensity(v),
+          onChange: (v) => {
+            scatter.setDensity(v);
+            session?.world('density', v);
+          },
         });
       }
 
@@ -857,7 +992,10 @@ export async function initDevPanel(
           step: 0.002,
           value: GRAIN.amplitude,
           id: 'grain-amplitude',
-          onChange: (v) => setGrain(v),
+          onChange: (v) => {
+            setGrain(v);
+            session?.world('grain', v);
+          },
         });
       }
       if (ink) {
@@ -868,7 +1006,10 @@ export async function initDevPanel(
           step: 0.0001,
           value: params.edgeThreshold,
           id: 'ink-edge-threshold',
-          onChange: (v) => ink.setParams({ edgeThreshold: v }),
+          onChange: (v) => {
+            ink.setParams({ edgeThreshold: v });
+            session?.world('inkEdgeThreshold', v);
+          },
         });
         style.addSlider('ink line width', {
           min: 0.5,
@@ -876,7 +1017,10 @@ export async function initDevPanel(
           step: 0.1,
           value: params.lineWidth,
           id: 'ink-line-width',
-          onChange: (v) => ink.setParams({ lineWidth: v }),
+          onChange: (v) => {
+            ink.setParams({ lineWidth: v });
+            session?.world('inkLineWidth', v);
+          },
         });
         style.addSlider('ink wobble', {
           min: 0,
@@ -884,7 +1028,10 @@ export async function initDevPanel(
           step: 0.1,
           value: params.wobble,
           id: 'ink-wobble',
-          onChange: (v) => ink.setParams({ wobble: v }),
+          onChange: (v) => {
+            ink.setParams({ wobble: v });
+            session?.world('inkWobble', v);
+          },
         });
         style.addSlider('ink hatch strength', {
           min: 0,
@@ -892,7 +1039,10 @@ export async function initDevPanel(
           step: 0.05,
           value: params.hatchStrength,
           id: 'ink-hatch-strength',
-          onChange: (v) => ink.setParams({ hatchStrength: v }),
+          onChange: (v) => {
+            ink.setParams({ hatchStrength: v });
+            session?.world('inkHatchStrength', v);
+          },
         });
       }
       // Color grade (user ask): hue + saturation dials for the object
@@ -912,6 +1062,7 @@ export async function initDevPanel(
           onChange: (v) => {
             objectHue = v;
             setObjectTint(objectHue, objectSat);
+            session?.world('objectHue', v);
           },
         });
         style.addSlider('object saturation', {
@@ -923,6 +1074,7 @@ export async function initDevPanel(
           onChange: (v) => {
             objectSat = v;
             setObjectTint(objectHue, objectSat);
+            session?.world('objectSaturation', v);
           },
         });
       }
@@ -933,7 +1085,10 @@ export async function initDevPanel(
         style.addColor('background color', {
           value: SURFACE.ground,
           id: 'background-color',
-          onChange: (c) => setBackgroundColor(c),
+          onChange: (c) => {
+            setBackgroundColor(c);
+            session?.world('background', c);
+          },
         });
       }
 
@@ -963,7 +1118,10 @@ export async function initDevPanel(
         options: [...WEATHER_NAMES],
         value: WEATHER_NAMES[0],
         id: 'weather-name',
-        onChange: (name) => env.setWeather(name),
+        onChange: (name) => {
+          env.setWeather(name);
+          session?.world('weather', name);
+        },
       });
       folder.addSlider('time of day', {
         min: 0,
@@ -971,7 +1129,10 @@ export async function initDevPanel(
         step: 0.01,
         value: 0.5,
         id: 'time-of-day',
-        onChange: (t) => env.setTimeOfDay(t),
+        onChange: (t) => {
+          env.setTimeOfDay(t);
+          session?.world('timeOfDay', t);
+        },
       });
       folder.addSlider('intensity', {
         min: 0,
@@ -979,7 +1140,10 @@ export async function initDevPanel(
         step: 0.05,
         value: 0.5,
         id: 'weather-intensity',
-        onChange: (v) => env.setIntensity(v),
+        onChange: (v) => {
+          env.setIntensity(v);
+          session?.world('intensity', v);
+        },
       });
       // Wind override (QA audit D5) — feature-detected like the rest: the
       // slider pins the wind through weather changes; auto hands it back to
@@ -991,9 +1155,15 @@ export async function initDevPanel(
           step: 0.05,
           value: 0.3,
           id: 'wind-override',
-          onChange: (v) => env.setWindOverride?.(v),
+          onChange: (v) => {
+            env.setWindOverride?.(v);
+            session?.world('wind', v);
+          },
         });
-        folder.addButton('wind auto (release override)', () => env.setWindOverride?.(null));
+        folder.addButton('wind auto (release override)', () => {
+          env.setWindOverride?.(null);
+          session?.world('wind', null);
+        });
       }
       return { folder };
     },
@@ -1015,7 +1185,10 @@ export async function initDevPanel(
         folder.addButtonRow(
           row.map((name) => ({
             label: name,
-            onClick: () => creatures.latestCharacter()?.emote(name),
+            onClick: () => {
+              const id = creatures.latestId();
+              if (id) creatures.emote(id, name, 'panel');
+            },
           })),
         );
       }

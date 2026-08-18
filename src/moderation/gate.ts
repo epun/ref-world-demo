@@ -52,6 +52,32 @@ export interface GateEntry<T extends GateDrawing = GateDrawing> {
   confidence: number;
 }
 
+/**
+ * One tap an operator can make. The session recorder (src/session/) mirrors
+ * this list — a replay that silently lost a removal would resurrect something
+ * a person deleted.
+ */
+export type GateOperatorAction =
+  | 'approve'
+  | 'discard'
+  | 'remove'
+  | 'block'
+  | 'unblock'
+  | 'hold';
+
+/**
+ * A passive witness to what the gate did. Structural on purpose: the session
+ * recorder implements it (src/session/wire.ts) without this module importing
+ * anything, so moderation stays a leaf. Called once per decision and once per
+ * operator tap — never per frame.
+ */
+export interface GateObserver<T extends GateDrawing = GateDrawing> {
+  /** One offer resolved. The entry's disposition is final when this runs. */
+  decision(entry: GateEntry<T>): void;
+  /** An operator acted. `on` carries the new state of hold-arrivals mode. */
+  operator(action: GateOperatorAction, id: string | null, on?: boolean): void;
+}
+
 export interface GateOptions<T extends GateDrawing> {
   /** Spawn one admitted drawing. Returns false when the ink is unusable. */
   spawn(drawing: T): boolean;
@@ -64,6 +90,8 @@ export interface GateOptions<T extends GateDrawing> {
   screen?(strokes: StrokeList): ScreenResult;
   /** How many decisions the readout log keeps. */
   logLimit?: number;
+  /** Session recorder (or any witness). Optional; absent in tests. */
+  observer?: GateObserver<T>;
 }
 
 /**
@@ -107,6 +135,7 @@ export function createIngestGate<T extends GateDrawing = GateDrawing>(
 ): IngestGate<T> {
   const screen = opts.screen ?? ((strokes: StrokeList) => screenDrawing(strokes));
   const logLimit = opts.logLimit ?? DEFAULT_LOG_LIMIT;
+  const observer = opts.observer;
 
   let seq = 0;
   let holdAll = false;
@@ -123,6 +152,9 @@ export function createIngestGate<T extends GateDrawing = GateDrawing>(
   const record = (entry: GateEntry<T>): GateEntry<T> => {
     decisions.unshift(entry);
     if (decisions.length > logLimit) decisions.length = logLimit;
+    // The single seam every ruling passes through, so the session log cannot
+    // miss one (src/session/wire.ts).
+    observer?.decision(entry);
     return entry;
   };
 
@@ -190,12 +222,14 @@ export function createIngestGate<T extends GateDrawing = GateDrawing>(
     holdAll: () => holdAll,
     setHoldAll(on: boolean): void {
       holdAll = on;
+      observer?.operator('hold', null, on);
       notify();
     },
     pending: () => queue.slice(),
     approve(id: string): boolean {
       const entry = takeFromQueue(id);
       if (!entry) return false;
+      observer?.operator('approve', id);
       spawnNow(entry);
       notify();
       return entry.disposition === 'admitted';
@@ -203,6 +237,7 @@ export function createIngestGate<T extends GateDrawing = GateDrawing>(
     discard(id: string): boolean {
       const entry = takeFromQueue(id);
       if (!entry) return false;
+      observer?.operator('discard', id);
       entry.disposition = 'refused';
       entry.reason = entry.reason ?? 'discarded by the operator';
       notify();
@@ -212,6 +247,9 @@ export function createIngestGate<T extends GateDrawing = GateDrawing>(
       let n = 0;
       while (queue.length > 0) {
         const entry = queue.shift()!;
+        // One event per drawer, not one for the batch: replay approves the
+        // same individuals even if the queue differs on the day.
+        observer?.operator('approve', entry.id);
         spawnNow(entry);
         if (entry.disposition === 'admitted') n++;
       }
@@ -221,6 +259,7 @@ export function createIngestGate<T extends GateDrawing = GateDrawing>(
     discardAll(): number {
       const n = queue.length;
       for (const entry of queue.splice(0, queue.length)) {
+        observer?.operator('discard', entry.id);
         entry.disposition = 'refused';
         entry.reason = entry.reason ?? 'discarded by the operator';
       }
@@ -235,11 +274,13 @@ export function createIngestGate<T extends GateDrawing = GateDrawing>(
     },
     remove(id: string): boolean {
       const had = admittedById.delete(id);
+      observer?.operator('remove', id);
       opts.clear?.(id);
       notify();
       return had;
     },
     block(id: string): void {
+      observer?.operator('block', id);
       blockedIds.add(id);
       admittedById.delete(id);
       takeFromQueue(id);
@@ -247,6 +288,7 @@ export function createIngestGate<T extends GateDrawing = GateDrawing>(
       notify();
     },
     unblock(id: string): boolean {
+      observer?.operator('unblock', id);
       const had = blockedIds.delete(id);
       notify();
       return had;

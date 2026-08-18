@@ -18,9 +18,22 @@
 import { Vector3 } from 'three';
 import { installHoverNames } from './creatures/hover';
 import { createCreatureManager } from './creatures/manager';
-import { connectWorldFeed, type IncomingDrawing } from './net/drawFeed';
+import { connectWorldFeed, PERSONALITIES, type IncomingDrawing } from './net/drawFeed';
 import { createIngestGate } from './moderation/gate';
-import { EMOTE_NAMES, isRoomCode, roomCode } from './net/protocol';
+import { EMOTE_NAMES, isRoomCode, roomCode, type EmoteName } from './net/protocol';
+import {
+  createSessionRecorder,
+  parseSessionLog,
+  readSessionLog,
+  recordCreatures,
+  recordGate,
+  replaySession,
+  type DrawingSource,
+  type ReplayDriver,
+  type ReplayHandle,
+  type SessionLog,
+} from './session';
+import { MAX_POPULATION, WANDER_SPEED_DEFAULT } from './creatures/manager';
 import { mountDrawScreen } from './draw/ui';
 import { MOTION, SURFACE, WORLD } from './taste/tokens';
 import { installJoinQr, QR_SIZE_CSS } from './ui/joinqr';
@@ -30,6 +43,14 @@ import { createTour } from './world/tour';
 
 /** Hatch timer — dev pacing; a live demo wants ~90s (PLAN §13). */
 export const HATCH_TIMER_MS = 20000;
+
+/**
+ * What this world offers its gate: the feed's drawing, the hatch delay it is
+ * admitted with, and where it came in from. `source` exists only so the
+ * session log can say whether a creature came from a phone, the local pad, or
+ * a fixture (src/session/).
+ */
+type WorldDrawing = IncomingDrawing & { hatchMs: number; source: DrawingSource };
 
 // ── draw overlay chrome ──────────────────────────────────────────────────────
 // TASTE §4: icons, hairline rules, thin borders — and nothing else. The
@@ -177,7 +198,36 @@ function main(): void {
   // let in to draw again instead of being locked out forever (user ask).
   const epoch = 'w' + Math.floor(Math.random() * 0xffffffff).toString(36);
 
-  const creatures = createCreatureManager(world);
+  // ── session recorder (src/session/, docs/SESSION.md) ──────────────────────
+  // Ships in EVERY build, not just dev: a live event is exactly when you want
+  // the log. It records inputs and decisions — stroke lists, ids, moderation
+  // verdicts, operator taps — at ms offsets from now, and nothing per frame,
+  // because generation is deterministic in (strokes, id) and replay re-derives
+  // the rest. Only the panel button that downloads it is dev-gated.
+  const session = createSessionRecorder({
+    epoch,
+    room,
+    // The one wall clock in the whole format. Everything else is an offset.
+    startedAt: new Date().toISOString(),
+    config: {
+      hatchMs: HATCH_TIMER_MS,
+      maxPopulation: MAX_POPULATION,
+      wanderSpeed: WANDER_SPEED_DEFAULT,
+      // Generation-affecting: the ground paper the session ran under, and
+      // the character construction path (src/character/character.ts reads
+      // this global override).
+      ground: SURFACE.ground,
+      construction:
+        (globalThis as { __refworldConstruction?: unknown }).__refworldConstruction ===
+        'blendshell'
+          ? 'blendshell'
+          : 'inflate',
+      worldScale: 1,
+    },
+    now: () => performance.now(),
+  });
+
+  const creatures = createCreatureManager(world, { observer: recordCreatures(session) });
   installHoverNames(canvas, world.cameraRig.camera, creatures);
 
   // ── moderation gate (src/moderation/) ─────────────────────────────────────
@@ -186,7 +236,8 @@ function main(): void {
   // A refusal is silent ON THE PROJECTION — never reward the drawing with
   // attention on the shared screen. The drawer IS told, privately, on their
   // own handset (user ask), and the operator sees it in the panel readout.
-  const gate = createIngestGate<IncomingDrawing & { hatchMs: number }>({
+  const gate = createIngestGate<WorldDrawing>({
+    observer: recordGate(session, { hatchMs: HATCH_TIMER_MS, source: 'phone' }),
     spawn: (d) =>
       creatures.spawn(d.id, d.strokes, {
         ...(d.name !== null ? { name: d.name } : {}),
@@ -200,6 +251,88 @@ function main(): void {
   // the moderation smoke reads decisions and drives hold/block from outside
   // the panel. Read-only handles to what the panel already exposes.
   (window as Window & { __refworldModeration?: unknown }).__refworldModeration = gate;
+
+  // ── replay (src/session/replay.ts) ────────────────────────────────────────
+  // The driver side of a recorded session: the pure replay walks the log and
+  // calls these, so a log recorded on one machine re-drives this world with
+  // the same ids and the same strokes at the same offsets. Spawns go STRAIGHT
+  // to the manager, never back through the screen — the recorded verdict is
+  // the decision, and re-screening could rule differently on a newer build.
+  const replayDriver: ReplayDriver = {
+    spawn: (d) =>
+      creatures.spawn(d.id, d.strokes, {
+        ...(d.name !== null ? { name: d.name } : {}),
+        ...(d.personality !== null && (PERSONALITIES as readonly string[]).includes(d.personality)
+          ? { personality: d.personality as (typeof PERSONALITIES)[number] }
+          : {}),
+        hatchMs: d.hatchMs,
+      }),
+    hatch: (id) => creatures.hatch(id),
+    emote: (id, emote) => {
+      if ((EMOTE_NAMES as readonly string[]).includes(emote)) {
+        creatures.emote(id, emote as EmoteName, 'phone');
+      }
+    },
+    remove: (id) => creatures.clear(id),
+    // The operator state a replayed world should stand in: hold mode and the
+    // block list. Removals are driven by replay itself, above.
+    operator: (action, id, on) => {
+      if (action === 'hold') gate.setHoldAll(on === true);
+      else if (action === 'block' && id !== null) gate.block(id);
+    },
+    // World controls an operator moved. Only the handles this page owns —
+    // anything it cannot drive is skipped rather than faked.
+    world: (field, value) => {
+      const env = (world as unknown as { environment?: Record<string, unknown> })
+        .environment;
+      const call = (name: string, arg: unknown): void => {
+        const fn = env?.[name];
+        if (typeof fn === 'function') (fn as (v: unknown) => void).call(env, arg);
+      };
+      if (field === 'weather' && typeof value === 'string') call('setWeather', value);
+      else if (field === 'timeOfDay' && typeof value === 'number') call('setTimeOfDay', value);
+      else if (field === 'intensity' && typeof value === 'number') call('setIntensity', value);
+      else if (field === 'wind') call('setWindOverride', value);
+      else if (field === 'background' && typeof value === 'string') {
+        world.setBackgroundColor(value);
+      } else if (field === 'grain' && typeof value === 'number') {
+        world.grain.setAmplitude(value);
+      } else if (field === 'density' && typeof value === 'number') {
+        world.scatter.setDensity(value);
+      } else if (field === 'wanderSpeed' && typeof value === 'number') {
+        creatures.setWanderSpeed(value);
+      }
+    },
+  };
+
+  /**
+   * Always-on session handle (same family as __refworldCreatures): read the
+   * log, export it, or replay one into this world. Not dev-gated — the
+   * recorder ships, and this is the code entry point the docs point at.
+   */
+  let replayHandle: ReplayHandle | null = null;
+  const sessionApi = {
+    recorder: session,
+    log: () => session.snapshot(),
+    json: () => session.toJson(),
+    count: () => session.count(),
+    replay: (input: string | SessionLog | unknown, options?: { speed?: number }) => {
+      const log =
+        typeof input === 'string' ? parseSessionLog(input) : readSessionLog(input);
+      if (!log) return null;
+      replayHandle?.stop();
+      // A replay starts from an empty world, exactly as the recorded session
+      // did — otherwise the population guard sees a different history.
+      creatures.clearAll();
+      replayHandle = replaySession(log, replayDriver, {
+        ...(options?.speed !== undefined ? { speed: options.speed } : {}),
+      });
+      return replayHandle;
+    },
+    stopReplay: () => replayHandle?.stop(),
+    driver: replayDriver,
+  };
+  (window as Window & { __refworldSession?: unknown }).__refworldSession = sessionApi;
 
   // ── presentation tour (GENERATOR §scale+camera, PLAN §7.1) ────────────────
   // Autonomous drift between clusters, lone wanderers, and wide scenic beats.
@@ -277,6 +410,11 @@ function main(): void {
         // The operator layer reads and acts through the same gate the
         // feed goes through (src/moderation/gate.ts).
         moderation: gate,
+        // The session log: the panel adds a readout and a download button.
+        // The RECORDER itself is not dev-gated (it runs above); only this ui
+        // for it is (src/session/, docs/SESSION.md).
+        session,
+        replaySession: (json) => sessionApi.replay(json) !== null,
         spawnFallback: (n) => {
           for (let i = 0; i < n; i++) {
             const strokes = m.FALLBACK_DRAWINGS[fallbackIndex % m.FALLBACK_DRAWINGS.length];
@@ -290,6 +428,7 @@ function main(): void {
               personality: null,
               strokes,
               hatchMs: m.FALLBACK_HATCH_MS,
+              source: 'dev',
             });
           }
         },
@@ -320,7 +459,7 @@ function main(): void {
   void connectWorldFeed({
     room,
     onDrawing: (d) => {
-      const entry = gate.offer({ ...d, hatchMs: HATCH_TIMER_MS });
+      const entry = gate.offer({ ...d, hatchMs: HATCH_TIMER_MS, source: 'phone' });
       // Tell the drawer, on their own handset, when their drawing will
       // never appear (user ask). Still nothing on the projection: the
       // refusal is private to the person who made it.
@@ -403,8 +542,10 @@ function main(): void {
     // Dev emote keys on the most recent character (PLAN §6.3).
     if (!overlayOpen && event.key >= '1' && event.key <= '7') {
       const name = EMOTE_NAMES[Number(event.key) - 1];
-      const character = creatures.latestCharacter();
-      if (name && character) character.emote(name);
+      // By id, not by character handle: the manager is the seam the session
+      // log listens on, and it needs to know WHICH creature emoted.
+      const id = creatures.latestId();
+      if (name && id) creatures.emote(id, name, 'key');
     }
   });
 
@@ -417,6 +558,7 @@ function main(): void {
         personality: null,
         strokes,
         hatchMs: HATCH_TIMER_MS,
+        source: 'local',
       });
       // A refused or held drawing closes the overlay exactly like an
       // admitted one — the drawer is told nothing either way.
