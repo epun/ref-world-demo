@@ -46,10 +46,12 @@ Measured on `test/fixtures/moderation.ts`:
 | Set | Result |
 |---|---|
 | 11 phallus fixtures (4 proportions, 5 rotations, 2 drawn as outlines) | **11/11 refused** |
-| 56 innocent fixtures | **0 refused, 0 held** |
+| 56 innocent fixtures | **0 refused**, 7 held (two-lobe tree, bone, person, stick figure, and rotations of those) |
 | the same doodle swept through 12 rotations | 12/12 refused |
-| a 124-point sweep of proportions × 4 rotations, restricted to how people draw it (lobes at least as wide as the shaft, shaft ≥ 3× its width) | **101/124 refused — 81%** |
-| the same sweep including degenerate proportions (lobes narrower than the shaft, near-square shapes) | 117/216 — 54% |
+| one composition rotated through 18 angles, 0–360° | **18/18 caught at every angle** |
+| the same doodle at six screening resolutions (96–256) | **caught at all six** (see §1a) |
+| a sweep of proportions × 4 rotations, restricted to how people draw it (lobes at least as wide as the shaft, shaft ≥ 3× its width) | **92/112 refused — 82%** |
+| ten shapes drawn the way people draw them on a phone (tilted, sideways, one-stroke outline, lobes touching) | **7/10 caught** — 6 refused, 1 held; was 4/10 before §1a |
 
 The cusp test is what separates it from its innocent neighbours. A tree, a mushroom, a
 balloon and a spoon are all "shaft plus bulge" — they have no cusp. A standing figure with
@@ -79,15 +81,21 @@ honest gap, so neither ships.
 
 ### The tuning bias, stated
 
-Thresholds were tuned so the innocent set has **zero** refusals and **zero** holds, and the
-recall that cost is real: the phallus detector requires elongation ≥ 2.8 (all fixtures are
-≥ 3.7), a bulge ≥ 2.0× the shaft, and a cusp ≥ 0.35 lobe-radii. A very stubby drawing, a
-drawing whose lobes overlap almost completely, or one drawn with the lobes apart from the
-shaft so the pieces do not touch, will pass. The 81% figure above is where that lands: the
-misses are short shafts carrying lobes as big as the shaft is long, where the cusp between
-the lobes all but closes. That is the deliberate trade: at a public
-installation, eating a child's drawing of a cat is worse than admitting a rude doodle,
-because the operator can remove the doodle in one tap and cannot un-eat the cat.
+Thresholds are tuned so the innocent set has **zero** refusals. Innocent drawings may be
+**held** — seven of the fifty-six are — and that is the price of catching the doodle as
+people actually draw it. The trade is deliberate and in this direction on purpose: at a
+public installation, eating a child's drawing of a cat is worse than admitting a rude
+doodle, because the operator can remove the doodle in one tap and cannot un-eat the cat;
+holding the cat for ten seconds costs nobody anything as long as somebody is watching the
+queue.
+
+The recall that still costs is real: elongation ≥ 2.8, bulge ≥ 2.0× the shaft, cusp ≥ 0.35
+lobe-radii. **A very stubby drawing — lobes as wide as the shaft is long, the cusp between
+them all but closed — still passes**, and so does one drawn with the lobes detached from
+the shaft. Loosening the elongation floor to reach the stubby corner was measured across
+2.8 / 2.4 / 2.1 / 1.9 and changed no verdict on any set: it is not the binding criterion, so
+the gate was left where it is rather than weakened for nothing. That corner belongs to the
+operator, like weapons and everything else automation cannot read.
 
 ## 1a. Two things that used to decide the verdict
 
@@ -119,13 +127,15 @@ population. In order:
 2. **automatic screen** — refuse / hold / allow
 3. **hold-for-approval mode** — a live-event switch
 
-**Refusal is silent.** Nothing appears on the projection, nothing goes back to the phone, no
-scolding copy anywhere. A public installation must never reward the drawing with a reaction;
-the only trace is the operator readout in the ghost panel.
+**Refusal is silent on the projection.** Nothing appears on the shared screen, no scolding
+copy anywhere: a public installation must never reward the drawing with a reaction in front
+of an audience. The operator readout in the ghost panel is the only trace there.
 
-Known gap, accepted: a phone whose drawing was refused or held still shows its own local egg
-and waits — the phone is never told. Closing that would mean either replying to the drawer
-(which rewards the attempt) or a phone-side screen (out of scope for this pass).
+**The drawer is told privately** (user ask, later pass). The world answers the handset that
+sent it, and the companion shows: *sorry — this goes against our content guidelines. it was
+not added to the world.* with a **draw something else** action that frees the phone to try
+again. A drawing that is merely **held** says nothing — it may yet be approved, and the
+drawer is not told off for it.
 
 ## 3. The operator layer — what actually makes it safe
 
