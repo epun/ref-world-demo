@@ -79,7 +79,19 @@
       <dl id="facts"></dl>
       <div class="verdict" id="verdict">measuring…</div>
 
-      <h2>try them</h2>
+      <h2>the decisive test</h2>
+      <p class="note">
+        the hatch does not happen on a tap — it happens when the world says so,
+        possibly minutes later. chrome only allows vibration on a document the
+        person has already touched, and a tap on the draw page does not carry
+        across the jump to this one. so the question is not "can it buzz", it is
+        "can it buzz without a fresh tap".
+      </p>
+      <dl id="gesture"></dl>
+      <button id="tryUntouched">a · buzz with no tap at all (runs on load — see result above)</button>
+      <button id="tryDelayed">b · buzz 6 seconds from now — then do not touch the screen</button>
+
+      <h2>try them directly</h2>
       <button id="tryVibrate">1 · vibration api — the hatch pattern</button>
       <button id="trySwitch">2 · ios switch — one tick</button>
       <button id="tryReal">3 · exactly what the hatch runs</button>
@@ -128,6 +140,57 @@
       ua.className = 'note';
       ua.innerHTML = 'user agent: <code>' + String(navigator.userAgent).replace(/[<&]/g, '') + '</code>';
       facts.parentNode.insertBefore(ua, document.getElementById('verdict').nextSibling);
+
+      // ── the gesture question ────────────────────────────────────────────
+      // navigator.vibrate needs STICKY USER ACTIVATION in chrome: a document
+      // nobody has touched cannot buzz. Activation is per-document, so the
+      // send tap on /draw/ is spent the moment the page navigates.
+      var gesture = document.getElementById('gesture');
+      function grow(k, v) {
+        var d = document.createElement('div');
+        d.className = 'row';
+        var dt = document.createElement('dt'); dt.textContent = k;
+        var dd = document.createElement('dd'); dd.id = 'g-' + k.replace(/\W/g, '');
+        dd.textContent = v;
+        d.append(dt, dd); gesture.appendChild(d); return dd;
+      }
+      var ua2 = navigator.userActivation;
+      var cellSticky = grow('touched yet', ua2 ? (ua2.hasBeenActive ? 'yes' : 'no — never touched') : 'not reportable');
+      var cellUntouched = grow('buzz with no tap', 'trying…');
+      function refreshSticky() {
+        if (!ua2) return;
+        cellSticky.textContent = ua2.hasBeenActive ? 'yes' : 'no — never touched';
+      }
+      window.addEventListener('pointerdown', function () { setTimeout(refreshSticky, 0); }, { passive: true });
+
+      // Fire immediately, before any tap can have happened. This is the exact
+      // situation the hatch is in.
+      (function () {
+        if (!hasVibrate) { cellUntouched.textContent = 'no vibration api'; return; }
+        var ok = false;
+        try { ok = navigator.vibrate([16, 70, 34]) !== false; } catch (e) { ok = false; }
+        cellUntouched.textContent = ok ? 'returned true — did you feel it?' : 'refused';
+      })();
+
+      document.getElementById('tryUntouched').onclick = function () {
+        say('a · that already ran on load, before any tap — see "buzz with no tap" above. ' +
+            'if that row says it returned true but you felt nothing, the gesture rule is what is silencing the hatch.');
+      };
+
+      document.getElementById('tryDelayed').onclick = function () {
+        say('b · counting down — do not touch the screen.');
+        var n = 6;
+        var tick = setInterval(function () {
+          n -= 1;
+          if (n > 0) { say('b · buzzing in ' + n + '…  do not touch the screen.'); return; }
+          clearInterval(tick);
+          var ok = false;
+          if (hasVibrate) { try { ok = navigator.vibrate([16, 70, 34]) !== false; } catch (e) { ok = false; } }
+          else if (hasSwitch) { try { document.getElementById('probe').click(); ok = true; } catch (e) {} }
+          say('b · fired with no fresh tap, returned ' + ok + '. if you felt this one, ' +
+              'sticky activation survives — and the hatch should buzz too, once this document has been touched once.');
+        }, 1000);
+      };
 
       var result = document.getElementById('result');
       function say(s) { result.textContent = s; }
