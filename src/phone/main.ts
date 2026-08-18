@@ -16,6 +16,7 @@ import { MOTION, SURFACE, WORLD } from '../taste/tokens';
 import { mountAliveScreen, type AliveScreenHandle } from './screens/alive';
 import { mountDraw } from './screens/draw';
 import { mountWaitScreen, type WaitScreenHandle } from './screens/wait';
+import { hatchPulse } from './haptics';
 import { clearSubmission, drawerId, isStale, readSubmission } from './identity';
 import { createSession } from './session';
 import { createMachine } from './states';
@@ -291,6 +292,10 @@ async function boot(): Promise<void> {
     // The transition to alive happens when the world (or the local session)
     // confirms — never on the tap itself (PLAN §6.2).
     if (msg.phase === 'alive' && machine.state !== 'alive' && strokes.length > 0) {
+      // It hatched — the one moment on this screen worth feeling (user
+      // ask). Silent on handsets without the vibration api (every iPhone);
+      // the visual reveal is unchanged either way.
+      hatchPulse();
       machine.goTo('alive');
     }
   });
