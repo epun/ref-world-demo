@@ -72,7 +72,13 @@ async function boot(): Promise<void> {
     .toLowerCase()
     .replace(/[^a-z0-9]/g, '')
     .slice(0, 8);
-  const me = drawerId();
+  // The id the world knows this creature by. Normally the handset's stable
+  // drawer id (the draw page publishes under it), but a creature submitted
+  // before that id existed lives under the id in its own record — so the
+  // handoff / stored submission wins when present. Addressing the wrong id
+  // is indistinguishable from a dead uplink: the tap simply does nothing.
+  const stored = room.length > 0 ? readSubmission(room) : null;
+  const me = stored?.id ?? drawerId();
   // The uplink is what carries a tap to the world; null with no mqtt on the
   // page (or no room), and every call site tolerates that.
   const uplink = room.length > 0 ? createEmoteUplink(room, me) : null;
@@ -157,7 +163,7 @@ async function boot(): Promise<void> {
     // ITS creature rather than offering a second pad (user ruling — one
     // drawing, one creature). Reloading the companion must not mint a new
     // inhabitant, and the emote wheel must keep addressing the old one.
-    const previous = readSubmission(room);
+    const previous = stored;
     if (previous) {
       const restored: StrokeList = [];
       for (const fs of previous.strokes) {

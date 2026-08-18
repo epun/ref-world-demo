@@ -3,115 +3,127 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
-  <title>Draw → 3D</title>
+  <title>draw → 3d</title>
   <style>
+    /*
+     * Light paper, ink marks (user ask). Values are the project's tokens
+     * (src/taste/tokens.ts): the page ground is the world's own paper
+     * SURFACE.ground, the pad is the lighter drawing ground SURFACE.canvas,
+     * and every mark is WORLD.ink. No color picker — the world rasterizes
+     * to a binary mask anyway, so a palette only ever promised something
+     * the experience does not keep.
+     */
+    :root {
+      --paper: #dfdfdf;   /* SURFACE.ground — the world's field */
+      --pad:   #e9ebe9;   /* SURFACE.canvas — the drawing ground */
+      --ink:   #353534;   /* WORLD.ink */
+      --muted: #92928e;   /* WORLD.neutral */
+      --line:  rgba(53, 53, 52, 0.22);
+    }
     * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
     html, body { height: 100%; overscroll-behavior: none; }
     body {
-      background: #0a0a0a; color: #fff;
+      background: var(--paper); color: var(--ink);
       font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
       display: flex; flex-direction: column; height: 100dvh; padding: 14px; gap: 12px;
       user-select: none; -webkit-user-select: none;
     }
     header { display: flex; align-items: center; justify-content: space-between; }
-    .title { display: flex; align-items: center; gap: 9px; font-weight: 700; font-size: 17px; letter-spacing: -0.01em; }
-    .status { display: flex; align-items: center; gap: 6px; font-size: 12px; color: rgba(255,255,255,0.5); }
-    .dot { width: 8px; height: 8px; border-radius: 50%; background: #f5a623; transition: background .3s; }
-    .dot.on { background: #34d058; } .dot.off { background: #e5484d; }
+    .title { display: flex; align-items: center; gap: 9px; font-weight: 500; font-size: 16px; letter-spacing: 0; }
+    .status { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+    /* Connection state without color: a hollow ring waiting, filled live. */
+    .dot { width: 8px; height: 8px; border-radius: 50%; border: 1px solid var(--muted);
+      background: transparent; transition: background .3s, border-color .3s; }
+    .dot.on { background: var(--ink); border-color: var(--ink); }
+    .dot.off { background: transparent; border-color: var(--line); }
 
+    /* Spent: this handset already drew (one handset, one creature). The pad
+       stops accepting marks while the companion loads. */
+    body.spent .stage, body.spent .tools, body.spent .actions { opacity: 0.35; pointer-events: none; }
     .stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; }
     .pad {
       position: relative; aspect-ratio: 1; max-width: 100%; max-height: 100%;
-      background: #fff; border-radius: 18px; overflow: hidden;
-      box-shadow: 0 20px 50px rgba(0,0,0,0.5); touch-action: none;
+      background: var(--pad); border: 1px solid var(--line); border-radius: 18px; overflow: hidden;
+      touch-action: none;
     }
     canvas { display: block; width: 100%; height: 100%; touch-action: none; }
     .hint { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-      color: #c7c7cc; font-size: 15px; font-weight: 500; pointer-events: none; transition: opacity .2s; }
+      color: var(--muted); font-size: 15px; font-weight: 400; pointer-events: none; transition: opacity .2s; }
 
-    .tools { display: flex; align-items: center; gap: 10px; justify-content: space-between; }
-    .swatches { display: flex; gap: 8px; }
-    .sw { width: 30px; height: 30px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.18); cursor: pointer; transition: transform .1s; }
-    .sw.sel { border-color: #fff; transform: scale(1.12); }
+    /* Only brush size remains — one row, centred. */
+    .tools { display: flex; align-items: center; gap: 10px; justify-content: center; }
     .sizes { display: flex; gap: 8px; }
-    .size { width: 30px; height: 30px; border-radius: 9px; background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.12);
-      display: flex; align-items: center; justify-content: center; cursor: pointer; }
-    .size.sel { background: rgba(255,255,255,0.16); border-color: #fff; }
-    .size i { display: block; border-radius: 50%; background: #fff; }
+    .size { width: 34px; height: 34px; border-radius: 50%; background: transparent; border: 1px solid var(--line);
+      display: flex; align-items: center; justify-content: center; cursor: pointer; transition: border-color .15s; }
+    .size.sel { border-color: var(--ink); }
+    .size i { display: block; border-radius: 50%; background: var(--ink); }
 
     .actions { display: flex; gap: 10px; }
-    button { flex: 1; border: none; border-radius: 13px; padding: 15px; font-size: 16px; font-weight: 700;
-      font-family: inherit; cursor: pointer; letter-spacing: -0.01em; transition: transform .08s, opacity .2s; }
+    button { flex: 1; border: 1px solid var(--line); border-radius: 13px; padding: 15px; font-size: 16px; font-weight: 500;
+      font-family: inherit; cursor: pointer; letter-spacing: 0; transition: transform .08s, opacity .2s; }
     button:active { transform: scale(0.98); }
-    .clear { background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.85); flex: 0 0 96px; }
-    .send { background: #fff; color: #0a0a0a; }
-    .send:disabled { opacity: 0.4; }
+    .clear { background: transparent; color: var(--ink); flex: 0 0 96px; }
+    .send { background: var(--ink); color: var(--pad); border-color: var(--ink); }
+    .send:disabled { opacity: 0.35; }
 
     .toast { position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%) translateY(20px);
-      background: #34d058; color: #04210e; font-weight: 700; padding: 12px 22px; border-radius: 999px;
+      background: var(--ink); color: var(--pad); font-weight: 500; padding: 12px 22px; border-radius: 999px;
       opacity: 0; pointer-events: none; transition: all .3s; font-size: 15px; text-align: center; }
     .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
-    .namechip { font-size: 13px; color: rgba(255,255,255,0.55); text-align: center; }
-    .namechip b { color: #fff; }
-    .chip-change { color: #f5a623; text-decoration: underline; cursor: pointer; }
+    .namechip { font-size: 13px; color: var(--muted); text-align: center; }
+    .namechip b { color: var(--ink); font-weight: 500; }
+    .chip-change { color: var(--ink); text-decoration: underline; cursor: pointer; }
 
     .sheet { position: fixed; inset: 0; z-index: 100; display: flex; align-items: flex-start; justify-content: center;
-      padding: 11vh 18px 0; background: rgba(0,0,0,0.55); opacity: 0; pointer-events: none; transition: opacity .2s; }
+      padding: 11vh 18px 0; background: rgba(223, 223, 223, 0.72); opacity: 0; pointer-events: none; transition: opacity .2s; }
     .sheet.show { opacity: 1; pointer-events: auto; }
-    .sheet-card { width: 100%; max-width: 380px; background: #18181b; border: 1px solid rgba(255,255,255,0.1);
+    .sheet-card { width: 100%; max-width: 380px; background: var(--pad); border: 1px solid var(--line);
       border-radius: 20px; padding: 22px; transform: translateY(-12px); transition: transform .2s; }
     .sheet.show .sheet-card { transform: translateY(0); }
-    .sheet-title { font-size: 21px; font-weight: 800; letter-spacing: -0.01em; }
-    .sheet-sub { font-size: 13px; color: rgba(255,255,255,0.55); margin: 5px 0 16px; }
-    .name-input { width: 100%; font-size: 18px; font-weight: 600; padding: 15px 16px; border-radius: 13px;
-      background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.18); color: #fff; outline: none;
+    .sheet-title { font-size: 20px; font-weight: 500; letter-spacing: 0; }
+    .sheet-sub { font-size: 13px; color: var(--muted); margin: 5px 0 16px; }
+    .name-input { width: 100%; font-size: 18px; font-weight: 400; padding: 15px 16px; border-radius: 13px;
+      background: transparent; border: 1px solid var(--line); color: var(--ink); outline: none;
       user-select: text; -webkit-user-select: text; }
-    .name-input:focus { border-color: #fff; }
-    .sheet-q { font-size: 13px; color: rgba(255,255,255,0.55); margin: 16px 0 9px; }
-    .pills { display: flex; flex-wrap: wrap; gap: 8px; }
-    .pill { padding: 9px 15px; border-radius: 999px; font-size: 14px; font-weight: 600;
-      background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.14);
-      color: rgba(255,255,255,0.85); cursor: pointer; transition: background .15s, border-color .15s, color .15s; }
-    .pill.sel { background: #fff; color: #0a0a0a; border-color: #fff; }
-    .sheet-go { width: 100%; margin-top: 14px; background: #fff; color: #0a0a0a; }
-    .sheet-skip { width: 100%; margin-top: 6px; background: transparent; color: rgba(255,255,255,0.5);
-      font-weight: 600; font-size: 14px; padding: 11px; }
+    .name-input:focus { border-color: var(--ink); }
+    .sheet-go { width: 100%; margin-top: 14px; background: var(--ink); color: var(--pad); border-color: var(--ink); }
+    .sheet-skip { width: 100%; margin-top: 6px; background: transparent; border-color: transparent; color: var(--muted);
+      font-weight: 400; font-size: 14px; padding: 11px; }
   </style>
 </head>
 <body>
   <header>
-    <div class="title"><span>✏️</span><span id="appTitle">Draw → 3D</span></div>
+    <div class="title"><span id="appTitle">draw → 3d</span></div>
     <div class="status"><span class="dot" id="dot"></span><span id="statusText">connecting…</span></div>
   </header>
 
   <div class="stage">
     <div class="pad">
       <canvas id="c"></canvas>
-      <div class="hint" id="hint">✏️ Draw something</div>
+      <div class="hint" id="hint">draw a solid shape</div>
     </div>
   </div>
 
   <div class="tools">
-    <div class="swatches" id="swatches"></div>
     <div class="sizes" id="sizes"></div>
   </div>
   <div class="namechip" id="namechip" hidden></div>
   <div class="actions">
-    <button class="clear" id="clear">Clear</button>
-    <button class="send" id="send" disabled>Send →</button>
+    <button class="clear" id="clear">clear</button>
+    <button class="send" id="send" disabled>send →</button>
   </div>
 
-  <div class="toast" id="toast">✨ Sent!</div>
+  <div class="toast" id="toast">sent</div>
 
   <div class="sheet" id="sheet">
     <div class="sheet-card">
-      <div class="sheet-title">Sign your drawing ✍️</div>
-      <div class="sheet-sub">Your name shows in the scene. Asked once — then it remembers.</div>
-      <input id="nameInput" class="name-input" type="text" maxlength="16" placeholder="First name"
+      <div class="sheet-title">sign your drawing</div>
+      <div class="sheet-sub">your name shows in the scene. asked once — then it remembers.</div>
+      <input id="nameInput" class="name-input" type="text" maxlength="16" placeholder="first name"
              autocomplete="off" autocorrect="off" autocapitalize="words" enterkeyhint="go" />
-      <button class="sheet-go" id="sheetGo">Send</button>
-      <button class="sheet-skip" id="sheetSkip">Skip — send without a name</button>
+      <button class="sheet-go" id="sheetGo">send</button>
+      <button class="sheet-skip" id="sheetSkip">skip — send without a name</button>
     </div>
   </div>
 
@@ -149,19 +161,44 @@
     const MY_ID = drawerId();
     // Already drew in this room? The pad is not offered again — go straight
     // to the companion, which restores that creature from the same record.
-    try {
-      if (localStorage.getItem(SUBMISSION_KEY)) {
-        location.replace('/phone.html?room=' + room);
-      }
-    } catch {}
+    //
+    // This has to survive the BACK BUTTON, which is how a second drawing
+    // actually got submitted (user report): a back navigation restores this
+    // page from the bfcache with its dom and script state intact and does
+    // NOT re-run the script, so a load-time check alone never fires. The
+    // pageshow handler covers the restore, and the pad is disabled outright
+    // as a second line of defence in case navigation is refused.
+    function alreadyDrew() {
+      try { return !!localStorage.getItem(SUBMISSION_KEY); } catch { return false; }
+    }
+    function goToCompanion() {
+      location.replace('/phone.html?room=' + room);
+    }
+    function enforceSingleDrawing() {
+      if (!alreadyDrew()) return false;
+      // Freeze the pad even if the navigation is slow or blocked.
+      document.body.classList.add('spent');
+      const send = document.getElementById('send');
+      if (send) send.disabled = true;
+      goToCompanion();
+      return true;
+    }
+    enforceSingleDrawing();
+    // Fires on first load AND on every bfcache restore (event.persisted).
+    window.addEventListener('pageshow', () => { enforceSingleDrawing(); });
+    // Some browsers only surface a restore as a visibility change.
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) enforceSingleDrawing();
+    });
     const UP_TOPIC = TOPIC + '/up';   // scene → phone (two-way back channel)
     if (params.get('title')) { const t = params.get('title').slice(0, 40); document.getElementById('appTitle').textContent = t; document.title = t; }
 
-    // NOTE: the swatches stay functional here (this page is a standalone kit),
-    // but THIS project's world ignores color on ingest — the experience is
-    // black and white by ruling (docs/GENERATOR.md §ruling 2); strokes are
-    // rasterized to a binary mask regardless of the color drawn with.
-    const COLORS = ['#0a0a0a', '#e5484d', '#f5a623', '#34d058', '#3b82f6', '#a855f7', '#ec4899'];
+    // One ink, no picker (user ask). The world rasterizes every drawing to
+    // a binary mask — the experience is black and white by ruling
+    // (docs/GENERATOR.md §ruling 2) — so a palette only ever promised
+    // something that never arrived. Strokes still carry `color` on the wire
+    // so the kit's own payload shape is unchanged.
+    const INK    = '#353534';   // WORLD.ink
     const SIZES  = [4, 8, 16];
 
     // ── Canvas (hi-dpi) ─────────────────────────────────────────────────────
@@ -178,7 +215,7 @@
 
     // strokes stored NORMALISED (0..1) so the scene can redraw at any size
     let strokes = [], cur = null;
-    let color = COLORS[0], size = SIZES[1];
+    let size = SIZES[1];
 
     function redraw() {
       ctx.clearRect(0, 0, W, H);
@@ -201,7 +238,7 @@
     };
     cv.addEventListener('pointerdown', (e) => {
       cv.setPointerCapture(e.pointerId);
-      cur = { color, width: size, pts: [pt(e)] };
+      cur = { color: INK, width: size, pts: [pt(e)] };
       document.getElementById('hint').style.opacity = '0';
       redraw();
     });
@@ -216,13 +253,6 @@
     cv.addEventListener('pointercancel', endStroke);
 
     // ── Tool UI ─────────────────────────────────────────────────────────────
-    const swEl = document.getElementById('swatches');
-    COLORS.forEach((c, i) => {
-      const b = document.createElement('div');
-      b.className = 'sw' + (i === 0 ? ' sel' : ''); b.style.background = c;
-      b.onclick = () => { color = c; [...swEl.children].forEach(x => x.classList.remove('sel')); b.classList.add('sel'); };
-      swEl.appendChild(b);
-    });
     const szEl = document.getElementById('sizes');
     SIZES.forEach((s, i) => {
       const b = document.createElement('div');
@@ -283,6 +313,8 @@
 
     function publish() {
       if (!strokes.length || !connected) return;
+      // Last gate: one handset, one creature — whatever route reached here.
+      if (alreadyDrew()) { enforceSingleDrawing(); return; }
       const msg = { id: MY_ID, name: userName, strokes, ts: Date.now() };
       client.publish(TOPIC, JSON.stringify(msg), { qos: 0 });
       // Hand off to the companion's egg view: stash the drawing for the
