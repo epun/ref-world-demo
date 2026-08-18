@@ -83,11 +83,17 @@ replace it.** Nothing generates a new shape.
 | `src/net/` | Room protocol, WebSocket client, state sync |
 | `src/phone/` | The companion app — draw, wait, alive, emote wheel, minimap |
 | `src/ui/` | Shared HUD primitives, type scale |
+| `src/moderation/` | **Pure.** What may become a creature — the screen, and the ingest gate |
 | `src/dev/` | Ghost Panel skills. Gated on `isDev`, tree-shaken from the demo build |
 | `worker/` | Cloudflare Worker + Durable Object, one per room |
 
-`src/shape/` and `src/inflate/` import **nothing** from Three.js or the DOM. That purity is
-what lets both the phone and the world run them and get byte-identical results.
+`src/shape/`, `src/inflate/` and `src/moderation/` import **nothing** from Three.js or the
+DOM. That purity is what lets both the phone and the world run them and get byte-identical
+results — and, for moderation, what makes a decision reproducible after the event.
+
+Every drawing enters the world through **one** call: the ingest gate
+(`src/moderation/gate.ts`). Nothing spawns around it. What it screens, what it cannot, and
+what the operator has to do instead is [`MODERATION.md`](./MODERATION.md).
 
 ---
 
@@ -392,6 +398,7 @@ scene. We extend it via `ui.skills.register`:
 | `refworld.eyes` | Eye SDF params, spacing, size, live emote preview |
 | `refworld.egg` | Hatch timer, wobble amplitude, **crack progress scrub**, force hatch |
 | `refworld.world` | Scatter density, exclusion radius, grid jitter, shadow hardness |
+| `refworld.moderation` | **The operator layer** ([`MODERATION.md`](./MODERATION.md)) — hold arrivals for approval, approve/discard the queue, remove a creature in one tap, block a drawer |
 | `refworld.taste` | **The verification gates from TASTE §7** — achromatic toggle, value histogram, damping audit, uppercase scan, stillness probe, density probe, mark-set lint, grain check |
 
 That last row is the important one: a taste constraint that isn't a button doesn't survive a

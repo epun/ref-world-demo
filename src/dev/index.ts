@@ -20,6 +20,7 @@
 
 import type { Camera, Object3D, Scene, WebGLRenderer } from 'three';
 import type { CreatureManager } from '../creatures/manager';
+import type { GateEntry, ModerationConsole } from '../moderation/gate';
 import type { InkParams } from '../world/ink';
 import { EMOTE_NAMES } from '../net/protocol';
 import { springRegistry } from '../motion/spring';
@@ -130,6 +131,10 @@ export interface DevHandles {
   /** Spawn n deterministic fixture drawings. Defaults to an internal
    * implementation over FALLBACK_DRAWINGS when absent. */
   spawnFallback?(n: number): void;
+  /** The world's ingest gate (src/moderation/gate.ts). The moderation
+   * folder appears only when this is wired; without it the panel says so
+   * rather than pretending there is a screen. */
+  moderation?: ModerationConsole;
 }
 
 /** Offscreen readback resolution for the pixel gates. */
@@ -204,6 +209,79 @@ function sampleUiMarks(): MarkSample[] {
   }
   return out;
 }
+
+// ── moderation list rendering ────────────────────────────────────────────────
+// The operator rows are raw dom (ghost-panel has no list control): a label
+// plus small actions. TASTE §4 holds here as everywhere — hairline borders
+// and text, no filled panels, no shadows, no uppercase.
+
+interface ModerationAction {
+  label: string;
+  onClick(): void;
+}
+
+function moderationRow(label: string, actions: ModerationAction[]): HTMLElement {
+  const row = document.createElement('div');
+  row.style.cssText =
+    'display:flex;align-items:center;gap:6px;padding:3px 0;font:400 11px/1.3 ui-sans-serif,system-ui,sans-serif;';
+  const text = document.createElement('span');
+  text.textContent = label;
+  text.style.cssText = 'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:0.85;';
+  row.appendChild(text);
+  for (const action of actions) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = action.label;
+    button.style.cssText =
+      'background:transparent;color:inherit;border:1px solid currentColor;border-radius:9px;padding:1px 7px;font:inherit;cursor:pointer;opacity:0.75;';
+    button.addEventListener('click', action.onClick);
+    row.appendChild(button);
+  }
+  return row;
+}
+
+interface ModerationList {
+  element: HTMLElement;
+  render(rows: { label: string; actions: ModerationAction[] }[]): void;
+}
+
+function createModerationList(title: string, emptyText: string): ModerationList {
+  const element = document.createElement('div');
+  element.style.cssText = 'margin:4px 0 8px;';
+  const heading = document.createElement('div');
+  heading.textContent = title;
+  heading.style.cssText =
+    'font:400 10px/1.4 ui-sans-serif,system-ui,sans-serif;opacity:0.55;border-bottom:1px solid currentColor;padding-bottom:2px;';
+  const body = document.createElement('div');
+  element.append(heading, body);
+  return {
+    element,
+    render(rows): void {
+      body.textContent = '';
+      if (rows.length === 0) {
+        const empty = document.createElement('div');
+        empty.textContent = emptyText;
+        empty.style.cssText =
+          'padding:3px 0;font:400 11px/1.3 ui-sans-serif,system-ui,sans-serif;opacity:0.45;';
+        body.appendChild(empty);
+        return;
+      }
+      for (const row of rows) body.appendChild(moderationRow(row.label, row.actions));
+    },
+  };
+}
+
+/** How an entry reads in the operator lists: who drew it, and why it is
+ * here. Ids are long, so only the tail is shown when there is no name. */
+function moderationLabel(entry: GateEntry): string {
+  const who = entry.name ?? entry.id.slice(-6);
+  if (entry.verdict === 'allow') return who;
+  const reason = entry.reason ?? entry.verdict;
+  return `${who} — ${reason}`;
+}
+
+/** Longest list length the panel draws: an operator scans, never scrolls. */
+const MODERATION_ROWS = 12;
 
 /** How many fallback creatures one button press spawns. */
 const FALLBACK_SPAWN_COUNT = 3;
@@ -553,6 +631,101 @@ export async function initDevPanel(
       return { folder };
     },
     teardown: (panelUi) => panelUi.panel.removeFolder('demo'),
+  });
+
+  // ── refworld.moderation — the operator layer (docs/MODERATION.md) ────────
+  // The automatic screen refuses one stereotyped mark and holds another;
+  // everything else a public installation needs is a person with one tap.
+  // These rows are that person's hands: take a creature off the projection,
+  // block the handset that sent it, or put every arrival behind approval
+  // for the length of a live event.
+
+  ui.skills.register({
+    ...metaOf('refworld.moderation'),
+    apply: (panelUi) => {
+      const folder = panelUi.addFolder('moderation');
+      const gate = handles.moderation;
+      if (!gate) {
+        folder.addInfo('no ingest gate in this world build', 'moderation-missing');
+        return { folder };
+      }
+
+      folder.addInfo('', 'moderation-readout');
+      folder.addCheckbox('hold arrivals', {
+        value: gate.holdAll(),
+        id: 'moderation-hold',
+        tooltip: 'queue every new drawing until a person approves it',
+        onChange: (on) => gate.setHoldAll(on),
+      });
+
+      const waiting = createModerationList('waiting for approval', 'nothing waiting');
+      folder.addRaw(waiting.element);
+      folder.addButtonRow([
+        { label: 'approve all', onClick: () => gate.approveAll() },
+        { label: 'discard all', onClick: () => gate.discardAll() },
+      ]);
+
+      const live = createModerationList('in the world', 'no arrivals yet');
+      folder.addRaw(live.element);
+      folder.addButton('unblock every drawer', () => {
+        for (const id of gate.blocked()) gate.unblock(id);
+      });
+
+      const render = (): void => {
+        const pending = gate.pending();
+        const admitted = gate.admitted();
+        const last = gate.log()[0];
+        folder
+          .get('moderation-readout')
+          ?.setText?.(
+            [
+              `in the world ${admitted.length}`,
+              `waiting ${pending.length}`,
+              `blocked ${gate.blocked().length}`,
+              last
+                ? `last: ${moderationLabel(last)} — ${last.disposition}`
+                : 'nothing has arrived yet',
+            ].join(' · '),
+          );
+        waiting.render(
+          pending.slice(0, MODERATION_ROWS).map((entry) => ({
+            label: moderationLabel(entry),
+            actions: [
+              { label: 'approve', onClick: () => gate.approve(entry.id) },
+              { label: 'discard', onClick: () => gate.discard(entry.id) },
+              { label: 'block', onClick: () => gate.block(entry.id) },
+            ],
+          })),
+        );
+        live.render(
+          admitted.slice(0, MODERATION_ROWS).map((entry) => ({
+            label: moderationLabel(entry),
+            actions: [
+              // One tap takes the thing off the projection.
+              { label: 'remove', onClick: () => gate.remove(entry.id) },
+              { label: 'block', onClick: () => gate.block(entry.id) },
+            ],
+          })),
+        );
+      };
+      render();
+      const unsubscribe = gate.onChange(render);
+      // A creature can also leave by the population guard or a clear-all,
+      // which the gate never hears about; a low-cadence repaint keeps the
+      // list honest without polling every frame.
+      let clockMs = 0;
+      handles.onFrame((dt) => {
+        clockMs += dt;
+        if (clockMs < 1000) return;
+        clockMs = 0;
+        render();
+      });
+      return { folder, unsubscribe };
+    },
+    teardown: (panelUi, handle) => {
+      (handle as { unsubscribe?: () => void } | undefined)?.unsubscribe?.();
+      panelUi.panel.removeFolder('moderation');
+    },
   });
 
   // ── refworld.environment — the right-hand environment variables ───────────

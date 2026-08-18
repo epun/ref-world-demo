@@ -16,10 +16,12 @@
  * document.hidden. Renderer and egg dispose on unmount.
  */
 
-import { PerspectiveCamera, Scene, WebGLRenderer } from 'three';
+import { Color, PerspectiveCamera, Scene, WebGLRenderer } from 'three';
 import { createEgg, EGG_HEIGHT } from '../../egg/egg';
 import type { StrokeList } from '../../shape/types';
 import { MOTION, WORLD, SURFACE } from '../../taste/tokens';
+import { GrainPass } from '../../world/grain';
+import { InkPass } from '../../world/ink';
 import { createLighting } from '../../world/lighting';
 import type { Screen } from '../states';
 
@@ -205,7 +207,16 @@ export function mountWaitScreen(
   renderer.setClearAlpha(0); // the screen's ground shows through
 
   const scene = new Scene();
+  // The egg renders through the WORLD's post chain (user ask): toon bands,
+  // wobbled contour lines, hatching, paper grain — the same InkPass and
+  // GrainPass the projection runs, so the egg in your hand is the egg on
+  // the wall. The quantizer needs paper behind the subject (it grades a
+  // rendered frame, not an alpha cut-out), so the scene carries the
+  // screen's own ground value and the canvas reads as part of the page.
+  scene.background = new Color(SURFACE.ground);
   scene.add(createLighting().group, egg.group);
+  const ink = new InkPass();
+  const grain = new GrainPass();
 
   const camera = new PerspectiveCamera(CAMERA_FOV, 0.85, 0.1, 100);
   camera.position.set(
@@ -220,6 +231,9 @@ export function mountWaitScreen(
     const w = Math.max(1, Math.round(rect.width));
     const h = Math.max(1, Math.round(rect.height));
     renderer.setSize(w, h, false);
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    ink.setSize(w, h, dpr);
+    grain.setSize(w, h, dpr);
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
   };
@@ -265,7 +279,7 @@ export function mountWaitScreen(
     egg.crack(crackTeaser(p));
 
     egg.update(dt, now);
-    renderer.render(scene, camera);
+    grain.compose(renderer, ink.render(renderer, scene, camera, now), now);
   };
 
   // Pause the loop while hidden (battery); resume without a dt lurch.
@@ -302,6 +316,7 @@ export function mountWaitScreen(
       document.removeEventListener('visibilitychange', onVisibility);
       observer.disconnect();
       egg.dispose();
+      ink.dispose();
       renderer.dispose();
       root.remove();
     },

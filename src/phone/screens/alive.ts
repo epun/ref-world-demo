@@ -135,6 +135,7 @@ function ensureStyle(): void {
   width: 100%;
   height: 100%;
   display: block;
+  transition: transform ${MOTION.tertiaryMs}ms ${MOTION.settleCurve};
 }
 .alive-emote-glyph {
   /* Native emoji color — the taste's carve-out. No fill override, so the
@@ -143,19 +144,29 @@ function ensureStyle(): void {
     "apple color emoji", "segoe ui emoji", "noto color emoji", sans-serif;
   user-select: none;
 }
+/*
+ * Two legible states (user ask). DEFAULT: a hairline ring around the
+ * emoji — the taste's border mark, nothing filled. PRESSED (while held,
+ * and held on briefly after the tap so the send is acknowledged): the ring
+ * thickens to a drawn-over line, its inside lifts to the light role so the
+ * button reads pushed in, and the mark settles a touch smaller. All on the
+ * settle curve over t.tertiary — no bounce, no cut, and the emoji itself
+ * never changes color.
+ */
 .alive-emote-ring {
-  transition: stroke-width ${MOTION.tertiaryMs}ms ${MOTION.settleCurve};
+  fill: transparent;
+  transition:
+    stroke-width ${MOTION.tertiaryMs}ms ${MOTION.settleCurve},
+    fill ${MOTION.tertiaryMs}ms ${MOTION.settleCurve};
 }
 .alive-emote-acked .alive-emote-ring,
-.alive-emote:active .alive-emote-glyph {
-  /* Native emoji color — the taste's carve-out. No fill override, so the
-     glyph paints with its own palette rather than the ink token. */
-  font-family:
-    "apple color emoji", "segoe ui emoji", "noto color emoji", sans-serif;
-  user-select: none;
+.alive-emote:active .alive-emote-ring {
+  stroke-width: 2.6;
+  fill: ${SURFACE.canvas};
 }
-.alive-emote-ring {
-  stroke-width: 2.4;
+.alive-emote-acked svg,
+.alive-emote:active svg {
+  transform: scale(0.92);
 }
 .alive-name {
   color: ${WORLD.ink};
@@ -209,7 +220,8 @@ function emoteButton(
   ring.setAttribute('cx', '26');
   ring.setAttribute('cy', '26');
   ring.setAttribute('r', '25');
-  ring.setAttribute('fill', 'none');
+  // Fill is owned by css: transparent at rest, the light role while
+  // pressed, so the button reads pushed in without a filled panel.
   ring.setAttribute('stroke', 'currentColor');
   ring.setAttribute('stroke-width', '1');
 

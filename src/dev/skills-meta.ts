@@ -27,6 +27,13 @@ export const DEV_SKILLS_META: readonly DevSkillMeta[] = [
       'presentation controls (docs/generator.md) — spawn fallback creatures, hatch all, pause/resume ai, clear, reset world, wander speed, hatch timer pause.',
   },
   {
+    id: 'refworld.moderation',
+    name: 'moderation',
+    category: 'refworld',
+    description:
+      'operator controls for what may become a creature — hold arrivals for approval, approve or discard the queue, remove a creature in one tap, block a drawer. the automatic screen (src/moderation/) sits under it.',
+  },
+  {
     id: 'refworld.environment',
     name: 'environment',
     category: 'refworld',

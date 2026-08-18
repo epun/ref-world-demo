@@ -252,6 +252,10 @@ export interface CreatureManager {
    * the slot a character root, character after. */
   positions(): { x: number; z: number; r: number; kind: 'egg' | 'character' }[];
   count(): number;
+  /** Is a slot with this id still live? The moderation gate uses it to
+   * drop rows for creatures the population guard has already retired
+   * (src/moderation/gate.ts). */
+  has(id: string): boolean;
   update(dt: number, nowMs: number): void;
   clear(id: string): void;
   clearAll(): void;
@@ -771,6 +775,10 @@ export function createCreatureManager(world: WorldHandles): CreatureManager {
           );
         }
       }
+    },
+
+    has(id): boolean {
+      return slots.has(id);
     },
 
     clear(id): void {

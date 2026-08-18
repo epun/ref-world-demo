@@ -18,7 +18,8 @@
 import { Vector3 } from 'three';
 import { installHoverNames } from './creatures/hover';
 import { createCreatureManager } from './creatures/manager';
-import { connectWorldFeed } from './net/drawFeed';
+import { connectWorldFeed, type IncomingDrawing } from './net/drawFeed';
+import { createIngestGate } from './moderation/gate';
 import { EMOTE_NAMES, isRoomCode, roomCode } from './net/protocol';
 import { mountDrawScreen } from './draw/ui';
 import { MOTION, SURFACE, WORLD } from './taste/tokens';
@@ -171,6 +172,27 @@ function main(): void {
   const creatures = createCreatureManager(world);
   installHoverNames(canvas, world.cameraRig.camera, creatures);
 
+  // ── moderation gate (src/moderation/) ─────────────────────────────────────
+  // EVERY drawing enters the world through this one call — the phone feed
+  // below and the local overlay both offer here, never spawning directly.
+  // A refusal is silent: no text on the projection, no reply to the phone.
+  // The only trace is the ghost panel's moderation readout (user ask: never
+  // reward the drawing with attention).
+  const gate = createIngestGate<IncomingDrawing & { hatchMs: number }>({
+    spawn: (d) =>
+      creatures.spawn(d.id, d.strokes, {
+        ...(d.name !== null ? { name: d.name } : {}),
+        ...(d.personality !== null ? { personality: d.personality } : {}),
+        hatchMs: d.hatchMs,
+      }),
+    clear: (id) => creatures.clear(id),
+    live: (id) => creatures.has(id),
+  });
+  // Tiny always-on probe, same family as __refworldCreatures in the manager:
+  // the moderation smoke reads decisions and drives hold/block from outside
+  // the panel. Read-only handles to what the panel already exposes.
+  (window as Window & { __refworldModeration?: unknown }).__refworldModeration = gate;
+
   // ── presentation tour (GENERATOR §scale+camera, PLAN §7.1) ────────────────
   // Autonomous drift between clusters, lone wanderers, and wide scenic beats.
   // Manual is the default; 't' toggles; the ghost panel has a mode select.
@@ -244,11 +266,21 @@ function main(): void {
         // Weather handle from a parallel workstream — forwarded as-is and
         // feature-detected inside the panel, so this compiles either way.
         environment: (world as { environment?: unknown }).environment,
+        // The operator layer reads and acts through the same gate the
+        // feed goes through (src/moderation/gate.ts).
+        moderation: gate,
         spawnFallback: (n) => {
           for (let i = 0; i < n; i++) {
             const strokes = m.FALLBACK_DRAWINGS[fallbackIndex % m.FALLBACK_DRAWINGS.length];
             if (!strokes) continue;
-            creatures.spawn(`dev-fallback-${fallbackIndex++}`, strokes, {
+            // Through the gate like everything else, so the operator list
+            // shows every creature standing in the world — not just the
+            // ones a phone sent.
+            gate.offer({
+              id: `dev-fallback-${fallbackIndex++}`,
+              name: null,
+              personality: null,
+              strokes,
               hatchMs: m.FALLBACK_HATCH_MS,
             });
           }
@@ -265,11 +297,7 @@ function main(): void {
   void connectWorldFeed({
     room,
     onDrawing: (d) => {
-      creatures.spawn(d.id, d.strokes, {
-        name: d.name,
-        personality: d.personality,
-        hatchMs: HATCH_TIMER_MS,
-      });
+      gate.offer({ ...d, hatchMs: HATCH_TIMER_MS });
     },
     // A phone tapped its emote wheel. The drawer id it sends is the id the
     // world spawned it under, so the emote lands on THAT creature — and on
@@ -345,9 +373,17 @@ function main(): void {
 
   const drawScreen = mountDrawScreen(overlay, {
     onDone: (strokes) => {
-      const ok = creatures.spawn(`local-${localCount++}`, strokes, {
+      // Same gate as the phones: the local pad is not a bypass.
+      const entry = gate.offer({
+        id: `local-${localCount++}`,
+        name: null,
+        personality: null,
+        strokes,
         hatchMs: HATCH_TIMER_MS,
       });
+      // A refused or held drawing closes the overlay exactly like an
+      // admitted one — the drawer is told nothing either way.
+      const ok = entry.disposition !== 'unusable';
       if (!ok) {
         // No usable ink — keep the overlay open with one small lowercase line.
         hint.classList.add('visible');

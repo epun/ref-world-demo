@@ -68,6 +68,10 @@ declare module 'ghost-panel' {
     /** Returns the button-row handle, not the folder (see folder.js). */
     addButtonRow(buttons: GhostButtonRowEntry[]): unknown;
     addInfo(text: string, id?: string): GhostFolder;
+    /** Escape hatch for custom ui (folder.js addRaw): appends a dom node
+     * to the folder body. Used by the moderation lists, which need rows
+     * that come and go. */
+    addRaw(element: HTMLElement): GhostFolder;
     get(id: string): GhostControlHandle | undefined;
     collapse(): void;
     expand(): void;
