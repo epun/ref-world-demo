@@ -24,6 +24,7 @@
  */
 
 import { Box3, OrthographicCamera, Scene, Vector3, WebGLRenderer } from 'three';
+import { BUBBLE_EMOJI } from '../../character/bubble';
 import { CHARACTER_HEIGHT, createCharacter, type Character } from '../../character/character';
 import { sampleDrift } from '../../motion/ambient';
 import { Spring } from '../../motion/spring';
@@ -54,25 +55,6 @@ import type { Screen } from '../states';
 // Stroke-only paths in a 24-unit box, all soft curves and round joins —
 // faces and gestures reduced to marks, wordless (TASTE §4, §5).
 
-const EMOTE_ICONS: Record<EmoteName, string> = {
-  // upturned crescent pair — closed, content eyes
-  happy: 'M5.6 12.2c1.1 2 3.4 2 4.5 0 M13.9 12.2c1.1 2 3.4 2 4.5 0',
-  // downturned pair plus one small tear curve
-  sad: 'M5.6 13.8c1.1-2 3.4-2 4.5 0 M13.9 13.8c1.1-2 3.4-2 4.5 0 M18.6 16.2c.5 1.3.3 2.3-.6 2.9',
-  // drooping lids low in the box, a soft z-curl floating above
-  sleepy:
-    'M4.8 14.6c1.4.9 3 .9 4.4 0 M11.2 14.6c1.4.9 3 .9 4.4 0 M15.2 5.1c1.4-.4 2.8-.4 4.2-.1-1.5 1.3-2.8 2.8-3.9 4.4 1.4.3 2.8.3 4.1-.1',
-  // inward-slanting brow strokes over two short pressed marks
-  angry:
-    'M6 9.4c1.6.6 3 1.4 4.2 2.5 M18 9.4c-1.6.6-3 1.4-4.2 2.5 M7.9 15.3c.7.4 1.5.6 2.3.7 M16.1 15.3c-.7.4-1.5.6-2.3.7',
-  // two wide round eyes and a small open mouth
-  surprised: 'M8 8.15a2.05 2.05 0 1 0 .01 0 M16 8.15a2.05 2.05 0 1 0 .01 0 M12 14.7a1.5 1.9 0 1 0 .01 0',
-  // tilted figure squiggle over a ground swing
-  dance:
-    'M10.4 4.9c2.9-1.1 4.9.3 4.4 2.4-.5 2-3.1 2.5-4.4 4.3-1.3 1.8-.1 3.6 2 3.5 1.9-.1 3.2-1.4 3.9-3 M6.9 18.8c3.2 1.1 6.6 1 9.8-.2',
-  // a bowed arm with a curled hand, two radiating arcs beside it
-  wave: 'M8.9 19.1c-.5-3.6-.2-7.2.9-10.7.4-1.2 1.5-1.8 2.5-1.3 M14.3 8.6c1.1 1.1 1.9 2.4 2.3 3.9 M17.2 6.6c1.4 1.4 2.4 3.1 2.9 5.1',
-};
 
 /** Emote buttons sit on this radius, as % of the wheel container. */
 const WHEEL_RADIUS_PCT = 42;
@@ -154,11 +136,25 @@ function ensureStyle(): void {
   height: 100%;
   display: block;
 }
+.alive-emote-glyph {
+  /* Native emoji color — the taste's carve-out. No fill override, so the
+     glyph paints with its own palette rather than the ink token. */
+  font-family:
+    "apple color emoji", "segoe ui emoji", "noto color emoji", sans-serif;
+  user-select: none;
+}
 .alive-emote-ring {
   transition: stroke-width ${MOTION.tertiaryMs}ms ${MOTION.settleCurve};
 }
 .alive-emote-acked .alive-emote-ring,
-.alive-emote:active .alive-emote-ring {
+.alive-emote:active .alive-emote-glyph {
+  /* Native emoji color — the taste's carve-out. No fill override, so the
+     glyph paints with its own palette rather than the ink token. */
+  font-family:
+    "apple color emoji", "segoe ui emoji", "noto color emoji", sans-serif;
+  user-select: none;
+}
+.alive-emote-ring {
   stroke-width: 2.4;
 }
 .alive-name {
@@ -217,18 +213,20 @@ function emoteButton(
   ring.setAttribute('stroke', 'currentColor');
   ring.setAttribute('stroke-width', '1');
 
-  const group = document.createElementNS(SVG_NS, 'g');
-  group.setAttribute('transform', 'translate(14 14)');
-  const path = document.createElementNS(SVG_NS, 'path');
-  path.setAttribute('d', EMOTE_ICONS[name]);
-  path.setAttribute('fill', 'none');
-  path.setAttribute('stroke', 'currentColor');
-  path.setAttribute('stroke-width', '1.6');
-  path.setAttribute('stroke-linecap', 'round');
-  path.setAttribute('stroke-linejoin', 'round');
-  group.appendChild(path);
+  // The emoji itself, centred in the ring (user ask). Emoji in native
+  // color is the taste's one explicit carve-out (TASTE §6) — the same
+  // glyph set the world paints into the speech bubble, so the button and
+  // the bubble it triggers always agree.
+  const glyph = document.createElementNS(SVG_NS, 'text');
+  glyph.setAttribute('class', 'alive-emote-glyph');
+  glyph.setAttribute('x', '26');
+  glyph.setAttribute('y', '26');
+  glyph.setAttribute('text-anchor', 'middle');
+  glyph.setAttribute('dominant-baseline', 'central');
+  glyph.setAttribute('font-size', '26');
+  glyph.textContent = BUBBLE_EMOJI[name];
 
-  svg.append(ring, group);
+  svg.append(ring, glyph);
   button.appendChild(svg);
 
   button.addEventListener('click', () => {

@@ -33,6 +33,7 @@ import {
 import { VARIATION_BULGE, VARIATION_SCALE_XZ } from '../world/scatter';
 import { createEgg, EGG_RADIUS, type Egg } from '../egg/egg';
 import { startHatch, type HatchHandle } from '../egg/hatch';
+import type { EmoteName } from '../net/protocol';
 import type { StrokeList } from '../shape/types';
 import { MOTION } from '../taste/tokens';
 import type { WorldHandles } from '../world/scene';
@@ -234,6 +235,13 @@ export interface CreatureManager {
   /** Force a specific egg (or with no id, every ready egg) to hatch now. */
   hatch(id?: string): void;
   hatchAll(): void;
+  /**
+   * Play an emote on ONE creature, by the id it was spawned under — the
+   * phone's drawer id (src/net/emoteUplink.ts). Returns false when that id
+   * holds no hatched character yet (still an egg, or never arrived), so the
+   * caller can tell "not mine" from "played".
+   */
+  emote(id: string, emote: EmoteName): boolean;
   /** Most recently hatched character, for emote keys / camera framing. */
   latestCharacter(): Character | null;
   /** Named, hit-testable live creatures for the hover-name overlay. Only
@@ -499,6 +507,13 @@ export function createCreatureManager(world: WorldHandles): CreatureManager {
       for (const slot of slots.values()) {
         if (slot.phase === 'egg') beginHatch(slot);
       }
+    },
+
+    emote(id, emote): boolean {
+      const slot = slots.get(id);
+      if (!slot || slot.phase !== 'alive' || !slot.character) return false;
+      slot.character.emote(emote);
+      return true;
     },
 
     hoverTargets() {

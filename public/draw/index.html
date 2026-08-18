@@ -125,6 +125,35 @@
     // room from ?room= (or legacy ?topic=); everything sanitised
     const room = (params.get('room') || params.get('topic') || 'demo').replace(/[^a-z0-9_-]/gi, '') || 'demo';
     const TOPIC = TOPIC_PREFIX + room;
+
+    // ── one handset, one creature (user ruling) ──────────────────────────
+    // The drawer id is stable per device and travels as the drawing's id,
+    // so the world (which keys creatures by that id and replaces a slot of
+    // the same id) can never hold two creatures for this phone. These keys
+    // mirror src/phone/identity.ts — keep the two in step.
+    const DRAWER_KEY = 'refworld:drawer';
+    const SUBMISSION_KEY = 'refworld:submission:' + room;
+    function drawerId() {
+      try {
+        let id = localStorage.getItem(DRAWER_KEY);
+        if (!id) {
+          id = 'd' + Math.floor(Math.random() * 0xffffffff).toString(36)
+                   + Math.floor(Math.random() * 0xffff).toString(36);
+          localStorage.setItem(DRAWER_KEY, id);
+        }
+        return id;
+      } catch {
+        return 'd' + Math.random().toString(36).slice(2, 10);
+      }
+    }
+    const MY_ID = drawerId();
+    // Already drew in this room? The pad is not offered again — go straight
+    // to the companion, which restores that creature from the same record.
+    try {
+      if (localStorage.getItem(SUBMISSION_KEY)) {
+        location.replace('/phone.html?room=' + room);
+      }
+    } catch {}
     const UP_TOPIC = TOPIC + '/up';   // scene → phone (two-way back channel)
     if (params.get('title')) { const t = params.get('title').slice(0, 40); document.getElementById('appTitle').textContent = t; document.title = t; }
 
@@ -254,7 +283,7 @@
 
     function publish() {
       if (!strokes.length || !connected) return;
-      const msg = { id: Math.random().toString(36).slice(2, 9), name: userName, strokes, ts: Date.now() };
+      const msg = { id: MY_ID, name: userName, strokes, ts: Date.now() };
       client.publish(TOPIC, JSON.stringify(msg), { qos: 0 });
       // Hand off to the companion's egg view: stash the drawing for the
       // wait screen (3D egg painted with it), then navigate. Short delay so
@@ -264,6 +293,9 @@
         // synthesis with the same identity the world spawns under, so both
         // render the identical creature.
         sessionStorage.setItem('refworld:handoff', JSON.stringify({ id: msg.id, name: userName || null, room, strokes: msg.strokes, ts: msg.ts }));
+        // Persisted too: a reload (or coming back later) must land on the
+        // creature this handset already made, never on an empty pad.
+        localStorage.setItem(SUBMISSION_KEY, JSON.stringify({ id: msg.id, name: userName || null, strokes: msg.strokes, ts: msg.ts }));
       } catch {}
       strokes = []; cur = null; redraw();
       document.getElementById('send').disabled = true;

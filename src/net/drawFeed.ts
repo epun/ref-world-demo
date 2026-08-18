@@ -12,7 +12,13 @@
  */
 
 import type { Stroke, StrokeList } from '../shape/types';
+import { EMOTE_NAMES, type EmoteName } from './protocol';
+import { readEmoteMessage } from './emoteUplink';
 import type { DrawFeed, DrawFeedOptions, FeedDrawing, FeedStroke } from './vendor/draw-feed';
+
+const EMOTE_SET = new Set<string>(EMOTE_NAMES);
+/** Guard for the wire: only the protocol's own emote names pass. */
+export const isEmoteName = (v: string): boolean => EMOTE_SET.has(v);
 
 /** Their width unit → fraction of canvas (matches vendor strokesToCanvas). */
 const WIDTH_REFERENCE_PX = 320;
@@ -92,6 +98,10 @@ export function normalizeDrawing(d: FeedDrawing): IncomingDrawing | null {
 export interface WorldFeedOptions {
   room: string;
   onDrawing(d: IncomingDrawing): void;
+  /** A phone tapped its emote wheel: `from` is the drawer id the world
+   * spawned that creature under (src/net/emoteUplink.ts). Optional — the
+   * same-device flow never sees one. */
+  onEmote?(e: { from: string; emote: EmoteName }): void;
   onStatus?(state: 'on' | 'off' | '', text: string): void;
   broker?: string;
 }
@@ -111,6 +121,14 @@ export async function connectWorldFeed(opts: WorldFeedOptions): Promise<DrawFeed
       room: opts.room,
       throttleMs: 350, // pace floods so spawns never spike the render loop
       onDrawing: (d) => {
+        // One topic, two message shapes: a drawing carries strokes, an
+        // emote carries { type: 'emote' }. Route before normalizing, since
+        // an emote has no strokes and would otherwise be dropped as junk.
+        const emote = readEmoteMessage(d, isEmoteName);
+        if (emote) {
+          opts.onEmote?.(emote);
+          return;
+        }
         const normalized = normalizeDrawing(d);
         if (normalized) opts.onDrawing(normalized);
       },

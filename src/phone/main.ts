@@ -10,11 +10,13 @@
 
 import type { PoseMsg, RosterMsg } from '../net/protocol';
 import { feedStrokeToStroke } from '../net/drawFeed';
+import { createEmoteUplink } from '../net/emoteUplink';
 import type { StrokeList } from '../shape/types';
 import { SURFACE } from '../taste/tokens';
 import { mountAliveScreen, type AliveScreenHandle } from './screens/alive';
 import { mountDraw } from './screens/draw';
 import { mountWaitScreen, type WaitScreenHandle } from './screens/wait';
+import { drawerId, readSubmission } from './identity';
 import { createSession } from './session';
 import { createMachine } from './states';
 
@@ -63,6 +65,18 @@ function readHandoff(): Handoff | null {
 async function boot(): Promise<void> {
   const session = await createSession();
 
+  // The room this handset joined, and who it is. The drawer id is stable
+  // per device, so the creature it addresses is always its own — and only
+  // ever one (src/phone/identity.ts).
+  const room = (new URLSearchParams(location.search).get('room') ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '')
+    .slice(0, 8);
+  const me = drawerId();
+  // The uplink is what carries a tap to the world; null with no mqtt on the
+  // page (or no room), and every call site tolerates that.
+  const uplink = room.length > 0 ? createEmoteUplink(room, me) : null;
+
   let strokes: StrokeList = [];
   /** Publish id from the draw-page handoff — the creature's identity. */
   let identity: string | null = null;
@@ -104,7 +118,14 @@ async function boot(): Promise<void> {
         strokes,
         // Same identity the world spawned under → the identical creature.
         ...(identity !== null ? { identity } : {}),
-        onEmote: (emote) => session.sendEmote(emote),
+        onEmote: (emote) => {
+          // Two paths, deliberately: the session keeps the local echo (and
+          // will carry the relay when one is deployed), while the uplink is
+          // what reaches the world today — the phone publishes on the room's
+          // own mqtt topic, the transport the drawings already prove works.
+          session.sendEmote(emote);
+          uplink?.send(emote);
+        },
       });
       if (lastPose) handle.setPose(lastPose);
       if (lastRoster) handle.setRoster(lastRoster);
@@ -131,6 +152,26 @@ async function boot(): Promise<void> {
     hatchInMs = 20000;
     session.sendDrawing(handedOff.strokes);
     machine.goTo('wait');
+  } else if (room.length > 0) {
+    // No fresh handoff, but this handset already drew in this room: restore
+    // ITS creature rather than offering a second pad (user ruling — one
+    // drawing, one creature). Reloading the companion must not mint a new
+    // inhabitant, and the emote wheel must keep addressing the old one.
+    const previous = readSubmission(room);
+    if (previous) {
+      const restored: StrokeList = [];
+      for (const fs of previous.strokes) {
+        const stroke = feedStrokeToStroke(fs as { pts: [number, number][]; width?: number });
+        if (stroke) restored.push(stroke);
+      }
+      if (restored.length > 0) {
+        strokes = restored;
+        identity = previous.id;
+        hatchInMs = 0; // it hatched long ago in the world; skip the wait
+        session.sendDrawing(restored);
+        machine.goTo('alive');
+      }
+    }
   }
 
   session.onState((msg) => {

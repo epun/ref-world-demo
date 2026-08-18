@@ -248,10 +248,10 @@ function main(): void {
           for (let i = 0; i < n; i++) {
             const strokes = m.FALLBACK_DRAWINGS[fallbackIndex % m.FALLBACK_DRAWINGS.length];
             if (!strokes) continue;
-            const ok = creatures.spawn(`dev-fallback-${fallbackIndex++}`, strokes, {
+            creatures.spawn(`dev-fallback-${fallbackIndex++}`, strokes, {
               hatchMs: m.FALLBACK_HATCH_MS,
             });
-                }
+          }
         },
       }, { showOnMount }),
     );
@@ -265,11 +265,17 @@ function main(): void {
   void connectWorldFeed({
     room,
     onDrawing: (d) => {
-      const ok = creatures.spawn(d.id, d.strokes, {
+      creatures.spawn(d.id, d.strokes, {
         name: d.name,
         personality: d.personality,
         hatchMs: HATCH_TIMER_MS,
       });
+    },
+    // A phone tapped its emote wheel. The drawer id it sends is the id the
+    // world spawned it under, so the emote lands on THAT creature — and on
+    // nobody else's (src/net/emoteUplink.ts).
+    onEmote: ({ from, emote }) => {
+      creatures.emote(from, emote);
     },
   });
 

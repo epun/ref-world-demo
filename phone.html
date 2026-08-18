@@ -31,6 +31,9 @@
     </style>
   </head>
   <body>
+    <!-- vendored MQTT client, same tag the world and draw pages carry: the
+         emote uplink publishes on the room's own topic (src/net/emoteUplink.ts) -->
+    <script src="/vendor/mqtt.min.js"></script>
     <script type="module" src="/src/phone/main.ts"></script>
   </body>
 </html>
