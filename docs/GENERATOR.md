@@ -73,15 +73,24 @@ optional ears/antennae/horns/tail per the generator brief) instead of being infl
 verbatim. The synthesized silhouette goes through the *same* inflate pipeline — pure,
 deterministic, same strokes → same creature on every device.
 
-Recognition is carried by two channels:
-- **Motif echo** — your drawing's proportions, limb count and placement, and top-of-head
-  appendages recur in the creature's anatomy. Draw something tall with antennae and two
-  legs → a tall two-legged creature with antennae.
-- **Marking** — the drawing itself is painted onto the body shell (the egg's painted
-  treatment), so the literal mark travels with the creature.
+Recognition is carried by the body itself *(revised 2026-08-18 — one channel, not two)*:
+- **The silhouette IS the drawing** (§1a) — the creature's body is the drawing's own shape,
+  filled, smoothed and chunkified, with the motif echo (proportions, limb count and
+  placement, top-of-head appendages) shaping its anatomy. Draw something tall with antennae
+  and two legs → a tall two-legged creature with antennae.
+- **No painted marking on the creature.** *(user decision, 2026-08-18: "after the egg
+  hatches lets remove the actual drawing on the creature".)* The hatched body is the plain
+  character material — one solid near-black mass carrying a single eye and nothing else.
+  A drawing printed across the fill contradicts the avatar spec's "ONE uniform solid black
+  fill — no patches, spots, stripes, or two-tone markings anywhere; the only white is the
+  eyes" (`docs/reference/avatar-prompt.md`). `src/character/marking.ts` is deleted; both
+  construction paths (inflate and blend-shell) build the body with the eye as its only mark.
 
-The egg still wears the raw drawing. The verbatim-inflation path stays in the codebase as
-the `fidelity 0` end of the dial (dev-tunable), but the shipped default is interpretation.
+**The painted drawing is the egg's alone.** The egg still wears the raw drawing and paints
+it on over the primary token as it spawns — that is the egg's whole point, and it is what
+makes the hatch a reveal rather than a restatement. The verbatim-inflation path stays in the
+codebase as the `fidelity 0` end of the dial (dev-tunable), but the shipped default is
+interpretation.
 
 ### 2. Creature color — none. Black and white, by user decision
 
@@ -94,8 +103,8 @@ since ruled: no color at all — the whole experience is black and white for now
   self-marker render in ink/light values instead. The token stays defined in
   `tokens.ts` for when color returns; nothing may reference it until then.
 - Creature bodies are uniform dark ink (`CHARACTER.body`); identity comes from silhouette,
-  markings, name, and behavior — which is truer to the corpus (solid black birds
-  distinguished by posture alone) anyway.
+  stance, name, and behavior — which is truer to the corpus (solid black birds
+  distinguished by posture alone) anyway. No markings: see §1's revision.
 
 Under a future chromatic Ref collection, color re-enters through the ref-config layer,
 not through per-creature inputs.

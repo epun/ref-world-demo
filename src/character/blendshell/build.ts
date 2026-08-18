@@ -6,7 +6,8 @@
  * interpretDrawing runs) → specFromMotifs → shell + ink outline + reactive
  * IK stepping + verlet secondary. Eyes mount on the head part's front
  * surface (solved from the part table's CPU SDF at the head's +z); the
- * marking box-projects as before; the bubble anchors above the shell top.
+ * bubble anchors above the shell top. The body carries no printed drawing —
+ * it is one solid near-black mass (GENERATOR §1a).
  *
  * Emote composition note: in this mode the v1 vertex-deform is NOT injected
  * (the snap shader owns the vertex stage, and the IK owns the legs). The
@@ -31,7 +32,6 @@ import { runEmote, type EmoteRun } from '../emotes';
 import { applyEyes } from '../eyes';
 import type { Expression, ExpressionName } from '../expressions';
 import { extractMotifs, strokeSeed } from '../interpret';
-import { applyMarking } from '../marking';
 import { createOutline } from './outline';
 import { createSecondary } from './secondary';
 import { specBounds, specFromMotifs, specHeight, type V3 } from './spec';
@@ -73,10 +73,6 @@ export function createBlendshellCharacter(
 
   const shell = createShell(spec);
   const outline = createOutline(shell.geometry, shell.table, height, seed);
-  // Recognition channel 2: the original drawing as a light knockout, box-
-  // projected over the shell's rest bounding box (chains onto the snap hook).
-  const box = shell.geometry.boundingBox!;
-  const marking = applyMarking(shell.material, strokes, box);
 
   // group (drift) → body (emote transforms about the base) → unit (spec→world scale)
   const unit = new Group();
@@ -192,7 +188,6 @@ export function createBlendshellCharacter(
       unit.remove(shell.mesh, outline.mesh);
       outline.dispose();
       shell.dispose();
-      marking?.dispose();
       springs.squash.dispose();
       springs.leanX.dispose();
       springs.leanZ.dispose();

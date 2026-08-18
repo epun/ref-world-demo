@@ -285,8 +285,8 @@ describe('interpretDrawing', () => {
   it('processes at fidelity 1: original strokes kept, analysis is the body', () => {
     const out = interpretDrawing(snowman, 1, OPTS);
     expect(out).not.toBeNull();
-    // §1a mask path: the strokes stay the ORIGINAL (egg + marking use them);
-    // only the analysis carries the processed body.
+    // §1a mask path: the strokes stay the ORIGINAL (the egg paint-on uses
+    // them); only the analysis carries the processed body.
     expect(out!.strokes).toBe(snowman);
     const source = analyze(snowman, OPTS)!;
     expect(JSON.stringify(out!.analysis.contour)).not.toBe(

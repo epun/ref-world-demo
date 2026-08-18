@@ -16,11 +16,11 @@
  * mask runs through the same pure tail (distance transform → contour →
  * skeleton → analyzeMask) that analyze() uses, so eyes, deformation, and
  * locomotion all work on the actual body. interpretDrawing returns the
- * ORIGINAL strokes untouched — they serve the egg paint-on and the marking
- * channel, while only the analysis drives the mesh.
- *
- * Recognition channel 2 (the drawing painted onto the body) lives in
- * ./marking.ts; the verbatim path survives as fidelity 0 (the dial's floor).
+ * ORIGINAL strokes untouched — they serve the egg paint-on (the egg is the
+ * only thing that wears the drawing), while only the analysis drives the
+ * mesh. The hatched creature carries no painted marking: its own silhouette
+ * IS the recognition (§1a). The verbatim path survives as fidelity 0 (the
+ * dial's floor).
  *
  * PURE module: no Three.js, no DOM, no Math.random, no Date. Same strokes →
  * same creature on every device (PLAN §6.3). All randomness is a seeded LCG
@@ -944,8 +944,8 @@ export function buildBody(
 // ── the pass ─────────────────────────────────────────────────────────────────
 
 export interface InterpretedDrawing {
-  /** The ORIGINAL strokes, untouched — they serve the egg paint-on and the
-   * marking channel. Only the analysis drives the body mesh. */
+  /** The ORIGINAL strokes, untouched — they serve the egg paint-on. Only
+   * the analysis drives the body mesh. */
   strokes: StrokeList;
   /** Analysis of the PROCESSED BODY — eyes and inflation work on the actual
    * silhouette (the drawing's own shape, §1a). */
