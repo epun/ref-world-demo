@@ -2,98 +2,223 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <!--
+    PHONE-STAGE §2 (one paper) + §4.1 (identical first paint).
+    This rule is the first thing in the document and runs before any script:
+    the seam to /phone.html is only invisible if there is nothing different to
+    flash to. #dfdfdf is SURFACE.ground (src/taste/tokens.ts).
+  -->
+  <style>html, body { background: #dfdfdf; }</style>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
   <title>draw → 3d</title>
   <style>
     /*
-     * Light paper, ink marks (user ask). Values are the project's tokens
-     * (src/taste/tokens.ts): the page ground is the world's own paper
-     * SURFACE.ground, the pad is the lighter drawing ground SURFACE.canvas,
-     * and every mark is WORLD.ink. No color picker — the world rasterizes
-     * to a binary mask anyway, so a palette only ever promised something
-     * the experience does not keep.
+     * The stage (docs/PHONE-STAGE.md §2). One surface that never moves; what
+     * changes is which elements occupy it. The pad IS the core — the same
+     * object that becomes the egg on the companion — so it is centred on the
+     * viewport, sized only by --core-side, and never translated or scaled.
+     *
+     * Every colour and duration below is MIRRORED from src/taste/tokens.ts.
+     * This page is a standalone document in public/ and cannot import from
+     * src/, so the duplication is made explicit here rather than scattered as
+     * magic numbers. Keep the two in step.
      */
     :root {
-      --paper: #dfdfdf;   /* SURFACE.ground — the world's field */
+      /* ── palette — src/taste/tokens.ts SURFACE / WORLD ──────────────── */
+      --paper: #dfdfdf;   /* SURFACE.ground — the world's field, one paper end to end */
       --pad:   #e9ebe9;   /* SURFACE.canvas — the drawing ground */
       --ink:   #353534;   /* WORLD.ink */
       --muted: #92928e;   /* WORLD.neutral */
       --line:  rgba(53, 53, 52, 0.22);
+      /* paper at 0.72 — a scrim, so the stage stays visible behind a modal (§5) */
+      --scrim: rgba(223, 223, 223, 0.72);
+
+      /* ── motion — src/taste/tokens.ts MOTION ────────────────────────── */
+      --t-tertiary:  456ms;    /* MOTION.tertiaryMs  — satellites out */
+      --t-secondary: 912ms;    /* MOTION.secondaryMs — satellites in, core, modals, the seam */
+      --t-primary:   1823ms;   /* MOTION.primaryMs   — toast dwell */
+      --t-ambient:   3646ms;   /* MOTION.ambientMs   — the drift floor */
+      --settle: cubic-bezier(0.17, 0.72, 0.24, 1.0);   /* MOTION.settleCurve — ζ ≥ 1, no overshoot */
+      --stagger: calc(var(--t-tertiary) / 4);          /* 114ms — derived, PHONE-STAGE §3 */
+      --slide: 8px;                                    /* satellite offset, PHONE-STAGE §3 */
+
+      /* ── safe area — owned by the stage, consumed by its slots ───────── */
+      --safe-x:      max(14px, env(safe-area-inset-left), env(safe-area-inset-right));
+      --safe-top:    max(14px, env(safe-area-inset-top));
+      --safe-bottom: max(14px, env(safe-area-inset-bottom));
     }
+
     * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
     html, body { height: 100%; overscroll-behavior: none; }
     body {
+      position: fixed; inset: 0; overflow: hidden;
       background: var(--paper); color: var(--ink);
       font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-      display: flex; flex-direction: column; height: 100dvh; padding: 14px; gap: 12px;
-      user-select: none; -webkit-user-select: none;
+      user-select: none; -webkit-user-select: none; -webkit-text-size-adjust: 100%;
     }
-    header { display: flex; align-items: center; justify-content: space-between; }
+
+    /* ── the stage ──────────────────────────────────────────────────────────
+       Fixed, full-bleed, no padding of its own: the safe-area insets live on
+       the slots, so the core's centre is the VIEWPORT centre on both sides of
+       the seam regardless of what any device's insets do. */
+    .stage {
+      position: fixed; inset: 0; background: var(--paper); overflow: hidden;
+      --core-side: min(76vmin, 480px);   /* PHONE-STAGE §2, draw measure */
+      /* MOTION.ambientAmplitude (0.003 of scale) — declared here, next to the
+         --core-side it is measured against: a custom property resolves its
+         var()s on the element that declares it, so this cannot live on :root. */
+      --ambient-amp: calc(var(--core-side) * 0.003);
+    }
+    /* the wait measure. The core arrives here BEFORE the navigation fires, so
+       the companion can boot with the box already this size (§4.2). */
+    .stage[data-state="sending"] { --core-side: min(60vmin, 380px); }
+
+    /* ── slots (always present; empty is a state, never a removal) ────────── */
+    .slot { position: absolute; }
+    .stage-brow   { top: var(--safe-top); left: var(--safe-x); right: var(--safe-x); }
+    .stage-tools  { bottom: var(--safe-bottom); left: var(--safe-x); right: var(--safe-x); }
+    .stage-corner { right: var(--safe-x); bottom: var(--safe-bottom); width: 0; height: 0; }
+    /* the core: inset 0 + auto margins centres it exactly; only the side
+       changes, and it changes as real layout, never as a scale. */
+    .stage-core {
+      inset: 0; margin: auto; width: var(--core-side); height: var(--core-side);
+      transition: width var(--t-secondary) var(--settle), height var(--t-secondary) var(--settle);
+    }
+
+    /* ── satellite choreography (PHONE-STAGE §3) ──────────────────────────
+       in:  opacity 0→1, translate +8px→0, over t.secondary, delay (i+1)·stagger
+       out: opacity 1→0, translate 0→+8px, over t.tertiary,  delay  i   ·stagger
+       `translate` rather than `transform` so nothing on this page ever reports
+       a transform at all — there is no scale to get wrong. */
+    .satellite {
+      opacity: 1; translate: 0 0;
+      transition: opacity var(--t-secondary) var(--settle),
+                  translate var(--t-secondary) var(--settle);
+      transition-delay: calc(var(--stagger) * (var(--i) + 1));
+    }
+    .satellite.is-out {
+      opacity: 0; translate: 0 var(--slide); pointer-events: none;
+      transition-duration: var(--t-tertiary);
+      transition-delay: calc(var(--stagger) * var(--i));
+    }
+
+    /* ── the ambient floor (TASTE §2.1) ───────────────────────────────────
+       Nothing on the stage ever fully arrests. It runs on the satellites, at
+       0.3% of the stage's own scale, and deliberately NOT on the core: the
+       core is the fixed point the seam is measured against (§3, §4.2), so the
+       floor never spends its 1px budget. Phase-offset per slot so the page
+       does not breathe in unison. */
+    .drift {
+      animation: ambient-floor var(--t-ambient) var(--settle) infinite alternate;
+      animation-delay: calc(var(--t-ambient) / -3 * var(--i));
+    }
+    @keyframes ambient-floor {
+      from { translate: 0 calc(var(--ambient-amp) * -1); }
+      to   { translate: 0 var(--ambient-amp); }
+    }
+
+    /* ── brow ─────────────────────────────────────────────────────────────── */
+    .brow-line { display: flex; align-items: center; justify-content: space-between; }
     .title { display: flex; align-items: center; gap: 9px; font-weight: 500; font-size: 16px; letter-spacing: 0; }
     .status { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
     /* Connection state without color: a hollow ring waiting, filled live. */
     .dot { width: 8px; height: 8px; border-radius: 50%; border: 1px solid var(--muted);
-      background: transparent; transition: background .3s, border-color .3s; }
+      background: transparent;
+      transition: background var(--t-tertiary) var(--settle), border-color var(--t-tertiary) var(--settle); }
     .dot.on { background: var(--ink); border-color: var(--ink); }
     .dot.off { background: transparent; border-color: var(--line); }
 
-    /* Spent: this handset already drew (one handset, one creature). The pad
-       stops accepting marks while the companion loads. */
-    body.spent .stage, body.spent .tools, body.spent .actions { opacity: 0.35; pointer-events: none; }
-    .stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; }
+    .namechip {
+      margin-top: 8px; font-size: 13px; color: var(--muted); text-align: center;
+      opacity: 0; translate: 0 var(--slide); pointer-events: none;
+      transition: opacity var(--t-secondary) var(--settle),
+                  translate var(--t-secondary) var(--settle);
+      transition-delay: var(--stagger);
+    }
+    .namechip.is-in { opacity: 1; translate: 0 0; pointer-events: auto; }
+    .namechip b { color: var(--ink); font-weight: 500; }
+    .chip-change { color: var(--ink); text-decoration: underline; cursor: pointer; }
+
+    /* ── core: the pad ────────────────────────────────────────────────────── */
     .pad {
-      position: relative; aspect-ratio: 1; max-width: 100%; max-height: 100%;
+      position: relative; width: 100%; height: 100%;
       background: var(--pad); border: 1px solid var(--line); border-radius: 18px; overflow: hidden;
       touch-action: none;
+      transition: opacity var(--t-secondary) var(--settle);
     }
+    /* the seam: the pad's content leaves, the box stays and travels (§4.2) */
+    .stage[data-state="sending"] .pad { opacity: 0; pointer-events: none; }
     canvas { display: block; width: 100%; height: 100%; touch-action: none; }
     .hint { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-      color: var(--muted); font-size: 15px; font-weight: 400; pointer-events: none; transition: opacity .2s; }
+      color: var(--muted); font-size: 15px; font-weight: 400; pointer-events: none;
+      opacity: 0; transition: opacity var(--t-secondary) var(--settle); }
+    .stage[data-state="idle"] .hint { opacity: 1; }
 
-    /* Only brush size remains — one row, centred. */
-    .tools { display: flex; align-items: center; gap: 10px; justify-content: center; }
-    .sizes { display: flex; gap: 8px; }
+    /* ── tools ────────────────────────────────────────────────────────────── */
+    .stage-tools .drift { display: flex; flex-direction: column; gap: 12px; }
+    .sizes { display: flex; gap: 8px; justify-content: center; }
     .size { width: 34px; height: 34px; border-radius: 50%; background: transparent; border: 1px solid var(--line);
-      display: flex; align-items: center; justify-content: center; cursor: pointer; transition: border-color .15s; }
+      display: flex; align-items: center; justify-content: center; cursor: pointer;
+      transition: border-color var(--t-tertiary) var(--settle); }
     .size.sel { border-color: var(--ink); }
     .size i { display: block; border-radius: 50%; background: var(--ink); }
 
     .actions { display: flex; gap: 10px; }
+    /* the actions ride the tools slot out on send/refusal, so they only carry
+       their own slide while the slot itself is standing still. */
+    .stage[data-state="idle"] .actions.is-out { translate: 0 var(--slide); }
+
     button { flex: 1; border: 1px solid var(--line); border-radius: 13px; padding: 15px; font-size: 16px; font-weight: 500;
-      font-family: inherit; cursor: pointer; letter-spacing: 0; transition: transform .08s, opacity .2s; }
-    button:active { transform: scale(0.98); }
+      font-family: inherit; cursor: pointer; letter-spacing: 0;
+      transition: opacity var(--t-tertiary) var(--settle), border-color var(--t-tertiary) var(--settle); }
+    /* press feedback drifts on the settle curve — no scale, no snap back */
+    button:active { opacity: 0.62; }
     .clear { background: transparent; color: var(--ink); flex: 0 0 96px; }
     .send { background: var(--ink); color: var(--pad); border-color: var(--ink); }
     .send:disabled { opacity: 0.35; }
 
-    .toast { position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%) translateY(20px);
-      background: var(--ink); color: var(--pad); font-weight: 500; padding: 12px 22px; border-radius: 999px;
-      opacity: 0; pointer-events: none; transition: all .3s; font-size: 15px; text-align: center; }
-    .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+    /* spent: this handset already drew (one handset, one creature). Everything
+       recedes while the companion loads — a fade, not a removal. */
+    .stage[data-spent="true"] .satellite,
+    .stage[data-spent="true"] .stage-core { opacity: 0.35; pointer-events: none; }
 
-    /* Refused on this handset: the drawing never leaves the phone. Same
-       words the companion uses, shown here instead of a send. */
-    .refused { position: fixed; inset: 0; z-index: 120; display: none; flex-direction: column;
-      align-items: center; justify-content: center; gap: 16px; padding: 10vmin; text-align: center;
-      background: var(--paper); color: var(--ink); }
-    .refused.show { display: flex; }
+    /* ── toast (the scene's back channel) ─────────────────────────────────── */
+    .toast { position: fixed; left: 50%; bottom: 96px; translate: -50% var(--slide);
+      background: var(--ink); color: var(--pad); font-weight: 500; padding: 12px 22px; border-radius: 999px;
+      opacity: 0; pointer-events: none; font-size: 15px; text-align: center; z-index: 90;
+      transition: opacity var(--t-secondary) var(--settle), translate var(--t-secondary) var(--settle); }
+    .toast.show { opacity: 1; translate: -50% 0; }
+
+    /* ── modals (PHONE-STAGE §5) ──────────────────────────────────────────
+       The name sheet and the guideline notice are interruptions, not steps in
+       the flow: they slide up over the stage on the settle curve and leave the
+       stage visible behind them. No display toggling — opacity, pointer-events
+       and aria-hidden only. */
+    .modal { position: fixed; inset: 0; z-index: 100; display: flex; justify-content: center;
+      background: var(--scrim); opacity: 0; pointer-events: none;
+      transition: opacity var(--t-secondary) var(--settle); }
+    .modal.show { opacity: 1; pointer-events: auto; }
+    .modal-card { width: 100%; max-width: 380px; background: var(--pad); border: 1px solid var(--line);
+      border-radius: 20px; padding: 22px;
+      translate: 0 calc(var(--slide) * 3);
+      transition: translate var(--t-secondary) var(--settle); }
+    .modal.show .modal-card { translate: 0 0; }
+
+    /* the sheet stays top-anchored: it owns a text input, and a bottom sheet
+       sits under the on-screen keyboard. It still slides up into place. */
+    .sheet { align-items: flex-start; padding: 11vh 18px 0; }
+    .refused { align-items: center; padding: 0 18px; }
+    .refused .modal-card { text-align: center; display: flex; flex-direction: column; align-items: center; gap: 16px; }
     .refused p { margin: 0; font-size: 17px; line-height: 1.45; max-width: 22em; }
     .refused .sub { font-size: 14px; color: var(--muted); }
-    .namechip { font-size: 13px; color: var(--muted); text-align: center; }
-    .namechip b { color: var(--ink); font-weight: 500; }
-    .chip-change { color: var(--ink); text-decoration: underline; cursor: pointer; }
+    .refused button { flex: 0 0 auto; }
 
-    .sheet { position: fixed; inset: 0; z-index: 100; display: flex; align-items: flex-start; justify-content: center;
-      padding: 11vh 18px 0; background: rgba(223, 223, 223, 0.72); opacity: 0; pointer-events: none; transition: opacity .2s; }
-    .sheet.show { opacity: 1; pointer-events: auto; }
-    .sheet-card { width: 100%; max-width: 380px; background: var(--pad); border: 1px solid var(--line);
-      border-radius: 20px; padding: 22px; transform: translateY(-12px); transition: transform .2s; }
-    .sheet.show .sheet-card { transform: translateY(0); }
     .sheet-title { font-size: 20px; font-weight: 500; letter-spacing: 0; }
     .sheet-sub { font-size: 13px; color: var(--muted); margin: 5px 0 16px; }
     .name-input { width: 100%; font-size: 18px; font-weight: 400; padding: 15px 16px; border-radius: 13px;
       background: transparent; border: 1px solid var(--line); color: var(--ink); outline: none;
-      user-select: text; -webkit-user-select: text; }
+      user-select: text; -webkit-user-select: text;
+      transition: border-color var(--t-tertiary) var(--settle); }
     .name-input:focus { border-color: var(--ink); }
     .sheet-go { width: 100%; margin-top: 14px; background: var(--ink); color: var(--pad); border-color: var(--ink); }
     .sheet-skip { width: 100%; margin-top: 6px; background: transparent; border-color: transparent; color: var(--muted);
@@ -101,37 +226,57 @@
   </style>
 </head>
 <body>
-  <header>
-    <div class="title"><span id="appTitle">draw → 3d</span></div>
-    <div class="status"><span class="dot" id="dot"></span><span id="statusText">connecting…</span></div>
-  </header>
+  <!-- One stage, four slots. The slots never leave the dom (PHONE-STAGE §2). -->
+  <div class="stage" id="stage" data-state="idle" data-spent="false">
 
-  <div class="stage">
-    <div class="pad">
-      <canvas id="c"></canvas>
-      <div class="hint" id="hint">draw a solid shape</div>
+    <div class="slot satellite stage-brow" id="brow" style="--i: 0">
+      <div class="drift">
+        <div class="brow-line">
+          <div class="title"><span id="appTitle">draw → 3d</span></div>
+          <div class="status"><span class="dot" id="dot"></span><span id="statusText">connecting…</span></div>
+        </div>
+        <div class="namechip" id="namechip" aria-hidden="true"></div>
+      </div>
     </div>
-  </div>
 
-  <div class="tools">
-    <div class="sizes" id="sizes"></div>
-  </div>
-  <div class="namechip" id="namechip" hidden></div>
-  <div class="actions">
-    <button class="clear" id="clear">clear</button>
-    <button class="send" id="send" disabled>send →</button>
+    <!-- the core: the square you draw in, which becomes the egg on the next
+         page. It never translates and never scales — only its side changes. -->
+    <div class="slot stage-core" id="core">
+      <div class="pad" id="pad">
+        <canvas id="c"></canvas>
+        <div class="hint" id="hint">draw a solid shape</div>
+      </div>
+    </div>
+
+    <div class="slot satellite stage-tools" id="tools" style="--i: 1">
+      <div class="drift">
+        <div class="sizes" id="sizes"></div>
+        <div class="actions satellite is-out" id="actions" style="--i: 1" aria-hidden="true">
+          <button class="clear" id="clear">clear</button>
+          <button class="send" id="send" disabled>send →</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- corner slot: the minimap lives here on the companion. Empty here, and
+         present anyway: removing a slot relayouts the stage, and that is a cut. -->
+    <div class="slot satellite stage-corner" id="corner" style="--i: 2" aria-hidden="true"></div>
   </div>
 
   <div class="toast" id="toast">sent</div>
 
-  <div class="refused" id="refused">
-    <p>sorry — this goes against our content guidelines.</p>
-    <p class="sub">it was not sent.</p>
-    <button class="clear" id="refusedBack" style="flex:0 0 auto">draw something else</button>
+  <!-- Refused on this handset: the drawing never leaves the phone. Same
+       words the companion uses, shown here instead of a send. -->
+  <div class="modal refused" id="refused" aria-hidden="true">
+    <div class="modal-card">
+      <p>sorry — this goes against our content guidelines.</p>
+      <p class="sub">it was not sent.</p>
+      <button class="clear" id="refusedBack">draw something else</button>
+    </div>
   </div>
 
-  <div class="sheet" id="sheet">
-    <div class="sheet-card">
+  <div class="modal sheet" id="sheet" aria-hidden="true">
+    <div class="modal-card">
       <div class="sheet-title">sign your drawing</div>
       <div class="sheet-sub">your name shows in the scene. asked once — then it remembers.</div>
       <input id="nameInput" class="name-input" type="text" maxlength="16" placeholder="first name"
@@ -147,6 +292,19 @@
   <script type="module" src="/screen.js"></script>
   <script>
   (() => {
+    // ── Motion tokens ───────────────────────────────────────────────────────
+    // Mirrored from MOTION in src/taste/tokens.ts (see the head stylesheet for
+    // the css side). A standalone document cannot import them, so they are
+    // named here once instead of appearing as literals at the call sites.
+    const MOTION = {
+      tertiaryMs: 456,
+      secondaryMs: 912,
+      primaryMs: 1823,
+      ambientMs: 3646,
+    };
+    // Stagger is derived from the scale, never invented (PHONE-STAGE §3).
+    const STAGGER_MS = MOTION.tertiaryMs / 4;   // 114ms
+
     // ── Config (must match the receiver's broker + topicPrefix) ─────────────
     const params = new URLSearchParams(location.search);
     const BROKER = 'wss://broker.emqx.io:8084/mqtt';
@@ -154,6 +312,32 @@
     // room from ?room= (or legacy ?topic=); everything sanitised
     const room = (params.get('room') || params.get('topic') || 'demo').replace(/[^a-z0-9_-]/gi, '') || 'demo';
     const TOPIC = TOPIC_PREFIX + room;
+
+    // ── The stage ───────────────────────────────────────────────────────────
+    // One surface; states are swaps of what occupies it, never screen changes.
+    // idle → drawn → sending, plus refused (a modal over a withdrawn stage).
+    const stage = document.getElementById('stage');
+    const actionsEl = document.getElementById('actions');
+    // reading order — brow, tools, corner (PHONE-STAGE §3). --i is on the
+    // elements themselves and drives both the stagger and the ambient phase.
+    const SATELLITES = ['brow', 'tools', 'corner'].map((id) => document.getElementById(id));
+
+    function setPresent(el, present) {
+      el.classList.toggle('is-out', !present);
+      el.setAttribute('aria-hidden', present ? 'false' : 'true');
+    }
+
+    let state = 'idle';
+    function setState(next) {
+      if (state === next) return;
+      state = next;
+      stage.dataset.state = next;
+      const satellitesIn = next === 'idle' || next === 'drawn';
+      for (const el of SATELLITES) setPresent(el, satellitesIn);
+      // clear/send are only offered once there is something to send; on the
+      // way out they ride the tools slot rather than doubling its travel.
+      setPresent(actionsEl, next === 'drawn');
+    }
 
     // ── one handset, one creature (user ruling) ──────────────────────────
     // The drawer id is stable per device and travels as the drawing's id,
@@ -214,8 +398,9 @@
     }
     function enforceSingleDrawing() {
       if (!alreadyDrew()) return false;
-      // Freeze the pad even if the navigation is slow or blocked.
-      document.body.classList.add('spent');
+      // Freeze the pad even if the navigation is slow or blocked. Both pages
+      // paint the same paper, so this hand-off has nothing to flash to.
+      stage.dataset.spent = 'true';
       const send = document.getElementById('send');
       if (send) send.disabled = true;
       goToCompanion();
@@ -275,9 +460,11 @@
       return [ (e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height ];
     };
     cv.addEventListener('pointerdown', (e) => {
+      if (state === 'sending') return;
       cv.setPointerCapture(e.pointerId);
       cur = { color: INK, width: size, pts: [pt(e)] };
-      document.getElementById('hint').style.opacity = '0';
+      // the swap: the hint leaves the core, the actions arrive in the tools slot
+      setState('drawn');
       redraw();
     });
     cv.addEventListener('pointermove', (e) => { if (cur) { cur.pts.push(pt(e)); redraw(); } });
@@ -290,6 +477,13 @@
     cv.addEventListener('pointerup', endStroke);
     cv.addEventListener('pointercancel', endStroke);
 
+    /** back to an empty pad: strokes gone, hint back, actions withdrawn. */
+    function resetPad() {
+      strokes = []; cur = null; redraw();
+      document.getElementById('send').disabled = true;
+      setState('idle');
+    }
+
     // ── Tool UI ─────────────────────────────────────────────────────────────
     const szEl = document.getElementById('sizes');
     SIZES.forEach((s, i) => {
@@ -300,18 +494,17 @@
       b.onclick = () => { size = s; [...szEl.children].forEach(x => x.classList.remove('sel')); b.classList.add('sel'); };
       szEl.appendChild(b);
     });
-    document.getElementById('clear').onclick = () => {
-      strokes = []; cur = null; redraw();
-      document.getElementById('hint').style.opacity = '1';
-      document.getElementById('send').disabled = true;
-    };
+    document.getElementById('clear').onclick = resetPad;
 
     // ── MQTT ────────────────────────────────────────────────────────────────
     let connected = false, client;
     const dot = document.getElementById('dot'), st = document.getElementById('statusText');
     const toast = document.getElementById('toast');
-    function setStatus(state, text) { dot.className = 'dot ' + state; st.textContent = text; }
-    function showToast(msg, ms = 1700) { toast.textContent = msg; toast.classList.add('show'); setTimeout(() => toast.classList.remove('show'), ms); }
+    function setStatus(kind, text) { dot.className = 'dot ' + kind; st.textContent = text; }
+    function showToast(msg, ms = MOTION.primaryMs) {
+      toast.textContent = msg; toast.classList.add('show');
+      setTimeout(() => toast.classList.remove('show'), ms);
+    }
     try {
       client = mqtt.connect(BROKER, { clientId: 'draw_' + Math.random().toString(16).slice(2, 10), keepalive: 30, reconnectPeriod: 2000 });
       client.on('connect', () => { connected = true; setStatus('on', 'connected'); document.getElementById('send').disabled = strokes.length === 0; client.subscribe(UP_TOPIC); });
@@ -335,15 +528,22 @@
 
     function updateChip() {
       const chip = document.getElementById('namechip');
-      if (!signed) { chip.hidden = true; return; }
-      chip.hidden = false;
+      // presence is opacity + aria, never display: a removal relayouts the brow
+      chip.classList.toggle('is-in', signed);
+      chip.setAttribute('aria-hidden', signed ? 'false' : 'true');
+      if (!signed) return;
       chip.innerHTML = userName
-        ? `Sending as <b>${escapeHtml(userName)}</b> · <span class="chip-change">change</span>`
-        : `Sending anonymously · <span class="chip-change">add name</span>`;
+        ? `sending as <b>${escapeHtml(userName)}</b> · <span class="chip-change">change</span>`
+        : `sending anonymously · <span class="chip-change">add name</span>`;
       chip.querySelector('.chip-change').onclick = openSheet;
     }
-    function openSheet() { nameInput.value = userName; sheet.classList.add('show'); setTimeout(() => { nameInput.focus(); nameInput.select(); }, 60); }
-    function closeSheet() { sheet.classList.remove('show'); nameInput.blur(); }
+    function openModal(el) { el.classList.add('show'); el.setAttribute('aria-hidden', 'false'); }
+    function closeModal(el) { el.classList.remove('show'); el.setAttribute('aria-hidden', 'true'); }
+    function openSheet() {
+      nameInput.value = userName; openModal(sheet);
+      setTimeout(() => { nameInput.focus(); nameInput.select(); }, STAGGER_MS);
+    }
+    function closeSheet() { closeModal(sheet); nameInput.blur(); }
     function commitName(v) {
       userName = (v || '').replace(/[<>&"]/g, '').trim().slice(0, 16);
       signed = true; localStorage.setItem(NAME_KEY, userName); updateChip();
@@ -365,11 +565,15 @@
       // design — it goes to the world for a person to decide, and the
       // drawer is told nothing about it.
       if (!verdict || verdict.verdict !== 'refuse') return false;
-      document.getElementById('refused').classList.add('show');
+      // the stage withdraws its satellites and the notice slides up over it —
+      // the drawing stays visible behind, at the same size, in the same place.
+      setState('refused');
+      openModal(document.getElementById('refused'));
       return true;
     }
 
     function publish() {
+      if (state === 'sending') return;
       if (!strokes.length || !connected) return;
       // Last gate: one handset, one creature — whatever route reached here.
       if (alreadyDrew()) { enforceSingleDrawing(); return; }
@@ -377,8 +581,7 @@
       const msg = { id: MY_ID, name: userName, strokes, ts: Date.now() };
       client.publish(TOPIC, JSON.stringify(msg), { qos: 0 });
       // Hand off to the companion's egg view: stash the drawing for the
-      // wait screen (3D egg painted with it), then navigate. Short delay so
-      // the MQTT publish flushes and the toast reads.
+      // wait screen (3D egg painted with it), then navigate.
       try {
         // id travels with the handoff: the companion's portrait salts its
         // synthesis with the same identity the world spawns under, so both
@@ -388,20 +591,23 @@
         // creature this handset already made, never on an empty pad.
         localStorage.setItem(SUBMISSION_KEY, JSON.stringify({ id: msg.id, name: userName || null, strokes: msg.strokes, ts: msg.ts, epoch: WORLD_EPOCH || null }));
       } catch {}
-      strokes = []; cur = null; redraw();
       document.getElementById('send').disabled = true;
-      showToast(userName ? `✨ ${userName}'s drawing is up!` : '✨ Sent!');
+      // The seam (PHONE-STAGE §4). Satellites leave, the core travels to the
+      // WAIT measure and its content fades, and only then do we navigate. The
+      // delay is MOTION.secondaryMs because that is the duration of the move
+      // it is waiting for — the companion boots with the core already there
+      // and fades the egg up into it, so one object stayed put while its
+      // content changed. Which is exactly what happened.
+      setState('sending');
       setTimeout(() => {
         location.href = '/phone.html?room=' + room + '&handoff=1'
           + (WORLD_EPOCH ? '&w=' + WORLD_EPOCH : '');
-      }, 700);
+      }, MOTION.secondaryMs);
     }
 
     document.getElementById('refusedBack').onclick = () => {
-      document.getElementById('refused').classList.remove('show');
-      strokes = []; cur = null; redraw();
-      document.getElementById('hint').style.opacity = '1';
-      document.getElementById('send').disabled = true;
+      closeModal(document.getElementById('refused'));
+      resetPad();
     };
 
     document.getElementById('send').onclick = () => {
