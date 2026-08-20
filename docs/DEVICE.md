@@ -146,9 +146,24 @@ below, so the interactive keys land on them with zero offset.
 | part | viewBox | as % of the device box |
 |---|---|---|
 | screen well, usable inner area | x 15–85, y 38–124 | `left 15%` `top 22.619%` `width 70%` `height 51.190%` |
-| button row centre line | y 145 | `top 86.310%` |
-| button centres | x 30.5 / 50 / 70 | `left 30.5% / 50% / 70%` |
-| button diameter | 14.4 | `14.4%` of width |
+| **top** key row centre line | y 24.6 | `top 14.643%` |
+| **bottom** key row centre line | y 145 | `top 86.310%` |
+| key centres, both rows | x 30.5 / 50 / 70 | `left 30.5% / 50% / 70%` |
+| key diameter | 14.4 | `14.4%` of width |
+
+**Six keys now, in two rows** *(user ruling, 2026-08-18)*. The top row occupies the
+band where the `ref` word mark used to sit; the bottom row is where the three keys
+already were.
+
+**The rings are DOM, not artwork.** They used to be drawn into the shell, which meant
+they could never be hidden — and the egg state has to hide them completely
+("when the egg is visible on the tamagotchi, let's hide the buttons"), not merely dim
+them. So each key draws its own ring inside its `<button>`. The shell no longer draws
+any. This also removes the alignment question permanently: a key cannot be offset from
+its own ring.
+
+Hiding is still opacity + `pointer-events` + `aria-hidden`, never `display` — the case
+is a solid object and a removal would relayout it.
 
 **The well is portrait, not square** *(user ruling, 2026-08-18: "you can make it
 slightly taller if we need more space")*. The device went from `100 × 150` to

@@ -252,9 +252,6 @@ const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${VB.w} ${VB.h
     <path d="M${n(50 - halfWidth(30))} 30c-2.6 6.1-4 12.7-4.4 19.3" stroke-width="0.75" opacity="0.5"/>
     <path d="M${n(50 + halfWidth(134))} 134c-2.9 6.6-7.2 12.5-12.6 17.1" stroke-width="0.75" opacity="0.5"/>
 
-    <!-- word mark. lowercase, always (TASTE §5). real text, not a path. -->
-    <text x="50" y="${WORDMARK_Y}" font-family="'helvetica neue', helvetica, arial, sans-serif" font-size="7" font-weight="400" letter-spacing="0.6" text-anchor="middle" fill="#353534" stroke="none">ref</text>
-
     <!-- the screen well. bowed, unequal corners — never a rectangle. -->
     <path d="${bezelPath(0, 0.45)}" fill="#dfdfdf" stroke-width="3.1"/>
     <path d="${bezelPath(0, 0.95)}" stroke-width="1.2" opacity="0.5"/>
@@ -262,16 +259,6 @@ const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${VB.w} ${VB.h
 
     <!-- the glass: ONE flat hard-edged highlight, no gradient (DEVICE §1e) -->
     <path d="${glass}" fill="#efecec" stroke="none" opacity="0.85"/>
-
-    <!-- three buttons. a device has fixed controls; the states borrow them. -->
-    <g stroke-width="1.5">
-${KEYS.xs.map((x) => `      <path d="${ring(x, KEYS.y, KEYS.r)}" fill="#dfdfdf"/>`).join('\n')}
-    </g>
-
-    <!-- ink motifs, in the body margin beside the screen. sparse: density 0.289. -->
-    <g stroke-width="0.95">
-${motifs.map((m) => `      <path d="${star(m.cx, m.cy, m.r)}"/>`).join('\n')}
-    </g>
 
     <!-- hatching on the lower-left shoulder: line density does the shading -->
     <g stroke-width="0.7" opacity="0.55">
