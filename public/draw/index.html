@@ -281,7 +281,11 @@
        is the taste's own mark set (TASTE §4). */
     .sign {
       position: absolute; inset: 0; display: flex; flex-direction: column;
-      align-items: center; justify-content: center; gap: calc(var(--well-pad) * 1.5);
+      /* density 0.289 and "the composition always leaves room to breathe":
+         one spacing unit, used twice over — the gap between title, input and
+         controls is double the gap between the two controls, so the rhythm is
+         regular rather than four different numbers (user: it was tight). */
+      align-items: center; justify-content: center; gap: calc(var(--well-pad) * 3);
       text-align: center; padding: 0 var(--well-pad);
       opacity: 0; pointer-events: none;
       transition: opacity var(--t-secondary) var(--settle);
@@ -295,7 +299,7 @@
     .name-input {
       width: 100%; max-width: 78%; text-align: center;
       font-family: inherit; font-size: max(16px, var(--screen-1)); font-weight: 400;
-      padding: 6px 2px; appearance: none; -webkit-appearance: none;
+      padding: 10px 2px; appearance: none; -webkit-appearance: none;
       background: transparent; color: var(--ink); outline: none;
       border: 0; border-bottom: 1px solid var(--line); border-radius: 0;
       user-select: text; -webkit-user-select: text;
@@ -310,8 +314,8 @@
        it belongs to the same hand. Each carries its own seed, so the two are
        not the same shape twice. Still not a card: the fill is transparent and
        the mark is the outline (TASTE §4 — border, never a filled panel). */
-    .sign-acts { display: flex; flex-direction: column; align-items: center; gap: 10px;
-      width: 100%; }
+    .sign-acts { display: flex; flex-direction: column; align-items: center;
+      gap: calc(var(--well-pad) * 1.5); width: 100%; }
     .sign-act { position: relative; background: transparent; border: 0; border-radius: 0;
       padding: 0; width: 78%; aspect-ratio: 44 / 11; display: grid; place-items: center;
       font-family: inherit; font-size: var(--screen-1); font-weight: 500; color: var(--ink);
