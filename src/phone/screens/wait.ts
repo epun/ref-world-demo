@@ -459,7 +459,14 @@ export function mountWaitScreen(
       // The deadline the world gave us. No text and no control read it any
       // more — it drives the shell.
       const remaining = deadline === null ? null : deadline - now;
-      if (remaining !== null && remaining <= 0) fireHatch();
+      // The deadline drives the SHELL, never the hatch (user, for the demo:
+      // "eggs should only hatch when I press h"). This was the third clock
+      // running — after the world's AUTO_HATCH and the local session's
+      // LOCAL_AUTO_HATCH, this one still opened the egg when the countdown
+      // it was given ran out, which is why the handset kept hatching on its
+      // own. Only the world's `hatched` message opens an egg now; the
+      // countdown is left to ramp the wobble and tease the cracks, which is
+      // the whole reason the signal is still here.
       // The world's mapping: wobble ramps with progress, cracks tease late.
       const p = hatchProgress(remaining, initialMs);
       egg.setHatchProgress(p);

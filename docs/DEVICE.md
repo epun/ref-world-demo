@@ -160,7 +160,7 @@ the drawing is finished and the screen has moved on. The old `.sheet` modal goes
 
 ## 3. Geometry — binding
 
-`public/device/shell.svg`, viewBox `0 0 100 178`. Both pages position against these
+`public/device/shell.svg`, viewBox `0 0 100 190`. Both pages position against these
 numbers, so they must not be edited on one side only.
 
 The artwork is **generated**, not hand-authored — `scripts/gen-device-shell.mjs`, run
@@ -176,9 +176,9 @@ below, so the interactive keys land on them with zero offset.
 
 | part | viewBox | as % of the device box |
 |---|---|---|
-| screen well, usable inner area | x 15–85, y 46–134 | `left 15%` `top 25.843%` `width 70%` `height 49.438%` |
-| **top** key row centre line | y 26 | `top 14.607%` |
-| **bottom** key row centre line | y 156 | `top 87.640%` |
+| screen well, usable inner area | x 13–87, y 48–146 | `left 13%` `top 25.263%` `width 74%` `height 51.579%` |
+| **top** key row centre line | y 26 | `top 13.684%` |
+| **bottom** key row centre line | y 168 | `top 88.421%` |
 | key centres, both rows | x 30.5 / 50 / 70 | `left 30.5% / 50% / 70%` |
 | key diameter | 14.4 | `14.4%` of width |
 

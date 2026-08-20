@@ -52,7 +52,7 @@ import { MOTION, SURFACE, WORLD } from '../taste/tokens';
 // rendered size.
 
 /** shell.svg's viewBox. The box is sized `contain` to this ratio. */
-export const DEVICE_VIEWBOX = { width: 100, height: 178 } as const;
+export const DEVICE_VIEWBOX = { width: 100, height: 190 } as const;
 
 /** How far a key slides on the way in. Entrances slide (TASTE §2.1). */
 const KEY_ENTER_TRAVEL_PX = 6;
@@ -102,10 +102,10 @@ const NO_SELECT = `
  * tall leaves a band above and below the largest core.
  */
 export const DEVICE_WELL = {
-  leftPct: 15,
-  topPct: (46 / 178) * 100,
-  widthPct: 70,
-  heightPct: (88 / 178) * 100,
+  leftPct: 13,
+  topPct: (48 / 190) * 100,
+  widthPct: 74,
+  heightPct: (98 / 190) * 100,
 } as const;
 
 /**
@@ -121,8 +121,8 @@ export const DEVICE_WELL = {
 export const DEVICE_KEYS = {
   centresPct: [30.5, 50, 70] as const,
   rowTopPct: {
-    top: (26 / 178) * 100,
-    bottom: (156 / 178) * 100,
+    top: (26 / 190) * 100,
+    bottom: (168 / 190) * 100,
   },
   diameterPct: 14.4,
   /** The ring's own stroke, in viewBox units — the artwork's weight. */
