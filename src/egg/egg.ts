@@ -82,6 +82,22 @@ export interface EggOptions {
   z?: number;
   /** Override the stroke-derived deterministic seed (dev only). */
   seed?: number;
+  /**
+   * Play the entrance slide (default true).
+   *
+   * The world wants it: an egg arriving in a wide frame should slide down
+   * and settle (TASTE §2.1 — entrances slide). A PORTRAIT does not. The
+   * phone frames its camera to the egg's settled bounds, so an egg that
+   * starts ENTRANCE_DROP above the ground begins outside the frustum and
+   * reads as cut off at the top edge.
+   *
+   * With this false the egg is at rest from its first frame and the
+   * entrance belongs to whatever is presenting it — on the phone that is
+   * the stage's own core cross-fade (docs/PHONE-STAGE.md §3), which is
+   * already an entrance and already on the settle curve. The ambient drift
+   * floor still runs; nothing is frozen.
+   */
+  entrance?: boolean;
 }
 
 export interface Egg {
@@ -319,13 +335,16 @@ export function createEgg(strokes: StrokeList, options: EggOptions = {}): Egg {
   const mesh = new Mesh(geometry, material);
   const group = new Group();
   group.add(mesh);
-  group.position.set(baseX, ENTRANCE_DROP, baseZ);
+  const wantsEntrance = options.entrance !== false;
+  group.position.set(baseX, wantsEntrance ? ENTRANCE_DROP : 0, baseZ);
   group.rotation.y = FACE_CAMERA_Y;
 
   // ── motion state ──────────────────────────────────────────────────────────
   // Entrance: slide down from slightly above the ground (TASTE §2.1 —
   // entrances slide; the ζ≥1 spring settles without ever crossing).
-  const dropSpring = new Spring(ENTRANCE_DROP, { settleMs: MOTION.primaryMs });
+  const dropSpring = new Spring(wantsEntrance ? ENTRANCE_DROP : 0, {
+    settleMs: MOTION.primaryMs,
+  });
   dropSpring.retarget(0);
   // Paint-on reveal, driven through a spring so the replay eases in and
   // drifts to completion over t.primary — nothing linear.
