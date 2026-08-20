@@ -303,14 +303,32 @@
     }
     .name-input:focus { border-bottom-color: var(--ink); }
     .name-input::placeholder { color: var(--muted); opacity: 1; }
-    /* the two ways out, as type: the keys are hidden in this state (DEVICE
-       §2), so the words are the controls. No box around either — a bordered
-       button in the well would be the card the ruling removed. */
-    .sign-acts { display: flex; flex-direction: column; align-items: center; gap: 2px; }
-    .sign-act { background: transparent; border: 0; border-radius: 0; padding: 8px 10px;
+    /* the two ways out (user ruling: "send and skip should be rounded buttons
+       with the same illustrated border"). The outline is a DRAWN pill, not a
+       css border-radius: same construction as the case and the key rings —
+       sampled points, catmull-rom through them, a deterministic wobble — so
+       it belongs to the same hand. Each carries its own seed, so the two are
+       not the same shape twice. Still not a card: the fill is transparent and
+       the mark is the outline (TASTE §4 — border, never a filled panel). */
+    .sign-acts { display: flex; flex-direction: column; align-items: center; gap: 10px;
+      width: 100%; }
+    .sign-act { position: relative; background: transparent; border: 0; border-radius: 0;
+      padding: 0; width: 78%; aspect-ratio: 44 / 11; display: grid; place-items: center;
       font-family: inherit; font-size: var(--screen-1); font-weight: 500; color: var(--ink);
-      letter-spacing: 0; cursor: pointer; }
-    .sign-skip { font-weight: 400; font-size: var(--screen-2); color: var(--muted); }
+      letter-spacing: 0; cursor: pointer; -webkit-tap-highlight-color: transparent;
+      transition: opacity var(--t-tertiary) var(--settle); }
+    .sign-act:active { opacity: .62; }
+    .sign-pill { position: absolute; inset: 0; width: 100%; height: 100%; display: block;
+      fill: none; stroke: currentColor; stroke-width: 0.5; stroke-linejoin: round;
+      /* an svg clips to its viewBox, and the wobble crosses the edge by
+         design — without this the pill is sliced flat top and bottom, the
+         same trap the key rings hit on press. */
+      overflow: visible; pointer-events: none; }
+    /* one line, always: the pill is a fixed 44:11, so a label that wraps
+       breaks straight out of the outline it is supposed to sit inside. */
+    .sign-label { position: relative; white-space: nowrap; }
+    .sign-skip { width: 56%; font-weight: 400; color: var(--muted); }
+    .sign-skip .sign-label { font-size: var(--screen-2); }
 
     /* ── the six keys, in two rows (DEVICE §2, §3) ──────────────────────────
        A physical device has fixed controls, so every key is always in the
@@ -475,8 +493,8 @@
                    autocomplete="off" autocorrect="off" autocapitalize="words" enterkeyhint="go"
                    aria-label="your first name" />
             <div class="sign-acts">
-              <button type="button" class="sign-act" id="signGo">send</button>
-              <button type="button" class="sign-act sign-skip" id="signSkip">skip — let the world name it</button>
+              <button type="button" class="sign-act" id="signGo"><svg class="sign-pill" viewBox="0 0 44 11" preserveAspectRatio="none" aria-hidden="true"><path d="M5.46 0.13C6.75 0.02 8.76 -0.02 10.33 -0.05C11.89 -0.07 13.33 -0.02 14.86 -0.02C16.39 -0.02 17.94 -0.02 19.51 -0.06C21.08 -0.1 22.69 -0.28 24.28 -0.27C25.88 -0.27 27.49 -0.07 29.07 -0.04C30.64 -0.01 32.15 -0.13 33.73 -0.11C35.32 -0.08 37.32 0.02 38.58 0.14C39.84 0.26 40.52 0.19 41.29 0.61C42.07 1.04 42.77 1.9 43.23 2.71C43.68 3.51 44.01 4.5 44.01 5.44C44 6.38 43.69 7.56 43.21 8.35C42.73 9.14 41.93 9.71 41.13 10.16C40.34 10.62 39.66 10.91 38.46 11.06C37.26 11.22 35.49 11.08 33.92 11.09C32.35 11.09 30.62 11.06 29.05 11.09C27.48 11.12 26.04 11.23 24.48 11.28C22.92 11.32 21.3 11.36 19.69 11.35C18.08 11.35 16.36 11.3 14.79 11.26C13.23 11.22 11.84 11.16 10.28 11.09C8.71 11.03 6.67 11.04 5.41 10.88C4.15 10.72 3.51 10.59 2.74 10.16C1.97 9.72 1.25 9.03 0.79 8.27C0.33 7.5 -0.01 6.44 -0.03 5.55C-0.05 4.65 0.23 3.7 0.67 2.88C1.11 2.06 1.82 1.09 2.62 0.63C3.41 0.17 4.17 0.24 5.46 0.13z"/></svg><span class="sign-label">send</span></button>
+              <button type="button" class="sign-act sign-skip" id="signSkip"><svg class="sign-pill" viewBox="0 0 44 11" preserveAspectRatio="none" aria-hidden="true"><path d="M5.62 0.02C6.85 -0.11 8.62 -0.13 10.15 -0.16C11.68 -0.19 13.2 -0.15 14.81 -0.15C16.41 -0.14 18.19 -0.12 19.78 -0.11C21.37 -0.11 22.77 -0.08 24.34 -0.1C25.92 -0.11 27.66 -0.19 29.21 -0.2C30.77 -0.2 32.11 -0.15 33.66 -0.13C35.22 -0.1 37.29 -0.16 38.57 -0.04C39.84 0.09 40.52 0.16 41.31 0.62C42.11 1.09 42.89 1.95 43.34 2.75C43.8 3.56 44.07 4.54 44.06 5.44C44.06 6.34 43.78 7.32 43.3 8.15C42.81 8.97 41.97 9.92 41.16 10.39C40.34 10.86 39.63 10.85 38.4 10.98C37.18 11.11 35.37 11.13 33.83 11.16C32.29 11.19 30.74 11.14 29.16 11.17C27.58 11.2 25.94 11.31 24.36 11.34C22.79 11.37 21.33 11.37 19.73 11.34C18.14 11.31 16.4 11.17 14.79 11.14C13.18 11.11 11.6 11.19 10.06 11.14C8.52 11.1 6.77 10.99 5.53 10.86C4.29 10.73 3.44 10.79 2.61 10.36C1.79 9.93 1.03 9.11 0.59 8.28C0.16 7.45 0 6.32 -0.01 5.38C-0.01 4.45 0.11 3.47 0.57 2.68C1.04 1.89 1.93 1.08 2.77 0.64C3.61 0.2 4.39 0.16 5.62 0.02z"/></svg><span class="sign-label">skip</span></button>
             </div>
           </div>
         </div>
