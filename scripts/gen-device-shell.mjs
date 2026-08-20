@@ -10,9 +10,9 @@
 import { writeFileSync } from 'node:fs';
 
 // ── the binding numbers (docs/DEVICE.md §3) ─────────────────────────────────
-const VB = { w: 100, h: 150 };
-const BEZEL = { x0: 11.4, x1: 89.0, y0: 33.8, y1: 112.0 }; // outer edge of the drawn bezel
-const KEYS = { y: 128, xs: [30.5, 50, 70], r: 7.2 };
+const VB = { w: 100, h: 168 };
+const BEZEL = { x0: 11.4, x1: 89.0, y0: 33.8, y1: 128.0 }; // outer edge of the drawn bezel
+const KEYS = { y: 145, xs: [30.5, 50, 70], r: 7.2 };
 const WORDMARK_Y = 24.6;
 
 /** Deterministic wobble — a fixed seed, so the device is the same object for
@@ -30,9 +30,9 @@ const rnd = () => {
  * tapers at both ends (TASTE §2.5: no rectilinear, no engineered geometry).
  */
 const PROFILE = [
-  [8, 14], [14, 24], [20, 33], [27, 40.5], [34, 44.6], [44, 46.4],
-  [60, 47.4], [78, 47.9], [96, 47.6], [110, 46.4], [120, 44], [130, 39.5],
-  [138, 33], [144, 24], [148, 13],
+  [8, 14], [14, 24], [20, 33], [27, 40.5], [34, 44.6], [46, 46.6],
+  [66, 47.6], [90, 48], [112, 47.6], [126, 46.4], [136, 44], [147, 39.5],
+  [156, 33], [162, 24], [166, 13],
 ];
 function halfWidth(y) {
   if (y <= PROFILE[0][0]) return PROFILE[0][1];
@@ -78,14 +78,14 @@ function bodyPath(wobble = 0.55) {
   const pts = [];
   const STEPS = 26;
   for (let i = 0; i <= STEPS; i++) {
-    const y = 8 + (148 - 8) * (i / STEPS);
+    const y = 8 + (166 - 8) * (i / STEPS);
     // right side runs a touch fuller, left a touch flatter — hand asymmetry
-    const lean = 1 + 0.028 * Math.sin((y - 8) / 140 * Math.PI);
+    const lean = 1 + 0.028 * Math.sin((y - 8) / 158 * Math.PI);
     pts.push([50 + halfWidth(y) * lean + rnd() * wobble, y + rnd() * wobble * 0.6]);
   }
   for (let i = STEPS; i >= 0; i--) {
-    const y = 8 + (148 - 8) * (i / STEPS);
-    const lean = 1 - 0.022 * Math.sin((y - 8) / 140 * Math.PI);
+    const y = 8 + (166 - 8) * (i / STEPS);
+    const lean = 1 - 0.022 * Math.sin((y - 8) / 158 * Math.PI);
     pts.push([50 - halfWidth(y) * lean + rnd() * wobble, y + rnd() * wobble * 0.6]);
   }
   return closedSmooth(pts);
@@ -155,7 +155,7 @@ function ring(cx, cy, r, wobble = 0.28) {
 }
 
 // ── motifs live in the body margin, never over the screen ──────────────────
-const bandY = [52, 68, 84, 100];
+const bandY = [52, 74, 96, 116];
 const motifs = [];
 for (let i = 0; i < bandY.length; i++) {
   const y = bandY[i];
@@ -184,7 +184,7 @@ function curl(cx, cy, r) {
 // hatch ticks, also in the left margin band
 const hatch = [];
 for (let i = 0; i < 4; i++) {
-  const y = 116 + i * 4.4;
+  const y = 132 + i * 4.4;
   const outer = 50 - halfWidth(y);
   const inner = Math.min(BEZEL.x0, outer + 9);
   if (inner - outer < 3) continue;
@@ -250,7 +250,7 @@ const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${VB.w} ${VB.h
     <path d="${bodyPath(1.5)}" stroke-width="0.6" opacity="0.4"/>
     <!-- a second pen pass that breaks rather than traces -->
     <path d="M${n(50 - halfWidth(30))} 30c-2.6 6.1-4 12.7-4.4 19.3" stroke-width="0.75" opacity="0.5"/>
-    <path d="M${n(50 + halfWidth(118))} 118c-2.9 6.6-7.2 12.5-12.6 17.1" stroke-width="0.75" opacity="0.5"/>
+    <path d="M${n(50 + halfWidth(134))} 134c-2.9 6.6-7.2 12.5-12.6 17.1" stroke-width="0.75" opacity="0.5"/>
 
     <!-- word mark. lowercase, always (TASTE §5). real text, not a path. -->
     <text x="50" y="${WORDMARK_Y}" font-family="'helvetica neue', helvetica, arial, sans-serif" font-size="7" font-weight="400" letter-spacing="0.6" text-anchor="middle" fill="#353534" stroke="none">ref</text>

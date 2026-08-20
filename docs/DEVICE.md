@@ -109,8 +109,15 @@ never leave**. What changes is what they mean:
 | state | button 1 | button 2 | button 3 |
 |---|---|---|---|
 | draw | undo | clear | done |
-| wait | — | hatch now | — |
+| wait | — | — | — |
 | alive | — | — | — |
+
+*(User ruling, 2026-08-20: *"let's remove the count down and the hatch button. i
+want to set the hatch timing on my end."* The wait row used to carry `hatch now`
+on button 2. It has no assigned button at all now, and the wait screen's brow
+carries no countdown line either. The hatch **timing** signal is untouched — it
+still ramps the shell's wobble and teases the cracks in; only the text and the
+control went.)*
 
 An unassigned button is **disabled, not removed** — it dims to the existing
 `opacity: 0.3` disabled treatment. Removing one would relayout the device, and the
@@ -122,7 +129,7 @@ buttons, and the wheel is screen content, not a control on the case.
 
 ## 3. Geometry — binding
 
-`public/device/shell.svg`, viewBox `0 0 100 150`. Both pages position against these
+`public/device/shell.svg`, viewBox `0 0 100 168`. Both pages position against these
 numbers, so they must not be edited on one side only.
 
 The artwork is **generated**, not hand-authored — `scripts/gen-device-shell.mjs`, run
@@ -138,10 +145,17 @@ below, so the interactive keys land on them with zero offset.
 
 | part | viewBox | as % of the device box |
 |---|---|---|
-| screen well, usable inner area | x 15–85, y 38–108 | `left 15%` `top 25.333%` `width 70%` `height 46.667%` |
-| button row centre line | y 128 | `top 85.333%` |
+| screen well, usable inner area | x 15–85, y 38–124 | `left 15%` `top 22.619%` `width 70%` `height 51.190%` |
+| button row centre line | y 145 | `top 86.310%` |
 | button centres | x 30.5 / 50 / 70 | `left 30.5% / 50% / 70%` |
 | button diameter | 14.4 | `14.4%` of width |
+
+**The well is portrait, not square** *(user ruling, 2026-08-18: "you can make it
+slightly taller if we need more space")*. The device went from `100 × 150` to
+`100 × 168` for one reason: with a square well the core fills it edge to edge and the
+brow has nowhere to go but on top of the drawing. At 390px wide the well is now
+273 × 335, so a 259px square core leaves a 38px band above and below — the brow and
+the tools get their own air, and nothing overlays the pad.
 
 The device is sized `contain` against the viewport and centred, so it never distorts
 and the hand-drawn line weight never stretches. On a tall handset the extra height
@@ -152,11 +166,26 @@ becomes paper above and below.
 the well those become shares of the well's own short side. The ratios between the
 three states are what matter and they are preserved:
 
-| state | old | new — share of the well's short side |
+| state | old | new — share of the well's WIDTH |
 |---|---|---|
 | draw | `min(76vmin, 480px)` | `95%` |
 | wait | `min(60vmin, 380px)` | `75%` |
 | alive | `min(80vmin, 460px)` | `100%` |
+
+Share of the well's **width**, not its short side — the well is taller than it is
+wide now, and the core is square, so width is what bounds it.
+
+### The screen has no frame of its own **[D]**
+
+*(user ruling: "we shouldn't see the borders of the drawing pad because it should be
+the tamagotchi screen.")*
+
+The drawing pad must not paint a background, a border or a corner radius. The bezel
+in the artwork is the only frame, and the well's own value (`SURFACE.ground`, one
+step darker than the body) is the only ground. A pad that carries its own card reads
+as a card sitting **on** the screen instead of being the screen — which is exactly
+what it looked like. The same applies to every other state's content: nothing inside
+the well draws its own enclosure.
 
 ## 4. What must not regress
 
