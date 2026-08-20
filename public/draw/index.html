@@ -110,12 +110,12 @@
        height becomes paper above and below. */
     .device-box {
       position: relative;
-      width: min(100cqw, calc(100cqh * 100 / 168));
-      aspect-ratio: 100 / 168;
+      width: min(100cqw, calc(100cqh * 100 / 178));
+      aspect-ratio: 100 / 178;
 
       /* the same measure again as a length, so the screen's own geometry can
          be derived from it (a percentage cannot feed calc() in `translate`). */
-      --device-w: min(100cqw, calc(100cqh * 100 / 168));
+      --device-w: min(100cqw, calc(100cqh * 100 / 178));
 
       /* DEVICE §3 — the screen well, x 15–85 / y 38–124 of the viewBox. The
          well is PORTRAIT (0.7·w wide, 0.86·w tall): a square well left the
@@ -161,7 +161,7 @@
          creature's name in the brow made the whole well highlight). */
       user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
       position: absolute;
-      left: 15%; top: 22.619%; width: 70%; height: 51.19%;
+      left: 15%; top: 25.843%; width: 70%; height: 49.438%;
       overflow: hidden;
     }
 
@@ -354,8 +354,8 @@
       position: absolute; left: 0; width: 100%; height: 0;
       transition: opacity var(--t-secondary) var(--settle);
     }
-    .device-key-row[data-row="top"]    { top: 14.643%; }
-    .device-key-row[data-row="bottom"] { top: 86.310%; }
+    .device-key-row[data-row="top"]    { top: 14.607%; }
+    .device-key-row[data-row="bottom"] { top: 87.640%; }
     /* Hidden is opacity + pointer-events + aria-hidden, never `display`
        (DEVICE §2/§3): the case is a solid object and a removal would relayout
        it. On THIS page the top row is hidden in every state — there is

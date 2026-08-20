@@ -52,7 +52,7 @@ import { MOTION, SURFACE, WORLD } from '../taste/tokens';
 // rendered size.
 
 /** shell.svg's viewBox. The box is sized `contain` to this ratio. */
-export const DEVICE_VIEWBOX = { width: 100, height: 168 } as const;
+export const DEVICE_VIEWBOX = { width: 100, height: 178 } as const;
 
 /**
  * Air above and below the device, on top of the safe-area insets.
@@ -98,9 +98,9 @@ const NO_SELECT = `
  */
 export const DEVICE_WELL = {
   leftPct: 15,
-  topPct: (38 / 168) * 100,
+  topPct: (46 / 178) * 100,
   widthPct: 70,
-  heightPct: (86 / 168) * 100,
+  heightPct: (88 / 178) * 100,
 } as const;
 
 /**
@@ -116,8 +116,8 @@ export const DEVICE_WELL = {
 export const DEVICE_KEYS = {
   centresPct: [30.5, 50, 70] as const,
   rowTopPct: {
-    top: (24.6 / 168) * 100,
-    bottom: (145 / 168) * 100,
+    top: (26 / 178) * 100,
+    bottom: (156 / 178) * 100,
   },
   diameterPct: 14.4,
   /** The ring's own stroke, in viewBox units — the artwork's weight. */

@@ -29,7 +29,7 @@ import {
 } from '../../src/phone/device';
 
 const VB_W = 100;
-const VB_H = 168;
+const VB_H = 178;
 
 describe('device geometry', () => {
   it('matches the shell artwork viewBox', () => {
@@ -37,11 +37,11 @@ describe('device geometry', () => {
     expect(DEVICE_VIEWBOX.height).toBe(VB_H);
   });
 
-  it('pins the screen well to viewBox x 15..85, y 38..124', () => {
+  it('pins the screen well to viewBox x 15..85, y 46..134', () => {
     expect(DEVICE_WELL.leftPct).toBeCloseTo((15 / VB_W) * 100, 6);
     expect(DEVICE_WELL.widthPct).toBeCloseTo(((85 - 15) / VB_W) * 100, 6);
-    expect(DEVICE_WELL.topPct).toBeCloseTo((38 / VB_H) * 100, 6);
-    expect(DEVICE_WELL.heightPct).toBeCloseTo(((124 - 38) / VB_H) * 100, 6);
+    expect(DEVICE_WELL.topPct).toBeCloseTo((46 / VB_H) * 100, 6);
+    expect(DEVICE_WELL.heightPct).toBeCloseTo(((134 - 46) / VB_H) * 100, 6);
   });
 
   it('leaves the well PORTRAIT, with a band above and below the largest core', () => {
@@ -66,11 +66,11 @@ describe('device geometry', () => {
     expect(DEVICE_KEYS.centresPct).toEqual([30.5, 50, 70]);
     // The top row occupies the band the `ref` word mark vacated (y 24.6);
     // the bottom row is where the three keys already were (y 145).
-    expect(DEVICE_KEYS.rowTopPct.top).toBeCloseTo((24.6 / VB_H) * 100, 6);
-    expect(DEVICE_KEYS.rowTopPct.bottom).toBeCloseTo((145 / VB_H) * 100, 6);
+    expect(DEVICE_KEYS.rowTopPct.top).toBeCloseTo((26 / VB_H) * 100, 6);
+    expect(DEVICE_KEYS.rowTopPct.bottom).toBeCloseTo((156 / VB_H) * 100, 6);
     // The doc quotes these to three decimals; the arithmetic must agree.
-    expect(DEVICE_KEYS.rowTopPct.top).toBeCloseTo(14.643, 3);
-    expect(DEVICE_KEYS.rowTopPct.bottom).toBeCloseTo(86.31, 3);
+    expect(DEVICE_KEYS.rowTopPct.top).toBeCloseTo(14.607, 3);
+    expect(DEVICE_KEYS.rowTopPct.bottom).toBeCloseTo(87.640, 3);
     expect(DEVICE_KEYS.diameterPct).toBe(14.4);
   });
 
