@@ -362,6 +362,14 @@
       position: absolute; left: 50%; top: 50%;
       width: 110.4167%; height: 110.4167%; translate: -50% -50%;
       fill: var(--paper); stroke: currentColor; stroke-width: 1.5;
+      /* An svg clips to its viewBox by default. The circle is r 7.2 centred
+         at 7.95 in a 15.9 box, so there is exactly 0.75 of margin — which a
+         1.5 stroke fills precisely and a thicker one paints straight out of.
+         The stroke straddles the path, so any press treatment that thickens
+         it would be sliced flat at the four extremes and the ring would read
+         as a squared-off circle (user report: the corner radius gets cut off
+         on press). Nothing here is clipped now. */
+      overflow: visible;
     }
     /* the mark on a key is an icon, never a filled shape — `icon` is the mark
        set's first entry (TASTE §4) and it is what the companion draws too.
