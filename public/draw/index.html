@@ -11,12 +11,20 @@
   <style>html, body { background: #dfdfdf; }</style>
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
   <title>draw → 3d</title>
+  <!-- the shell is the first thing the eye lands on; fetch it alongside the
+       document rather than after the scripts (DEVICE §1a — it must not fade in) -->
+  <link rel="preload" as="image" href="/device/shell.svg" />
   <style>
     /*
-     * The stage (docs/PHONE-STAGE.md §2). One surface that never moves; what
-     * changes is which elements occupy it. The pad IS the core — the same
-     * object that becomes the egg on the companion — so it is centred on the
-     * viewport, sized only by --core-side, and never translated or scaled.
+     * The device (docs/DEVICE.md) wrapping the stage (docs/PHONE-STAGE.md §2).
+     *
+     * Two objects, two laws:
+     *   the DEVICE is a prop drawn in the illustrated world. It never moves —
+     *   no transition, no animation, ever (DEVICE §1a). A tamagotchi whose
+     *   plastic case breathed would read as wrong.
+     *   the SCREEN WELL holds the stage exactly as it was: one surface that
+     *   never moves, four slots, the core as the fixed point, the ambient
+     *   drift floor running under everything (TASTE §2.1).
      *
      * Every colour and duration below is MIRRORED from src/taste/tokens.ts.
      * This page is a standalone document in public/ and cannot import from
@@ -26,7 +34,7 @@
     :root {
       /* ── palette — src/taste/tokens.ts SURFACE / WORLD ──────────────── */
       --paper: #dfdfdf;   /* SURFACE.ground — the world's field, one paper end to end */
-      --pad:   #e9ebe9;   /* SURFACE.canvas — the drawing ground */
+      --pad:   #e9ebe9;   /* SURFACE.canvas — the drawing ground, and the device body */
       --ink:   #353534;   /* WORLD.ink */
       --muted: #92928e;   /* WORLD.neutral */
       --line:  rgba(53, 53, 52, 0.22);
@@ -34,7 +42,7 @@
       --scrim: rgba(223, 223, 223, 0.72);
 
       /* ── motion — src/taste/tokens.ts MOTION ────────────────────────── */
-      --t-tertiary:  456ms;    /* MOTION.tertiaryMs  — satellites out */
+      --t-tertiary:  456ms;    /* MOTION.tertiaryMs  — satellites out, key states */
       --t-secondary: 912ms;    /* MOTION.secondaryMs — satellites in, core, modals, the seam */
       --t-primary:   1823ms;   /* MOTION.primaryMs   — toast dwell */
       --t-ambient:   3646ms;   /* MOTION.ambientMs   — the drift floor */
@@ -42,10 +50,8 @@
       --stagger: calc(var(--t-tertiary) / 4);          /* 114ms — derived, PHONE-STAGE §3 */
       --slide: 8px;                                    /* satellite offset, PHONE-STAGE §3 */
 
-      /* ── safe area — owned by the stage, consumed by its slots ───────── */
-      --safe-x:      max(14px, env(safe-area-inset-left), env(safe-area-inset-right));
-      --safe-top:    max(14px, env(safe-area-inset-top));
-      --safe-bottom: max(14px, env(safe-area-inset-bottom));
+      /* an unassigned or unavailable key dims rather than leaving (DEVICE §2) */
+      --dim: 0.3;
     }
 
     * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -58,30 +64,94 @@
     }
 
     /* ── the stage ──────────────────────────────────────────────────────────
-       Fixed, full-bleed, no padding of its own: the safe-area insets live on
-       the slots, so the core's centre is the VIEWPORT centre on both sides of
-       the seam regardless of what any device's insets do. */
+       Fixed and full-bleed. It owns the paper the device is drawn on, and it
+       owns every measure the device and the well are built from, so that one
+       element resolves the whole geometry and both pages can copy it. */
     .stage {
       position: fixed; inset: 0; background: var(--paper); overflow: hidden;
-      --core-side: min(76vmin, 480px);   /* PHONE-STAGE §2, draw measure */
+      display: grid; place-items: center;
+      /* the device box measures against THIS element, not against vh: a
+         container query length is exact where vh and a fixed inset disagree
+         on mobile. src/phone/device.ts does the same, so both halves of the
+         seam resolve the identical box. */
+      container-type: size;
+    }
+
+    /* ── the device ─────────────────────────────────────────────────────────
+       A prop in the illustrated world, not a ui panel (DEVICE §1d): a light
+       paper-filled shape carried by wobbly ink outlines, exactly like the
+       trees. shell.svg is viewBox 0 0 100 150, so the box is 2:3 and sized
+       CONTAIN: the hand-drawn line weight never stretches, and extra viewport
+       height becomes paper above and below. */
+    .device-box {
+      position: relative;
+      width: min(100cqw, calc(100cqh * 100 / 150));
+      aspect-ratio: 100 / 150;
+
+      /* the same measure again as a length, so the screen's own geometry can
+         be derived from it (a percentage cannot feed calc() in `translate`). */
+      --device-w: min(100cqw, calc(100cqh * 100 / 150));
+
+      /* DEVICE §3 — the screen well, x 15–85 / y 38–108 of the viewBox. With
+         the box at 2:3 that is 0.7·w by 0.7·w: the well is square. */
+      --well-side: calc(var(--device-w) * 0.7);
+      --well-pad:  calc(var(--well-side) * 0.032);
+
+      /* DEVICE §3 — the core's measure is now a share of the WELL's short
+         side, not of the viewport. draw 95%, wait 75%; the ratio between the
+         two is what the seam is built on. */
+      --core-side: calc(var(--well-side) * 0.95);
       /* MOTION.ambientAmplitude (0.003 of scale) — declared here, next to the
          --core-side it is measured against: a custom property resolves its
          var()s on the element that declares it, so this cannot live on :root. */
       --ambient-amp: calc(var(--core-side) * 0.003);
+
+      /* screen type scales with the screen, so a 273px well and a 700px one
+         read the same. The clamps keep it legible at either end. */
+      --screen-1: clamp(11px, calc(var(--well-side) * 0.052), 17px);
+      --screen-2: clamp(9px,  calc(var(--well-side) * 0.042), 14px);
     }
     /* the wait measure. The core arrives here BEFORE the navigation fires, so
        the companion can boot with the box already this size (§4.2). */
-    .stage[data-state="sending"] { --core-side: min(60vmin, 380px); }
+    .stage[data-state="sending"] .device-box { --core-side: calc(var(--well-side) * 0.75); }
+
+    /* the shell artwork. It never transitions, never animates and carries no
+       transform (DEVICE §1a) — the case is a physical object. The real
+       controls are separate elements; this is only the drawing of them. */
+    .device-shell {
+      position: absolute; inset: 0; width: 100%; height: 100%; display: block;
+      pointer-events: none; user-select: none; -webkit-user-drag: none;
+    }
+
+    /* ── the screen well ────────────────────────────────────────────────────
+       DEVICE §3. The stage's four slots live in here with their roles
+       unchanged. Depth is value only (DEVICE §1e): the well is painted one
+       step darker than the body by the artwork itself, so it reads as inset
+       with no shadow, no gradient and no rounding of ours. */
+    .device-well {
+      position: absolute;
+      left: 15%; top: 25.3333%; width: 70%; height: 46.6667%;
+      overflow: hidden;
+    }
 
     /* ── slots (always present; empty is a state, never a removal) ────────── */
     .slot { position: absolute; }
-    .stage-brow   { top: var(--safe-top); left: var(--safe-x); right: var(--safe-x); }
-    .stage-tools  { bottom: var(--safe-bottom); left: var(--safe-x); right: var(--safe-x); }
-    .stage-corner { right: var(--safe-x); bottom: var(--safe-bottom); width: 0; height: 0; }
+    .slot.satellite { z-index: 2; }
+    /* the well is nearly all core, so the brow floats over the top of the pad
+       the way a handheld's status row floats over its play field. It takes no
+       pointer events — the pad underneath keeps its whole surface — except on
+       the one word that is a control. */
+    .stage-brow   { top: var(--well-pad); left: var(--well-pad); right: var(--well-pad); pointer-events: none; }
+    .stage-brow .chip-change { pointer-events: auto; }
+    /* tools render into the device's own keys now (DEVICE §2), so this slot is
+       empty here. It stays in the dom: removing a slot relayouts the stage. */
+    .stage-tools  { bottom: var(--well-pad); left: var(--well-pad); right: var(--well-pad); pointer-events: none; }
+    .stage-corner { right: var(--well-pad); bottom: var(--well-pad); width: 0; height: 0; }
     /* the core: inset 0 + auto margins centres it exactly; only the side
        changes, and it changes as real layout, never as a scale. */
     .stage-core {
-      inset: 0; margin: auto; width: var(--core-side); height: var(--core-side);
+      inset: 0; margin: auto; z-index: 1;
+      width: var(--core-side); height: var(--core-side);
       transition: width var(--t-secondary) var(--settle), height var(--t-secondary) var(--settle);
     }
 
@@ -106,8 +176,9 @@
        Nothing on the stage ever fully arrests. It runs on the satellites, at
        0.3% of the stage's own scale, and deliberately NOT on the core: the
        core is the fixed point the seam is measured against (§3, §4.2), so the
-       floor never spends its 1px budget. Phase-offset per slot so the page
-       does not breathe in unison. */
+       floor never spends its 1px budget. It never runs on the device either —
+       the case is still by ruling. Phase-offset per slot so the screen does
+       not breathe in unison. */
     .drift {
       animation: ambient-floor var(--t-ambient) var(--settle) infinite alternate;
       animation-delay: calc(var(--t-ambient) / -3 * var(--i));
@@ -118,31 +189,35 @@
     }
 
     /* ── brow ─────────────────────────────────────────────────────────────── */
-    .brow-line { display: flex; align-items: center; justify-content: space-between; }
-    .title { display: flex; align-items: center; gap: 9px; font-weight: 500; font-size: 16px; letter-spacing: 0; }
-    .status { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+    .brow-line { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    /* min-width 0 is what lets the title actually ellipsis inside a flex row —
+       ?title= carries up to 40 characters and the well is only ~250px wide */
+    .title { flex: 1 1 auto; min-width: 0; font-weight: 500; font-size: var(--screen-1); letter-spacing: 0;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .status { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; font-size: var(--screen-2); color: var(--muted); white-space: nowrap; }
     /* Connection state without color: a hollow ring waiting, filled live. */
-    .dot { width: 8px; height: 8px; border-radius: 50%; border: 1px solid var(--muted);
+    .dot { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; border: 1px solid var(--muted);
       background: transparent;
       transition: background var(--t-tertiary) var(--settle), border-color var(--t-tertiary) var(--settle); }
     .dot.on { background: var(--ink); border-color: var(--ink); }
     .dot.off { background: transparent; border-color: var(--line); }
 
     .namechip {
-      margin-top: 8px; font-size: 13px; color: var(--muted); text-align: center;
+      margin-top: 6px; font-size: var(--screen-2); color: var(--muted); text-align: center;
       opacity: 0; translate: 0 var(--slide); pointer-events: none;
       transition: opacity var(--t-secondary) var(--settle),
                   translate var(--t-secondary) var(--settle);
       transition-delay: var(--stagger);
     }
-    .namechip.is-in { opacity: 1; translate: 0 0; pointer-events: auto; }
+    .namechip.is-in { opacity: 1; translate: 0 0; }
     .namechip b { color: var(--ink); font-weight: 500; }
     .chip-change { color: var(--ink); text-decoration: underline; cursor: pointer; }
 
     /* ── core: the pad ────────────────────────────────────────────────────── */
     .pad {
       position: relative; width: 100%; height: 100%;
-      background: var(--pad); border: 1px solid var(--line); border-radius: 18px; overflow: hidden;
+      background: var(--pad); border: 1px solid var(--line);
+      border-radius: calc(var(--well-side) * 0.04); overflow: hidden;
       touch-action: none;
       transition: opacity var(--t-secondary) var(--settle);
     }
@@ -150,42 +225,62 @@
     .stage[data-state="sending"] .pad { opacity: 0; pointer-events: none; }
     canvas { display: block; width: 100%; height: 100%; touch-action: none; }
     .hint { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-      color: var(--muted); font-size: 15px; font-weight: 400; pointer-events: none;
+      color: var(--muted); font-size: var(--screen-1); font-weight: 400; pointer-events: none;
       opacity: 0; transition: opacity var(--t-secondary) var(--settle); }
     .stage[data-state="idle"] .hint { opacity: 1; }
 
-    /* ── tools ────────────────────────────────────────────────────────────── */
-    .stage-tools .drift { display: flex; flex-direction: column; gap: 12px; }
-    .sizes { display: flex; gap: 8px; justify-content: center; }
-    .size { width: 34px; height: 34px; border-radius: 50%; background: transparent; border: 1px solid var(--line);
-      display: flex; align-items: center; justify-content: center; cursor: pointer;
-      transition: border-color var(--t-tertiary) var(--settle); }
-    .size.sel { border-color: var(--ink); }
-    .size i { display: block; border-radius: 50%; background: var(--ink); }
+    /* ── the three keys (DEVICE §2, §3) ─────────────────────────────────────
+       A physical device has fixed controls, so all three are always present
+       and never leave; what changes is what they mean, and an unavailable one
+       dims rather than going away. The drawn ring in shell.svg is artwork —
+       these are the real controls, sitting on the geometry DEVICE §3 pins:
+       centres x 30.5 / 50 / 70, centre line y 128, diameter 14.4 of the box.
+       They carry no transform and never move; only their value changes, and
+       it changes on the settle curve because a hard cut is forbidden. */
+    /* a zero-height line on the drawn row centre; each key hangs off it by
+       half its own diameter, and a percentage margin resolves against the box
+       WIDTH — the axis the diameter is quoted in. Same construction as
+       src/phone/device.ts, so the two pages land on the same pixels. */
+    .device-keys { position: absolute; left: 0; width: 100%; top: 85.3333%; height: 0; }
+    .device-key {
+      position: absolute; top: 0;
+      width: 14.4%; aspect-ratio: 1;
+      margin-top: -7.2%; margin-left: -7.2%;
+      display: flex; align-items: center; justify-content: center;
+      padding: 0; border: 0; border-radius: 50%; background: transparent;
+      color: var(--ink); cursor: pointer; touch-action: manipulation;
+      transition: opacity var(--t-tertiary) var(--settle);
+    }
+    .device-key[data-key="0"] { left: 30.5000%; }
+    .device-key[data-key="1"] { left: 50.0000%; }
+    .device-key[data-key="2"] { left: 70.0000%; }
+    .device-key:disabled { opacity: var(--dim); cursor: default; pointer-events: none; }
+    /* the mark on a key is an icon, never a filled shape — `icon` is the mark
+       set's first entry (TASTE §4) and it is what the companion draws too. */
+    .device-key svg { width: 46%; height: 46%; display: block; }
 
-    .actions { display: flex; gap: 10px; }
-    /* the actions ride the tools slot out on send/refusal, so they only carry
-       their own slide while the slot itself is standing still. */
-    .stage[data-state="idle"] .actions.is-out { translate: 0 var(--slide); }
-
-    button { flex: 1; border: 1px solid var(--line); border-radius: 13px; padding: 15px; font-size: 16px; font-weight: 500;
+    /* ── tools (the modal buttons; the pad's own tools are the keys) ──────── */
+    button { border: 1px solid var(--line); border-radius: 13px; padding: 15px; font-size: 16px; font-weight: 500;
       font-family: inherit; cursor: pointer; letter-spacing: 0;
       transition: opacity var(--t-tertiary) var(--settle), border-color var(--t-tertiary) var(--settle); }
     /* press feedback drifts on the settle curve — no scale, no snap back */
     button:active { opacity: 0.62; }
-    .clear { background: transparent; color: var(--ink); flex: 0 0 96px; }
-    .send { background: var(--ink); color: var(--pad); border-color: var(--ink); }
-    .send:disabled { opacity: 0.35; }
+    .clear { background: transparent; color: var(--ink); }
 
     /* spent: this handset already drew (one handset, one creature). Everything
-       recedes while the companion loads — a fade, not a removal. */
+       recedes while the companion loads — a fade, not a removal. The shell
+       itself does not dim: it is the object, not the state. */
     .stage[data-spent="true"] .satellite,
     .stage[data-spent="true"] .stage-core { opacity: 0.35; pointer-events: none; }
+    .stage[data-spent="true"] .device-key { opacity: var(--dim); pointer-events: none; }
 
-    /* ── toast (the scene's back channel) ─────────────────────────────────── */
-    .toast { position: fixed; left: 50%; bottom: 96px; translate: -50% var(--slide);
-      background: var(--ink); color: var(--pad); font-weight: 500; padding: 12px 22px; border-radius: 999px;
-      opacity: 0; pointer-events: none; font-size: 15px; text-align: center; z-index: 90;
+    /* ── toast (the scene's back channel) ─────────────────────────────────
+       it is a message from the world to this screen, so it lives on the
+       screen — inside the well, not floating on the case. */
+    .toast { position: absolute; left: 50%; bottom: 7%; translate: -50% var(--slide); z-index: 3;
+      max-width: 88%; background: var(--ink); color: var(--pad); font-weight: 500;
+      padding: 9px 15px; border-radius: 999px;
+      opacity: 0; pointer-events: none; font-size: var(--screen-2); text-align: center;
       transition: opacity var(--t-secondary) var(--settle), translate var(--t-secondary) var(--settle); }
     .toast.show { opacity: 1; translate: -50% 0; }
 
@@ -193,7 +288,9 @@
        The name sheet and the guideline notice are interruptions, not steps in
        the flow: they slide up over the stage on the settle curve and leave the
        stage visible behind them. No display toggling — opacity, pointer-events
-       and aria-hidden only. */
+       and aria-hidden only. They stay anchored to the viewport rather than to
+       the well: the sheet owns a text input, and an input inside a 273px well
+       would sit under the on-screen keyboard. */
     .modal { position: fixed; inset: 0; z-index: 100; display: flex; justify-content: center;
       background: var(--scrim); opacity: 0; pointer-events: none;
       transition: opacity var(--t-secondary) var(--settle); }
@@ -213,8 +310,9 @@
     .refused .sub { font-size: 14px; color: var(--muted); }
     .refused button { flex: 0 0 auto; }
 
-    .sheet-title { font-size: 20px; font-weight: 500; letter-spacing: 0; }
-    .sheet-sub { font-size: 13px; color: var(--muted); margin: 5px 0 16px; }
+    /* the sub line is gone (user ruling): the title is the whole prompt, so it
+       carries the margin the sub used to. */
+    .sheet-title { font-size: 20px; font-weight: 500; letter-spacing: 0; margin: 0 0 16px; }
     .name-input { width: 100%; font-size: 18px; font-weight: 400; padding: 15px 16px; border-radius: 13px;
       background: transparent; border: 1px solid var(--line); color: var(--ink); outline: none;
       user-select: text; -webkit-user-select: text;
@@ -226,44 +324,75 @@
   </style>
 </head>
 <body>
-  <!-- One stage, four slots. The slots never leave the dom (PHONE-STAGE §2). -->
+  <!-- One stage, one device, four slots. The slots never leave the dom
+       (PHONE-STAGE §2) and the device never moves (DEVICE §1a). -->
   <div class="stage" id="stage" data-state="idle" data-spent="false">
+    <div class="device-box" id="device">
 
-    <div class="slot satellite stage-brow" id="brow" style="--i: 0">
-      <div class="drift">
-        <div class="brow-line">
-          <div class="title"><span id="appTitle">draw → 3d</span></div>
-          <div class="status"><span class="dot" id="dot"></span><span id="statusText">connecting…</span></div>
+      <!-- the shell: hand-drawn, black and white, static. Decorative — every
+           control it draws has a real element over it. -->
+      <img class="device-shell" id="deviceShell" src="/device/shell.svg" alt=""
+           aria-hidden="true" draggable="false" />
+
+      <!-- the screen well: the stage lives in here, unchanged -->
+      <div class="device-well" id="well">
+
+        <div class="slot satellite stage-brow" id="brow" style="--i: 0">
+          <div class="drift">
+            <div class="brow-line">
+              <div class="title"><span id="appTitle">draw → 3d</span></div>
+              <div class="status"><span class="dot" id="dot"></span><span id="statusText">connecting…</span></div>
+            </div>
+            <div class="namechip" id="namechip" aria-hidden="true"></div>
+          </div>
         </div>
-        <div class="namechip" id="namechip" aria-hidden="true"></div>
-      </div>
-    </div>
 
-    <!-- the core: the square you draw in, which becomes the egg on the next
-         page. It never translates and never scales — only its side changes. -->
-    <div class="slot stage-core" id="core">
-      <div class="pad" id="pad">
-        <canvas id="c"></canvas>
-        <div class="hint" id="hint">draw a solid shape</div>
-      </div>
-    </div>
-
-    <div class="slot satellite stage-tools" id="tools" style="--i: 1">
-      <div class="drift">
-        <div class="sizes" id="sizes"></div>
-        <div class="actions satellite is-out" id="actions" style="--i: 1" aria-hidden="true">
-          <button class="clear" id="clear">clear</button>
-          <button class="send" id="send" disabled>send →</button>
+        <!-- the core: the square you draw in, which becomes the egg on the next
+             page. It never translates and never scales — only its side changes. -->
+        <div class="slot stage-core" id="core">
+          <div class="pad" id="pad">
+            <canvas id="c"></canvas>
+            <div class="hint" id="hint">draw a solid shape</div>
+          </div>
         </div>
-      </div>
-    </div>
 
-    <!-- corner slot: the minimap lives here on the companion. Empty here, and
-         present anyway: removing a slot relayouts the stage, and that is a cut. -->
-    <div class="slot satellite stage-corner" id="corner" style="--i: 2" aria-hidden="true"></div>
+        <!-- tools slot: its controls are the device's keys now (DEVICE §2), so
+             it is empty here. Present anyway — empty is a state of a slot. -->
+        <div class="slot satellite stage-tools" id="tools" style="--i: 1" aria-hidden="true">
+          <div class="drift"></div>
+        </div>
+
+        <!-- corner slot: the minimap lives here on the companion. Empty here, and
+             present anyway: removing a slot relayouts the stage, and that is a cut. -->
+        <div class="slot satellite stage-corner" id="corner" style="--i: 2" aria-hidden="true"></div>
+
+        <div class="toast" id="toast">sent</div>
+      </div>
+
+      <!--
+        the keys. Real buttons with real names, sitting on the rings the shell
+        draws. This page has no undo, so where DEVICE §2's draw row reads
+        undo · clear · done, key 1 carries the page's other tool — the brush
+        size — and keys 2 and 3 carry clear and send as the table says.
+      -->
+      <div class="device-keys" id="keys">
+        <button type="button" class="device-key" data-key="0" id="keySize" aria-label="brush size">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle id="keySizeDot" cx="12" cy="12" r="5.6" fill="currentColor" /></svg>
+        </button>
+        <button type="button" class="device-key" data-key="1" id="clear" aria-label="clear">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path
+            d="M8.2 8.3c2.3 2.2 4.7 4.7 7.3 7.5M15.8 8.4c-2.4 2.3-4.9 4.8-7.2 7.4"
+            fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" /></svg>
+        </button>
+        <button type="button" class="device-key" data-key="2" id="send" aria-label="send" disabled>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path
+            d="M6.4 12.1c3.7-.3 7.4-.4 11.1-.3M13.3 8c1.4 1.3 2.8 2.6 4.2 3.8-1.4 1.3-2.8 2.6-4.1 4"
+            fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" /></svg>
+        </button>
+      </div>
+
+    </div>
   </div>
-
-  <div class="toast" id="toast">sent</div>
 
   <!-- Refused on this handset: the drawing never leaves the phone. Same
        words the companion uses, shown here instead of a send. -->
@@ -277,12 +406,11 @@
 
   <div class="modal sheet" id="sheet" aria-hidden="true">
     <div class="modal-card">
-      <div class="sheet-title">sign your drawing</div>
-      <div class="sheet-sub">your name shows in the scene. asked once — then it remembers.</div>
+      <div class="sheet-title">sign your masterpiece</div>
       <input id="nameInput" class="name-input" type="text" maxlength="16" placeholder="first name"
              autocomplete="off" autocorrect="off" autocapitalize="words" enterkeyhint="go" />
       <button class="sheet-go" id="sheetGo">send</button>
-      <button class="sheet-skip" id="sheetSkip">skip — send without a name</button>
+      <button class="sheet-skip" id="sheetSkip">skip — let the world name it</button>
     </div>
   </div>
 
@@ -317,14 +445,33 @@
     // One surface; states are swaps of what occupies it, never screen changes.
     // idle → drawn → sending, plus refused (a modal over a withdrawn stage).
     const stage = document.getElementById('stage');
-    const actionsEl = document.getElementById('actions');
     // reading order — brow, tools, corner (PHONE-STAGE §3). --i is on the
     // elements themselves and drives both the stagger and the ambient phase.
     const SATELLITES = ['brow', 'tools', 'corner'].map((id) => document.getElementById(id));
+    // the device's three keys. They are always present and never leave
+    // (DEVICE §2) — an unavailable one dims, it does not go away.
+    const keyClear = document.getElementById('clear');
+    const keySend  = document.getElementById('send');
+    const keySize  = document.getElementById('keySize');
+    const keySizeDot = document.getElementById('keySizeDot');
 
     function setPresent(el, present) {
       el.classList.toggle('is-out', !present);
       el.setAttribute('aria-hidden', present ? 'false' : 'true');
+    }
+
+    /**
+     * The keys' availability, in one place. This is what used to be the
+     * actions row arriving and leaving; the keys are on the case now, so
+     * instead of sliding away they dim. Same rule, same moments:
+     *   send  — offered once there is something to send AND a connection
+     *   clear — offered once there is something to clear
+     * and neither is live while the stage is mid-seam or already spent.
+     */
+    function syncKeys() {
+      const busy = state === 'sending' || state === 'refused' || stage.dataset.spent === 'true';
+      keySend.disabled  = busy || strokes.length === 0 || !connected;
+      keyClear.disabled = busy || strokes.length === 0;
     }
 
     let state = 'idle';
@@ -334,9 +481,9 @@
       stage.dataset.state = next;
       const satellitesIn = next === 'idle' || next === 'drawn';
       for (const el of SATELLITES) setPresent(el, satellitesIn);
-      // clear/send are only offered once there is something to send; on the
-      // way out they ride the tools slot rather than doubling its travel.
-      setPresent(actionsEl, next === 'drawn');
+      // clear/send are only live once there is something to send; they no
+      // longer travel — the case they sit on is a solid object.
+      syncKeys();
     }
 
     // ── one handset, one creature (user ruling) ──────────────────────────
@@ -403,6 +550,8 @@
       stage.dataset.spent = 'true';
       const send = document.getElementById('send');
       if (send) send.disabled = true;
+      const clear = document.getElementById('clear');
+      if (clear) clear.disabled = true;
       goToCompanion();
       return true;
     }
@@ -438,7 +587,8 @@
 
     // strokes stored NORMALISED (0..1) so the scene can redraw at any size
     let strokes = [], cur = null;
-    let size = SIZES[1];
+    let sizeIndex = 1;
+    let size = SIZES[sizeIndex];
 
     function redraw() {
       ctx.clearRect(0, 0, W, H);
@@ -463,7 +613,7 @@
       if (state === 'sending') return;
       cv.setPointerCapture(e.pointerId);
       cur = { color: INK, width: size, pts: [pt(e)] };
-      // the swap: the hint leaves the core, the actions arrive in the tools slot
+      // the swap: the hint leaves the core, the keys come live on the case
       setState('drawn');
       redraw();
     });
@@ -471,30 +621,34 @@
     const endStroke = () => {
       if (!cur) return;
       strokes.push(cur); cur = null;
-      document.getElementById('send').disabled = strokes.length === 0 || !connected;
+      syncKeys();
       redraw();
     };
     cv.addEventListener('pointerup', endStroke);
     cv.addEventListener('pointercancel', endStroke);
 
-    /** back to an empty pad: strokes gone, hint back, actions withdrawn. */
+    /** back to an empty pad: strokes gone, hint back, keys withdrawn. */
     function resetPad() {
       strokes = []; cur = null; redraw();
-      document.getElementById('send').disabled = true;
       setState('idle');
+      syncKeys();
     }
 
-    // ── Tool UI ─────────────────────────────────────────────────────────────
-    const szEl = document.getElementById('sizes');
-    SIZES.forEach((s, i) => {
-      const b = document.createElement('div');
-      b.className = 'size' + (i === 1 ? ' sel' : '');
-      const dot = document.createElement('i'); dot.style.width = dot.style.height = (s + 4) + 'px';
-      b.appendChild(dot);
-      b.onclick = () => { size = s; [...szEl.children].forEach(x => x.classList.remove('sel')); b.classList.add('sel'); };
-      szEl.appendChild(b);
-    });
-    document.getElementById('clear').onclick = resetPad;
+    // ── Tool ui: it lives on the case now (DEVICE §2) ───────────────────────
+    // The three brush sizes are the same three values, reached from key 1:
+    // the ring shows the ink dot it will draw with, so the control still
+    // reads its own state without a second row of marks on the screen. The
+    // radii are the old 8 / 12 / 20px dots expressed in the icon's 24-unit
+    // box, so at a 390pt handset the mark is the size it always was.
+    const SIZE_RADII = [3.7, 5.6, 9.3];
+    function applySize() {
+      size = SIZES[sizeIndex];
+      keySizeDot.setAttribute('r', String(SIZE_RADII[sizeIndex]));
+      keySize.setAttribute('aria-label', 'brush size ' + (sizeIndex + 1) + ' of ' + SIZES.length);
+    }
+    keySize.onclick = () => { sizeIndex = (sizeIndex + 1) % SIZES.length; applySize(); };
+    applySize();
+    keyClear.onclick = resetPad;
 
     // ── MQTT ────────────────────────────────────────────────────────────────
     let connected = false, client;
@@ -507,7 +661,7 @@
     }
     try {
       client = mqtt.connect(BROKER, { clientId: 'draw_' + Math.random().toString(16).slice(2, 10), keepalive: 30, reconnectPeriod: 2000 });
-      client.on('connect', () => { connected = true; setStatus('on', 'connected'); document.getElementById('send').disabled = strokes.length === 0; client.subscribe(UP_TOPIC); });
+      client.on('connect', () => { connected = true; setStatus('on', 'connected'); syncKeys(); client.subscribe(UP_TOPIC); });
       client.on('reconnect', () => setStatus('', 'reconnecting…'));
       client.on('close',  () => { connected = false; setStatus('off', 'offline'); });
       client.on('error',  () => setStatus('off', 'connection error'));
@@ -591,7 +745,7 @@
         // creature this handset already made, never on an empty pad.
         localStorage.setItem(SUBMISSION_KEY, JSON.stringify({ id: msg.id, name: userName || null, strokes: msg.strokes, ts: msg.ts, epoch: WORLD_EPOCH || null }));
       } catch {}
-      document.getElementById('send').disabled = true;
+      keySend.disabled = true;
       // The seam (PHONE-STAGE §4). Satellites leave, the core travels to the
       // WAIT measure and its content fades, and only then do we navigate. The
       // delay is MOTION.secondaryMs because that is the duration of the move
@@ -610,7 +764,7 @@
       resetPad();
     };
 
-    document.getElementById('send').onclick = () => {
+    keySend.onclick = () => {
       if (!strokes.length || !connected) return;
       if (!signed) { openSheet(); return; }   // first send → sign it; then remembered
       publish();
@@ -620,6 +774,7 @@
     nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); document.getElementById('sheetGo').click(); } });
     sheet.addEventListener('click', (e) => { if (e.target === sheet) closeSheet(); });
     updateChip();
+    syncKeys();
 
     window.addEventListener('resize', resize);
     resize();

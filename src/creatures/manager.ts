@@ -38,6 +38,7 @@ import type { StrokeList } from '../shape/types';
 import { MOTION } from '../taste/tokens';
 import type { WorldHandles } from '../world/scene';
 import type { ShadowHandle } from '../world/shadows';
+import { resolveName } from './naming';
 
 /** Shipped wander-speed multiplier (panel export, user ask): a touch
  * brisker than spec pace. The panel slider starts here. */
@@ -507,7 +508,10 @@ export function createCreatureManager(
       const nowMs = performance.now();
       const slot: Slot = {
         id,
-        name: opts.name ?? null,
+        // Unsigned drawings still get a name (user ruling, 2026-08-18) —
+        // derived from the identity id, so it is the same on every device
+        // and reproduces exactly on replay (src/creatures/naming.ts).
+        name: resolveName(opts.name, id),
         phase: 'egg',
         spot,
         egg,
