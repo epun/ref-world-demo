@@ -125,6 +125,17 @@ buttons, and the wheel is screen content, not a control on the case.
 `public/device/shell.svg`, viewBox `0 0 100 150`. Both pages position against these
 numbers, so they must not be edited on one side only.
 
+The artwork is **generated**, not hand-authored — `scripts/gen-device-shell.mjs`, run
+with `node scripts/gen-device-shell.mjs`. The first version was drawn by hand and
+shipped three containment faults (the bezel was wider than the body, the ink motifs
+and hatching landed inside the screen well, and the outer button rings straddled the
+body's edge). Generating it makes containment correct *by construction*: the body's
+half-width is a function of y, every other part is placed by asking that function how
+much room there is, and the script refuses to emit a shape whose clearances fail.
+Measured clearances are 5.59 / 8.80 / 7.15 units of body outside the bezel at its top,
+middle and bottom. The button rings are drawn at exactly the centres in the table
+below, so the interactive keys land on them with zero offset.
+
 | part | viewBox | as % of the device box |
 |---|---|---|
 | screen well, usable inner area | x 15–85, y 38–108 | `left 15%` `top 25.333%` `width 70%` `height 46.667%` |
