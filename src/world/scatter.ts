@@ -76,8 +76,33 @@ export interface Exclusion {
 export const SCATTER_STEP = 6;
 /** Half-extent of the scattered region. */
 export const SCATTER_EXTENT = 120;
-/** World seed — one world, one growth. */
+/** World seed — one world, one growth. The shipped default. */
 export const SCATTER_SEED = 7;
+
+/**
+ * The seed actually in force.
+ *
+ * Placement is a pure function of (cell, seed, density), so changing this
+ * re-rolls every cluster — a different world from the same rules, which is
+ * exactly what the panel's seed control is for (user ask). It is module
+ * state rather than a placement option because `cellHash` is called from
+ * the pure placement helpers, which take no instance.
+ *
+ * Determinism is unaffected: the same seed always grows the same world, and
+ * the shipped default is unchanged, so a session that never touches the
+ * control is byte-identical to before.
+ */
+let activeSeed: number = SCATTER_SEED;
+
+/** The seed the world is currently grown from. */
+export function scatterSeed(): number {
+  return activeSeed;
+}
+
+/** Re-seed the placement. Callers must rebuild the scatter to see it. */
+export function setScatterSeed(seed: number): void {
+  activeSeed = Math.floor(seed);
+}
 
 /** [D] Clearing radius around the origin: the hatch ground stays open paper
  * (creature spawns spiral out from the origin; live exclusions arrive later
@@ -142,7 +167,7 @@ export const SCATTER_KINDS: ScatterKind[] = [...PROP_KINDS, 'tick'];
 
 function cellHash(ix: number, iz: number, salt: number): number {
   const x =
-    Math.sin(ix * 127.1 + iz * 311.7 + SCATTER_SEED * 74.7 + salt * 53.13) * 43758.5453123;
+    Math.sin(ix * 127.1 + iz * 311.7 + activeSeed * 74.7 + salt * 53.13) * 43758.5453123;
   return x - Math.floor(x);
 }
 
@@ -701,6 +726,8 @@ export interface Scatter {
   setExclusions(points: Exclusion[]): void;
   /** Rebuild with a global density multiplier (dev panel). */
   setDensity(mult: number): void;
+  /** Re-roll placement from a new seed — a different world, same rules. */
+  setSeed(seed: number): void;
   /** Per-kind density multiplier, layered on the global one. Independent per
    * kind: changing one kind never moves another kind's placements. */
   setKindDensity(kind: ScatterKind, mult: number): void;
@@ -1200,6 +1227,11 @@ export function createScatter(): Scatter {
     },
     setDensity(mult: number): void {
       globalDensity = mult;
+      replace();
+      rebuild();
+    },
+    setSeed(seed: number): void {
+      setScatterSeed(seed);
       replace();
       rebuild();
     },

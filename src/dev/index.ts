@@ -35,7 +35,7 @@ import {
 } from '../taste/gates';
 import { WIND_OVERRIDE_MAX } from '../world/environment';
 import { WANDER_SPEED_DEFAULT } from '../creatures/manager';
-import { DEFAULT_KIND_DENSITY, SCATTER_STEP } from '../world/scatter';
+import { DEFAULT_KIND_DENSITY, SCATTER_SEED, SCATTER_STEP } from '../world/scatter';
 import { GRAIN, MOTION, SURFACE } from '../taste/tokens';
 import { countByKind } from '../session';
 import type { SessionRecorder } from '../session';
@@ -54,6 +54,8 @@ export interface DevInkApi {
 /** Scatter tuning surface — matches src/world/scatter.ts's Scatter handle. */
 export interface DevScatterApi {
   setDensity(mult: number): void;
+  /** Re-roll placement from a new seed — the same rules, a different world. */
+  setSeed?(seed: number): void;
   setKindDensity?(kind: string, mult: number): void;
   setKindScale?(kind: string, mult: number): void;
   setExclusions(points: { x: number; z: number; r: number }[]): void;
@@ -965,6 +967,27 @@ export async function initDevPanel(
             onChange: (v) => {
               ks('tick', v);
               session?.world('kindScale', v, 'grass');
+            },
+          });
+        }
+        // Placement seed (user ask). Placement is a pure function of
+        // (cell, seed, density), so moving this re-rolls every cluster —
+        // the same rules growing a different world. Stepped by 1 and
+        // integer-valued: a seed is an identity, not a magnitude, and 7.35
+        // would be a different world from 7.36 with no way to say which
+        // you meant.
+        if (scatter.setSeed) {
+          const setSeed = scatter.setSeed.bind(scatter);
+          folder.addSlider('placement seed', {
+            min: 1,
+            max: 200,
+            step: 1,
+            value: SCATTER_SEED,
+            id: 'scatter-seed',
+            onChange: (v) => {
+              const seed = Math.round(v);
+              setSeed(seed);
+              session?.world('seed', seed);
             },
           });
         }

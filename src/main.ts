@@ -59,12 +59,6 @@ type WorldDrawing = IncomingDrawing & { hatchMs: number; source: DrawingSource }
 
 const OVERLAY_STYLE_ID = 'world-overlay-style';
 
-// Stroke-only pencil mark in a 24-unit box — bowed curves and round joins,
-// nothing rectilinear (shared law, TASTE §3).
-const ICON_DRAW = [
-  'M5.6 18.4c.3-1.3.7-2.6 1.3-3.8 2.9-3.3 5.9-6.4 9.1-9.3.9.7 1.8 1.5 2.5 2.4-2.7 3.4-5.6 6.6-8.8 9.5-1.3.5-2.7.9-4.1 1.2',
-  'M13.9 7.4c1.1.8 2.1 1.7 3 2.7',
-].join(' ');
 
 function ensureOverlayStyle(): void {
   if (document.getElementById(OVERLAY_STYLE_ID)) return;
@@ -101,60 +95,8 @@ function ensureOverlayStyle(): void {
   opacity: 1;
   transform: translateY(0);
 }
-.draw-open {
-  position: fixed;
-  left: calc(env(safe-area-inset-left, 0px) + 20px);
-  /* Sits directly above the join code, which owns the bottom-left corner. */
-  bottom: calc(env(safe-area-inset-bottom, 0px) + 20px + ${QR_SIZE_CSS} + 12px);
-  z-index: 5;
-  width: 48px;
-  height: 48px;
-  padding: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: transparent;
-  color: ${WORLD.ink};
-  border: 1px solid ${WORLD.ink};
-  border-radius: 50%;
-  cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
-  transition:
-    opacity ${MOTION.tertiaryMs}ms ${MOTION.settleCurve},
-    transform ${MOTION.tertiaryMs}ms ${MOTION.settleCurve};
-}
-.draw-open:active {
-  transform: scale(0.96);
-}
-.draw-open svg {
-  width: 22px;
-  height: 22px;
-  display: block;
-}
 `;
   document.head.appendChild(style);
-}
-
-/** The persistent corner control: hairline-bordered stroke-only icon mark. */
-function createOpenControl(): HTMLButtonElement {
-  const button = document.createElement('button');
-  button.type = 'button';
-  button.className = 'draw-open';
-  button.setAttribute('aria-label', 'draw');
-
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('viewBox', '0 0 24 24');
-  svg.setAttribute('aria-hidden', 'true');
-  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-  path.setAttribute('d', ICON_DRAW);
-  path.setAttribute('fill', 'none');
-  path.setAttribute('stroke', 'currentColor');
-  path.setAttribute('stroke-width', '1.5');
-  path.setAttribute('stroke-linecap', 'round');
-  path.setAttribute('stroke-linejoin', 'round');
-  svg.appendChild(path);
-  button.appendChild(svg);
-  return button;
 }
 
 function main(): void {
@@ -504,8 +446,12 @@ function main(): void {
   hint.className = 'draw-hint';
   hint.textContent = 'draw a solid shape — it becomes a creature';
 
-  const openControl = createOpenControl();
-  document.body.append(overlay, openControl);
+  // No pencil control on the projection (user ruling, 2026-08-20: "in the
+  // 3d world let's remove the pencil button on the map"). The world is the
+  // shared view — the audience draws on their own handsets, so a button
+  // inviting a tap on a wall nobody can reach was a mark with no purpose.
+  // The overlay is unchanged and still opens on `d` for local use.
+  document.body.append(overlay);
 
   let overlayOpen = false;
   const openOverlay = (): void => {
@@ -520,7 +466,6 @@ function main(): void {
 
   let localCount = 0;
 
-  openControl.addEventListener('click', openOverlay);
   window.addEventListener('keydown', (event) => {
     // Shift+h — the hatch-all moment (GENERATOR set piece): pull wide over
     // the population, burst every shell at once, hold, then resume.
