@@ -966,9 +966,23 @@
     // keeps its box but takes no focus.
     function openModal(el) { el.classList.add('show'); setLayerShown(el, true); }
     function closeModal(el) { el.classList.remove('show'); setLayerShown(el, false); }
+    /**
+     * A signed name is the creature's name; a skip leaves it to the world
+     * (user ruling: *"when the user signs the name, it should replace the
+     * name of the character at the very end, so we should only show the
+     * generated name if they skipped"*).
+     *
+     * Skipping publishes an empty name — that is what makes the world
+     * generate one (src/creatures/naming.ts) — but it does NOT erase a name
+     * this handset already had. Overwriting the remembered name with '' on
+     * a skip meant the field came back blank next time, which is not what
+     * skipping once should mean.
+     */
     function commitName(v) {
       userName = (v || '').replace(/[<>&"]/g, '').trim().slice(0, 16);
-      signed = true; localStorage.setItem(NAME_KEY, userName); updateChip();
+      signed = true;
+      if (userName) localStorage.setItem(NAME_KEY, userName);
+      updateChip();
     }
 
     /**
