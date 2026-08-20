@@ -78,7 +78,17 @@
        nothing on the shell. Every other state leaves these at their css
        values, so both sides of the seam resolve the identical box. */
     .stage {
-      position: fixed; left: 0; right: 0; top: 0; height: 100%;
+      position: fixed; left: 0; right: 0; top: 0;
+      /* 100dvh, not 100%: on ios the layout viewport runs UNDER safari's
+         url bar, so a full-height fixed layer is taller than the visible
+         band and the case's top row lands behind the browser ui (user
+         report). The percentage is the fallback. Mirrors DEVICE_TOP_AIR_PX
+         / DEVICE_BOTTOM_AIR_PX in src/phone/device.ts — both halves of the
+         seam must resolve the identical box. */
+      height: 100%; height: 100dvh;
+      box-sizing: border-box;
+      padding: calc(env(safe-area-inset-top, 0px) + 18px) 0
+        calc(env(safe-area-inset-bottom, 0px) + 10px);
       background: var(--paper); overflow: hidden;
       display: grid; place-items: center;
       /* the device box measures against THIS element, not against vh: a
@@ -1026,10 +1036,17 @@
 
     keySend.onclick = () => {
       if (!strokes.length || !connected) return;
-      // first send → the pad is replaced by the signing screen; after that the
-      // name is remembered and the send goes straight through (DEVICE §2a).
-      if (!signed) { enterSign(); return; }
-      publish();
+      // ALWAYS sign (user ruling, 2026-08-20: "we're also missing the name
+      // signing screen after the drawing screen. it should show as part of
+      // the flow after the user submits their drawing").
+      //
+      // This used to skip once a name was remembered, which is why the screen
+      // vanished for anyone who had signed before — it was a shortcut for a
+      // flow that no longer exists. One handset makes one creature per world
+      // now, so there is no repeat send to save a step on, and signing is a
+      // beat of the flow rather than a form to get past. The remembered name
+      // still pre-fills the field; it just no longer skips the screen.
+      enterSign();
     };
     updateChip();
     syncKeys();

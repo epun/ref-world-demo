@@ -663,7 +663,11 @@ export async function initDevPanel(
   ui.skills.register({
     ...metaOf('refworld.moderation'),
     apply: (panelUi) => {
-      const folder = panelUi.addFolder('moderation');
+      // Collapsed on open (user ask): the queue is an exception handler, not
+      // a control you reach for — it earns its space only when something is
+      // actually held, and an expanded operator queue pushes the controls
+      // people DO use every session further down the panel.
+      const folder = panelUi.addFolder('moderation', { collapsed: true });
       const gate = handles.moderation;
       if (!gate) {
         folder.addInfo('no ingest gate in this world build', 'moderation-missing');

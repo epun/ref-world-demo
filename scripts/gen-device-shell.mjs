@@ -253,9 +253,9 @@ const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${VB.w} ${VB.h
     <path d="M${n(50 + halfWidth(134))} 134c-2.9 6.6-7.2 12.5-12.6 17.1" stroke-width="0.75" opacity="0.5"/>
 
     <!-- the screen well. bowed, unequal corners — never a rectangle. -->
-    <path d="${bezelPath(0, 0.45)}" fill="#dfdfdf" stroke-width="3.1"/>
-    <path d="${bezelPath(0, 0.95)}" stroke-width="1.2" opacity="0.5"/>
-    <path d="${bezelPath(3.1, 0.5)}" stroke-width="0.8" opacity="0.4"/>
+    <path d="${bezelPath(0, 0.45)}" fill="#dfdfdf" stroke-width="1.55"/>
+    <path d="${bezelPath(0, 0.95)}" stroke-width="0.6" opacity="0.5"/>
+    <path d="${bezelPath(3.1, 0.5)}" stroke-width="0.4" opacity="0.4"/>
 
     <!-- the glass: ONE flat hard-edged highlight, no gradient (DEVICE §1e) -->
     <path d="${glass}" fill="#efecec" stroke="none" opacity="0.85"/>

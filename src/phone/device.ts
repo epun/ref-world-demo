@@ -55,6 +55,18 @@ import { MOTION, SURFACE, WORLD } from '../taste/tokens';
 export const DEVICE_VIEWBOX = { width: 100, height: 168 } as const;
 
 /**
+ * Air above and below the device, on top of the safe-area insets.
+ *
+ * User report: the top key row collided with the browser's own controls.
+ * The insets alone do not cover it — ios reports no top inset in a normal
+ * browser tab, and the url bar still overlays the layout viewport — so the
+ * device is given its own margin and sits a little low in the band, which
+ * is also where a handheld naturally rests in the hand.
+ */
+export const DEVICE_TOP_AIR_PX = 18;
+export const DEVICE_BOTTOM_AIR_PX = 10;
+
+/**
  * Screen well, usable inner area: viewBox x 15..85, y 38..124.
  *
  * PORTRAIT, not square (DEVICE §3, user ruling "you can make it slightly
@@ -160,13 +172,30 @@ function ensureStyle(): void {
  */
 .device {
   position: fixed;
-  inset: 0;
+  left: 0;
+  right: 0;
+  top: 0;
+  /* 100dvh, not 100% of a fixed inset: on ios the layout viewport runs
+     UNDER safari's url bar, so a full-height fixed layer is taller than
+     what the person can actually see and the case's top row ends up
+     behind the browser chrome (user report). dvh is the visible band.
+     The percentage is the fallback for engines without dvh. */
+  height: 100%;
+  height: 100dvh;
+  /* Clear of the notch at the top and the home indicator at the bottom,
+     plus a little air so the top key row never sits against the browser
+     ui — the device is an object lying on the paper, not a full-bleed
+     skin, and it needs room above it to read that way. */
+  box-sizing: border-box;
+  padding: calc(env(safe-area-inset-top, 0px) + ${DEVICE_TOP_AIR_PX}px) 0
+    calc(env(safe-area-inset-bottom, 0px) + ${DEVICE_BOTTOM_AIR_PX}px);
   display: grid;
   place-items: center;
   overflow: hidden;
   background: ${SURFACE.ground};
   /* The box measures against this element, not the viewport: container
-     units are exact where vh/dvh disagree with a fixed inset on mobile. */
+     units are exact where vh/dvh disagree with a fixed inset on mobile.
+     Padding shrinks the container box, so 100cqh already excludes it. */
   container-type: size;
 }
 /*
