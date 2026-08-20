@@ -69,6 +69,17 @@ export interface PhoneLink {
   onVerdict(handler: (v: Verdict) => void): void;
   /** The running world's session id, whenever it announces one. */
   onWorldEpoch(handler: (epoch: string) => void): void;
+  /**
+   * The world opened THIS drawer's egg.
+   *
+   * Without it the handset hatches on its own local timer and the two run
+   * independently — the creature appears on the projection and some seconds
+   * later, unrelated, on the phone (user report). The hatch is the moment
+   * the whole thing is about, so it is the world's to call: it fires this
+   * the instant the shell breaks, and the handset plays its own hatch off
+   * the same edge.
+   */
+  onHatched(handler: () => void): void;
   dispose(): void;
 }
 
@@ -95,6 +106,7 @@ export function createPhoneLink(
   let seq = 0;
   let client: MqttClientLike | null = null;
   const verdictHandlers: ((v: Verdict) => void)[] = [];
+  const hatchedHandlers: (() => void)[] = [];
   const epochHandlers: ((epoch: string) => void)[] = [];
   // The world answers a hello within a round trip, while the phone is still
   // mounting its screens (a webgl screen easily takes longer than the
@@ -103,6 +115,7 @@ export function createPhoneLink(
   // otherwise being told your drawing was refused is a race you lose on a
   // slow handset. Only the latest of each is worth keeping.
   let heldVerdict: Verdict | null = null;
+  let heldHatched = false;
   let heldEpoch: string | null = null;
 
   try {
@@ -160,6 +173,13 @@ export function createPhoneLink(
         if (epochHandlers.length === 0) heldEpoch = epoch;
         else for (const h of epochHandlers) h(epoch);
       }
+      if (readHatched(msg, from)) {
+        // Held like a verdict: the world can call the hatch before this
+        // screen has registered its handler, and a missed hatch would
+        // strand the handset on the egg forever.
+        if (hatchedHandlers.length === 0) heldHatched = true;
+        else for (const h of hatchedHandlers) h();
+      }
     });
   } catch {
     /* a client without on/subscribe is a publish-only link — still useful */
@@ -171,6 +191,13 @@ export function createPhoneLink(
     },
     hello(): void {
       publish({ type: 'hello' });
+    },
+    onHatched(handler): void {
+      hatchedHandlers.push(handler);
+      if (heldHatched) {
+        heldHatched = false;
+        handler();
+      }
     },
     onVerdict(handler): void {
       verdictHandlers.push(handler);
@@ -217,6 +244,13 @@ export function readVerdict(msg: unknown, me: string): Verdict | null {
 }
 
 /** The world session id carried by any world → phone message, or null. */
+/** A `hatched` message addressed to this drawer. */
+export function readHatched(msg: unknown, me: string): boolean {
+  if (typeof msg !== 'object' || msg === null) return false;
+  const rec = msg as { type?: unknown; to?: unknown };
+  return rec.type === 'hatched' && typeof rec.to === 'string' && rec.to === me;
+}
+
 export function readWorldEpoch(msg: unknown): string | null {
   if (typeof msg !== 'object' || msg === null) return null;
   const rec = msg as Record<string, unknown>;

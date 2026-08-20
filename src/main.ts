@@ -227,7 +227,20 @@ function main(): void {
     now: () => performance.now(),
   });
 
-  const creatures = createCreatureManager(world, { observer: recordCreatures(session) });
+  // The world calls the hatch, so the world announces it: the handset plays
+  // its own hatch off this edge instead of running an independent timer,
+  // which is what made the creature appear on the projection and, seconds
+  // later and unrelated, on the phone (user report).
+  const recorder = recordCreatures(session);
+  const creatures = createCreatureManager(world, {
+    observer: {
+      ...recorder,
+      hatch(id, cause) {
+        recorder.hatch(id, cause);
+        feed?.publishToPhones({ type: 'hatched', to: id, epoch });
+      },
+    },
+  });
   installHoverNames(canvas, world.cameraRig.camera, creatures);
 
   // ── moderation gate (src/moderation/) ─────────────────────────────────────

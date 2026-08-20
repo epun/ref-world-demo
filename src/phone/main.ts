@@ -351,6 +351,13 @@ async function boot(): Promise<void> {
   // from under them — the staleness check below would otherwise redirect on
   // the very message that carries the refusal.
   let told = false;
+  // The world opened this drawer's egg — play the hatch NOW, on the same
+  // edge, rather than waiting for the local session's own timer to come
+  // round. Guarded like the state path: only from the egg, and only when
+  // this handset actually has a drawing in flight.
+  uplink?.onHatched(() => {
+    if (machine.state !== 'alive' && strokes.length > 0) hatch();
+  });
   uplink?.onVerdict((verdict) => {
     // 'held' means an operator has it — the drawer is not told off for a
     // drawing that may yet be approved; they keep waiting. Anything else
