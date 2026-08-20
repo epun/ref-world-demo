@@ -98,11 +98,31 @@ export const SATELLITE_SLOTS: readonly SlotName[] = ['brow', 'tools', 'corner'];
  * the same DEVICE §3 geometry, so the core is in the same place at the
  * same size on both sides of the page navigation.
  */
-export const CORE_SIDE: Record<PhoneState, string> = {
-  draw: '95cqw',
-  wait: '75cqw',
-  alive: '100cqw',
+export const CORE_SHARE: Record<PhoneState, number> = {
+  draw: 0.95,
+  wait: 0.75,
+  alive: 1,
 };
+
+export const CORE_SIDE: Record<PhoneState, string> = {
+  draw: `${CORE_SHARE.draw * 100}cqw`,
+  wait: `${CORE_SHARE.wait * 100}cqw`,
+  alive: `${CORE_SHARE.alive * 100}cqw`,
+};
+
+/**
+ * The screen well the stage measures against — the `cqw` base for every
+ * measure above.
+ *
+ * A screen that has to COMPUTE one of those shares rather than set it (the
+ * wait screen sizes its 3D camera so the creature it reveals lands at the
+ * pixel size the alive portrait will give it) needs the length the share is
+ * a share OF. Reading it here keeps the two sides reading the same box
+ * instead of each guessing at the viewport.
+ */
+export function wellElement(inside: Element): HTMLElement | null {
+  return inside.closest('.stage');
+}
 
 /**
  * Stagger between satellites, derived from the token scale rather than
@@ -434,6 +454,14 @@ export function createMachine(
 
   // ── The initial entrance ──────────────────────────────────────────────────
   const entrance: Entrance = options.entrance ?? 'settled';
+  if (entrance === 'settled') {
+    // A restore opens on a state the person was already looking at, so
+    // nothing plays an entrance — including the keys on the case, whose
+    // staggered arrival (src/phone/device.ts) is otherwise on by default.
+    for (const set of root.querySelectorAll<HTMLElement>('.device-key-set')) {
+      set.dataset['enter'] = 'false';
+    }
+  }
   if (entrance === 'seam') {
     // The seam (PHONE-STAGE §4): the core is already at this measure — its
     // content fades UP into it, and the satellites run their in-move from

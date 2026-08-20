@@ -20,6 +20,7 @@ import { mountWaitScreen, type WaitScreenHandle } from './screens/wait';
 import { hatchPulse } from './haptics';
 import { clearSubmission, drawerId, isStale, readSubmission } from './identity';
 import { createSession } from './session';
+import { SPIN_REST, type SpinState } from './spin';
 import {
   createMachine,
   type Entrance,
@@ -188,6 +189,16 @@ async function boot(): Promise<void> {
   let lastPose: PoseMsg | null = null;
   let lastRoster: RosterMsg | null = null;
   let lastName: string | null = null;
+  /**
+   * Where the person has turned the object, and how fast it is still
+   * turning (user ruling, 2026-08-20). It lives HERE rather than in a
+   * screen because it has to survive the swap between them: the egg the
+   * wait screen turned and the creature the alive screen mounts are the
+   * one object the whole way down (PHONE-STAGE §2), and an object that
+   * snapped back to front — or simply stopped — at the seam would be both
+   * a jump and an abrupt stop.
+   */
+  let spin: SpinState = SPIN_REST;
 
   const root = document.createElement('div');
   document.body.appendChild(root);
@@ -248,13 +259,20 @@ async function boot(): Promise<void> {
     wait: (slots) => {
       const handle = mountWaitScreen(slots, {
         strokes,
+        // The same id the world spawns under and the alive portrait
+        // mounts: the creature this screen reveals at the hatch and the
+        // creature that portrait draws are then the identical mesh, which
+        // is what makes the swap between them a dissolve.
+        ...(identity !== null ? { identity } : {}),
         hatchInMs,
+        initialSpin: spin,
         onHatch: () => session.sendHatch(),
       });
       waitHandle = handle;
       return {
         destroy(): void {
           if (waitHandle === handle) waitHandle = null;
+          spin = handle.spin();
           handle.destroy();
         },
       };
@@ -264,6 +282,7 @@ async function boot(): Promise<void> {
         strokes,
         // Same identity the world spawned under → the identical creature.
         ...(identity !== null ? { identity } : {}),
+        initialSpin: spin,
         onEmote: (emote) => {
           // Two paths, deliberately: the session keeps the local echo (and
           // will carry the relay when one is deployed), while the uplink is
@@ -280,6 +299,7 @@ async function boot(): Promise<void> {
       return {
         destroy(): void {
           if (aliveHandle === handle) aliveHandle = null;
+          spin = handle.spin();
           handle.destroy();
         },
       };
@@ -322,6 +342,45 @@ async function boot(): Promise<void> {
     location.replace(`/draw/?room=${room}&w=${worldEpoch}`);
   });
 
+  /**
+   * The hatch, played rather than cut to.
+   *
+   * User report, 2026-08-20: *"on hatch the egg should break apart and the
+   * creature should appear. right now it glitches on the screen from the
+   * egg and flashes on."* It did, because this used to be one line —
+   * `machine.goTo('alive')` — and a goTo cross-fades the core between two
+   * scenes: an egg dissolving into a character is not a hatch, it is two
+   * pictures.
+   *
+   * So the world's confirmation now starts the REAL sequence in the screen
+   * that already holds the egg (screens/wait.ts → src/egg/hatch.ts, the
+   * same module the projection runs), and the swap waits for it. By the
+   * time the stage cross-fades, the wait screen is showing the creature the
+   * alive screen is about to mount — same strokes, same identity, same pure
+   * pipeline, framed to the same pixels — so the cross-fade has almost
+   * nothing left to fade.
+   */
+  let hatching = false;
+  const hatch = (): void => {
+    if (hatching || machine.state === 'alive') return;
+    hatching = true;
+    const handle = waitHandle;
+    if (!handle) {
+      machine.goTo('alive');
+      return;
+    }
+    void handle
+      .playHatch({
+        // The haptic belongs to the CRACK, not to the screen change. It
+        // used to fire on the transition, which was a different moment and
+        // happened to be the only one this flow had. Silent on handsets
+        // without the vibration api (every iPhone); the visual reveal is
+        // unchanged either way.
+        onCrack: () => hatchPulse(),
+      })
+      .then(() => machine.goTo('alive'));
+  };
+
   session.onState((msg) => {
     if (msg.phase === 'egg') {
       hatchInMs = msg.hatchInMs ?? null;
@@ -329,13 +388,7 @@ async function boot(): Promise<void> {
     }
     // The transition to alive happens when the world (or the local session)
     // confirms — never on the tap itself (PLAN §6.2).
-    if (msg.phase === 'alive' && machine.state !== 'alive' && strokes.length > 0) {
-      // It hatched — the one moment on this screen worth feeling (user
-      // ask). Silent on handsets without the vibration api (every iPhone);
-      // the visual reveal is unchanged either way.
-      hatchPulse();
-      machine.goTo('alive');
-    }
+    if (msg.phase === 'alive' && machine.state !== 'alive' && strokes.length > 0) hatch();
   });
   session.onPose((msg) => {
     lastPose = msg;

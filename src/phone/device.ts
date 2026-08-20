@@ -63,6 +63,12 @@ export const DEVICE_VIEWBOX = { width: 100, height: 168 } as const;
  * device is given its own margin and sits a little low in the band, which
  * is also where a handheld naturally rests in the hand.
  */
+/** How far a key slides on the way in. Entrances slide (TASTE §2.1). */
+const KEY_ENTER_TRAVEL_PX = 6;
+/** Stagger between keys, derived from the token scale like the stage's own
+ * satellite stagger (PHONE-STAGE §3): t.tertiary / 4. */
+const KEY_STAGGER_MS = MOTION.tertiaryMs / 4;
+
 export const DEVICE_TOP_AIR_PX = 18;
 export const DEVICE_BOTTOM_AIR_PX = 10;
 
@@ -271,6 +277,32 @@ ${rowPlacement}
   pointer-events: none;
 }
 /*
+ * The keys ARRIVE (user ruling, 2026-08-20: *"when the transition happens
+ * between the egg and the creature the buttons should animate onto the
+ * device nicely not just flash on"*).
+ *
+ * The egg shows no keys at all, so the six emotes are new elements the
+ * moment the creature appears — and a row mounted at full opacity is a
+ * hard cut, which TASTE §2.1 forbids at confidence 1.00. They slide up and
+ * fade, staggered in reading order by the same STAGGER the stage uses for
+ * its satellites, so the case fills in rather than switching on.
+ *
+ * An animation, not a transition, because the key's own transition is
+ * spoken for by the press and disabled states — a delay on that would lag
+ * the feedback on a tap.
+ */
+@keyframes device-key-in {
+  from { opacity: 0; transform: translateY(${KEY_ENTER_TRAVEL_PX}px); }
+  to   { opacity: 1; transform: none; }
+}
+.device-key-set[data-enter='true'] .device-key {
+  animation: device-key-in ${MOTION.secondaryMs}ms ${MOTION.settleCurve} both;
+  animation-delay: calc(var(--key-i, 0) * ${KEY_STAGGER_MS}ms);
+}
+/* A settled mount (a restore) shows no entrance: replaying one for a state
+ * the person was already looking at reads as a glitch (PHONE-STAGE §4). */
+.device-key-set[data-enter='false'] .device-key { animation: none; }
+/*
  * A key is the real interactive element AND the ring it sits in — the
  * artwork draws no rings any more (DEVICE §3). No css border and no css
  * background: the ring is one stroked circle in the ink value at the
@@ -343,6 +375,19 @@ ${keyPlacement}
   transition:
     stroke-width ${MOTION.tertiaryMs}ms ${MOTION.settleCurve},
     fill ${MOTION.tertiaryMs}ms ${MOTION.settleCurve};
+  /*
+   * An svg clips to its viewBox by default. The circle is r 7.2 centred at
+   * 7.95 in a 15.9 box, so there is exactly 0.75 of margin — which the
+   * resting 1.5 stroke fills to the pixel, because a stroke straddles its
+   * path. The pressed state thickens it to 2.4, which needs 1.2, so it
+   * painted straight out of the box and was sliced flat at the four
+   * extremes: a round key read as a squared-off one for as long as it was
+   * held (user report — "the corner radius gets cut off as the shape
+   * scales"). The geometry is untouched, so the key still lands on DEVICE
+   * §3's documented centre and still matches public/draw/index.html across
+   * the seam, which carries the identical fix (e2b5a9a).
+   */
+  overflow: visible;
 }
 /*
  * Two legible states, carried over from the emote wheel the keys replaced.
@@ -536,11 +581,15 @@ function makeRow(name: KeyRowName, spec: KeyRowSpec | null): {
     el.dataset['hidden'] = 'true';
     el.setAttribute('aria-hidden', 'true');
   }
+  const order = name === 'top' ? 0 : 3;
   const triple: KeyTriple = [
     makeKey(spec === null ? null : spec[0], 0, hidden),
     makeKey(spec === null ? null : spec[1], 1, hidden),
     makeKey(spec === null ? null : spec[2], 2, hidden),
   ];
+  // Reading order across BOTH rows, so the six fill in as one gesture
+  // rather than two rows racing each other.
+  triple.forEach((b, i) => b.style.setProperty('--key-i', String(order + i)));
   for (const button of triple) el.appendChild(button);
   return { el, buttons: triple };
 }
@@ -557,6 +606,8 @@ export function createKeyRow(spec: KeySpec): KeyRow {
   ensureStyle();
   const el = document.createElement('div');
   el.className = 'device-key-set';
+  // Entering by default; a settled mount clears it (see states.ts).
+  el.dataset['enter'] = 'true';
   const top = makeRow('top', spec.top);
   const bottom = makeRow('bottom', spec.bottom);
   el.append(top.el, bottom.el);

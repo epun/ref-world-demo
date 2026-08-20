@@ -4,6 +4,29 @@
  * paint-on reveal from the stroke list, clearcoat sheen under the world
  * lighting recipe, continuous wobble ramping toward hatch.
  *
+ * And the HATCH itself. User report, 2026-08-20: *"on hatch the egg should
+ * break apart and the creature should appear. right now it glitches on the
+ * screen from the egg and flashes on."* They were right, and the cause was
+ * structural: `wait` and `alive` were two screens with two scenes, one
+ * holding an egg and one holding a character, and the stage cross-faded
+ * between them. Nothing broke — one image dissolved into a different image,
+ * which under the ink+grain chain reads as a flash.
+ *
+ * This screen already owns a scene with the egg in it, so this is the
+ * screen that hatches. `playHatch()` runs `src/egg/hatch.ts` — the same
+ * `startHatch` the world drives from src/creatures/manager.ts, driven the
+ * same way — in this scene: the shell splits into three slice geometries
+ * that inherit the egg's exact pose mid-wobble, slide apart and drift down
+ * while fading over t.primary, and the character rises from the egg
+ * position on ζ≥1 springs (from 0.6, never from zero). main.ts holds the
+ * swap to `alive` until that has actually played.
+ *
+ * The swap at the END is then a cross-fade between two pictures of the SAME
+ * creature: src/shape and src/inflate are pure, and this screen builds the
+ * character from the same strokes and the same identity id the alive screen
+ * will, so both are the identical generated mesh. The camera is what makes
+ * them the same PICTURE — see the reframe below.
+ *
  * It mounts into the STAGE's slots (docs/PHONE-STAGE.md §2), not into a
  * full-bleed root of its own: the egg is the core — the same object the
  * pad was — and every other slot is empty.
@@ -35,19 +58,24 @@
  * off that diagonal so the mark stays readable while the form stays 3D.
  *
  * Mobile discipline: one WebGL context per mount, devicePixelRatio capped
- * at 2, ResizeObserver drives the backing store, and the loop pauses while
- * document.hidden. Renderer and egg dispose on unmount.
+ * at 2, the canvas's own box drives the backing store, and the loop pauses
+ * while document.hidden. Renderer, egg and character dispose on unmount.
  */
 
-import { Color, PerspectiveCamera, Scene, WebGLRenderer } from 'three';
+import { Box3, Color, Group, PerspectiveCamera, Scene, Vector3, WebGLRenderer } from 'three';
+import { createCharacter, type Character } from '../../character/character';
 import { createEgg, EGG_HEIGHT } from '../../egg/egg';
+import { startHatch, type HatchHandle } from '../../egg/hatch';
+import { Spring } from '../../motion/spring';
 import type { StrokeList } from '../../shape/types';
-import { WORLD, SURFACE } from '../../taste/tokens';
+import { MOTION, SURFACE } from '../../taste/tokens';
 import { GrainPass } from '../../world/grain';
 import { InkPass } from '../../world/ink';
 import { createLighting } from '../../world/lighting';
 import { createKeyRow, NO_KEYS } from '../device';
-import type { Screen, StageSlots } from '../states';
+import { createSpin, type SpinHandle, type SpinState } from '../spin';
+import { CORE_SHARE, wellElement, type Screen, type StageSlots } from '../states';
+import { PORTRAIT_SHARE, portraitHalfExtent, portraitUnitsPerPixel } from './alive';
 
 // ── Pure helpers (unit-tested in test/phone) ────────────────────────────────
 
@@ -78,35 +106,118 @@ export function crackTeaser(p: number): number {
   return CRACK_TEASER * t * t * (3 - 2 * t);
 }
 
+// ── Framing (pure) ──────────────────────────────────────────────────────────
+
+/**
+ * Where the camera is, said in the terms the reframe interpolates: a look
+ * point and a direction to stand off it. Blending these rather than two
+ * world positions keeps the path an arc around the subject instead of a
+ * chord through it.
+ */
+export interface Framing {
+  /** Radians around +y from the +z axis. */
+  azimuth: number;
+  /** Radians above the horizon. */
+  elevation: number;
+  lookX: number;
+  lookY: number;
+  distance: number;
+}
+
+/** Camera: slight three-quarter off the painted front (which faces the
+ * world's 45° diagonal), tipped gently down so the shell reads volumetric. */
+export const CAMERA_FOV = 28;
+
+/** The opening shot: the egg, three-quartered, at rest in the core. */
+export const EGG_FRAMING: Framing = {
+  azimuth: Math.PI / 4 + 0.22,
+  elevation: 0.3,
+  lookX: 0,
+  lookY: EGG_HEIGHT * 0.5,
+  distance: 7.6,
+};
+
+/** Straight lerp of every term. `t` comes from a ζ≥1 spring, so the path
+ * eases in, never overshoots and never arrests. */
+export function blendFraming(t: number, from: Framing, to: Framing): Framing {
+  const k = Math.min(1, Math.max(0, t));
+  const mix = (a: number, b: number): number => a + (b - a) * k;
+  return {
+    azimuth: mix(from.azimuth, to.azimuth),
+    elevation: mix(from.elevation, to.elevation),
+    lookX: mix(from.lookX, to.lookX),
+    lookY: mix(from.lookY, to.lookY),
+    distance: mix(from.distance, to.distance),
+  };
+}
+
+/**
+ * The distance at which a perspective camera of `fovDeg` shows exactly
+ * `unitsPerPx` world units per pixel across a canvas `canvasPx` tall, at
+ * the look plane.
+ *
+ * This is what makes the final cross-fade a dissolve rather than a jump.
+ * The alive portrait frames the creature with an orthographic camera fitted
+ * to its measured bounds, in a canvas that is PORTRAIT_SHARE of the alive
+ * core; this screen's canvas is the whole core and the core GROWS during
+ * the swap (CORE_SHARE.wait → CORE_SHARE.alive). Solving for units-per-
+ * PIXEL rather than for a share of the frame makes the creature's rendered
+ * size independent of both — it holds the same pixels on the same spot
+ * while the box travels around it, and lands exactly where the portrait
+ * fading in on top of it is drawing the same creature.
+ */
+export function fitDistance(unitsPerPx: number, canvasPx: number, fovDeg: number): number {
+  return (unitsPerPx * canvasPx) / (2 * Math.tan((fovDeg * Math.PI) / 360));
+}
+
 // ── Screen ──────────────────────────────────────────────────────────────────
 
 export interface WaitScreenOptions {
   strokes: StrokeList;
+  /**
+   * The drawing's publish id — the same identity the world spawns the
+   * creature under, and the same one the alive screen is given. Passing it
+   * is what makes the creature this screen reveals at the hatch and the
+   * creature the portrait mounts afterwards the identical mesh.
+   */
+  identity?: string;
   /** ms until the hatch deadline, or null when unknown. Drives the shell's
    * wobble ramp and the late crack teaser — it is a VISUAL signal here, not
    * a control. */
   hatchInMs: number | null;
+  /** Yaw + throw carried in from the previous screen (user rotation). */
+  initialSpin?: SpinState;
   /** Fired once, when the deadline the world gave us runs out. The session
-   * sends hatch; the transition to alive happens when the world (or the
-   * local session) confirms with a state message — never on this call. It
-   * is no longer reachable by tapping: the timing is the world's to set. */
+   * sends hatch; the world (or the local session) confirms with a state
+   * message, and THAT is what starts playHatch. */
   onHatch(): void;
+}
+
+export interface PlayHatchOptions {
+  /**
+   * The shell has broken open. The hatch haptic belongs here — at the
+   * crack, not at the screen change, which is a different moment and used
+   * to be the only one this screen had.
+   */
+  onCrack?(): void;
 }
 
 export interface WaitScreenHandle extends Screen {
   /** Re-arm the hatch deadline from a fresh StateMsg. */
   setHatchIn(ms: number): void;
+  /**
+   * Break the egg open in THIS scene and stand the creature up in it.
+   * Resolves when the sequence has played (or at once when there is nothing
+   * to play — a degenerate drawing, or a hatch already run). The caller
+   * holds the swap to `alive` until then.
+   */
+  playHatch(options?: PlayHatchOptions): Promise<void>;
+  /** Where the person left the object turned, and how fast it is still
+   * turning — handed to the next screen so the seam does not stop it. */
+  spin(): SpinState;
 }
 
 const STYLE_ID = 'wait-screen-style';
-
-/** Camera: slight three-quarter off the painted front (which faces the
- * world's 45° diagonal), tipped gently down so the shell reads volumetric. */
-const CAMERA_FOV = 28;
-const CAMERA_AZIMUTH = Math.PI / 4 + 0.22;
-const CAMERA_ELEVATION = 0.3;
-const CAMERA_DISTANCE = 7.6;
-const LOOK_Y = EGG_HEIGHT * 0.5;
 
 function ensureStyle(): void {
   if (document.getElementById(STYLE_ID)) return;
@@ -168,18 +279,25 @@ export function mountWaitScreen(
   const ink = new InkPass();
   const grain = new GrainPass();
 
-  const camera = new PerspectiveCamera(CAMERA_FOV, 0.85, 0.1, 100);
-  camera.position.set(
-    Math.sin(CAMERA_AZIMUTH) * Math.cos(CAMERA_ELEVATION) * CAMERA_DISTANCE,
-    LOOK_Y + Math.sin(CAMERA_ELEVATION) * CAMERA_DISTANCE,
-    Math.cos(CAMERA_AZIMUTH) * Math.cos(CAMERA_ELEVATION) * CAMERA_DISTANCE,
-  );
-  camera.lookAt(0, LOOK_Y, 0);
+  const camera = new PerspectiveCamera(CAMERA_FOV, 1, 0.1, 100);
 
+  // ── Sizing ───────────────────────────────────────────────────────────────
+  // The canvas's box is read every frame, not only on a ResizeObserver
+  // callback: during the swap to alive the core's side travels for
+  // t.secondary and the camera has to follow it on the same frame the box
+  // moves, or the creature would breathe against the portrait fading in on
+  // top of it.
+  let canvasPx = 1;
+  let sizedW = 0;
+  let sizedH = 0;
   const size = (): void => {
     const rect = canvas.getBoundingClientRect();
     const w = Math.max(1, Math.round(rect.width));
     const h = Math.max(1, Math.round(rect.height));
+    canvasPx = h;
+    if (w === sizedW && h === sizedH) return;
+    sizedW = w;
+    sizedH = h;
     renderer.setSize(w, h, false);
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     ink.setSize(w, h, dpr);
@@ -190,6 +308,133 @@ export function mountWaitScreen(
   size();
   const observer = new ResizeObserver(size);
   observer.observe(canvas);
+
+  /**
+   * The pixel side the alive portrait's canvas will have. The well is the
+   * `cqw` base both measures are shares of, so reading it is what lets this
+   * screen compute the OTHER screen's box instead of guessing at it. With
+   * no stage above us (a headless mount) fall back to this screen's own
+   * share, which is exact until the swap starts.
+   */
+  const portraitPx = (): number => {
+    const well = wellElement(canvas);
+    const wellPx = well ? well.getBoundingClientRect().width : canvasPx / CORE_SHARE.wait;
+    return wellPx * CORE_SHARE.alive * PORTRAIT_SHARE;
+  };
+
+  // ── Hatch state ──────────────────────────────────────────────────────────
+  /**
+   * egg     — the timer drives the shell: wobble ramp, crack teaser.
+   * crack   — startHatch owns the shell; the egg is still whole and still
+   *           being updated, exactly as the world updates it.
+   * exit    — the shell is off and flying; the creature is rising.
+   * settled — the creature stands, under the ambient floor alone.
+   */
+  let phase: 'egg' | 'crack' | 'exit' | 'settled' = 'egg';
+  /**
+   * Each object's own facing, captured on its first frame.
+   *
+   * User ruling, 2026-08-20: *"the egg and the character should not
+   * ambiently spin. It should be user-driven."* The drift floor's third
+   * term is a rotation (`sampleDrift().rot`, ±MOTION.ambientAmplitude —
+   * ±0.17°), and egg.update()/character.update() write it straight onto
+   * rotation.y every frame. Small, but it is yaw the person did not ask
+   * for, and yaw is now theirs alone: the facing is PINNED at what the
+   * object was built with and the drag is added to it, so with no input
+   * the angle is bit-identical frame to frame.
+   *
+   * The other two ambient terms are untouched. The POSITIONAL drift
+   * (drift.x/drift.y) still runs on both objects — that is TASTE §2.1's
+   * floor at confidence 1.00 and it is what the stillness probe reads —
+   * and so does the egg's wobble, which rocks it about x and z. A rock is
+   * the egg being alive and it is what telegraphs the hatch; it never
+   * turns the shell about its vertical axis, so the painted mark stays
+   * where the person left it.
+   */
+  let eggFacing: number | null = null;
+  let charFacing: number | null = null;
+  let hatch: HatchHandle | null = null;
+  let hatched: Character | null = null;
+  /** The wrapper startHatch owns the rise on. Handed over at the burst. */
+  let charRoot: Group | null = null;
+  let charFraming: Omit<Framing, 'distance'> | null = null;
+  let charHalfExtent = 0;
+  /** The reframe: egg framing → creature framing, over t.primary. */
+  let reframe: Spring | null = null;
+  let hatchDone: (() => void) | null = null;
+
+  // ── Turning the object by hand (user ruling, 2026-08-20) ─────────────────
+  // Read on the WELL, not on the canvas: the whole display turns the
+  // object. New gestures are HELD while the hatch plays — the shell pieces
+  // and the rising creature are choreographed against the egg's pose and a
+  // fresh drag mid-sequence would tear them apart. A throw already in
+  // flight is never cut short: it keeps decaying onto the egg, and onto the
+  // creature once the shell is off, so nothing abruptly stops.
+  const spin: SpinHandle = createSpin({
+    surface: wellElement(canvas) ?? canvas,
+    width: () => {
+      const well = wellElement(canvas);
+      return well ? well.getBoundingClientRect().width : canvasPx;
+    },
+    ...(options.initialSpin ? { initial: options.initialSpin } : {}),
+    held: () => phase !== 'egg' && phase !== 'settled',
+  });
+
+  const framingNow = (): Framing => {
+    if (!charFraming || !reframe) return EGG_FRAMING;
+    const to: Framing = {
+      ...charFraming,
+      distance: fitDistance(
+        portraitUnitsPerPixel(charHalfExtent, portraitPx()),
+        canvasPx,
+        CAMERA_FOV,
+      ),
+    };
+    return blendFraming(reframe.value, EGG_FRAMING, to);
+  };
+
+  /**
+   * Keep the creature's feet ON the shell's contact point while it rises.
+   *
+   * startHatch starts the rise at RISE_FROM, BELOW the ground — right in
+   * the world, where the ground plane hides everything under it, so what
+   * the room sees is a creature coming up out of the earth. This scene has
+   * no ground: the egg rests on paper. Measured, the world's version put
+   * the creature's lower body on screen in the single frame the shell
+   * broke — the largest one-frame change in the whole sequence, and the
+   * one thing left in it that read as a pop.
+   *
+   * So the rise is re-anchored, not removed. The root's own downward
+   * offset is cancelled in the character's local space, which leaves the
+   * creature's base planted at the contact point and its scale still
+   * travelling 0.6 → 1 on the sequence's own ζ≥1 spring: its head slides
+   * up from inside the shell (2.1 units tall, well under the egg's 2.6) to
+   * standing height. It is fully behind the shell on the frame it appears
+   * and is revealed by the shell leaving, which is what a hatch is. Same
+   * precedent as `entrance: false` on the egg (src/egg/egg.ts): the world's
+   * motion is right in a wide frame and wrong in a portrait.
+   *
+   * If startHatch ever takes a rise-origin option the way createEgg takes
+   * `entrance`, this comes out and the option goes in.
+   */
+  const groundLift = (): number => {
+    if (!charRoot) return 0;
+    const below = -charRoot.position.y;
+    if (below <= 0) return 0;
+    return below / (charRoot.scale.y || 1);
+  };
+
+  const applyCamera = (): void => {
+    const f = framingNow();
+    const cosEl = Math.cos(f.elevation);
+    camera.position.set(
+      f.lookX + Math.sin(f.azimuth) * cosEl * f.distance,
+      f.lookY + Math.sin(f.elevation) * f.distance,
+      Math.cos(f.azimuth) * cosEl * f.distance,
+    );
+    camera.lookAt(f.lookX, f.lookY, 0);
+  };
+  applyCamera();
 
   // ── Countdown + loop ──────────────────────────────────────────────────────
   const mountedAt = performance.now();
@@ -205,23 +450,55 @@ export function mountWaitScreen(
     options.onHatch();
   };
 
+  /** One step of the world's own loop, on this scene. */
+  const step = (dt: number, now: number): void => {
+    size();
+    const yaw = spin.update(dt);
+
+    if (phase === 'egg') {
+      // The deadline the world gave us. No text and no control read it any
+      // more — it drives the shell.
+      const remaining = deadline === null ? null : deadline - now;
+      if (remaining !== null && remaining <= 0) fireHatch();
+      // The world's mapping: wobble ramps with progress, cracks tease late.
+      const p = hatchProgress(remaining, initialMs);
+      egg.setHatchProgress(p);
+      egg.crack(crackTeaser(p));
+      egg.update(dt, now);
+      if (eggFacing === null) eggFacing = egg.group.rotation.y;
+      egg.group.rotation.y = eggFacing + yaw;
+    } else if (phase === 'crack') {
+      // Exactly the world's order (src/creatures/manager.ts): the egg is
+      // still updated while it exists, and the hatch drives the crack.
+      egg.update(dt, now);
+      if (eggFacing === null) eggFacing = egg.group.rotation.y;
+      egg.group.rotation.y = eggFacing + yaw;
+      hatch?.update(dt, now);
+    } else {
+      hatch?.update(dt, now);
+      if (hatched) {
+        hatched.update(dt, now);
+        if (charFacing === null) charFacing = hatched.group.rotation.y;
+        hatched.group.rotation.y = charFacing + yaw;
+      }
+    }
+    // After the branch, not inside it: the shell breaks DURING a crack
+    // frame's hatch.update(), so the creature exists and is already parented
+    // low on the very frame the pieces appear. Re-anchoring it there too is
+    // the difference between the shell hiding it and it arriving under the
+    // shell in one frame.
+    if (hatched) hatched.group.position.y += groundLift();
+
+    reframe?.update(dt);
+    applyCamera();
+    grain.compose(renderer, ink.render(renderer, scene, camera, now), now);
+  };
+
   const frame = (now: number): void => {
     raf = requestAnimationFrame(frame);
     const dt = Math.min(now - last, 100);
     last = now;
-
-    // The deadline the world gave us. No text and no control read it any
-    // more — it drives the shell.
-    const remaining = deadline === null ? null : deadline - now;
-    if (remaining !== null && remaining <= 0) fireHatch();
-
-    // The world's mapping: wobble ramps with progress, cracks tease in late.
-    const p = hatchProgress(remaining, initialMs);
-    egg.setHatchProgress(p);
-    egg.crack(crackTeaser(p));
-
-    egg.update(dt, now);
-    grain.compose(renderer, ink.render(renderer, scene, camera, now), now);
+    step(dt, now);
   };
 
   // Pause the loop while hidden (battery); resume without a dt lurch.
@@ -245,15 +522,83 @@ export function mountWaitScreen(
 
   return {
     setHatchIn(ms: number): void {
+      if (phase !== 'egg') return; // the shell is already coming off
       deadline = performance.now() + ms;
       if (initialMs === null || ms > initialMs) initialMs = ms;
       // The world re-armed the timer: arm the deadline again too.
       if (ms > 0 && fired) fired = false;
     },
+
+    playHatch(playOptions: PlayHatchOptions = {}): Promise<void> {
+      if (phase !== 'egg') return Promise.resolve();
+      // Same identity as the world's slot and as the alive portrait → the
+      // identical creature, so the swap at the end is a cross-fade between
+      // two pictures of one mesh.
+      const character = createCharacter(
+        options.strokes,
+        1,
+        options.identity === undefined ? {} : { identity: options.identity },
+      );
+      // A degenerate drawing has no creature to reveal. Nothing to play:
+      // resolve and let the caller swap as it always did.
+      if (!character) return Promise.resolve();
+
+      // Measure the creature the way the portrait will, from the same
+      // helper, BEFORE the hatch parents it — the two framings have to be
+      // computed from the same numbers or they cannot converge.
+      const bounds = new Box3().setFromObject(character.group);
+      const boundsSize = bounds.getSize(new Vector3());
+      const centre = bounds.getCenter(new Vector3());
+      charHalfExtent = portraitHalfExtent(boundsSize.x, boundsSize.y);
+      // Head-on, as the portrait is: straight down the z axis, so the
+      // silhouette is the drawing (PLAN §1) and the creature the person
+      // sees standing here is the creature the portrait mounts.
+      charFraming = { azimuth: 0, elevation: 0, lookX: centre.x, lookY: centre.y };
+
+      hatched = character;
+      phase = 'crack';
+      reframe = new Spring(0, { settleMs: MOTION.primaryMs });
+
+      return new Promise<void>((resolve) => {
+        hatchDone = resolve;
+        hatch = startHatch(scene, egg, character, {
+          onBurst: (root) => {
+            phase = 'exit';
+            charRoot = root;
+            // The frame follows the creature out of the shell — a slide on
+            // a ζ≥1 spring over t.primary, the same span the shell pieces
+            // and the rise take, so it is one move and not three.
+            reframe?.retarget(1);
+            playOptions.onCrack?.();
+          },
+          onDone: () => {
+            phase = 'settled';
+            hatch = null;
+            hatchDone = null;
+            resolve();
+          },
+        });
+      });
+    },
+
+    spin(): SpinState {
+      return spin.state();
+    },
+
     destroy(): void {
       stop();
       document.removeEventListener('visibilitychange', onVisibility);
       observer.disconnect();
+      spin.destroy();
+      // A screen torn down mid-hatch must not leave the caller awaiting a
+      // sequence that can no longer play.
+      hatchDone?.();
+      hatchDone = null;
+      hatch?.dispose();
+      hatch = null;
+      charRoot = null;
+      reframe?.dispose();
+      hatched?.dispose();
       egg.dispose();
       ink.dispose();
       renderer.dispose();

@@ -53,7 +53,8 @@ import type { StrokeList } from '../../shape/types';
 import { WORLD } from '../../taste/tokens';
 import { createLighting } from '../../world/lighting';
 import { createKeyRow, type KeyRowSpec } from '../device';
-import type { Screen, StageSlots } from '../states';
+import { createSpin, type SpinHandle, type SpinState } from '../spin';
+import { wellElement, type Screen, type StageSlots } from '../states';
 
 // ── The phone's emote set (DEVICE §2) ───────────────────────────────────────
 
@@ -111,6 +112,16 @@ export interface AliveScreenOptions {
    * local same-device flow) the portrait seeds from the strokes alone.
    */
   identity?: string;
+  /**
+   * Yaw + throw handed over by the screen before this one (user ruling,
+   * 2026-08-20 — the object turns by hand). Carried across the swap rather
+   * than reset: the creature standing at the end of the hatch and the
+   * creature this portrait mounts are the same mesh, so if one of them were
+   * facing a different way the dissolve between them would be a jump — and
+   * an object that stopped turning at the seam would be the abrupt stop the
+   * motion law forbids outright.
+   */
+  initialSpin?: SpinState;
   onEmote(emote: EmoteName): void;
 }
 
@@ -118,6 +129,9 @@ export interface AliveScreenHandle extends Screen {
   setPose(msg: PoseMsg): void;
   setRoster(msg: RosterMsg): void;
   setName(name: string): void;
+  /** Where the person left the creature turned, and how fast it is still
+   * turning. */
+  spin(): SpinState;
 }
 
 const STYLE_ID = 'alive-screen-style';
@@ -132,9 +146,39 @@ const STYLE_ID = 'alive-screen-style';
  * and the creature would read as jammed into the frame rather than living
  * in it. 88% leaves a real margin on all four sides at every handset size
  * — measured in the browser, not asserted — and the character's own camera
- * padding (bounds × 0.72) keeps air around the silhouette inside that.
+ * padding (PORTRAIT_FIT) keeps air around the silhouette inside that.
+ *
+ * Exported because the WAIT screen has to reach it: the creature standing
+ * at the end of the hatch and the creature this portrait mounts are the
+ * same mesh, and the swap between them is only a dissolve if they are also
+ * the same PICTURE. That means the wait screen sizing its own camera
+ * against this box, from this number, rather than against a copy of it.
  */
-const PORTRAIT_SHARE_PCT = 88;
+export const PORTRAIT_SHARE = 0.88;
+
+/**
+ * [D] Breathing room around the silhouette: the ortho half-extent is the
+ * creature's larger measured extent times this. Shared with the wait
+ * screen's reframe for the same reason PORTRAIT_SHARE is.
+ */
+export const PORTRAIT_FIT = 0.72;
+
+/**
+ * The portrait's half-extent — fit the LARGER extent plus breathing room,
+ * never an assumed height: the mesh is normalized to CHARACTER_HEIGHT but a
+ * wide drawing can be much wider than tall, and a fixed frustum crops it
+ * (user-reported). The canvas is square, so one half-extent serves both
+ * axes.
+ */
+export function portraitHalfExtent(sizeX: number, sizeY: number): number {
+  return Math.max(sizeX, sizeY, CHARACTER_HEIGHT) * PORTRAIT_FIT;
+}
+
+/** World units per css pixel this portrait renders at, in a canvas that
+ * many pixels across. The measure the wait screen's camera solves for. */
+export function portraitUnitsPerPixel(halfExtent: number, portraitPx: number): number {
+  return (2 * halfExtent) / Math.max(1, portraitPx);
+}
 
 function ensureStyle(): void {
   if (document.getElementById(STYLE_ID)) return;
@@ -153,7 +197,7 @@ function ensureStyle(): void {
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
-  width: ${PORTRAIT_SHARE_PCT}%;
+  width: ${PORTRAIT_SHARE * 100}%;
   aspect-ratio: 1;
   display: block;
   touch-action: none;
@@ -247,6 +291,26 @@ export function mountAliveScreen(
   slots.core.appendChild(field);
   slots.brow.appendChild(nameLine);
   slots.tools.appendChild(keys.el);
+
+  // ── Turning the creature by hand (user ruling, 2026-08-20) ────────────────
+  // *"on the mobile view a user should be able to rotate the egg and their
+  // character."* — and it matters more than it sounds: the drawing lives on
+  // the creature's BACK now (a knockout on the local −z face), and this
+  // camera is head-on, so turning it round is the only way the person can
+  // ever find their own drawing on it.
+  //
+  // Read on the WELL, not on the portrait canvas: the whole display turns
+  // the creature. The emote keys live on the CASE now (DEVICE §3 — their
+  // rows sit at y 24.6 and 145, outside the well's y 38..124), so the well
+  // is free and a drag can never be a key press.
+  const spin: SpinHandle = createSpin({
+    surface: wellElement(field) ?? field,
+    width: () => {
+      const well = wellElement(field);
+      return well ? well.getBoundingClientRect().width : field.getBoundingClientRect().width;
+    },
+    ...(options.initialSpin ? { initial: options.initialSpin } : {}),
+  });
   // The corner stays EMPTY (user ruling — no minimap on mobile for now).
   // Empty is a state of a slot, never a removal.
 
@@ -277,7 +341,7 @@ export function mountAliveScreen(
     const bounds = new Box3().setFromObject(character.group);
     const size = bounds.getSize(new Vector3());
     const center = bounds.getCenter(new Vector3());
-    const half = Math.max(size.x, size.y, CHARACTER_HEIGHT) * 0.72;
+    const half = portraitHalfExtent(size.x, size.y);
     camera = new OrthographicCamera(-half, half, half, -half, 0.1, 100);
     camera.position.set(center.x, center.y, 12);
     camera.lookAt(center.x, center.y, 0);
@@ -304,13 +368,29 @@ export function mountAliveScreen(
   // screen ever fully arrests (TASTE §2.1).
   let raf = 0;
   let last = performance.now();
+  /** The creature's own facing, captured on its first frame — see below. */
+  let facing: number | null = null;
   const frame = (now: number): void => {
     raf = requestAnimationFrame(frame);
     const dt = Math.min(now - last, 100);
     last = now;
 
+    const yaw = spin.update(dt);
     if (character && renderer && scene && camera) {
       character.update(dt, now);
+      // Yaw is the person's alone (user ruling, 2026-08-20: *"the egg and
+      // the character should not ambiently spin. It should be
+      // user-driven."*). The drift floor's third term is a rotation
+      // (sampleDrift().rot, ±0.17°) and character.update() writes it onto
+      // rotation.y every frame; the facing is pinned at what the creature
+      // was built with instead, and the drag is added to it. With no input
+      // the angle is bit-identical frame to frame.
+      //
+      // The floor itself is NOT removed: drift.x/drift.y still move the
+      // creature every frame, which is the ambient motion TASTE §2.1
+      // requires at confidence 1.00 and what the stillness probe reads.
+      if (facing === null) facing = character.group.rotation.y;
+      character.group.rotation.y = facing + yaw;
       renderer.render(scene, camera);
     }
   };
@@ -350,10 +430,14 @@ export function mountAliveScreen(
     setName(name: string): void {
       nameLine.textContent = name.toLowerCase();
     },
+    spin(): SpinState {
+      return spin.state();
+    },
     destroy(): void {
       stop();
       document.removeEventListener('visibilitychange', onVisibility);
       portraitObserver.disconnect();
+      spin.destroy();
       character?.dispose();
       renderer?.dispose();
       field.remove();
