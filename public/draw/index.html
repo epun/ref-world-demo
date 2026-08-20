@@ -91,6 +91,10 @@
         calc(env(safe-area-inset-bottom, 0px) + 10px);
       background: var(--paper); overflow: hidden;
       display: grid; place-items: center;
+      /* the keyboard lift (see liftClearOfKeyboard): the device MOVES, it
+         never resizes. On the settle curve like everything else — a screen
+         that jumped into place would be a cut (TASTE §2.1). */
+      transition: transform var(--t-secondary) var(--settle);
       /* the device box measures against THIS element, not against vh: a
          container query length is exact where vh and a fixed inset disagree
          on mobile. src/phone/device.ts does the same, so both halves of the
@@ -183,7 +187,6 @@
        follow would be sized for a well it no longer fits in — and its content
        would clip against the bezel for the length of the transition. A
        relayout is not a state change; the core follows it in the same frame. */
-    .stage.is-resizing .stage-core { transition: none; }
 
     /* ── satellite choreography (PHONE-STAGE §3) ──────────────────────────
        in:  opacity 0→1, translate +8px→0, over t.secondary, delay (i+1)·stagger
@@ -659,54 +662,64 @@
       // leaving `sign` releases the keyboard, which gives the band back
       // (DEVICE §2a). The visual viewport reports that on its own, but the
       // state change is the earliest moment we know about it.
-      fitVisibleBand();
+      liftClearOfKeyboard();
     }
 
     /**
-     * Keep the stage inside the VISIBLE band (DEVICE §2a).
+     * Lift the device clear of the keyboard — do NOT resize it.
      *
-     * *"the keyboard covers the bottom of the viewport. The device is
-     * centred, so an open keyboard can hide the very input being typed
-     * into."* On ios the keyboard does not change the layout viewport at
-     * all — `100%`, `100vh` and a fixed inset all keep measuring the space
-     * behind it — so the only honest source is `visualViewport`.
+     * User ruling, 2026-08-20: *"when adding a text input we shouldn't
+     * shrink the entire view to fit the keyboard. we should just show the
+     * keyboard and keep the tamagotchi device the same size. it's really
+     * hard to see and tap when the entire device and input and view scales
+     * down."*
      *
-     * The stage is fitted to it, and because the device box is sized
-     * `contain` against the stage (a size container), the WHOLE device —
-     * bezel, well, input, keys — stays inside the band. That is a relayout,
-     * not a move: no transform and no transition is applied to the shell,
-     * which stays as still as DEVICE §1a requires. The core follows in the
-     * same frame (`.is-resizing`), because a screen still sized for the old
-     * well would clip its own text against the bezel while it caught up.
+     * The first version fitted the stage to `visualViewport`, and because
+     * the device box is sized `contain` against the stage, shrinking the
+     * stage shrank the whole device — case, well, input and all. Correct
+     * about the covering, wrong about the remedy: the thing you are trying
+     * to read and tap got smaller exactly when you needed it bigger.
+     *
+     * So the device keeps its size and MOVES. The stage is translated up by
+     * the smallest amount that puts the input above the keyboard; the top of
+     * the case slides off screen, which is the right thing to lose, because
+     * in this state the case carries nothing — both key rows are hidden.
+     *
+     * On ios the keyboard does not change the layout viewport at all —
+     * `100%`, `100dvh` and a fixed inset all keep measuring the space behind
+     * it — so `visualViewport` is the only honest source for where the
+     * visible band actually ends.
+     *
+     * The lift runs on the settle curve over t.secondary like everything
+     * else: a screen that jumped into place would be a cut (TASTE §2.1).
      */
-    function fitVisibleBand(freeze) {
+    const KEYBOARD_GAP_PX = 12;   // air between the input and the keyboard
+    let stageLift = 0;
+    function liftClearOfKeyboard() {
       const vv = window.visualViewport;
-      if (!vv) return;   // then the layout viewport IS the visible one
-      // Only while signing, and only while something is actually covering the
-      // viewport. Two reasons to be this narrow: the keyboard is the only
-      // cover this document has, and the seam depends on both pages resolving
-      // the device box IDENTICALLY (PHONE-STAGE §4.2) — the companion sizes
-      // against the layout viewport, so this page must too everywhere except
-      // the one state the companion does not have.
-      const fit = state === 'sign' && vv.height < window.innerHeight - 1;
-      const top = fit ? vv.offsetTop + 'px' : '';
-      const height = fit ? vv.height + 'px' : '';
-      if (top === stage.style.top && height === stage.style.height) return;
-      // The band moved, so the whole device is about to be re-sized. The core
-      // follows in the same frame rather than over t.secondary: see the
-      // `.is-resizing` note in the stylesheet. Only the viewport-driven
-      // callers ask for this — a state change must keep its transition, and
-      // the seam is measured on it.
-      if (freeze) stage.classList.add('is-resizing');
-      stage.style.top = top;
-      stage.style.height = height;
-      if (freeze) { void core.offsetHeight; stage.classList.remove('is-resizing'); }
+      const covered = vv ? window.innerHeight - vv.height : 0;
+      // Only while signing, and only while something is genuinely covering
+      // the viewport. The seam depends on both pages resolving the device box
+      // IDENTICALLY (PHONE-STAGE §4.2), and this is a transform on the stage,
+      // never a change of the box itself — so the box stays identical either
+      // way and only its position moves.
+      const want = state === 'sign' && vv && covered > 1
+        ? (() => {
+            const r = nameInput.getBoundingClientRect();
+            const bandBottom = vv.offsetTop + vv.height;
+            // Positive when the input sits below the visible band.
+            return Math.max(0, r.bottom + KEYBOARD_GAP_PX - bandBottom);
+          })()
+        : 0;
+      if (Math.abs(want - stageLift) < 0.5) return;
+      stageLift = want;
+      stage.style.transform = want > 0 ? `translateY(${-want}px)` : '';
     }
     if (window.visualViewport) {
       // resize: the keyboard opening or closing. scroll: ios panning the
       // visual viewport inside the layout one while it is open.
-      window.visualViewport.addEventListener('resize', () => { fitVisibleBand(true); resize(); });
-      window.visualViewport.addEventListener('scroll', () => fitVisibleBand(true));
+      window.visualViewport.addEventListener('resize', liftClearOfKeyboard);
+      window.visualViewport.addEventListener('scroll', liftClearOfKeyboard);
     }
 
     // ── one handset, one creature (user ruling) ──────────────────────────
@@ -1057,8 +1070,8 @@
 
     // a rotation, or an android keyboard (which resizes the layout viewport
     // as well). Both are viewport changes, so both take the same instant fit.
-    window.addEventListener('resize', () => { fitVisibleBand(true); resize(); });
-    fitVisibleBand();
+    window.addEventListener('resize', () => { liftClearOfKeyboard(); resize(); });
+    liftClearOfKeyboard();
     resize();
   })();
   </script>
