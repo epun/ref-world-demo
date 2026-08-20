@@ -18,6 +18,7 @@ import { mountAliveScreen, type AliveScreenHandle } from './screens/alive';
 import { mountDraw } from './screens/draw';
 import { mountWaitScreen, type WaitScreenHandle } from './screens/wait';
 import { hatchPulse } from './haptics';
+import { resolveName } from '../creatures/naming';
 import { clearSubmission, drawerId, isStale, readSubmission } from './identity';
 import { createSession } from './session';
 import { SPIN_REST, type SpinState } from './spin';
@@ -133,6 +134,10 @@ interface Handoff {
   /** The publish id — the same identity the world spawns under, so the
    * alive-screen portrait renders the identical creature. */
   id: string | null;
+  /** What the person signed, or null if they skipped. The draw page has
+   * already published under it; the companion needs it so the brow shows
+   * the name they chose rather than one the session invented. */
+  name: string | null;
 }
 
 function readHandoff(): Handoff | null {
@@ -142,7 +147,7 @@ function readHandoff(): Handoff | null {
     sessionStorage.removeItem('refworld:handoff'); // one-shot
     const parsed: unknown = JSON.parse(raw);
     if (typeof parsed !== 'object' || parsed === null) return null;
-    const rec = parsed as { id?: unknown; strokes?: unknown; ts?: unknown };
+    const rec = parsed as { id?: unknown; strokes?: unknown; ts?: unknown; name?: unknown };
     if (!Array.isArray(rec.strokes)) return null;
     // Stale stashes (an old tab restored much later) go back to drawing.
     if (typeof rec.ts === 'number' && Date.now() - rec.ts > 10 * 60 * 1000) return null;
@@ -152,7 +157,11 @@ function readHandoff(): Handoff | null {
       if (stroke) out.push(stroke);
     }
     if (out.length === 0) return null;
-    return { strokes: out, id: typeof rec.id === 'string' && rec.id ? rec.id : null };
+    return {
+      strokes: out,
+      id: typeof rec.id === 'string' && rec.id ? rec.id : null,
+      name: typeof rec.name === 'string' && rec.name ? rec.name : null,
+    };
   } catch {
     return null;
   }
@@ -188,6 +197,21 @@ async function boot(): Promise<void> {
   let hatchInMs: number | null = null;
   let lastPose: PoseMsg | null = null;
   let lastRoster: RosterMsg | null = null;
+  /**
+   * The creature's name, as THIS handset knows it.
+   *
+   * User ruling: *"the creature name should be replaced by the user name if
+   * they signed"*. It was not, because SameDeviceSession emits
+   * `localName(seed)` — a name of its own invention — and that is what the
+   * brow showed. The signature never reached it.
+   *
+   * So the phone resolves it the same way the world does
+   * (src/creatures/naming.ts): the signed name if there is one, otherwise a
+   * name derived from the identity id. Both sides run the same pure
+   * function on the same id, so the phone and the projection always agree —
+   * without the world having to send anything down.
+   */
+  let signedName: string | null = null;
   let lastName: string | null = null;
   /**
    * Where the person has turned the object, and how fast it is still
@@ -207,6 +231,10 @@ async function boot(): Promise<void> {
   // built: a state the person is already looking at must not play an
   // entrance, and the seam must not play one for the stage itself.
   const handedOff = readHandoff();
+  // Resolved here because it needs the handoff: the signed name arrives with
+  // it, and `me` is the identity both sides derive the fallback from.
+  signedName = (stored?.name ?? handedOff?.name ?? null) || null;
+  lastName = resolveName(signedName, me);
   const acrossSeam = new URLSearchParams(location.search).get('handoff') === '1';
   let initialState: PhoneState = 'draw';
   let entrance: Entrance = 'settled';
@@ -399,6 +427,10 @@ async function boot(): Promise<void> {
     aliveHandle?.setRoster(msg);
   });
   session.onName((msg) => {
+    // A signed name is the person's own and outranks anything the session
+    // invents; the fallback is already the world's generated name, so there
+    // is nothing a session-supplied one can improve on.
+    if (signedName) return;
     lastName = msg.name;
     aliveHandle?.setName(msg.name);
   });
