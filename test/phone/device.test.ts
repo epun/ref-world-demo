@@ -13,10 +13,13 @@
  * tests stay node-only, per the phone test discipline.
  */
 
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
+  DEVICE_BOTTOM_AIR_PX,
   DEVICE_KEYS,
   DEVICE_KEY_ROWS,
+  DEVICE_TOP_AIR_PX,
   DEVICE_VIEWBOX,
   DEVICE_WELL,
   KEYS_PER_ROW,
@@ -131,5 +134,59 @@ describe('what the case shows, per state (DEVICE §2)', () => {
 
   it('shows both rows alive — the six emotes are the keys', () => {
     expect(DEVICE_KEY_ROWS.alive).toEqual({ top: true, bottom: true });
+  });
+});
+
+/**
+ * The seam's first paint (docs/PHONE-STAGE.md §4.1).
+ *
+ * Both documents paint the same paper before any script, which was never the
+ * problem — what flashed was the CASE. `/draw/` carries its device in the
+ * document; `/phone.html` built its own in device.ts, which cannot run until
+ * the phone bundle has parsed and `createSession()` has resolved. Measured in
+ * chromium at 390x844: the last frame of `/draw/` showed the case, the first
+ * frame of `/phone.html` showed bare paper, and the case stayed gone for
+ * ~960ms — the single largest frame-to-frame change anywhere in the flow.
+ *
+ * These two tests hold the fix in place from both ends: the markup has to be
+ * in the document ahead of every script, and mountDevice has to ADOPT it
+ * rather than build a second case beside it.
+ */
+describe('the case is painted before any script (PHONE-STAGE §4.1)', () => {
+  const html = readFileSync(
+    new URL('../../phone.html', import.meta.url),
+    'utf8',
+  );
+
+  it('carries the shell as markup, not as something a module inserts', () => {
+    expect(html).toContain('class="device-shell"');
+    expect(html).toContain('src="/device/shell.svg"');
+    expect(html).toContain('class="device-well"');
+    expect(html).toContain('class="device-keys"');
+  });
+
+  it('puts the case ahead of every script in the document', () => {
+    const shell = html.indexOf('class="device-shell"');
+    const firstScript = html.indexOf('<script');
+    expect(shell).toBeGreaterThan(-1);
+    expect(firstScript).toBeGreaterThan(-1);
+    // Ahead of the scripts is what makes it the FIRST paint rather than a
+    // paint that waits on the network.
+    expect(shell).toBeLessThan(firstScript);
+  });
+
+  it('resolves the device box from the same measures device.ts does', () => {
+    // Mirrored values, not a second geometry (DEVICE §3 — binding on both
+    // sides of the seam).
+    expect(html).toContain(
+      `aspect-ratio: ${DEVICE_VIEWBOX.width} / ${DEVICE_VIEWBOX.height}`,
+    );
+    expect(html).toContain(
+      `calc(100cqh * ${DEVICE_VIEWBOX.width} / ${DEVICE_VIEWBOX.height})`,
+    );
+    expect(html).toContain(`env(safe-area-inset-top, 0px) + ${DEVICE_TOP_AIR_PX}px`);
+    expect(html).toContain(
+      `env(safe-area-inset-bottom, 0px) + ${DEVICE_BOTTOM_AIR_PX}px`,
+    );
   });
 });
