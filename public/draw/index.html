@@ -66,9 +66,20 @@
     /* ── the stage ──────────────────────────────────────────────────────────
        Fixed and full-bleed. It owns the paper the device is drawn on, and it
        owns every measure the device and the well are built from, so that one
-       element resolves the whole geometry and both pages can copy it. */
+       element resolves the whole geometry and both pages can copy it.
+
+       left/right/top/height rather than `inset: 0` so that the one state that
+       needs it — `sign` — can fit the stage to the VISIBLE band instead of
+       the layout viewport (DEVICE §2a). The on-screen keyboard covers the
+       bottom of the layout viewport without changing it, so a centred device,
+       and the name input inside it, would sit underneath. Because the box is
+       sized `contain` against this element, fitting it keeps the whole device
+       in view. It is a resize, never a move: no transition, no transform,
+       nothing on the shell. Every other state leaves these at their css
+       values, so both sides of the seam resolve the identical box. */
     .stage {
-      position: fixed; inset: 0; background: var(--paper); overflow: hidden;
+      position: fixed; left: 0; right: 0; top: 0; height: 100%;
+      background: var(--paper); overflow: hidden;
       display: grid; place-items: center;
       /* the device box measures against THIS element, not against vh: a
          container query length is exact where vh and a fixed inset disagree
@@ -157,6 +168,12 @@
       width: var(--core-side); height: var(--core-side);
       transition: width var(--t-secondary) var(--settle), height var(--t-secondary) var(--settle);
     }
+    /* …except when the VIEWPORT changed rather than the state (DEVICE §2a).
+       The device box resizes instantly, so a core that took t.secondary to
+       follow would be sized for a well it no longer fits in — and its content
+       would clip against the bezel for the length of the transition. A
+       relayout is not a state change; the core follows it in the same frame. */
+    .stage.is-resizing .stage-core { transition: none; }
 
     /* ── satellite choreography (PHONE-STAGE §3) ──────────────────────────
        in:  opacity 0→1, translate +8px→0, over t.secondary, delay (i+1)·stagger
@@ -227,7 +244,11 @@
       touch-action: none;
       transition: opacity var(--t-secondary) var(--settle);
     }
-    /* the seam: the pad's content leaves, the box stays and travels (§4.2) */
+    /* the seam: the pad's content leaves, the box stays and travels (§4.2).
+       sign is the same move for the same reason — the drawing is finished and
+       the screen has moved on, so the pad is replaced rather than dimmed
+       behind a card (DEVICE §2a). */
+    .stage[data-state="sign"] .pad,
     .stage[data-state="sending"] .pad { opacity: 0; pointer-events: none; }
     canvas { display: block; width: 100%; height: 100%; touch-action: none; }
     .hint { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
@@ -235,19 +256,73 @@
       opacity: 0; transition: opacity var(--t-secondary) var(--settle); }
     .stage[data-state="idle"] .hint { opacity: 1; }
 
-    /* ── the three keys (DEVICE §2, §3) ─────────────────────────────────────
-       A physical device has fixed controls, so all three are always present
-       and never leave; what changes is what they mean, and an unavailable one
-       dims rather than going away. The drawn ring in shell.svg is artwork —
-       these are the real controls, sitting on the geometry DEVICE §3 pins:
-       centres x 30.5 / 50 / 70, centre line y 128, diameter 14.4 of the box.
+    /* ── core: the sign state (DEVICE §2a) ─────────────────────────────────
+       *"after the user finishes the drawing, we should just have the input
+       replace the drawing pad before the egg appears."*
+       Signing is a STATE OF THE STAGE, not a sheet over it. This layer and
+       the pad share the core's box and cross-fade in place on the ordinary
+       swap — same duration (t.secondary), same curve, same fixed centre. The
+       two opacities are complements, so the core is never blank for a frame.
+       Nothing here draws an enclosure (DEVICE §3): no card, no background, no
+       border, no radius. The one mark under the input is a RULE LINE, which
+       is the taste's own mark set (TASTE §4). */
+    .sign {
+      position: absolute; inset: 0; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: calc(var(--well-pad) * 1.5);
+      text-align: center; padding: 0 var(--well-pad);
+      opacity: 0; pointer-events: none;
+      transition: opacity var(--t-secondary) var(--settle);
+    }
+    .stage[data-state="sign"] .sign { opacity: 1; pointer-events: auto; }
+    .sign-title { font-size: var(--screen-1); font-weight: 500; letter-spacing: 0; }
+    /* a real <input type="text">, so the handset raises its own keyboard
+       (DEVICE §2a). `appearance: none` because ios draws a bordered, rounded,
+       inner-shadowed box otherwise — which is the enclosure the well forbids.
+       16px floor: anything smaller and the handset zooms the page on focus. */
+    .name-input {
+      width: 100%; max-width: 78%; text-align: center;
+      font-family: inherit; font-size: max(16px, var(--screen-1)); font-weight: 400;
+      padding: 6px 2px; appearance: none; -webkit-appearance: none;
+      background: transparent; color: var(--ink); outline: none;
+      border: 0; border-bottom: 1px solid var(--line); border-radius: 0;
+      user-select: text; -webkit-user-select: text;
+      transition: border-color var(--t-tertiary) var(--settle);
+    }
+    .name-input:focus { border-bottom-color: var(--ink); }
+    .name-input::placeholder { color: var(--muted); opacity: 1; }
+    /* the two ways out, as type: the keys are hidden in this state (DEVICE
+       §2), so the words are the controls. No box around either — a bordered
+       button in the well would be the card the ruling removed. */
+    .sign-acts { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+    .sign-act { background: transparent; border: 0; border-radius: 0; padding: 8px 10px;
+      font-family: inherit; font-size: var(--screen-1); font-weight: 500; color: var(--ink);
+      letter-spacing: 0; cursor: pointer; }
+    .sign-skip { font-weight: 400; font-size: var(--screen-2); color: var(--muted); }
+
+    /* ── the six keys, in two rows (DEVICE §2, §3) ──────────────────────────
+       A physical device has fixed controls, so every key is always in the
+       same place; what changes is what it means, and whether the row is
+       there at all. Geometry is DEVICE §3, binding on both pages:
+       row centre lines y 24.6 / y 145 → top 14.643% / 86.310%, key centres
+       x 30.5 / 50 / 70, diameter 14.4 of the box WIDTH.
        They carry no transform and never move; only their value changes, and
        it changes on the settle curve because a hard cut is forbidden. */
-    /* a zero-height line on the drawn row centre; each key hangs off it by
-       half its own diameter, and a percentage margin resolves against the box
-       WIDTH — the axis the diameter is quoted in. Same construction as
+    /* a zero-height line on the row centre; each key hangs off it by half its
+       own diameter, and a percentage margin resolves against the box WIDTH —
+       the axis the diameter is quoted in. Same construction as
        src/phone/device.ts, so the two pages land on the same pixels. */
-    .device-keys { position: absolute; left: 0; width: 100%; top: 86.31%; height: 0; }
+    .device-key-row {
+      position: absolute; left: 0; width: 100%; height: 0;
+      transition: opacity var(--t-secondary) var(--settle);
+    }
+    .device-key-row[data-row="top"]    { top: 14.643%; }
+    .device-key-row[data-row="bottom"] { top: 86.310%; }
+    /* Hidden is opacity + pointer-events + aria-hidden, never `display`
+       (DEVICE §2/§3): the case is a solid object and a removal would relayout
+       it. On THIS page the top row is hidden in every state — there is
+       nothing for it to do here — and the bottom row hides for sign and for
+       the seam, because the egg the companion boots into shows no keys. */
+    .device-key-row.is-hidden { opacity: 0; pointer-events: none; }
     .device-key {
       position: absolute; top: 0;
       width: 14.4%; aspect-ratio: 1;
@@ -255,17 +330,37 @@
       display: flex; align-items: center; justify-content: center;
       padding: 0; border: 0; border-radius: 50%; background: transparent;
       color: var(--ink); cursor: pointer; touch-action: manipulation;
-      transition: opacity var(--t-tertiary) var(--settle);
     }
     .device-key[data-key="0"] { left: 30.5000%; }
     .device-key[data-key="1"] { left: 50.0000%; }
     .device-key[data-key="2"] { left: 70.0000%; }
-    .device-key:disabled { opacity: var(--dim); cursor: default; pointer-events: none; }
+    .device-key:disabled { cursor: default; pointer-events: none; }
+    /* The ring is the KEY's own, not artwork (DEVICE §3): drawn into the
+       shell it could never be hidden, and a row that has to disappear cannot
+       leave its rings behind. Drawing it here also retires the alignment
+       question — a key cannot be offset from a ring it draws itself.
+       The svg is one stroke wider than the key box in each axis and scaled by
+       the same factor (15.9 / 14.4 = 110.4167%), so one svg unit is exactly
+       one shell viewBox unit — stroke-width 1.5 is the artwork's own weight,
+       not an approximation of it — and the stroke is never clipped. The face
+       is the well's value, so the key reads recessed by value alone, exactly
+       as the drawn rings did. Same construction as src/phone/device.ts. */
+    .device-key-ring {
+      position: absolute; left: 50%; top: 50%;
+      width: 110.4167%; height: 110.4167%; translate: -50% -50%;
+      fill: var(--paper); stroke: currentColor; stroke-width: 1.5;
+    }
     /* the mark on a key is an icon, never a filled shape — `icon` is the mark
-       set's first entry (TASTE §4) and it is what the companion draws too. */
-    .device-key svg { width: 46%; height: 46%; display: block; }
+       set's first entry (TASTE §4) and it is what the companion draws too.
+       An unavailable key dims its MARK and keeps its ring: the ring is a
+       feature of the case — it used to be printed on it, and the case does
+       not change — while the assignment is what is or is not on offer. */
+    .device-key-mark { width: 46%; height: 46%; display: block; position: relative;
+      transition: opacity var(--t-tertiary) var(--settle); }
+    .device-key:disabled .device-key-mark { opacity: var(--dim); }
 
-    /* ── tools (the modal buttons; the pad's own tools are the keys) ──────── */
+    /* ── the notice's button (the pad's own tools are the keys, and the
+       signing screen's are words) ─────────────────────────────────────────── */
     button { border: 1px solid var(--line); border-radius: 13px; padding: 15px; font-size: 16px; font-weight: 500;
       font-family: inherit; cursor: pointer; letter-spacing: 0;
       transition: opacity var(--t-tertiary) var(--settle), border-color var(--t-tertiary) var(--settle); }
@@ -290,13 +385,13 @@
       transition: opacity var(--t-secondary) var(--settle), translate var(--t-secondary) var(--settle); }
     .toast.show { opacity: 1; translate: -50% 0; }
 
-    /* ── modals (PHONE-STAGE §5) ──────────────────────────────────────────
-       The name sheet and the guideline notice are interruptions, not steps in
-       the flow: they slide up over the stage on the settle curve and leave the
-       stage visible behind them. No display toggling — opacity, pointer-events
-       and aria-hidden only. They stay anchored to the viewport rather than to
-       the well: the sheet owns a text input, and an input inside a 273px well
-       would sit under the on-screen keyboard. */
+    /* ── the notice (PHONE-STAGE §5) ──────────────────────────────────────
+       One modal is left. The guideline notice is an interruption, not a step
+       in the flow: it slides up over the stage on the settle curve and leaves
+       the stage visible behind it. No display toggling — opacity,
+       pointer-events and aria-hidden only.
+       The name SHEET is gone (DEVICE §2a): signing is a state of the stage
+       now, not a card over it. */
     .modal { position: fixed; inset: 0; z-index: 100; display: flex; justify-content: center;
       background: var(--scrim); opacity: 0; pointer-events: none;
       transition: opacity var(--t-secondary) var(--settle); }
@@ -307,26 +402,12 @@
       transition: translate var(--t-secondary) var(--settle); }
     .modal.show .modal-card { translate: 0 0; }
 
-    /* the sheet stays top-anchored: it owns a text input, and a bottom sheet
-       sits under the on-screen keyboard. It still slides up into place. */
-    .sheet { align-items: flex-start; padding: 11vh 18px 0; }
     .refused { align-items: center; padding: 0 18px; }
     .refused .modal-card { text-align: center; display: flex; flex-direction: column; align-items: center; gap: 16px; }
     .refused p { margin: 0; font-size: 17px; line-height: 1.45; max-width: 22em; }
     .refused .sub { font-size: 14px; color: var(--muted); }
     .refused button { flex: 0 0 auto; }
 
-    /* the sub line is gone (user ruling): the title is the whole prompt, so it
-       carries the margin the sub used to. */
-    .sheet-title { font-size: 20px; font-weight: 500; letter-spacing: 0; margin: 0 0 16px; }
-    .name-input { width: 100%; font-size: 18px; font-weight: 400; padding: 15px 16px; border-radius: 13px;
-      background: transparent; border: 1px solid var(--line); color: var(--ink); outline: none;
-      user-select: text; -webkit-user-select: text;
-      transition: border-color var(--t-tertiary) var(--settle); }
-    .name-input:focus { border-color: var(--ink); }
-    .sheet-go { width: 100%; margin-top: 14px; background: var(--ink); color: var(--pad); border-color: var(--ink); }
-    .sheet-skip { width: 100%; margin-top: 6px; background: transparent; border-color: transparent; color: var(--muted);
-      font-weight: 400; font-size: 14px; padding: 11px; }
   </style>
 </head>
 <body>
@@ -364,6 +445,19 @@
             <canvas id="c"></canvas>
             <div class="hint" id="hint">draw a solid shape</div>
           </div>
+          <!-- the sign state (DEVICE §2a): the input REPLACES the pad, in the
+               core's own box, on the ordinary swap. Same box, same centre —
+               the two layers cross-fade and the core never moves. -->
+          <div class="sign" id="sign" aria-hidden="true">
+            <div class="sign-title">sign your masterpiece</div>
+            <input id="nameInput" class="name-input" type="text" maxlength="16" placeholder="first name"
+                   autocomplete="off" autocorrect="off" autocapitalize="words" enterkeyhint="go"
+                   aria-label="your first name" />
+            <div class="sign-acts">
+              <button type="button" class="sign-act" id="signGo">send</button>
+              <button type="button" class="sign-act sign-skip" id="signSkip">skip — let the world name it</button>
+            </div>
+          </div>
         </div>
 
         <!-- tools slot: its controls are the device's keys now (DEVICE §2), so
@@ -380,22 +474,45 @@
       </div>
 
       <!--
-        the keys. Real buttons with real names, sitting on the rings the shell
-        draws. This page has no undo, so where DEVICE §2's draw row reads
-        undo · clear · done, key 1 carries the page's other tool — the brush
-        size — and keys 2 and 3 carry clear and send as the table says.
+        the keys — six now, in two rows (DEVICE §2, §3). Real buttons that
+        draw their own rings: the shell draws none any more, so a row can be
+        hidden outright instead of only dimmed.
+
+        The TOP row is hidden in every state on this page. There is nothing
+        for it to do here — it carries the emotes, and this document has no
+        creature. It stays in the dom and keeps its geometry, because the case
+        is a solid object and a removal would relayout it.
+
+        The BOTTOM row is this page's tools. It has no undo, so where DEVICE
+        §2's draw row reads undo · clear · done, key 1 carries the page's other
+        tool — the brush size — and keys 2 and 3 carry clear and send.
       -->
-      <div class="device-keys" id="keys">
+      <div class="device-key-row is-hidden" data-row="top" id="rowTop" aria-hidden="true">
+        <button type="button" class="device-key" data-key="0" disabled tabindex="-1" aria-hidden="true">
+          <svg class="device-key-ring" viewBox="0 0 15.9 15.9" aria-hidden="true"><circle cx="7.95" cy="7.95" r="7.2" /></svg>
+        </button>
+        <button type="button" class="device-key" data-key="1" disabled tabindex="-1" aria-hidden="true">
+          <svg class="device-key-ring" viewBox="0 0 15.9 15.9" aria-hidden="true"><circle cx="7.95" cy="7.95" r="7.2" /></svg>
+        </button>
+        <button type="button" class="device-key" data-key="2" disabled tabindex="-1" aria-hidden="true">
+          <svg class="device-key-ring" viewBox="0 0 15.9 15.9" aria-hidden="true"><circle cx="7.95" cy="7.95" r="7.2" /></svg>
+        </button>
+      </div>
+
+      <div class="device-key-row" data-row="bottom" id="rowBottom">
         <button type="button" class="device-key" data-key="0" id="keySize" aria-label="brush size">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><circle id="keySizeDot" cx="12" cy="12" r="5.6" fill="currentColor" /></svg>
+          <svg class="device-key-ring" viewBox="0 0 15.9 15.9" aria-hidden="true"><circle cx="7.95" cy="7.95" r="7.2" /></svg>
+          <svg class="device-key-mark" viewBox="0 0 24 24" aria-hidden="true"><circle id="keySizeDot" cx="12" cy="12" r="5.6" fill="currentColor" /></svg>
         </button>
         <button type="button" class="device-key" data-key="1" id="clear" aria-label="clear">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path
+          <svg class="device-key-ring" viewBox="0 0 15.9 15.9" aria-hidden="true"><circle cx="7.95" cy="7.95" r="7.2" /></svg>
+          <svg class="device-key-mark" viewBox="0 0 24 24" aria-hidden="true"><path
             d="M8.2 8.3c2.3 2.2 4.7 4.7 7.3 7.5M15.8 8.4c-2.4 2.3-4.9 4.8-7.2 7.4"
             fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" /></svg>
         </button>
         <button type="button" class="device-key" data-key="2" id="send" aria-label="send" disabled>
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path
+          <svg class="device-key-ring" viewBox="0 0 15.9 15.9" aria-hidden="true"><circle cx="7.95" cy="7.95" r="7.2" /></svg>
+          <svg class="device-key-mark" viewBox="0 0 24 24" aria-hidden="true"><path
             d="M6.4 12.1c3.7-.3 7.4-.4 11.1-.3M13.3 8c1.4 1.3 2.8 2.6 4.2 3.8-1.4 1.3-2.8 2.6-4.1 4"
             fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" /></svg>
         </button>
@@ -411,16 +528,6 @@
       <p>sorry — this goes against our content guidelines.</p>
       <p class="sub">it was not sent.</p>
       <button class="clear" id="refusedBack">draw something else</button>
-    </div>
-  </div>
-
-  <div class="modal sheet" id="sheet" aria-hidden="true">
-    <div class="modal-card">
-      <div class="sheet-title">sign your masterpiece</div>
-      <input id="nameInput" class="name-input" type="text" maxlength="16" placeholder="first name"
-             autocomplete="off" autocorrect="off" autocapitalize="words" enterkeyhint="go" />
-      <button class="sheet-go" id="sheetGo">send</button>
-      <button class="sheet-skip" id="sheetSkip">skip — let the world name it</button>
     </div>
   </div>
 
@@ -440,8 +547,9 @@
       primaryMs: 1823,
       ambientMs: 3646,
     };
-    // Stagger is derived from the scale, never invented (PHONE-STAGE §3).
-    const STAGGER_MS = MOTION.tertiaryMs / 4;   // 114ms
+    // The stagger the satellites run on is derived from the same scale, never
+    // invented (PHONE-STAGE §3) — it lives in css as `--stagger`, because
+    // nothing in this script schedules a satellite by hand any more.
 
     // ── Config (must match the receiver's broker + topicPrefix) ─────────────
     const params = new URLSearchParams(location.search);
@@ -453,13 +561,21 @@
 
     // ── The stage ───────────────────────────────────────────────────────────
     // One surface; states are swaps of what occupies it, never screen changes.
-    // idle → drawn → sending, plus refused (a modal over a withdrawn stage).
+    // idle → drawn → sign → sending, plus refused (a notice over a withdrawn
+    // stage). Signing is a state of this surface now, not a sheet over it
+    // (DEVICE §2a).
     const stage = document.getElementById('stage');
+    // the one object the whole flow is built around (PHONE-STAGE §2)
+    const core = document.getElementById('core');
     // reading order — brow, tools, corner (PHONE-STAGE §3). --i is on the
     // elements themselves and drives both the stagger and the ambient phase.
     const SATELLITES = ['brow', 'tools', 'corner'].map((id) => document.getElementById(id));
-    // the device's three keys. They are always present and never leave
-    // (DEVICE §2) — an unavailable one dims, it does not go away.
+    // the device's six keys, in two rows (DEVICE §2, §3). A key is always in
+    // the same place — it is a physical control — so what changes is what it
+    // means, whether it is available (dim) and whether its row is there at
+    // all (hidden: opacity + pointer-events + aria-hidden, never `display`).
+    const rowTop    = document.getElementById('rowTop');
+    const rowBottom = document.getElementById('rowBottom');
     const keyClear = document.getElementById('clear');
     const keySend  = document.getElementById('send');
     const keySize  = document.getElementById('keySize');
@@ -471,6 +587,28 @@
     }
 
     /**
+     * A whole row of keys, present or hidden. Hidden is not a removal: the
+     * row keeps its box on the case, stops taking pointers, leaves the
+     * accessibility tree and drops out of the tab order (DEVICE §3).
+     */
+    function setRowShown(row, shown) {
+      row.classList.toggle('is-hidden', !shown);
+      row.setAttribute('aria-hidden', shown ? 'false' : 'true');
+      for (const key of row.querySelectorAll('.device-key')) key.tabIndex = shown ? 0 : -1;
+    }
+
+    /**
+     * The same rule for a core layer that is faded out: still in the dom,
+     * still laid out, but out of the accessibility tree and out of the tab
+     * order. A control you cannot see but can still tab into is the same
+     * bug as a hidden key you can still press.
+     */
+    function setLayerShown(layer, shown) {
+      layer.setAttribute('aria-hidden', shown ? 'false' : 'true');
+      for (const el of layer.querySelectorAll('input, button')) el.tabIndex = shown ? 0 : -1;
+    }
+
+    /**
      * The keys' availability, in one place. This is what used to be the
      * actions row arriving and leaving; the keys are on the case now, so
      * instead of sliding away they dim. Same rule, same moments:
@@ -479,9 +617,21 @@
      * and neither is live while the stage is mid-seam or already spent.
      */
     function syncKeys() {
-      const busy = state === 'sending' || state === 'refused' || stage.dataset.spent === 'true';
+      const busy = state === 'sign' || state === 'sending' || state === 'refused'
+        || stage.dataset.spent === 'true';
       keySend.disabled  = busy || strokes.length === 0 || !connected;
       keyClear.disabled = busy || strokes.length === 0;
+      // DEVICE §2's row table, for the states this document has:
+      //   idle/drawn/refused  hidden · brush · clear · send
+      //   sign                hidden · hidden   (the words in the well are
+      //                                          the controls there)
+      //   sending             hidden · hidden   (the companion boots into the
+      //                                          egg, which shows no keys at
+      //                                          all — the case is already
+      //                                          bare when the seam happens)
+      // The top row is hidden in EVERY state on this page.
+      setRowShown(rowTop, false);
+      setRowShown(rowBottom, state !== 'sign' && state !== 'sending');
     }
 
     let state = 'idle';
@@ -489,11 +639,64 @@
       if (state === next) return;
       state = next;
       stage.dataset.state = next;
-      const satellitesIn = next === 'idle' || next === 'drawn';
+      const satellitesIn = next === 'idle' || next === 'drawn' || next === 'sign';
       for (const el of SATELLITES) setPresent(el, satellitesIn);
+      // the core's two layers: the pad and the signing screen (DEVICE §2a)
+      setLayerShown(document.getElementById('sign'), next === 'sign');
       // clear/send are only live once there is something to send; they no
       // longer travel — the case they sit on is a solid object.
       syncKeys();
+      // leaving `sign` releases the keyboard, which gives the band back
+      // (DEVICE §2a). The visual viewport reports that on its own, but the
+      // state change is the earliest moment we know about it.
+      fitVisibleBand();
+    }
+
+    /**
+     * Keep the stage inside the VISIBLE band (DEVICE §2a).
+     *
+     * *"the keyboard covers the bottom of the viewport. The device is
+     * centred, so an open keyboard can hide the very input being typed
+     * into."* On ios the keyboard does not change the layout viewport at
+     * all — `100%`, `100vh` and a fixed inset all keep measuring the space
+     * behind it — so the only honest source is `visualViewport`.
+     *
+     * The stage is fitted to it, and because the device box is sized
+     * `contain` against the stage (a size container), the WHOLE device —
+     * bezel, well, input, keys — stays inside the band. That is a relayout,
+     * not a move: no transform and no transition is applied to the shell,
+     * which stays as still as DEVICE §1a requires. The core follows in the
+     * same frame (`.is-resizing`), because a screen still sized for the old
+     * well would clip its own text against the bezel while it caught up.
+     */
+    function fitVisibleBand(freeze) {
+      const vv = window.visualViewport;
+      if (!vv) return;   // then the layout viewport IS the visible one
+      // Only while signing, and only while something is actually covering the
+      // viewport. Two reasons to be this narrow: the keyboard is the only
+      // cover this document has, and the seam depends on both pages resolving
+      // the device box IDENTICALLY (PHONE-STAGE §4.2) — the companion sizes
+      // against the layout viewport, so this page must too everywhere except
+      // the one state the companion does not have.
+      const fit = state === 'sign' && vv.height < window.innerHeight - 1;
+      const top = fit ? vv.offsetTop + 'px' : '';
+      const height = fit ? vv.height + 'px' : '';
+      if (top === stage.style.top && height === stage.style.height) return;
+      // The band moved, so the whole device is about to be re-sized. The core
+      // follows in the same frame rather than over t.secondary: see the
+      // `.is-resizing` note in the stylesheet. Only the viewport-driven
+      // callers ask for this — a state change must keep its transition, and
+      // the seam is measured on it.
+      if (freeze) stage.classList.add('is-resizing');
+      stage.style.top = top;
+      stage.style.height = height;
+      if (freeze) { void core.offsetHeight; stage.classList.remove('is-resizing'); }
+    }
+    if (window.visualViewport) {
+      // resize: the keyboard opening or closing. scroll: ios panning the
+      // visual viewport inside the layout one while it is open.
+      window.visualViewport.addEventListener('resize', () => { fitVisibleBand(true); resize(); });
+      window.visualViewport.addEventListener('scroll', () => fitVisibleBand(true));
     }
 
     // ── one handset, one creature (user ruling) ──────────────────────────
@@ -687,7 +890,7 @@
     const NAME_KEY = 'drawto3d:name';
     let signed   = localStorage.getItem(NAME_KEY) !== null;
     let userName = (localStorage.getItem(NAME_KEY) || '').slice(0, 16);
-    const sheet = document.getElementById('sheet');
+    const signLayer = document.getElementById('sign');
     const nameInput = document.getElementById('nameInput');
     const escapeHtml = (s) => s.replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
 
@@ -700,19 +903,65 @@
       chip.innerHTML = userName
         ? `sending as <b>${escapeHtml(userName)}</b> · <span class="chip-change">change</span>`
         : `sending anonymously · <span class="chip-change">add name</span>`;
-      chip.querySelector('.chip-change').onclick = openSheet;
+      chip.querySelector('.chip-change').onclick = enterSign;
     }
-    function openModal(el) { el.classList.add('show'); el.setAttribute('aria-hidden', 'false'); }
-    function closeModal(el) { el.classList.remove('show'); el.setAttribute('aria-hidden', 'true'); }
-    function openSheet() {
-      nameInput.value = userName; openModal(sheet);
-      setTimeout(() => { nameInput.focus(); nameInput.select(); }, STAGGER_MS);
-    }
-    function closeSheet() { closeModal(sheet); nameInput.blur(); }
+    // Same rule as a folded-away core layer: a notice that is not on screen
+    // keeps its box but takes no focus.
+    function openModal(el) { el.classList.add('show'); setLayerShown(el, true); }
+    function closeModal(el) { el.classList.remove('show'); setLayerShown(el, false); }
     function commitName(v) {
       userName = (v || '').replace(/[<>&"]/g, '').trim().slice(0, 16);
       signed = true; localStorage.setItem(NAME_KEY, userName); updateChip();
     }
+
+    /**
+     * ── the sign state (DEVICE §2a) ──────────────────────────────────────
+     * *"after the user finishes the drawing, we should just have the input
+     * replace the drawing pad before the egg appears."*
+     *
+     * It is an ordinary swap, not a sheet: `setState` alone does the whole
+     * thing, so signing gets the same duration, the same curve and the same
+     * fixed centre every other state change gets. There is no modal left to
+     * open, nothing dims behind a card, and the keys hide (DEVICE §2) —
+     * inside the well the two words ARE the controls.
+     */
+    function enterSign() {
+      nameInput.value = userName;
+      setState('sign');
+    }
+    /**
+     * Both ways out. A typed name publishes under it; skipping publishes
+     * with none and the world names the creature (src/creatures/naming.ts).
+     * If there is nothing to send yet — the person reached this screen from
+     * the `change` chip, or the connection dropped while they typed — the
+     * name is still kept and the pad comes back rather than stranding them
+     * on a screen with no exit.
+     */
+    function leaveSign(value) {
+      commitName(value);
+      nameInput.blur();
+      if (strokes.length && connected) { publish(); return; }
+      setState(strokes.length ? 'drawn' : 'idle');
+    }
+
+    // ios raises the keyboard ONLY from a genuine user gesture, so the focus
+    // is taken inside the tap handler itself — never on a timer and never
+    // after an await, either of which is silently ignored and leaves the
+    // person looking at a field that will not type (DEVICE §2a). Tapping the
+    // input focuses it natively; this covers the rest of the well, so a tap
+    // anywhere near the field still "clicks in to sign".
+    signLayer.addEventListener('click', (e) => {
+      if (e.target.closest('.sign-act')) return;   // the words are their own controls
+      nameInput.focus();
+    });
+    document.getElementById('signGo').onclick = () => leaveSign(nameInput.value);
+    document.getElementById('signSkip').onclick = () => leaveSign('');
+    // enterkeyhint="go" — the keyboard's own key is the primary way out.
+    nameInput.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      leaveSign(nameInput.value);
+    });
 
     /**
      * Screen on THIS handset before anything is sent. The world screens
@@ -777,17 +1026,22 @@
 
     keySend.onclick = () => {
       if (!strokes.length || !connected) return;
-      if (!signed) { openSheet(); return; }   // first send → sign it; then remembered
+      // first send → the pad is replaced by the signing screen; after that the
+      // name is remembered and the send goes straight through (DEVICE §2a).
+      if (!signed) { enterSign(); return; }
       publish();
     };
-    document.getElementById('sheetGo').onclick = () => { commitName(nameInput.value); closeSheet(); publish(); };
-    document.getElementById('sheetSkip').onclick = () => { commitName(''); closeSheet(); publish(); };
-    nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); document.getElementById('sheetGo').click(); } });
-    sheet.addEventListener('click', (e) => { if (e.target === sheet) closeSheet(); });
     updateChip();
     syncKeys();
+    // the signing screen starts folded away: out of the accessibility tree
+    // and out of the tab order until it is the state on screen.
+    setLayerShown(signLayer, false);
+    setLayerShown(document.getElementById('refused'), false);
 
-    window.addEventListener('resize', resize);
+    // a rotation, or an android keyboard (which resizes the layout viewport
+    // as well). Both are viewport changes, so both take the same instant fit.
+    window.addEventListener('resize', () => { fitVisibleBand(true); resize(); });
+    fitVisibleBand();
     resize();
   })();
   </script>
