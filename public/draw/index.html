@@ -87,8 +87,11 @@
          seam must resolve the identical box. */
       height: 100%; height: 100dvh;
       box-sizing: border-box;
-      padding: calc(env(safe-area-inset-top, 0px) + 42px) 0
-        calc(env(safe-area-inset-bottom, 0px) + 10px);
+      /* equal air both sides: the device is CENTRED in the visible band
+         (user ruling). Mirrors DEVICE_TOP_AIR_PX / DEVICE_BOTTOM_AIR_PX in
+         src/phone/device.ts — both halves of the seam must agree. */
+      padding: calc(env(safe-area-inset-top, 0px) + 16px) 0
+        calc(env(safe-area-inset-bottom, 0px) + 16px);
       background: var(--paper); overflow: hidden;
       display: grid; place-items: center;
       /* the keyboard lift (see liftClearOfKeyboard): the device MOVES, it

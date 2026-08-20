@@ -54,23 +54,28 @@ import { MOTION, SURFACE, WORLD } from '../taste/tokens';
 /** shell.svg's viewBox. The box is sized `contain` to this ratio. */
 export const DEVICE_VIEWBOX = { width: 100, height: 178 } as const;
 
-/**
- * Air above and below the device, on top of the safe-area insets.
- *
- * User report: the top key row collided with the browser's own controls.
- * The insets alone do not cover it — ios reports no top inset in a normal
- * browser tab, and the url bar still overlays the layout viewport — so the
- * device is given its own margin and sits a little low in the band, which
- * is also where a handheld naturally rests in the hand.
- */
 /** How far a key slides on the way in. Entrances slide (TASTE §2.1). */
 const KEY_ENTER_TRAVEL_PX = 6;
 /** Stagger between keys, derived from the token scale like the stage's own
  * satellite stagger (PHONE-STAGE §3): t.tertiary / 4. */
 const KEY_STAGGER_MS = MOTION.tertiaryMs / 4;
 
-export const DEVICE_TOP_AIR_PX = 42;
-export const DEVICE_BOTTOM_AIR_PX = 10;
+/**
+ * Air above and below the device, on top of the safe-area insets.
+ *
+ * EQUAL on both sides (user ruling, 2026-08-20: *"I want the device
+ * vertically centred in the screen"*). An earlier reading of "move it down"
+ * biased this 42/10, which pushed the case low in the band; the crowding
+ * that ruling was really about was between the top key row and the bezel
+ * below it, and that is fixed in the artwork's own geometry instead (the
+ * case is 100x178 with the bezel at y 42, giving 8.8 units of clearance).
+ *
+ * So the padding's only job now is to keep the case off the edges and out
+ * from under the browser's controls. Equal air + the real insets means the
+ * device is centred in the band the person can actually see.
+ */
+export const DEVICE_TOP_AIR_PX = 16;
+export const DEVICE_BOTTOM_AIR_PX = 16;
 
 /**
  * The screen is a 3d object, not a document.
