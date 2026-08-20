@@ -9,10 +9,12 @@
  * pad was — and every other slot is empty.
  *
  * User ruling, 2026-08-20: *"let's remove the count down and the hatch
- * button. i want to set the hatch timing on my end."* So the brow carries
- * no countdown line and all three of the device's keys are unassigned here
- * (docs/DEVICE.md §2) — disabled, never removed, because the case is a
- * solid object and its controls do not come and go. The TIMING signal is
+ * button. i want to set the hatch timing on my end."* — and, 2026-08-18,
+ * *"when the egg is visible on the tamagotchi, let's hide the buttons"*. So
+ * the brow carries no countdown line and BOTH of the device's key rows are
+ * hidden here (docs/DEVICE.md §2): hidden, not dimmed, and never removed,
+ * because the case is a solid object and its controls do not come and go.
+ * The egg is the only thing on the device. The TIMING signal is
  * untouched: `hatchInMs` still drives hatchProgress, which is what ramps
  * the shell's wobble and teases the cracks in. Only the text and the
  * control went; the thing they were reading is still running.
@@ -44,7 +46,7 @@ import { WORLD, SURFACE } from '../../taste/tokens';
 import { GrainPass } from '../../world/grain';
 import { InkPass } from '../../world/ink';
 import { createLighting } from '../../world/lighting';
-import { createKeyRow } from '../device';
+import { createKeyRow, NO_KEYS } from '../device';
 import type { Screen, StageSlots } from '../states';
 
 // ── Pure helpers (unit-tested in test/phone) ────────────────────────────────
@@ -133,8 +135,13 @@ export function mountWaitScreen(
   canvas.className = 'wait-egg';
   canvas.setAttribute('aria-label', 'your egg');
 
-  // All three keys unassigned here (DEVICE §2): disabled, never removed.
-  const keys = createKeyRow([null, null, null]);
+  // NO keys at all here, by ruling (DEVICE §2): *"when the egg is visible
+  // on the tamagotchi, let's hide the buttons"*. Hidden, not dimmed — and
+  // hidden is opacity + pointer-events + aria-hidden, never display, since
+  // the case is a solid object and a removal would relayout it. The rings
+  // are the keys' own now (DEVICE §3), so a hidden row leaves the case
+  // genuinely bare rather than showing six empty circles.
+  const keys = createKeyRow(NO_KEYS);
 
   // The egg is the only occupant. Brow and corner stay empty — a state of
   // a slot, never a removal.

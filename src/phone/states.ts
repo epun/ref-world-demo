@@ -10,16 +10,21 @@
  * is a state of a slot, never a removal (removing one relayouts the stage,
  * and a relayout is a cut — TASTE §2.1, confidence 1.00):
  *
- *   .stage-brow     top          status / countdown / creature name
- *   .stage-core     centre       the ONE object: pad → egg → wheel
- *   .stage-tools    the case      undo·clear·done → hatch → (all idle)
- *   .stage-corner   bottom-right minimap (alive only)
+ *   .stage-brow     top          status / creature name
+ *   .stage-core     centre       the ONE object: pad → egg → creature
+ *   .stage-tools    the case     undo·clear·done → (none) → six emotes
+ *   .stage-corner   bottom-right empty (the minimap left the phone)
  *
  * The stage now sits inside the device's screen well (docs/DEVICE.md §3)
- * and the tools slot sits on the device's three fixed keys — the ONLY
+ * and the tools slot sits on the device's six fixed keys — the ONLY
  * change the device makes to this file. Roles, layering, the swap
  * choreography and the seam are untouched: the device is a frame around
  * them, and if any behaviour changed the wrapper would be wrong.
+ *
+ * The `corner` slot is EMPTY on every state now (user ruling: *"let's also
+ * get rid of the mini map on mobile for now"*). It stays in the DOM, in the
+ * slot set, and in the stagger order — empty is a state of a slot, never a
+ * removal, and a slot that left would relayout the stage.
  *
  * A state change is a SWAP, never a translate of the stage:
  *   1. satellites out   opacity 1→0, translateY 0→+8px, t.tertiary
@@ -40,7 +45,19 @@ import { mountDevice, type DeviceChrome } from './device';
 
 export type PhoneState = 'draw' | 'wait' | 'alive';
 
-/** Flow order. Forward is draw → wait → alive; nothing about it is spatial. */
+/**
+ * Flow order. Forward is draw → wait → alive; nothing about it is spatial.
+ *
+ * `sign` (DEVICE §2a) is deliberately NOT here. It is a state of the
+ * /draw/ document's stage — the core cross-fades from the pad to the name
+ * input on the ordinary swap, and the person has navigated to the
+ * companion before the egg exists. This machine never mounts it, so
+ * putting it in the flow would only oblige main.ts to supply a screen that
+ * can never appear. What the two documents DO have to agree on is the
+ * case: `DEVICE_KEY_ROWS` in device.ts names sign alongside the other
+ * three and hides both its rows, so the keys are the same object on both
+ * sides of the seam.
+ */
 export const PHONE_STATES: readonly PhoneState[] = ['draw', 'wait', 'alive'];
 
 export function stateIndex(state: PhoneState): number {
@@ -250,17 +267,21 @@ function ensureStyle(): void {
 }
 /*
  * The tools slot is no longer in the stage's grid: it mounts onto the
- * device's key row (DEVICE §2), because a physical device's controls are
+ * device's key field (DEVICE §2), because a physical device's controls are
  * on the case, not on the screen. It is still a persistent slot, still a
  * satellite, still animated by the same swap steps — only its address
- * changed. The row line has no height of its own; the keys hang off it.
+ * changed.
+ *
+ * It spans the whole device box, because there are TWO key rows now
+ * (DEVICE §3) and their lines are shares of the box's HEIGHT — one above
+ * the screen, one below it. Nothing in the slot paints and nothing in it
+ * takes a pointer except a key itself, so covering the screen costs the
+ * screen nothing.
  */
 .stage-tools {
   position: absolute;
-  left: 0;
-  top: 0;
-  width: 100%;
-  height: 0;
+  inset: 0;
+  pointer-events: none;
 }
 .stage-core {
   /* Centred in the well, out of the grid flow — see the note above. */
@@ -274,13 +295,11 @@ function ensureStyle(): void {
     height ${MOTION.secondaryMs}ms ${MOTION.settleCurve};
 }
 /*
- * The corner, measured against the well (DEVICE §3). 19cqw is not a picked
- * number: in the alive state the core is as wide as the well, so the map
- * has only the wheel's free corner to sit in. The emote nearest the
- * bottom-right diagonal has its right edge at
- * (side/2 + 0.4345·(side/2 − 26) + 26), and the map's left edge has to
- * clear it. 19% of the well's width plus the 1% inset does, from a 224px
- * well up. Measured, not asserted — the device probe checks the real rects.
+ * The corner, measured against the well (DEVICE §3). It holds nothing now
+ * — the minimap left the phone by ruling — but the slot keeps its box and
+ * its place in the stagger: empty is a state of a slot, never a removal,
+ * and bringing the map back must be a mount rather than a relayout. 19cqw
+ * is the measure the map had, kept so it returns to the same corner.
  */
 .stage-corner {
   position: absolute;

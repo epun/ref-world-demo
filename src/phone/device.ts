@@ -12,18 +12,18 @@
  * What it provides:
  *
  *   .device        the page, in SURFACE.ground paper, centring the box
- *   .device-box    the shell's own 100×150 box, sized `contain` so the
+ *   .device-box    the shell's own 100×168 box, sized `contain` so the
  *                  hand-drawn line weight never stretches (DEVICE §3)
  *   .device-shell  public/device/shell.svg, the artwork, as an <img>
  *   .device-well   the screen well — the stage mounts in here
- *   .device-keys   the three fixed keys, over the drawn rings
+ *   .device-keys   the six fixed keys, in two rows (DEVICE §2, §3)
  *
- * MOTION (DEVICE §1a): nothing in here animates, ever. A physical object
- * does not breathe, and a Tamagotchi whose case breathed would read as
- * wrong. The stage inside the well keeps the world's motion law in full,
- * ambient floor included — the shell simply is not part of it. No
- * transition, no animation, no transform is declared on the body, the
- * bezel, the drawn buttons or the motifs.
+ * MOTION (DEVICE §1a): the SHELL never animates. A physical object does not
+ * breathe, and a Tamagotchi whose case breathed would read as wrong. The
+ * keys are controls rather than shell, so they may cross-fade with the
+ * state they belong to — the case around them does not move a pixel. The
+ * stage inside the well keeps the world's motion law in full, ambient floor
+ * included.
  *
  * COLOUR (DEVICE §1b/§1c): black and white. The ui brief's `#9cd3d4` and
  * its `#161615` ground are both dropped — the darkest thing on this
@@ -31,6 +31,14 @@
  * (SURFACE.ground) is one step darker than the body (SURFACE.canvas), both
  * of which live in the artwork; the page behind is SURFACE.ground too, so
  * the device reads as an object drawn on the world's paper.
+ *
+ * THE RINGS ARE DOM, NOT ARTWORK (DEVICE §3). They used to be drawn into
+ * shell.svg, which meant they could never be hidden — and the egg state has
+ * to hide the keys completely rather than dim them ("when the egg is visible
+ * on the tamagotchi, let's hide the buttons"). So each key draws its own
+ * ring, at the artwork's own weight, inside its own <button>. That also
+ * retires the alignment question permanently: a key cannot be offset from a
+ * ring it draws itself.
  *
  * GEOMETRY (DEVICE §3) is binding — public/draw/index.html positions
  * against the same numbers, so they may not be edited on one side only.
@@ -63,19 +71,53 @@ export const DEVICE_WELL = {
 } as const;
 
 /**
- * The three keys. Centres at viewBox x 30.5 / 50 / 70 on the row line
- * y 145, diameter 14.4 — all as shares of the box's WIDTH except the row
- * line, which is a share of its height. The artwork draws its rings at
- * exactly these centres, so the keys land on them with zero offset.
+ * The six keys, in two rows (DEVICE §3). Centres at viewBox x 30.5 / 50 /
+ * 70 on the row lines y 24.6 (top — the band the `ref` word mark vacated)
+ * and y 145 (bottom — where the three keys already were), diameter 14.4.
+ *
+ * The x measures and the diameter are shares of the box's WIDTH; the row
+ * lines are shares of its HEIGHT. A physical device has fixed controls, so
+ * these never change: what changes is what a key means, and whether it is
+ * there at all.
  */
 export const DEVICE_KEYS = {
   centresPct: [30.5, 50, 70] as const,
-  rowTopPct: (145 / 168) * 100,
+  rowTopPct: {
+    top: (24.6 / 168) * 100,
+    bottom: (145 / 168) * 100,
+  },
   diameterPct: 14.4,
+  /** The ring's own stroke, in viewBox units — the artwork's weight. */
+  ringStroke: 1.5,
 } as const;
 
-/** How many keys the case has. Fixed: it is a physical object. */
-export const KEY_COUNT = 3;
+/** How many keys the case has, per row and in total. It is a physical object. */
+export const KEYS_PER_ROW = 3;
+export const KEY_ROW_NAMES = ['top', 'bottom'] as const;
+export type KeyRowName = (typeof KEY_ROW_NAMES)[number];
+export const KEY_COUNT = KEYS_PER_ROW * KEY_ROW_NAMES.length;
+
+/**
+ * The states the CASE knows about, and which of its two rows each one shows
+ * (DEVICE §2). This is the phone flow plus `sign` (DEVICE §2a), which is a
+ * state of the /draw/ document's stage rather than of the companion's
+ * machine — the companion never mounts it, but the case is the same object
+ * on both sides of the seam, so the contract for its keys lives here where
+ * both halves can read it.
+ *
+ *   draw   hidden            · undo · clear · done
+ *   sign   hidden            · hidden
+ *   wait   hidden            · hidden      (the egg shows NO keys at all)
+ *   alive  wave·happy·surprised · dance·sleepy·sad
+ */
+export type DeviceState = 'draw' | 'sign' | 'wait' | 'alive';
+
+export const DEVICE_KEY_ROWS: Record<DeviceState, Record<KeyRowName, boolean>> = {
+  draw: { top: false, bottom: true },
+  sign: { top: false, bottom: false },
+  wait: { top: false, bottom: false },
+  alive: { top: true, bottom: true },
+};
 
 const STYLE_ID = 'device-style';
 
@@ -86,13 +128,29 @@ function pct(value: number): string {
   return `${value.toFixed(4)}%`;
 }
 
+/**
+ * The ring's own viewBox side. The key box is `diameterPct` of the device
+ * box wide; the ring svg is drawn one stroke wider than that in each
+ * direction so the 1.5-unit stroke is never clipped, and is scaled by the
+ * same factor — which makes one ring unit exactly one device viewBox unit,
+ * so `ringStroke` really is the artwork's weight and not an approximation.
+ */
+const RING_BOX = DEVICE_KEYS.diameterPct + DEVICE_KEYS.ringStroke;
+const RING_SCALE_PCT = (RING_BOX / DEVICE_KEYS.diameterPct) * 100;
+/** Half the overhang, so the ring can be placed by offset rather than by a
+ * transform — see .device-key-ring. */
+const RING_INSET_PCT = (RING_SCALE_PCT - 100) / 2;
+
 function ensureStyle(): void {
   if (document.getElementById(STYLE_ID)) return;
   const style = document.createElement('style');
   style.id = STYLE_ID;
   const half = DEVICE_KEYS.diameterPct / 2;
-  const keyPlacement = DEVICE_KEYS.centresPct.map(
-    (centre, index) => `.device-key[data-key='${index}'] { left: ${pct(centre)}; }`,
+  const keyPlacement = DEVICE_KEYS.centresPct
+    .map((centre, index) => `.device-key[data-key='${index}'] { left: ${pct(centre)}; }`)
+    .join('\n');
+  const rowPlacement = KEY_ROW_NAMES.map(
+    (row) => `.device-key-row[data-row='${row}'] { top: ${pct(DEVICE_KEYS.rowTopPct[row])}; }`,
   ).join('\n');
   style.textContent = `
 /*
@@ -144,30 +202,51 @@ function ensureStyle(): void {
   overflow: hidden;
 }
 /*
- * The key row. A zero-height line on the drawn row centre: the keys hang
- * off it by half their own diameter, and a percentage margin resolves
- * against the box WIDTH, which is the axis the diameter is quoted in.
+ * The key field spans the whole box, because the two row lines are shares
+ * of the box's HEIGHT (DEVICE §3) and a percentage top has to resolve
+ * against something that is that tall. It is transparent and inert — only
+ * the keys themselves take a pointer — so it covers the screen without
+ * taking anything from it.
  */
 .device-keys {
   position: absolute;
-  left: 0;
-  width: 100%;
-  top: ${pct(DEVICE_KEYS.rowTopPct)};
-  height: 0;
+  inset: 0;
+  pointer-events: none;
 }
+.device-keys .device-key-set {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+/*
+ * A row is a zero-height line on its drawn centre: the keys hang off it by
+ * half their own diameter, and a percentage margin resolves against the
+ * box WIDTH, which is the axis the diameter is quoted in.
+ */
 .device-key-row {
   position: absolute;
   left: 0;
-  top: 0;
   width: 100%;
   height: 0;
 }
+${rowPlacement}
 /*
- * A key is the real interactive element sitting on top of a drawn ring.
- * The ring is artwork (it is in the svg and never changes); the key
- * carries the hit area, the accessible name and the mark. No border of
- * its own — a second ring on top of the drawn one would read as a filled
- * ui control, which TASTE §4 has no mark for.
+ * A HIDDEN row (DEVICE §2 — draw's top row, and both rows on sign and on
+ * the egg). Opacity + pointer-events + aria-hidden, never display: the case
+ * is a solid object and a removal would relayout it. Hidden, not dimmed —
+ * an unavailable key still dims to 0.3 below, but the egg shows no keys at
+ * all by ruling.
+ */
+.device-key-row[data-hidden='true'] {
+  opacity: 0;
+  pointer-events: none;
+}
+/*
+ * A key is the real interactive element AND the ring it sits in — the
+ * artwork draws no rings any more (DEVICE §3). No css border and no css
+ * background: the ring is one stroked circle in the ink value at the
+ * artwork's own weight, and the face inside it is the well's value, so the
+ * key reads recessed by value alone exactly as the drawn ones did.
  */
 .device-key {
   position: absolute;
@@ -185,6 +264,7 @@ function ensureStyle(): void {
   border-radius: 50%;
   color: ${WORLD.ink};
   cursor: pointer;
+  pointer-events: auto;
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
   transition:
@@ -193,18 +273,86 @@ function ensureStyle(): void {
 }
 ${keyPlacement}
 .device-key:active { transform: scale(0.96); }
-/* The existing disabled treatment, unchanged (DEVICE §2): an unassigned or
-   inactive key dims, it is never removed — removing one would relayout the
-   device, and the device is a solid object. */
+/*
+ * Unavailable, not gone (DEVICE §2): an unassigned or inactive key dims to
+ * 0.3 and is never removed — removing one would relayout the device, and
+ * the device is a solid object.
+ *
+ * What dims is the MARK, not the ring. The ring is a feature of the CASE —
+ * it used to be printed on it, and the case does not change — while the
+ * assignment is what is or is not on offer. public/draw/index.html reads
+ * the doc the same way, so a key that is present but unavailable looks
+ * identical on both sides of the seam.
+ */
 .device-key:disabled {
-  opacity: 0.3;
   cursor: default;
   pointer-events: none;
 }
-.device-key svg {
+.device-key:disabled .device-key-mark {
+  opacity: 0.3;
+}
+/*
+ * The ring. One unit here is one device viewBox unit (see RING_BOX), so
+ * the stroke is the artwork's 1.5 and not an approximation of it.
+ *
+ * Placed by OFFSET, not by translate(-50%,-50%): a transform here puts the
+ * ring on its own composited layer, and a composited layer is rasterized at
+ * the compositor's raster scale rather than at the svg's own resolution —
+ * which flattened the circle into a visible polygon on any page with a live
+ * webgl context (measured in chromium at dpr 3, alive state). Same
+ * geometry, no layer, a true curve.
+ */
+.device-key-ring {
+  position: absolute;
+  left: ${(-RING_INSET_PCT).toFixed(4)}%;
+  top: ${(-RING_INSET_PCT).toFixed(4)}%;
+  width: ${RING_SCALE_PCT.toFixed(4)}%;
+  height: ${RING_SCALE_PCT.toFixed(4)}%;
+  fill: ${SURFACE.ground};
+  stroke: currentColor;
+  stroke-width: ${DEVICE_KEYS.ringStroke};
+  transition:
+    stroke-width ${MOTION.tertiaryMs}ms ${MOTION.settleCurve},
+    fill ${MOTION.tertiaryMs}ms ${MOTION.settleCurve};
+}
+/*
+ * Two legible states, carried over from the emote wheel the keys replaced.
+ * DEFAULT: the hairline ring, face in the well's value. PRESSED (while
+ * held, and held on briefly after the tap so the send is acknowledged): the
+ * ring thickens to a drawn-over line, the face lifts to the body's light
+ * value so the key reads pushed, and the mark settles a touch smaller. All
+ * on the settle curve over t.tertiary — no bounce, no cut, and an emoji
+ * mark never changes colour.
+ */
+.device-key-acked .device-key-ring,
+.device-key:not(:disabled):active .device-key-ring {
+  stroke-width: ${(DEVICE_KEYS.ringStroke * 1.6).toFixed(2)};
+  fill: ${SURFACE.canvas};
+}
+.device-key-mark {
+  position: relative;
   width: 46%;
   height: 46%;
   display: block;
+  transition:
+    opacity ${MOTION.tertiaryMs}ms ${MOTION.settleCurve},
+    transform ${MOTION.tertiaryMs}ms ${MOTION.settleCurve};
+}
+/* An emoji mark reads at the same share of the ring the wheel gave it. */
+.device-key-mark[data-mark='emoji'] {
+  width: 54%;
+  height: 54%;
+}
+.device-key-acked .device-key-mark,
+.device-key:not(:disabled):active .device-key-mark {
+  transform: scale(0.92);
+}
+.device-key-glyph {
+  /* Native emoji color — the taste's carve-out (TASTE §6). No fill
+     override, so the glyph paints with its own palette, not the ink. */
+  font-family:
+    "apple color emoji", "segoe ui emoji", "noto color emoji", sans-serif;
+  user-select: none;
 }
 `;
   document.head.appendChild(style);
@@ -213,47 +361,88 @@ ${keyPlacement}
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
 /** What a key means in the state currently on screen. */
-export interface KeyAssignment {
+export interface KeyBase {
   /** Accessible name. Lowercase, always (TASTE §5). */
   label: string;
-  /** Icon path data in a 24-unit box. Stroke-only, soft curves. */
-  icon: string;
   /** Optional press handler; callers may also wire the button directly. */
   onPress?: () => void;
 }
 
-/** Three keys, left to right. `null` is an unassigned key — disabled. */
-export type KeySpec = readonly [
+export interface KeyIcon extends KeyBase {
+  /** Icon path data in a 24-unit box. Stroke-only, soft curves. */
+  icon: string;
+}
+
+export interface KeyEmoji extends KeyBase {
+  /** A single emoji glyph, painted in its own colour (TASTE §6). */
+  emoji: string;
+}
+
+export type KeyAssignment = KeyIcon | KeyEmoji;
+
+/** One row of three, left to right. `null` is an unassigned key — disabled. */
+export type KeyRowSpec = readonly [
   KeyAssignment | null,
   KeyAssignment | null,
   KeyAssignment | null,
 ];
 
+/**
+ * The whole case, both rows (DEVICE §2). A `null` ROW is hidden outright —
+ * no ring, nothing to press; a `null` KEY inside a visible row keeps its
+ * ring and dims.
+ */
+export interface KeySpec {
+  top: KeyRowSpec | null;
+  bottom: KeyRowSpec | null;
+}
+
+export type KeyTriple = readonly [HTMLButtonElement, HTMLButtonElement, HTMLButtonElement];
+
 export interface KeyRow {
   /** Mount this into the stage's tools slot. */
   el: HTMLElement;
-  /** Always three, always present, left to right. */
-  buttons: readonly [HTMLButtonElement, HTMLButtonElement, HTMLButtonElement];
+  /** The top row, left to right. Always three, always in the DOM. */
+  top: KeyTriple;
+  /** The bottom row, left to right. Always three, always in the DOM. */
+  bottom: KeyTriple;
+  /** All six, top row first. */
+  buttons: readonly HTMLButtonElement[];
 }
 
-function makeKey(assignment: KeyAssignment | null, index: number): HTMLButtonElement {
-  const button = document.createElement('button');
-  button.type = 'button';
-  button.className = 'device-key';
-  button.dataset['key'] = String(index);
-  if (assignment === null) {
-    // Unassigned: disabled, not removed (DEVICE §2). It carries no mark, so
-    // the drawn ring behind it is all that shows — and the drawn ring is
-    // shell, which never changes (DEVICE §1a). Nothing to announce.
-    button.disabled = true;
-    button.setAttribute('aria-hidden', 'true');
-    button.tabIndex = -1;
-    return button;
-  }
-  button.setAttribute('aria-label', assignment.label);
+function makeRing(): SVGSVGElement {
   const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('class', 'device-key-ring');
+  svg.setAttribute('viewBox', `0 0 ${RING_BOX} ${RING_BOX}`);
+  svg.setAttribute('aria-hidden', 'true');
+  const circle = document.createElementNS(SVG_NS, 'circle');
+  const c = RING_BOX / 2;
+  circle.setAttribute('cx', String(c));
+  circle.setAttribute('cy', String(c));
+  circle.setAttribute('r', String(DEVICE_KEYS.diameterPct / 2));
+  svg.appendChild(circle);
+  return svg;
+}
+
+function makeMark(assignment: KeyAssignment): SVGSVGElement {
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('class', 'device-key-mark');
   svg.setAttribute('viewBox', '0 0 24 24');
   svg.setAttribute('aria-hidden', 'true');
+  if ('emoji' in assignment) {
+    svg.setAttribute('data-mark', 'emoji');
+    const glyph = document.createElementNS(SVG_NS, 'text');
+    glyph.setAttribute('class', 'device-key-glyph');
+    glyph.setAttribute('x', '12');
+    glyph.setAttribute('y', '12');
+    glyph.setAttribute('text-anchor', 'middle');
+    glyph.setAttribute('dominant-baseline', 'central');
+    glyph.setAttribute('font-size', '21');
+    glyph.textContent = assignment.emoji;
+    svg.appendChild(glyph);
+    return svg;
+  }
+  svg.setAttribute('data-mark', 'icon');
   const path = document.createElementNS(SVG_NS, 'path');
   path.setAttribute('d', assignment.icon);
   path.setAttribute('fill', 'none');
@@ -262,36 +451,103 @@ function makeKey(assignment: KeyAssignment | null, index: number): HTMLButtonEle
   path.setAttribute('stroke-linecap', 'round');
   path.setAttribute('stroke-linejoin', 'round');
   svg.appendChild(path);
-  button.appendChild(svg);
-  if (assignment.onPress) button.addEventListener('click', assignment.onPress);
+  return svg;
+}
+
+function makeKey(
+  assignment: KeyAssignment | null,
+  column: number,
+  hidden: boolean,
+): HTMLButtonElement {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'device-key';
+  // The column indexes the CENTRE: both rows sit on the same three x
+  // measures (DEVICE §3), so the placement rule is shared.
+  button.dataset['key'] = String(column);
+  // The ring is the key's own now (DEVICE §3) — but a hidden row draws
+  // none, so the case is bare wherever the state says it is.
+  if (!hidden) button.appendChild(makeRing());
+
+  if (hidden || assignment === null) {
+    // Hidden (the whole row is off) or unassigned (present, unavailable —
+    // dimmed by :disabled). Either way it is disabled, never removed
+    // (DEVICE §2), and carries nothing to announce.
+    button.disabled = true;
+    button.setAttribute('aria-hidden', 'true');
+    button.tabIndex = -1;
+    return button;
+  }
+
+  button.setAttribute('aria-label', assignment.label);
+  button.appendChild(makeMark(assignment));
+
+  // The acknowledgement (carried over from the wheel): the ring thickens
+  // and the face lifts for one t.tertiary after the tap, so a press that
+  // sends something is legible without a bounce.
+  button.addEventListener('click', () => {
+    assignment.onPress?.();
+    button.classList.add('device-key-acked');
+    window.setTimeout(() => button.classList.remove('device-key-acked'), MOTION.tertiaryMs);
+  });
   return button;
 }
 
+function makeRow(name: KeyRowName, spec: KeyRowSpec | null): {
+  el: HTMLElement;
+  buttons: KeyTriple;
+} {
+  const el = document.createElement('div');
+  el.className = 'device-key-row';
+  el.dataset['row'] = name;
+  const hidden = spec === null;
+  if (hidden) {
+    // Hidden means opacity + pointer-events + aria-hidden, never display
+    // (DEVICE §2/§3): a removal would relayout the case.
+    el.dataset['hidden'] = 'true';
+    el.setAttribute('aria-hidden', 'true');
+  }
+  const triple: KeyTriple = [
+    makeKey(spec === null ? null : spec[0], 0, hidden),
+    makeKey(spec === null ? null : spec[1], 1, hidden),
+    makeKey(spec === null ? null : spec[2], 2, hidden),
+  ];
+  for (const button of triple) el.appendChild(button);
+  return { el, buttons: triple };
+}
+
 /**
- * The three keys for one state. The case always has three; what changes is
- * what they mean (DEVICE §2) — draw: undo · clear · done; wait: hatch on
- * the middle key alone; alive: all three idle. The emote wheel stays in the
- * core: seven emotes do not map to three keys, and the wheel is screen
- * content, not a control on the case.
+ * The six keys for one state. The case always has six, in two fixed rows;
+ * what changes is what they mean and whether they are there at all
+ * (DEVICE §2) — draw: undo · clear · done on the bottom row alone; sign and
+ * the egg: nothing at all; alive: the six emotes, three over three, so the
+ * creature is alone in the screen and the controls are on the case, which
+ * is what a handheld actually looks like.
  */
 export function createKeyRow(spec: KeySpec): KeyRow {
   ensureStyle();
   const el = document.createElement('div');
-  el.className = 'device-key-row';
-  const buttons = spec.map((assignment, index) => makeKey(assignment, index));
-  for (const button of buttons) el.appendChild(button);
+  el.className = 'device-key-set';
+  const top = makeRow('top', spec.top);
+  const bottom = makeRow('bottom', spec.bottom);
+  el.append(top.el, bottom.el);
   return {
     el,
-    buttons: buttons as [HTMLButtonElement, HTMLButtonElement, HTMLButtonElement],
+    top: top.buttons,
+    bottom: bottom.buttons,
+    buttons: [...top.buttons, ...bottom.buttons],
   };
 }
 
+/** Both rows hidden — sign and the egg (DEVICE §2). */
+export const NO_KEYS: KeySpec = { top: null, bottom: null };
+
 export interface DeviceChrome {
-  /** The device box — the shell's own 100×150 area. */
+  /** The device box — the shell's own 100×168 area. */
   box: HTMLElement;
   /** The screen well. The stage mounts in here. */
   well: HTMLElement;
-  /** The key row line. The tools slot mounts in here. */
+  /** The key field. The tools slot mounts in here. */
   keys: HTMLElement;
   destroy(): void;
 }

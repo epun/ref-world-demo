@@ -4,86 +4,77 @@
  * - PORTRAIT: the identical pure pipeline (createCharacter) run locally on
  *   the stroke list — no geometry crosses the wire. Head-on orthographic
  *   camera, so the silhouette matches the drawing; world lighting recipe;
- *   ambient drift keeps it alive; generous negative space around it.
- * - EMOTE WHEEL: seven wordless stroke-only icon marks in a ring around the
- *   portrait, hairline circular borders, ≥44px hit areas. A tap thickens the
- *   tapped ring briefly on the tertiary token — acknowledgement without a
- *   bounce, and the PORTRAIT PLAYS THE EMOTE (user ask, 2026-08-20: the
+ *   ambient drift keeps it alive; generous negative space around it. The
+ *   creature is ALONE in the screen now (user ruling, 2026-08-18) — the
+ *   ring of emote buttons that used to orbit it is gone, so the portrait
+ *   takes the screen instead of sitting at the wheel's old 52% inset.
+ * - EMOTES: six keys on the CASE, not a wheel in the screen (DEVICE §2)
+ *   — *"instead of having the emotes around the actual character on the
+ *   screen, we should have one row of buttons at the top … another row of
+ *   three buttons at the bottom. it looks like we have seven emotes, so we
+ *   would need three, and I think it's okay to get rid of the angry
+ *   emote."* Six, not seven: `angry` leaves the phone's set and stays in
+ *   EMOTE_NAMES, because the world still uses it for autonomous behaviour —
+ *   this is the phone's button set, not the protocol.
+ *
+ *   They carry the same BUBBLE_EMOJI glyphs the wheel carried, in native
+ *   colour, with the wheel's pressed/default treatment preserved on the
+ *   key (device.ts). A tap publishes to the world AND plays
+ *   `character.emote()` on the local portrait (user ask, 2026-08-20: the
  *   creature shows the same emote on mobile as it does in the world). It
  *   plays locally on the tap rather than waiting for the world to echo:
  *   the portrait is the identical pure pipeline, so it needs nothing from
  *   the wire, and a round trip through the broker would put visible lag on
  *   the person's own tap. An emote the WORLD reports for this creature is
  *   mirrored too — but the echo of the tap that just played is not
- *   double-played (see lastPoseEmote below).
- * - MINIMAP: a SMALL corner inset (~24vmin) — the portrait is the screen,
- *   the map is a glance. Top-down canvas: ground field inside a
- *   deterministic hand-wavering border, peers as neutral dots (clusters
- *   read bigger), you as the near-black dot inside a near-black halo ring —
- *   the map's most distinct marker without hue (the warm accent is retired:
- *   TASTE §6, black-and-white ruling). Pose updates settle through ζ≥1
- *   springs so the marker never jitters or snaps. Mark sizes scale down
- *   with the inset so it stays legible but quiet.
+ *   double-played (see nextPoseEmote below).
+ * - NO MINIMAP (user ruling, 2026-08-18: *"let's also get rid of the mini
+ *   map on mobile for now"*). The `corner` slot stays in the DOM and stays
+ *   empty — empty is a state of a slot, never a removal — and
+ *   src/phone/minimap.ts stays where it is: the world view still draws
+ *   from it (src/ui/minimap.ts, src/ui/joinqr.ts). This is a presentation
+ *   decision on one surface, not a deletion.
  *
- * No dividing rule in this layout: the inset floats in the portrait's
- * field, so there are no two regions to divide. TASTE §4 *reserves* a
- * single hairline rule — it does not demand one be shown.
+ * No dividing rule in this layout: one object in a field has no two
+ * regions to divide. TASTE §4 *reserves* a single hairline rule — it does
+ * not demand one be shown.
  *
- * It mounts into the STAGE's slots (docs/PHONE-STAGE.md §2): the wheel is
- * the core — the third face of the one object the pad and the egg were —
- * the creature's name is the brow, and the minimap is the corner. All three
- * of the device's keys are idle here (docs/DEVICE.md §2): disabled, never
- * removed. The emote wheel stays in the core where it is — seven emotes do
- * not map to three keys, and the wheel is screen content, not a control on
- * the case.
+ * It mounts into the STAGE's slots (docs/PHONE-STAGE.md §2): the portrait
+ * is the core — the third face of the one object the pad and the egg were —
+ * the creature's name is the brow, the corner is empty, and the six keys
+ * are the tools slot, which sits on the case.
  */
 
 import { Box3, OrthographicCamera, Scene, Vector3, WebGLRenderer } from 'three';
 import { BUBBLE_EMOJI } from '../../character/bubble';
 import { CHARACTER_HEIGHT, createCharacter, type Character } from '../../character/character';
-import { sampleDrift } from '../../motion/ambient';
-import { Spring } from '../../motion/spring';
-import {
-  EMOTE_NAMES,
-  type EmoteName,
-  type PoseMsg,
-  type RosterMsg,
-} from '../../net/protocol';
+import type { EmoteName, PoseMsg, RosterMsg } from '../../net/protocol';
 import type { StrokeList } from '../../shape/types';
-import { CHARACTER, MOTION, SURFACE, WORLD } from '../../taste/tokens';
+import { WORLD } from '../../taste/tokens';
 import { createLighting } from '../../world/lighting';
-import { createKeyRow } from '../device';
-import {
-  mapBorderInset,
-  mapMarkScale,
-  nearestAngleTarget,
-  peerDotRadius,
-  wavyBorderPoints,
-  worldToMap,
-  type BorderPoint,
-  type MapFrame,
-} from '../minimap';
-import { strokeSeed } from '../seed';
-import { LOCAL_EXTENT } from '../session';
+import { createKeyRow, type KeyRowSpec } from '../device';
 import type { Screen, StageSlots } from '../states';
 
-// ── Emote icon marks ────────────────────────────────────────────────────────
-// Stroke-only paths in a 24-unit box, all soft curves and round joins —
-// faces and gestures reduced to marks, wordless (TASTE §4, §5).
-
+// ── The phone's emote set (DEVICE §2) ───────────────────────────────────────
 
 /**
- * Emote button size. ≥44px hit area, unchanged.
- *
- * The ring they sit on is no longer a fixed percentage: it is the largest
- * ring that keeps every button WHOLE inside the core — half the core, less
- * half a button (see emoteButton). That resolves to ~40.5% on a 390px-wide
- * handset, where the old fixed 42% put the outermost 4px of each ring
- * outside the box. It never showed while the core was centred on a tall
- * viewport; inside the device's screen well it would be clipped, so the
- * measure is now stated as the fit it always meant.
+ * Six emotes on six keys, in the order the case reads them: the top row
+ * left to right, then the bottom row. Six and not seven — `angry` is
+ * dropped from the PHONE's set by ruling and stays in `EMOTE_NAMES`,
+ * because the world still uses it for autonomous behaviour. Typed as
+ * EmoteName, so dropping one from the protocol breaks the build here
+ * rather than silently sending an emote nothing understands.
  */
-const BUTTON_SIZE_PX = 52;
+export const PHONE_EMOTE_KEYS: Record<'top' | 'bottom', readonly EmoteName[]> = {
+  top: ['wave', 'happy', 'surprised'],
+  bottom: ['dance', 'sleepy', 'sad'],
+};
+
+/** Every emote the phone can send, in key order. */
+export const PHONE_EMOTES: readonly EmoteName[] = [
+  ...PHONE_EMOTE_KEYS.top,
+  ...PHONE_EMOTE_KEYS.bottom,
+];
 
 /**
  * De-dupe for emotes arriving on the pose stream (unit-tested in
@@ -131,14 +122,28 @@ export interface AliveScreenHandle extends Screen {
 
 const STYLE_ID = 'alive-screen-style';
 
+/**
+ * [D] The portrait's share of the core.
+ *
+ * With the wheel gone the core is the creature's alone, so the portrait
+ * takes the screen instead of sitting at the wheel's old 52% inset. It is
+ * not 100%: the alive core is exactly as wide as the well (CORE_SIDE.alive
+ * = 100cqw), so a full-width portrait would touch the bezel on both sides
+ * and the creature would read as jammed into the frame rather than living
+ * in it. 88% leaves a real margin on all four sides at every handset size
+ * — measured in the browser, not asserted — and the character's own camera
+ * padding (bounds × 0.72) keeps air around the silhouette inside that.
+ */
+const PORTRAIT_SHARE_PCT = 88;
+
 function ensureStyle(): void {
   if (document.getElementById(STYLE_ID)) return;
   const style = document.createElement('style');
   style.id = STYLE_ID;
   style.textContent = `
-/* The wheel fills the core slot — the stage owns the measure
+/* The portrait fills the core slot alone — the stage owns the measure
    (--core-side), so nothing here declares a size that could disagree. */
-.alive-wheel {
+.alive-stage {
   position: relative;
   width: 100%;
   height: 100%;
@@ -148,64 +153,15 @@ function ensureStyle(): void {
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
-  width: 52%;
+  width: ${PORTRAIT_SHARE_PCT}%;
   aspect-ratio: 1;
   display: block;
   touch-action: none;
 }
-.alive-emote {
-  position: absolute;
-  width: ${BUTTON_SIZE_PX}px;
-  height: ${BUTTON_SIZE_PX}px;
-  padding: 0;
-  background: transparent;
-  border: none;
-  color: ${WORLD.ink};
-  cursor: pointer;
-  touch-action: manipulation;
-  -webkit-tap-highlight-color: transparent;
-}
-.alive-emote svg {
-  width: 100%;
-  height: 100%;
-  display: block;
-  transition: transform ${MOTION.tertiaryMs}ms ${MOTION.settleCurve};
-}
-.alive-emote-glyph {
-  /* Native emoji color — the taste's carve-out. No fill override, so the
-     glyph paints with its own palette rather than the ink token. */
-  font-family:
-    "apple color emoji", "segoe ui emoji", "noto color emoji", sans-serif;
-  user-select: none;
-}
-/*
- * Two legible states (user ask). DEFAULT: a hairline ring around the
- * emoji — the taste's border mark, nothing filled. PRESSED (while held,
- * and held on briefly after the tap so the send is acknowledged): the ring
- * thickens to a drawn-over line, its inside lifts to the light role so the
- * button reads pushed in, and the mark settles a touch smaller. All on the
- * settle curve over t.tertiary — no bounce, no cut, and the emoji itself
- * never changes color.
- */
-.alive-emote-ring {
-  fill: transparent;
-  transition:
-    stroke-width ${MOTION.tertiaryMs}ms ${MOTION.settleCurve},
-    fill ${MOTION.tertiaryMs}ms ${MOTION.settleCurve};
-}
-.alive-emote-acked .alive-emote-ring,
-.alive-emote:active .alive-emote-ring {
-  stroke-width: 2.6;
-  fill: ${SURFACE.canvas};
-}
-.alive-emote-acked svg,
-.alive-emote:active svg {
-  transform: scale(0.92);
-}
 /*
  * Centred in the brow band, as it always was. The well is PORTRAIT
  * (DEVICE §3) — 70 wide by 86 tall — so even the alive core, which is as
- * wide as the well, leaves a band above it that the wheel never reaches.
+ * wide as the well, leaves a band above it that the portrait never reaches.
  * That band is what the taller device was cut for. Ellipsis and the size
  * clamp are the only additions: the screen is narrower than the viewport
  * used to be, and a long creature name must trim rather than run into the
@@ -223,100 +179,27 @@ function ensureStyle(): void {
   letter-spacing: 0.02em;
   min-height: 1.2em;
 }
-.alive-map {
-  /* The corner slot already carries the safe-area offsets and the measure. */
-  width: 100%;
-  height: 100%;
-  display: block;
-  touch-action: none;
-}
 `;
   document.head.appendChild(style);
 }
 
-const SVG_NS = 'http://www.w3.org/2000/svg';
-
-function emoteButton(
-  name: EmoteName,
-  index: number,
-  count: number,
+/** One row of three emote keys, carrying the wheel's own glyphs. */
+function emoteRow(
+  names: readonly EmoteName[],
   onEmote: (emote: EmoteName) => void,
-): HTMLButtonElement {
-  const button = document.createElement('button');
-  button.type = 'button';
-  button.className = 'alive-emote';
-  button.setAttribute('aria-label', name);
-
-  const angle = -Math.PI / 2 + (index * Math.PI * 2) / count;
-  const cx = Math.cos(angle);
-  const cy = Math.sin(angle);
-  const half = BUTTON_SIZE_PX / 2;
-  // radius = 50% of the core less half a button, projected on each axis.
-  const radius = `(50% - ${half}px)`;
-  button.style.left = `calc(50% + ${radius} * ${cx.toFixed(4)} - ${half}px)`;
-  button.style.top = `calc(50% + ${radius} * ${cy.toFixed(4)} - ${half}px)`;
-
-  const svg = document.createElementNS(SVG_NS, 'svg');
-  svg.setAttribute('viewBox', '0 0 52 52');
-  svg.setAttribute('aria-hidden', 'true');
-
-  // Hairline circular border, part of the icon so the acknowledgement can
-  // thicken the stroke without shifting layout.
-  const ring = document.createElementNS(SVG_NS, 'circle');
-  ring.setAttribute('class', 'alive-emote-ring');
-  ring.setAttribute('cx', '26');
-  ring.setAttribute('cy', '26');
-  ring.setAttribute('r', '25');
-  // Fill is owned by css: transparent at rest, the light role while
-  // pressed, so the button reads pushed in without a filled panel.
-  ring.setAttribute('stroke', 'currentColor');
-  ring.setAttribute('stroke-width', '1');
-
-  // The emoji itself, centred in the ring (user ask). Emoji in native
-  // color is the taste's one explicit carve-out (TASTE §6) — the same
-  // glyph set the world paints into the speech bubble, so the button and
-  // the bubble it triggers always agree.
-  const glyph = document.createElementNS(SVG_NS, 'text');
-  glyph.setAttribute('class', 'alive-emote-glyph');
-  glyph.setAttribute('x', '26');
-  glyph.setAttribute('y', '26');
-  glyph.setAttribute('text-anchor', 'middle');
-  glyph.setAttribute('dominant-baseline', 'central');
-  glyph.setAttribute('font-size', '26');
-  glyph.textContent = BUBBLE_EMOJI[name];
-
-  svg.append(ring, glyph);
-  button.appendChild(svg);
-
-  button.addEventListener('click', () => {
-    onEmote(name);
-    button.classList.add('alive-emote-acked');
-    window.setTimeout(
-      () => button.classList.remove('alive-emote-acked'),
-      MOTION.tertiaryMs,
-    );
-  });
-
-  return button;
-}
-
-/** Closed loop through the points with quadratic midpoint smoothing —
- * corners round off, the waver reads hand-drawn. */
-function traceLoop(ctx: CanvasRenderingContext2D, points: BorderPoint[]): void {
-  const n = points.length;
-  if (n < 3) return;
-  const last = points[n - 1];
-  const first = points[0];
-  if (!last || !first) return;
-  ctx.beginPath();
-  ctx.moveTo((last.x + first.x) / 2, (last.y + first.y) / 2);
-  for (let i = 0; i < n; i++) {
-    const p = points[i];
-    const next = points[(i + 1) % n];
-    if (!p || !next) break;
-    ctx.quadraticCurveTo(p.x, p.y, (p.x + next.x) / 2, (p.y + next.y) / 2);
-  }
-  ctx.closePath();
+): KeyRowSpec {
+  const key = (index: number): { label: string; emoji: string; onPress: () => void } | null => {
+    const name = names[index];
+    if (name === undefined) return null;
+    return {
+      label: name,
+      // The same glyph set the world paints into the speech bubble, so the
+      // key and the bubble it triggers always agree (TASTE §6 carve-out).
+      emoji: BUBBLE_EMOJI[name],
+      onPress: (): void => onEmote(name),
+    };
+  };
+  return [key(0), key(1), key(2)];
 }
 
 export function mountAliveScreen(
@@ -338,41 +221,34 @@ export function mountAliveScreen(
     character?.emote(emote);
   };
 
-  // ── DOM: wheel (portrait inside) → core, name → brow, map → corner ────────
-  const wheel = document.createElement('div');
-  wheel.className = 'alive-wheel';
+  // ── DOM: portrait → core, name → brow, six emote keys → tools ─────────────
+  const field = document.createElement('div');
+  field.className = 'alive-stage';
 
   const portraitCanvas = document.createElement('canvas');
   portraitCanvas.className = 'alive-portrait';
   portraitCanvas.setAttribute('aria-label', 'your character');
-  wheel.appendChild(portraitCanvas);
-
-  EMOTE_NAMES.forEach((name, index) => {
-    wheel.appendChild(
-      emoteButton(name, index, EMOTE_NAMES.length, (emote) => {
-        // Both, in this order: the person's own creature reacts in their
-        // hand on the same frame as the tap, and the world hears about it.
-        playEmote(emote);
-        options.onEmote(emote);
-      }),
-    );
-  });
+  field.appendChild(portraitCanvas);
 
   const nameLine = document.createElement('div');
   nameLine.className = 'alive-name';
 
-  const mapCanvas = document.createElement('canvas');
-  mapCanvas.className = 'alive-map';
-  mapCanvas.setAttribute('aria-label', 'minimap');
+  const tap = (emote: EmoteName): void => {
+    // Both, in this order: the person's own creature reacts in their hand
+    // on the same frame as the tap, and the world hears about it.
+    playEmote(emote);
+    options.onEmote(emote);
+  };
+  const keys = createKeyRow({
+    top: emoteRow(PHONE_EMOTE_KEYS.top, tap),
+    bottom: emoteRow(PHONE_EMOTE_KEYS.bottom, tap),
+  });
 
-  // All three keys idle (DEVICE §2). They are disabled, not removed — the
-  // case is a solid object and its controls never leave it.
-  const keys = createKeyRow([null, null, null]);
-
-  slots.core.appendChild(wheel);
+  slots.core.appendChild(field);
   slots.brow.appendChild(nameLine);
   slots.tools.appendChild(keys.el);
-  slots.corner.appendChild(mapCanvas);
+  // The corner stays EMPTY (user ruling — no minimap on mobile for now).
+  // Empty is a state of a slot, never a removal.
 
   // ── Portrait: the local deterministic pipeline (PLAN §6.3) ────────────────
   let renderer: WebGLRenderer | null = null;
@@ -422,114 +298,10 @@ export function mountAliveScreen(
   const portraitObserver = new ResizeObserver(sizePortrait);
   portraitObserver.observe(portraitCanvas);
 
-  // ── Minimap state ─────────────────────────────────────────────────────────
-  const mapCtx = mapCanvas.getContext('2d');
-  const mapSeed = strokeSeed(options.strokes) + 3.7;
-
-  // Drift-settle interpolation between ~10Hz pose updates: the marker never
-  // jitters or snaps (PLAN §6.3), and ζ≥1 means it never overshoots.
-  const springX = new Spring(0, { settleMs: MOTION.secondaryMs });
-  const springZ = new Spring(0, { settleMs: MOTION.secondaryMs });
-  const springH = new Spring(0, { settleMs: MOTION.secondaryMs });
-  let hasPose = false;
-  let roster: RosterMsg | null = null;
-
-  const drawMap = (dt: number, now: number): void => {
-    if (!mapCtx) return;
-    const rect = mapCanvas.getBoundingClientRect();
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const w = Math.max(1, rect.width);
-    const h = Math.max(1, rect.height);
-    const bw = Math.round(w * dpr);
-    const bh = Math.round(h * dpr);
-    if (mapCanvas.width !== bw || mapCanvas.height !== bh) {
-      mapCanvas.width = bw;
-      mapCanvas.height = bh;
-    }
-
-    mapCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    mapCtx.clearRect(0, 0, w, h);
-
-    // Marks and insets shrink with the small corner map (minimap.ts).
-    const scale = mapMarkScale(Math.min(w, h));
-    const inset = mapBorderInset(scale);
-
-    // The ambient floor: the whole map drifts imperceptibly, forever.
-    const drift = sampleDrift(now, mapSeed, 140 * scale);
-    mapCtx.translate(drift.x, drift.y);
-
-    const border = wavyBorderPoints(w, h, inset, mapSeed);
-    const extent = roster ? roster.extent : LOCAL_EXTENT;
-    const frame: MapFrame = { w, h, inset: inset + 5 * scale };
-
-    // Ground field inside the border — the mid-toned world value.
-    traceLoop(mapCtx, border);
-    mapCtx.fillStyle = SURFACE.ground;
-    mapCtx.fill();
-
-    mapCtx.save();
-    traceLoop(mapCtx, border);
-    mapCtx.clip();
-
-    // Peers: neutral-dark marks, clusters read bigger. Scatter marks are
-    // omitted for now — the world sends none yet.
-    if (roster) {
-      mapCtx.fillStyle = WORLD.neutralDark;
-      for (const entry of roster.peers) {
-        const at = worldToMap(entry.x, entry.z, extent, frame);
-        mapCtx.beginPath();
-        mapCtx.arc(at.px, at.py, peerDotRadius(entry.n, scale), 0, Math.PI * 2);
-        mapCtx.fill();
-      }
-    }
-
-    // You: near-black dot + a near-black ring with a light gap between —
-    // the accent is retired (TASTE §6, black-and-white ruling), so the halo
-    // read alone keeps this the most distinct marker on the map.
-    if (hasPose) {
-      const x = springX.update(dt);
-      const z = springZ.update(dt);
-      const heading = springH.update(dt);
-      const at = worldToMap(x, z, extent, frame);
-
-      mapCtx.fillStyle = CHARACTER.body;
-      mapCtx.beginPath();
-      mapCtx.arc(at.px, at.py, 3.2 * scale, 0, Math.PI * 2);
-      mapCtx.fill();
-
-      // Heading tick, just outside the ring.
-      mapCtx.strokeStyle = CHARACTER.body;
-      mapCtx.lineWidth = Math.max(1, 1.4 * scale);
-      mapCtx.lineCap = 'round';
-      mapCtx.beginPath();
-      mapCtx.moveTo(
-        at.px + Math.cos(heading) * 7.5 * scale,
-        at.py + Math.sin(heading) * 7.5 * scale,
-      );
-      mapCtx.lineTo(
-        at.px + Math.cos(heading) * 11 * scale,
-        at.py + Math.sin(heading) * 11 * scale,
-      );
-      mapCtx.stroke();
-
-      mapCtx.strokeStyle = CHARACTER.body;
-      mapCtx.lineWidth = Math.max(1, 1.4 * scale);
-      mapCtx.beginPath();
-      mapCtx.arc(at.px, at.py, 6 * scale, 0, Math.PI * 2);
-      mapCtx.stroke();
-    }
-
-    mapCtx.restore();
-
-    // The hairline border itself, over the clipped field.
-    traceLoop(mapCtx, border);
-    mapCtx.strokeStyle = WORLD.ink;
-    mapCtx.lineWidth = 1.25;
-    mapCtx.stroke();
-  };
-
-  // ── One loop drives portrait drift and the minimap ────────────────────────
-  // Paused while document.hidden (battery); resumes without a dt lurch.
+  // ── The portrait's loop ───────────────────────────────────────────────────
+  // Paused while document.hidden (battery); resumes without a dt lurch. The
+  // character's own ambient drift runs inside update(), so nothing on this
+  // screen ever fully arrests (TASTE §2.1).
   let raf = 0;
   let last = performance.now();
   const frame = (now: number): void => {
@@ -541,7 +313,6 @@ export function mountAliveScreen(
       character.update(dt, now);
       renderer.render(scene, camera);
     }
-    drawMap(dt, now);
   };
   const start = (): void => {
     if (raf !== 0) return;
@@ -563,24 +334,18 @@ export function mountAliveScreen(
   return {
     setPose(msg: PoseMsg): void {
       // Mirror what the world says this creature is doing, without
-      // re-playing the echo of the tap that already played locally.
+      // re-playing the echo of the tap that already played locally. The
+      // pose's position and heading drove the minimap, which this screen no
+      // longer shows — the emote marker is what is still read.
       const next = nextPoseEmote(msg.emote, marker);
       marker = next.marker;
       if (next.play !== null) character?.emote(next.play);
-
-      if (!hasPose) {
-        hasPose = true;
-        springX.reset(msg.x);
-        springZ.reset(msg.z);
-        springH.reset(msg.heading);
-        return;
-      }
-      springX.retarget(msg.x);
-      springZ.retarget(msg.z);
-      springH.retarget(nearestAngleTarget(springH.value, msg.heading));
     },
-    setRoster(msg: RosterMsg): void {
-      roster = msg;
+    setRoster(_msg: RosterMsg): void {
+      // The roster fed the minimap only. It is still delivered (main.ts
+      // caches it and the session keeps sending) so nothing upstream has to
+      // know this screen stopped drawing a map — bringing the map back is a
+      // mount, not a rewire.
     },
     setName(name: string): void {
       nameLine.textContent = name.toLowerCase();
@@ -589,15 +354,11 @@ export function mountAliveScreen(
       stop();
       document.removeEventListener('visibilitychange', onVisibility);
       portraitObserver.disconnect();
-      springX.dispose();
-      springZ.dispose();
-      springH.dispose();
       character?.dispose();
       renderer?.dispose();
-      wheel.remove();
+      field.remove();
       nameLine.remove();
       keys.el.remove();
-      mapCanvas.remove();
     },
   };
 }

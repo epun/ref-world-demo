@@ -3,7 +3,9 @@
  * (docs/PHONE-STAGE.md §2) rather than owning a full-bleed root of its own.
  *
  *   core   the drawing pad — the first face of the one object
- *   tools  the device's three keys: undo · clear · done (DEVICE §2)
+ *   tools  the case's BOTTOM key row: undo · clear · done (DEVICE §2).
+ *          The top row is HIDDEN here — the drawing has no third pair of
+ *          controls, and a hidden row draws no ring at all.
  *   brow   empty (a state of the slot, not a removal)
  *
  * The pad's interior keeps SURFACE.canvas so there is still a figure/ground
@@ -26,19 +28,22 @@ export interface DrawOptions {
 }
 
 export function mountDraw(slots: StageSlots, options: DrawOptions): Screen {
-  const keys = createKeyRow([
-    { label: 'undo', icon: DRAW_ICONS.undo },
-    { label: 'clear', icon: DRAW_ICONS.clear },
-    { label: 'done', icon: DRAW_ICONS.done },
-  ]);
+  const keys = createKeyRow({
+    top: null,
+    bottom: [
+      { label: 'undo', icon: DRAW_ICONS.undo },
+      { label: 'clear', icon: DRAW_ICONS.clear },
+      { label: 'done', icon: DRAW_ICONS.done },
+    ],
+  });
   slots.tools.appendChild(keys.el);
 
   const handle = mountDrawScreen(slots.core, {
     hosts: { canvas: slots.core },
     controls: {
-      undo: keys.buttons[0],
-      clear: keys.buttons[1],
-      done: keys.buttons[2],
+      undo: keys.bottom[0],
+      clear: keys.bottom[1],
+      done: keys.bottom[2],
     },
     onDone: (strokes) => options.onDone(strokes),
   });
