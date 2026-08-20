@@ -101,31 +101,62 @@ swap choreography, the core's travelling side, the seam across the page navigati
 all of it survives verbatim. The device is a frame around it. If any behaviour
 changes, the wrapper is wrong.
 
-### The three buttons **[D]**
+### The six keys **[D]**
 
-A physical device has fixed controls, so the three buttons are **always present and
-never leave**. What changes is what they mean:
+A physical device has fixed controls, so the keys are **always in the same places**.
+What changes is what they mean, and whether they are there at all:
 
-| state | button 1 | button 2 | button 3 |
-|---|---|---|---|
-| draw | undo | clear | done |
-| wait | — | — | — |
-| alive | — | — | — |
+| state | top row | bottom row |
+|---|---|---|
+| draw | hidden | undo *(brush size on `/draw/`, which has no undo)* · clear · done / send |
+| sign | hidden | hidden |
+| egg (wait) | **hidden** | **hidden** |
+| alive | wave · happy · surprised | dance · sleepy · sad |
 
-*(User ruling, 2026-08-20: *"let's remove the count down and the hatch button. i
-want to set the hatch timing on my end."* The wait row used to carry `hatch now`
-on button 2. It has no assigned button at all now, and the wait screen's brow
-carries no countdown line either. The hatch **timing** signal is untouched — it
-still ramps the shell's wobble and teases the cracks in; only the text and the
-control went.)*
+The egg state shows **no keys at all** by ruling — *"when the egg is visible on the
+tamagotchi, let's hide the buttons"* — hidden, not dimmed. The countdown line and the
+manual hatch key went with them: *"I want to set the hatch timing on my end."*
+`hatchInMs` still flows to the screen because it drives the shell's crack and wobble
+teaser; only the readout and the control were removed, not the signal.
 
-An unassigned button is **disabled, not removed** — it dims to the existing
-`opacity: 0.3` disabled treatment. Removing one would relayout the device, and the
-device is a solid object.
+Hiding is opacity + `pointer-events` + `aria-hidden`, never `display` — the case is a
+solid object and a removal would relayout it. A key that is present but unavailable
+still dims to `opacity: 0.3` instead.
 
-This replaces the `tools` slot's own layout: tools now render *into* the buttons.
-The emote wheel stays in the core where it is — seven emotes do not map to three
-buttons, and the wheel is screen content, not a control on the case.
+**The emote wheel is gone.** *(user ruling: "instead of having the emotes around the
+actual character on the screen, we should have one row of buttons at the top … another
+row of three buttons at the bottom.")* The creature is alone in the screen and the
+emotes are physical keys on the case, which is what a handheld actually looks like.
+Six of them, not seven — **`angry` is dropped from the phone's set**. It stays in
+`EMOTE_NAMES` because the world still uses it for autonomous behaviour; this is the
+phone's button set, not the protocol.
+
+**The minimap is gone from the phone** *(user ruling: "let's also get rid of the mini
+map on mobile for now")*. The `corner` slot stays in the DOM and stays empty — empty
+is a state of a slot, never a removal.
+
+### 2a. The sign state **[D]**
+
+> *"we're also missing the 'sign your masterpiece' screen. after the user finishes the
+> drawing, we should just have the input replace the drawing pad before the egg
+> appears. as the user clicks in to sign their name, we should pull up the normal
+> phone keyboard so that they can type their name in there."*
+
+Signing is a **state of the stage**, not a sheet over it. The core cross-fades from
+the pad to the name input on the ordinary swap (PHONE-STAGE §3) — same duration, same
+curve, same fixed centre. The pad does not dim behind a card; it is replaced, because
+the drawing is finished and the screen has moved on. The old `.sheet` modal goes.
+
+- The input is a real `<input type="text">`, so the handset raises its own keyboard.
+  Focus is taken **inside the tap handler** — iOS raises the keyboard only from a
+  genuine user gesture, so a focus scheduled on a timer or after an `await` is
+  silently ignored.
+- **The keyboard covers the bottom of the viewport.** The device is centred, so an
+  open keyboard can hide the very input being typed into. Track `visualViewport` and
+  keep the input inside the visible band; do not assume the layout viewport.
+- `enterkeyhint="go"`, `autocomplete="off"`, `autocapitalize="words"`, `maxlength=16`
+  — the same input the sheet already carried.
+- Skipping still means the world names the creature (`src/creatures/naming.ts`).
 
 ## 3. Geometry — binding
 
