@@ -172,8 +172,22 @@ export const PORTRAIT_FIT = 0.72;
  * (user-reported). The canvas is square, so one half-extent serves both
  * axes.
  */
+/**
+ * Headroom above the creature for its speech bubble, in the same units.
+ *
+ * The bubble sits at `anchorY + HEAD_MARGIN + BUBBLE_SIZE / 2` above the
+ * body (src/character/bubble.ts) — outside the creature's own bounding box.
+ * A camera framed symmetrically on that box therefore crops it, which is
+ * what the user saw: the bubble cut in half against the top of the well.
+ *
+ * So the frame reserves room for it. The creature sits a little low in the
+ * screen as a result, which is right — a portrait with its head against the
+ * top edge has nowhere for the thing it is about to say.
+ */
+export const PORTRAIT_HEADROOM = 1.35;
+
 export function portraitHalfExtent(sizeX: number, sizeY: number): number {
-  return Math.max(sizeX, sizeY, CHARACTER_HEIGHT) * PORTRAIT_FIT;
+  return (Math.max(sizeX, sizeY, CHARACTER_HEIGHT) + PORTRAIT_HEADROOM) * PORTRAIT_FIT;
 }
 
 /** World units per css pixel this portrait renders at, in a canvas that
@@ -373,8 +387,12 @@ export function mountAliveScreen(
     const center = bounds.getCenter(new Vector3());
     halfExtent = portraitHalfExtent(size.x, size.y);
     camera = new OrthographicCamera(-halfExtent, halfExtent, halfExtent, -halfExtent, 0.1, 100);
-    camera.position.set(center.x, center.y, 12);
-    camera.lookAt(center.x, center.y, 0);
+    // Look a little BELOW the body's centre, so the room the extent gained
+    // lands above the head where the bubble needs it rather than being
+    // split evenly top and bottom.
+    const lookY = center.y + (PORTRAIT_HEADROOM * PORTRAIT_FIT) / 2;
+    camera.position.set(center.x, lookY, 12);
+    camera.lookAt(center.x, lookY, 0);
   } else {
     // Degenerate drawing survived to here: hold the space, skip the render.
     portraitCanvas.style.display = 'none';

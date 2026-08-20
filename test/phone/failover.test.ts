@@ -57,8 +57,15 @@ describe('withOfflineFailover', () => {
     expect(relay.disposed).toBe(true);
     expect(phases[0]).toBe('egg');
 
-    // The local 20s timer eventually hatches to alive.
+    // The local timer no longer opens the egg on its own (LOCAL_AUTO_HATCH,
+    // src/phone/session.ts): the hatch is the world's call, so a handset
+    // left alone waits rather than hatching on a clock of its own.
     vi.advanceTimersByTime(21000);
+    expect(phases).not.toContain('alive');
+
+    // An explicit hatch still works — that is the path the world's
+    // `hatched` message drives.
+    session.sendHatch();
     expect(phases).toContain('alive');
   });
 

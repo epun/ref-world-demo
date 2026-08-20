@@ -90,6 +90,21 @@ export function localName(seed: number): string {
 
 /** Local default hatch timer (PLAN §13.2 — short when unattended). */
 export const LOCAL_HATCH_MS = 20_000;
+/**
+ * Let the local session open its own egg after LOCAL_HATCH_MS.
+ *
+ * OFF, matching AUTO_HATCH in src/creatures/manager.ts (user, for the demo:
+ * *"eggs should only hatch when I press h"*). This timer is why the handset
+ * hatched early even with the world's timer disabled — the two ran on
+ * separate clocks, and this one did not know the world had been told to
+ * wait. The hatch is now the world's call alone: it publishes `hatched` to
+ * the drawer and the handset plays it on that edge.
+ *
+ * The timer itself is intact and still reports hatchInMs, which drives the
+ * shell's crack and wobble teaser; flipping this back on restores the
+ * unattended behaviour for a phone with no world to listen to.
+ */
+export const LOCAL_AUTO_HATCH = false;
 /** World half-extent used for the local minimap. */
 export const LOCAL_EXTENT = 48;
 const POSE_INTERVAL_MS = 100; // ~10Hz, matching the wire rate (PLAN §8)
@@ -126,7 +141,9 @@ export class SameDeviceSession implements NetLike {
     this.seed = strokeSeed(strokes);
     this.phase = 'egg';
     this.emit(this.stateCbs, { t: 'state', phase: 'egg', hatchInMs: LOCAL_HATCH_MS });
-    this.hatchTimer = setTimeout(() => this.hatch(), LOCAL_HATCH_MS);
+    if (LOCAL_AUTO_HATCH) {
+      this.hatchTimer = setTimeout(() => this.hatch(), LOCAL_HATCH_MS);
+    }
   }
 
   sendHatch(): void {
