@@ -93,6 +93,17 @@ function driftSeed(strokes: StrokeList): number {
 
 export interface CharacterOptions {
   /**
+   * Show the speech bubble on emote. Default true — it is the legible
+   * emote signal at world scale, where a creature is 1-3% of the frame and
+   * the body's own motion cannot carry the read.
+   *
+   * The PHONE passes false (user ruling, 2026-08-20: *"you can remove the
+   * emote bubble on mobile"*). A portrait fills the screen, so the emote is
+   * perfectly legible in the body itself, and the bubble was both redundant
+   * and cropped against the top of the well.
+   */
+  bubble?: boolean;
+  /**
    * Interpretation fidelity (GENERATOR §1): 1 (default) = species body
    * synthesized from the drawing's motifs; 0 = verbatim inflation of the
    * drawing (the dial's dev-tunable floor).
@@ -222,7 +233,8 @@ export function createCharacter(
   // hand-drawn outline is deterministic per character. Billboards on its own.
   // Joins the group only while showing (it detaches itself once hidden), so
   // an idle character's bounds stay exactly the body's.
-  const bubble = createBubble({ seed, anchorY: worldHeight });
+  const wantsBubble = options.bubble !== false;
+  const bubble = wantsBubble ? createBubble({ seed, anchorY: worldHeight }) : null;
 
   return {
     group,
@@ -240,15 +252,17 @@ export function createCharacter(
       });
       // The bubble is the legible signal; its own springs retarget cleanly
       // when one emote interrupts another. It removes itself once hidden.
-      if (bubble.object.parent !== group) group.add(bubble.object);
-      bubble.show(name);
+      if (bubble) {
+        if (bubble.object.parent !== group) group.add(bubble.object);
+        bubble.show(name);
+      }
     },
     setLocomotion(speed: number, heading: number): void {
       locoSpeed = speed;
       locoHeading = heading;
     },
     setWorldUnitsPerPixel(v: number): void {
-      bubble.setWorldUnitsPerPixel(v);
+      bubble?.setWorldUnitsPerPixel(v);
     },
     update(dt: number, nowMs: number): void {
       // Ambient drift only — no idle bob, nothing that reads as bounce.
@@ -278,11 +292,13 @@ export function createCharacter(
       });
 
       eyes.update(dt);
-      bubble.update(dt, nowMs);
+      bubble?.update(dt, nowMs);
     },
     dispose(): void {
-      group.remove(bubble.object);
-      bubble.dispose();
+      if (bubble) {
+        group.remove(bubble.object);
+        bubble.dispose();
+      }
       eyes.dispose();
       group.remove(mesh);
       geometry.dispose();

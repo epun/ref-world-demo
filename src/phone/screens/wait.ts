@@ -534,11 +534,13 @@ export function mountWaitScreen(
       // Same identity as the world's slot and as the alive portrait → the
       // identical creature, so the swap at the end is a cross-fade between
       // two pictures of one mesh.
-      const character = createCharacter(
-        options.strokes,
-        1,
-        options.identity === undefined ? {} : { identity: options.identity },
-      );
+      const character = createCharacter(options.strokes, 1, {
+        // Same options the alive screen uses, bubble included — the two
+        // must build the SAME mesh or the handover stops being a cross-fade
+        // between one creature and itself.
+        bubble: false,
+        ...(options.identity === undefined ? {} : { identity: options.identity }),
+      });
       // A degenerate drawing has no creature to reveal. Nothing to play:
       // resolve and let the caller swap as it always did.
       if (!character) return Promise.resolve();

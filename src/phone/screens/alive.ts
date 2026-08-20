@@ -173,21 +173,13 @@ export const PORTRAIT_FIT = 0.72;
  * axes.
  */
 /**
- * Headroom above the creature for its speech bubble, in the same units.
- *
- * The bubble sits at `anchorY + HEAD_MARGIN + BUBBLE_SIZE / 2` above the
- * body (src/character/bubble.ts) — outside the creature's own bounding box.
- * A camera framed symmetrically on that box therefore crops it, which is
- * what the user saw: the bubble cut in half against the top of the well.
- *
- * So the frame reserves room for it. The creature sits a little low in the
- * screen as a result, which is right — a portrait with its head against the
- * top edge has nowhere for the thing it is about to say.
+ * No headroom reserve: the phone builds its character with `bubble: false`
+ * (user ruling — the bubble is gone from mobile), so nothing renders above
+ * the body's own bounding box and the frame is symmetric on it again. The
+ * creature gets the whole screen back.
  */
-export const PORTRAIT_HEADROOM = 1.35;
-
 export function portraitHalfExtent(sizeX: number, sizeY: number): number {
-  return (Math.max(sizeX, sizeY, CHARACTER_HEIGHT) + PORTRAIT_HEADROOM) * PORTRAIT_FIT;
+  return Math.max(sizeX, sizeY, CHARACTER_HEIGHT) * PORTRAIT_FIT;
 }
 
 /** World units per css pixel this portrait renders at, in a canvas that
@@ -357,11 +349,12 @@ export function mountAliveScreen(
   let sizedPx = 0;
 
   // Same identity as the world's slot → the identical creature (parity).
-  character = createCharacter(
-    options.strokes,
-    1,
-    options.identity === undefined ? {} : { identity: options.identity },
-  );
+  character = createCharacter(options.strokes, 1, {
+    // No speech bubble on the phone (user ruling): a portrait fills the
+    // screen, so the emote reads in the body itself.
+    bubble: false,
+    ...(options.identity === undefined ? {} : { identity: options.identity }),
+  });
   if (character) {
     renderer = new WebGLRenderer({ canvas: portraitCanvas, antialias: true, alpha: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
@@ -387,12 +380,8 @@ export function mountAliveScreen(
     const center = bounds.getCenter(new Vector3());
     halfExtent = portraitHalfExtent(size.x, size.y);
     camera = new OrthographicCamera(-halfExtent, halfExtent, halfExtent, -halfExtent, 0.1, 100);
-    // Look a little BELOW the body's centre, so the room the extent gained
-    // lands above the head where the bubble needs it rather than being
-    // split evenly top and bottom.
-    const lookY = center.y + (PORTRAIT_HEADROOM * PORTRAIT_FIT) / 2;
-    camera.position.set(center.x, lookY, 12);
-    camera.lookAt(center.x, lookY, 0);
+    camera.position.set(center.x, center.y, 12);
+    camera.lookAt(center.x, center.y, 0);
   } else {
     // Degenerate drawing survived to here: hold the space, skip the render.
     portraitCanvas.style.display = 'none';
