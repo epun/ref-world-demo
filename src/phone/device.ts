@@ -655,6 +655,37 @@ export interface DeviceChrome {
 export function mountDevice(root: HTMLElement): DeviceChrome {
   ensureStyle();
 
+  // ADOPT the case the document already painted, if there is one.
+  //
+  // phone.html carries the shell as markup now (see its head note): this
+  // module cannot run until the whole phone bundle has parsed and boot()'s
+  // `await createSession()` has resolved, and building the case only then
+  // left the person looking at bare paper for the best part of a second
+  // across the /draw/ seam — measured at ~960ms, the single largest
+  // frame-to-frame change anywhere in the flow. Adopting it means the
+  // markup's first paint IS the device, and this function only takes
+  // ownership of it. Building one from scratch stays the path for any host
+  // that does not paint it up front (the tests, and any future entry point).
+  const adopted = document.querySelector<HTMLElement>('.device');
+  const adoptedBox = adopted?.querySelector<HTMLElement>('.device-box') ?? null;
+  const adoptedWell = adopted?.querySelector<HTMLElement>('.device-well') ?? null;
+  const adoptedKeys = adopted?.querySelector<HTMLElement>('.device-keys') ?? null;
+  if (adopted && adoptedBox && adoptedWell && adoptedKeys) {
+    // Moved under the caller's root so the tree is the same shape either
+    // way. A move is not a reload: the shell is the identical <img> node
+    // with its artwork already decoded, and the whole case is fixed-position,
+    // so no pixel changes on the frame it happens.
+    root.appendChild(adopted);
+    return {
+      box: adoptedBox,
+      well: adoptedWell,
+      keys: adoptedKeys,
+      destroy(): void {
+        adopted.remove();
+      },
+    };
+  }
+
   const device = document.createElement('div');
   device.className = 'device';
 

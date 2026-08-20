@@ -43,9 +43,110 @@
         overflow: hidden;
         -webkit-text-size-adjust: 100%;
       }
+
+      /*
+       * THE CASE, PAINTED BEFORE ANY SCRIPT (docs/PHONE-STAGE.md §4.1).
+       *
+       * Measured cause of the reported seam flash: /draw/ carries its device
+       * in the document, this page built its device in src/phone/device.ts —
+       * which cannot run until ~840kB of module has been fetched, parsed and
+       * executed, and until boot()'s `await createSession()` (a dynamic
+       * import of the relay client) has resolved. Screencast measurement at
+       * 390x844: the last frame of /draw/ showed the case, the first frame of
+       * this document showed bare paper, and the case did not come back for
+       * ~960ms — one frame at 330x the running median luma delta, then a
+       * second one when it returned. The paper never changed value; what
+       * flashed was the whole device disappearing and reappearing.
+       *
+       * So the case is markup now, exactly as it is on /draw/, and
+       * mountDevice() ADOPTS it rather than building a second one. The first
+       * paint of this document is then the last frame of the previous one:
+       * same shell, same box, same empty well at the wait measure, same bare
+       * key field. Nothing to flash to.
+       *
+       * Every value below is MIRRORED from src/phone/device.ts — DEVICE_VIEWBOX,
+       * DEVICE_TOP_AIR_PX (42), DEVICE_BOTTOM_AIR_PX (10), DEVICE_WELL, and
+       * SURFACE.ground. public/draw/index.html mirrors the same numbers for
+       * the same reason (a standalone document cannot import from src/), and
+       * DEVICE §3 makes them binding: they may not be edited on one side
+       * only. device.ts re-declares them identically at runtime, so nothing
+       * here can drift into a second geometry — it can only be stale, and
+       * stale would move the case on both pages at once, not one of them.
+       *
+       * Nothing here transitions or animates: the shell is a physical object
+       * and it never moves (DEVICE §1a).
+       */
+      .device {
+        position: fixed;
+        left: 0;
+        right: 0;
+        top: 0;
+        height: 100%;
+        height: 100dvh;
+        box-sizing: border-box;
+        padding: calc(env(safe-area-inset-top, 0px) + 42px) 0
+          calc(env(safe-area-inset-bottom, 0px) + 10px);
+        display: grid;
+        place-items: center;
+        overflow: hidden;
+        background: #dfdfdf;
+        container-type: size;
+      }
+      .device-box {
+        position: relative;
+        width: min(100cqw, calc(100cqh * 100 / 168));
+        aspect-ratio: 100 / 168;
+      }
+      .device-shell {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        display: block;
+        pointer-events: none;
+        user-select: none;
+        -webkit-user-drag: none;
+      }
+      .device-well {
+        position: absolute;
+        left: 15%;
+        top: 22.619%;
+        width: 70%;
+        height: 51.1905%;
+        overflow: hidden;
+        user-select: none;
+        -webkit-user-select: none;
+        -webkit-touch-callout: none;
+      }
+      .device-keys {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+      }
     </style>
   </head>
   <body>
+    <!--
+      The case, in the document (see the note above). src/phone/device.ts
+      adopts this exact subtree — the stage mounts into .device-well and the
+      key rows into .device-keys — so the person never sees a frame without
+      it. The well is empty here, which is precisely what the last frame of
+      /draw/ shows: the pad has faded out and the core has already travelled
+      to the wait measure.
+    -->
+    <div class="device">
+      <div class="device-box">
+        <img
+          class="device-shell"
+          src="/device/shell.svg"
+          alt=""
+          aria-hidden="true"
+          draggable="false"
+        />
+        <div class="device-well"></div>
+        <div class="device-keys"></div>
+      </div>
+    </div>
     <!-- vendored MQTT client, same tag the world and draw pages carry: the
          emote uplink publishes on the room's own topic (src/net/emoteUplink.ts) -->
     <script src="/vendor/mqtt.min.js"></script>

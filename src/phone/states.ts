@@ -458,7 +458,10 @@ export function createMachine(
     // A restore opens on a state the person was already looking at, so
     // nothing plays an entrance — including the keys on the case, whose
     // staggered arrival (src/phone/device.ts) is otherwise on by default.
-    for (const set of root.querySelectorAll<HTMLElement>('.device-key-set')) {
+    // Asked of the key field itself, not of the caller's root: the case may
+    // have been adopted from the document rather than built here
+    // (device.ts), and the keys are always inside it either way.
+    for (const set of device.keys.querySelectorAll<HTMLElement>('.device-key-set')) {
       set.dataset['enter'] = 'false';
     }
   }
