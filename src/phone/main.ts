@@ -44,21 +44,28 @@ document.body.style.background = SURFACE.ground;
  *
  * It slides up over the companion on the settle curve, and its one action
  * forgets this handset's submission so they can draw something else.
+ *
+ * It slides up inside the device's SCREEN, not over the whole page
+ * (docs/DEVICE.md): a notice that covered the case would read as a
+ * different surface arriving, which is the cut PHONE-STAGE §5 keeps these
+ * modals clear of. Everything else about it is unchanged — same trigger,
+ * same copy, same action, same settle curve over t.secondary, and the
+ * stage stays visible behind it until it is fully up.
  */
 function showGuidelineNotice(onDrawAgain: () => void): void {
   if (document.querySelector('.guideline-notice')) return;
   const style = document.createElement('style');
   style.textContent = `
 .guideline-notice {
-  position: fixed;
+  position: absolute;
   inset: 0;
   z-index: 60;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 18px;
-  padding: 10vmin;
+  gap: 5cqw;
+  padding: 8cqw;
   text-align: center;
   background: ${SURFACE.ground};
   color: ${WORLD.ink};
@@ -69,18 +76,18 @@ function showGuidelineNotice(onDrawAgain: () => void): void {
 .guideline-notice.open { transform: translateY(0); }
 .guideline-notice p {
   margin: 0;
-  font-size: 17px;
+  font-size: clamp(12px, 6.2cqw, 17px);
   line-height: 1.45;
   max-width: 22em;
 }
 .guideline-notice .sub {
-  font-size: 14px;
+  font-size: clamp(10px, 5.1cqw, 14px);
   color: ${WORLD.neutral};
 }
 .guideline-notice button {
   font: inherit;
-  font-size: 16px;
-  padding: 14px 22px;
+  font-size: clamp(11px, 5.8cqw, 16px);
+  padding: 4cqw 7cqw;
   border-radius: 13px;
   border: 1px solid ${WORLD.ink};
   background: transparent;
@@ -105,7 +112,11 @@ function showGuidelineNotice(onDrawAgain: () => void): void {
   again.textContent = 'draw something else';
   again.addEventListener('click', onDrawAgain);
   notice.append(line, sub, again);
-  document.body.appendChild(notice);
+  // Inside the screen. The stage is the query container the measures above
+  // resolve against, and it clips — so the sheet slides up the display,
+  // exactly as it always slid up the page. Falls back to the body if the
+  // stage is not mounted (it always is by the time a verdict can arrive).
+  (document.querySelector('.stage') ?? document.body).appendChild(notice);
   requestAnimationFrame(() => notice.classList.add('open'));
 }
 

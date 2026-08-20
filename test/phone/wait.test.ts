@@ -1,37 +1,21 @@
 /**
- * Wait-screen pure logic: the lowercase countdown line, the countdown→hatch
- * progress mapping (the same elapsed/total read the world uses), and the
- * late crack teaser scrub.
+ * Wait-screen pure logic: the timer→hatch progress mapping (the same
+ * elapsed/total read the world uses) and the late crack teaser scrub.
+ *
+ * The countdown LINE is gone (user ruling, 2026-08-20: *"let's remove the
+ * count down and the hatch button. i want to set the hatch timing on my
+ * end."*) and `countdownLabel` went with it. The timer itself did not: it
+ * still feeds hatchProgress, which is what ramps the shell's wobble and
+ * teases the cracks in — so these two are exactly the part that survived,
+ * and they are what these tests cover.
  */
 
 import { describe, expect, it } from 'vitest';
 import {
-  countdownLabel,
   crackTeaser,
   CRACK_TEASER,
   hatchProgress,
 } from '../../src/phone/screens/wait';
-
-describe('countdownLabel', () => {
-  it('reads lowercase and rounds seconds up', () => {
-    expect(countdownLabel(18_000)).toBe('hatches in 18s');
-    expect(countdownLabel(17_001)).toBe('hatches in 18s');
-    expect(countdownLabel(500)).toBe('hatches in 1s');
-  });
-
-  it('handles the endpoints', () => {
-    expect(countdownLabel(0)).toBe('hatching');
-    expect(countdownLabel(-250)).toBe('hatching');
-    expect(countdownLabel(null)).toBe('the egg is warming');
-  });
-
-  it('never emits uppercase (TASTE §5)', () => {
-    for (const ms of [null, 0, 900, 5_000, 61_000]) {
-      const label = countdownLabel(ms);
-      expect(label).toBe(label.toLowerCase());
-    }
-  });
-});
 
 describe('hatchProgress', () => {
   it('is the world mapping: elapsed over total', () => {

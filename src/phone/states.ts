@@ -12,8 +12,14 @@
  *
  *   .stage-brow     top          status / countdown / creature name
  *   .stage-core     centre       the ONE object: pad → egg → wheel
- *   .stage-tools    bottom       undo·clear·done → hatch → (empty)
+ *   .stage-tools    the case      undo·clear·done → hatch → (all idle)
  *   .stage-corner   bottom-right minimap (alive only)
+ *
+ * The stage now sits inside the device's screen well (docs/DEVICE.md §3)
+ * and the tools slot sits on the device's three fixed keys — the ONLY
+ * change the device makes to this file. Roles, layering, the swap
+ * choreography and the seam are untouched: the device is a frame around
+ * them, and if any behaviour changed the wrapper would be wrong.
  *
  * A state change is a SWAP, never a translate of the stage:
  *   1. satellites out   opacity 1→0, translateY 0→+8px, t.tertiary
@@ -30,6 +36,7 @@
 
 import { sampleDrift } from '../motion/ambient';
 import { MOTION, SURFACE } from '../taste/tokens';
+import { mountDevice, type DeviceChrome } from './device';
 
 export type PhoneState = 'draw' | 'wait' | 'alive';
 
@@ -52,18 +59,32 @@ export type SlotName = (typeof SLOT_NAMES)[number];
 export const SATELLITE_SLOTS: readonly SlotName[] = ['brow', 'tools', 'corner'];
 
 /**
- * Core geometry (PHONE-STAGE §2) [D]. The core is a centred square whose
- * SIDE is the only thing that changes between states — it is never animated
- * by scale, so the canvas inside it stays sharp at every frame.
+ * Core geometry (PHONE-STAGE §2, restated against the well by DEVICE §3)
+ * [D]. The core is a centred square whose SIDE is the only thing that
+ * changes between states — it is never animated by scale, so the canvas
+ * inside it stays sharp at every frame.
  *
- * These strings are binding: the draw page (public/draw/) sets the same
- * values, so the core is in the same place at the same size on both sides
- * of the page navigation.
+ * The measures are now shares of the SCREEN WELL's WIDTH rather than of the
+ * viewport: the stage lives inside the device now, and a viewport measure
+ * inside a letterboxed box would drift with the paper margin instead of
+ * with the screen. The well is taller than it is wide (DEVICE §3) and the
+ * core is square, so width is what bounds it. The RATIOS between the three
+ * states are what carry the choreography and they are preserved exactly —
+ * 76 : 60 : 80 vmin is 95% : 75% : 100%, the same relative distances the
+ * swap has always travelled.
+ *
+ * `cqw` (the well is the query container — see .stage below) is used rather
+ * than a bare `%` so the height side of the square resolves against the
+ * same axis as the width and the box can never come out non-square.
+ *
+ * These strings are binding: the draw page (public/draw/) places against
+ * the same DEVICE §3 geometry, so the core is in the same place at the
+ * same size on both sides of the page navigation.
  */
 export const CORE_SIDE: Record<PhoneState, string> = {
-  draw: 'min(76vmin, 480px)',
-  wait: 'min(60vmin, 380px)',
-  alive: 'min(80vmin, 460px)',
+  draw: '95cqw',
+  wait: '75cqw',
+  alive: '100cqw',
 };
 
 /**
@@ -172,28 +193,49 @@ function ensureStyle(): void {
   style.id = STYLE_ID;
   style.textContent = `
 .stage {
-  /* One paper for the whole mobile flow (PHONE-STAGE §2). */
+  /*
+   * One paper for the whole mobile flow (PHONE-STAGE §2) — but the stage
+   * does not PAINT it any more: the artwork does.
+   *
+   * The well in shell.svg is filled with this exact value already, and the
+   * page behind the device is too, so painting it again changes no pixel.
+   * What it did change was the bezel: DEVICE §3's usable inner area is a
+   * RECTANGLE (x 15..85, y 38..124) and the drawn bezel opening has bowed,
+   * rounded corners, so the rectangle's four corners fell outside it and
+   * an opaque stage cut the bezel's ink at every corner — the frame read
+   * as broken. Transparent, the stage can cover nothing: the bezel closes,
+   * the glass highlight (DEVICE §1e) shows where no content sits over it,
+   * and the paper is still one value from the first frame of /draw/ to the
+   * last frame here. The token stays defined for anything that needs to
+   * paint the paper itself.
+   */
   --stage-paper: ${SURFACE.ground};
   /* Reserved bands. Their height never changes, so the core's centre is
-     the exact middle of the padded box in every state — no relayout. */
-  --stage-band: clamp(56px, 11vmin, 92px);
+     the exact middle of the box in every state — no relayout. Measured
+     against the well now (DEVICE §3), not the viewport: 14% of the well's
+     width is the 38px band a 259px core leaves in a 335px-tall well at
+     390px wide, which is exactly the air the taller well was cut for. */
+  --stage-band: 14cqw;
   --core-side: ${CORE_SIDE.draw};
 
-  position: fixed;
+  /* Absolute inside the device's screen well, which is itself fixed — so
+     the stage is the same immovable surface it always was, just smaller
+     than the page. It is the query container the core measures against. */
+  position: absolute;
   inset: 0;
+  container-type: size;
   overflow: hidden;
   box-sizing: border-box;
-  background: var(--stage-paper);
+  background: transparent;
   display: grid;
   grid-template-rows: var(--stage-band) 1fr var(--stage-band);
   justify-items: center;
   align-items: center;
   /* NO padding here. The core has to land in the same place on both sides
-     of the /draw/ seam, and the draw page centres it on the VIEWPORT. Pad
-     the stage instead and the core's centre shifts by (top - bottom) / 2 —
-     which is 0 in a headless viewport and 6.5px on a notched handset, so it
-     passes every desktop probe and jumps on the actual device. The insets
-     live on the slots, exactly as the draw page puts them. */
+     of the /draw/ seam, and both sides place it against the same DEVICE §3
+     well. The safe-area insets that used to live on the slots are gone
+     with the viewport: the device is sized to contain and centred, so the
+     paper margin around it already clears every notch and home bar. */
 }
 .stage-slot {
   position: relative;
@@ -205,18 +247,23 @@ function ensureStyle(): void {
   grid-row: 1;
   width: 100%;
   height: 100%;
-  padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) 0
-    env(safe-area-inset-left, 0px);
 }
+/*
+ * The tools slot is no longer in the stage's grid: it mounts onto the
+ * device's key row (DEVICE §2), because a physical device's controls are
+ * on the case, not on the screen. It is still a persistent slot, still a
+ * satellite, still animated by the same swap steps — only its address
+ * changed. The row line has no height of its own; the keys hang off it.
+ */
 .stage-tools {
-  grid-row: 3;
+  position: absolute;
+  left: 0;
+  top: 0;
   width: 100%;
-  height: 100%;
-  padding: 0 env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px)
-    env(safe-area-inset-left, 0px);
+  height: 0;
 }
 .stage-core {
-  /* Centred on the viewport, out of the grid flow — see the note above. */
+  /* Centred in the well, out of the grid flow — see the note above. */
   position: absolute;
   inset: 0;
   margin: auto;
@@ -226,12 +273,21 @@ function ensureStyle(): void {
     width ${MOTION.secondaryMs}ms ${MOTION.settleCurve},
     height ${MOTION.secondaryMs}ms ${MOTION.settleCurve};
 }
+/*
+ * The corner, measured against the well (DEVICE §3). 19cqw is not a picked
+ * number: in the alive state the core is as wide as the well, so the map
+ * has only the wheel's free corner to sit in. The emote nearest the
+ * bottom-right diagonal has its right edge at
+ * (side/2 + 0.4345·(side/2 − 26) + 26), and the map's left edge has to
+ * clear it. 19% of the well's width plus the 1% inset does, from a 224px
+ * well up. Measured, not asserted — the device probe checks the real rects.
+ */
 .stage-corner {
   position: absolute;
-  right: calc(env(safe-area-inset-right, 0px) + 4vmin);
-  bottom: calc(env(safe-area-inset-bottom, 0px) + 4vmin);
-  width: clamp(88px, 24vmin, 160px);
-  height: clamp(88px, 24vmin, 160px);
+  right: 1cqw;
+  bottom: 1cqw;
+  width: 19cqw;
+  height: 19cqw;
 }
 /* Layers stack inside a slot so the outgoing and incoming contents overlap
    without ever relayouting the slot. */
@@ -286,7 +342,8 @@ function coreKeyframes(role: 'out' | 'in'): Keyframe[] {
 }
 
 /**
- * Create the stage and mount the initial state.
+ * Create the device, the stage inside its screen well, and mount the
+ * initial state.
  */
 export function createMachine(
   root: HTMLElement,
@@ -295,6 +352,10 @@ export function createMachine(
   options: MachineOptions = {},
 ): PhoneMachine {
   ensureStyle();
+
+  // The frame (docs/DEVICE.md). It owns no state and no timing — it hands
+  // back the two places the stage plugs into and is never touched again.
+  const device: DeviceChrome = mountDevice(root);
 
   const stage = document.createElement('div');
   stage.className = 'stage';
@@ -309,9 +370,13 @@ export function createMachine(
     el.className = `stage-slot stage-${name}`;
     el.dataset['slot'] = name;
     slotEls[name] = el;
-    stage.appendChild(el);
+    // Three slots are screen; the tools slot is the case's key row
+    // (DEVICE §2). Both are inside the device box, so nothing about the
+    // slot set, the layering or the swap changes.
+    if (name === 'tools') device.keys.appendChild(el);
+    else stage.appendChild(el);
   }
-  root.appendChild(stage);
+  device.well.appendChild(stage);
 
   const mountInto = (state: PhoneState, role: 'out' | 'in'): MountedLayers => {
     const slots = {} as StageSlots;
@@ -466,6 +531,7 @@ export function createMachine(
       document.removeEventListener('visibilitychange', onVisibility);
       current.screen.destroy();
       stage.remove();
+      device.destroy();
     },
   };
 }

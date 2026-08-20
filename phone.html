@@ -10,6 +10,14 @@
     <title>ref — companion</title>
     <!-- inline ink-blob favicon (qa audit p1): a loose hand-drawn dot in the environment ink value, no binary asset -->
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path d='M12.3 4.6c3.9.2 6.9 3.4 7 7.3.1 4.1-3 7.6-7.1 7.7-4 .1-7.4-3-7.5-7.1-.1-4.2 3.4-8.1 7.6-7.9z' fill='%23353534'/></svg>" />
+    <!--
+      The device shell (docs/DEVICE.md). Requested at parse time so the
+      artwork is decoded before the module that inserts it runs — the case
+      must be there in the first frame the person sees, not fade in behind
+      the screen. It is a static asset in public/, so both this page and
+      /draw/ paint the identical shell from one file.
+    -->
+    <link rel="preload" as="image" href="/device/shell.svg" type="image/svg+xml" />
     <style>
       /*
        * ONE PAPER for the whole mobile flow (docs/PHONE-STAGE.md §2/§4):

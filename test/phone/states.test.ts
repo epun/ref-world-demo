@@ -38,14 +38,30 @@ describe('phone stage', () => {
     expect(SATELLITE_SLOTS).toEqual(['brow', 'tools', 'corner']);
   });
 
-  it('names a core measure for every state, and only the side changes', () => {
+  it('names a core measure for every state, as a share of the well WIDTH', () => {
+    // docs/DEVICE.md §3: the measures are shares of the WELL's width now,
+    // not of the viewport — the stage lives inside the device, the well is
+    // taller than it is wide, and the core is square, so width bounds it.
     for (const state of PHONE_STATES) {
-      expect(CORE_SIDE[state]).toMatch(/^min\(\d+vmin, \d+px\)$/);
+      expect(CORE_SIDE[state]).toMatch(/^\d+cqw$/);
     }
-    // Binding across the /draw/ → /phone.html seam (PHONE-STAGE §2/§4).
-    expect(CORE_SIDE.draw).toBe('min(76vmin, 480px)');
-    expect(CORE_SIDE.wait).toBe('min(60vmin, 380px)');
-    expect(CORE_SIDE.alive).toBe('min(80vmin, 460px)');
+    // Binding across the /draw/ → /phone.html seam (PHONE-STAGE §2/§4,
+    // DEVICE §3). Both pages place against the same well.
+    expect(CORE_SIDE.draw).toBe('95cqw');
+    expect(CORE_SIDE.wait).toBe('75cqw');
+    expect(CORE_SIDE.alive).toBe('100cqw');
+  });
+
+  it('preserves the ratios the swap has always travelled', () => {
+    // The old measures were 76 / 60 / 80 vmin. The device restates them
+    // against the well, and the RATIOS are what carry the choreography:
+    // normalising the old scale by its largest term reproduces the new one
+    // exactly, so the core still travels the same relative distances.
+    const share = (measure: string): number => Number(measure.replace('cqw', ''));
+    const old = { draw: 76, wait: 60, alive: 80 };
+    for (const state of PHONE_STATES) {
+      expect(share(CORE_SIDE[state])).toBeCloseTo((old[state] / old.alive) * 100, 6);
+    }
   });
 
   it('derives the stagger from the token scale rather than picking it', () => {

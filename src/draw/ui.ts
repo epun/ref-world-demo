@@ -32,7 +32,20 @@ export interface DrawScreenOptions {
    */
   hosts?: {
     canvas: HTMLElement;
-    controls: HTMLElement;
+    controls?: HTMLElement;
+  };
+  /**
+   * Controls supplied by the host, already placed (docs/DEVICE.md §2: the
+   * device's three keys are fixed features of the case, so they are built
+   * and positioned by the device, not by this screen). When present the
+   * screen wires these three instead of building a row of its own — the
+   * behaviour is identical either way: undo, clear, done, all three
+   * disabled while the pad is empty.
+   */
+  controls?: {
+    undo: HTMLButtonElement;
+    clear: HTMLButtonElement;
+    done: HTMLButtonElement;
   };
 }
 
@@ -56,6 +69,18 @@ const ICON_CLEAR = [
   'M16.7 7.3c-3.3 2.9-6.4 6-9.3 9.3',
 ].join(' ');
 const ICON_DONE = 'M5.8 12.9c1.5 1.7 2.9 3.4 4.1 5.1 2.3-4.1 5.2-7.8 8.5-11.1';
+
+/**
+ * The three marks, exported so a host that supplies its OWN control
+ * elements (the device's fixed keys — docs/DEVICE.md §2) puts the same
+ * icons on them. The marks are the contract; the button chrome around
+ * them is the host's.
+ */
+export const DRAW_ICONS = {
+  undo: ICON_UNDO,
+  clear: ICON_CLEAR,
+  done: ICON_DONE,
+} as const;
 
 function ensureStyle(): void {
   if (document.getElementById(STYLE_ID)) return;
@@ -116,12 +141,26 @@ function ensureStyle(): void {
   height: 22px;
   display: block;
 }
-/* Split mount: the stage's core slot is already the pad's measure, so the
-   pad fills it rather than declaring one of its own. */
+/*
+ * Split mount: the stage's core slot is already the pad's measure, so the
+ * pad fills it rather than declaring one of its own.
+ *
+ * And it draws NO enclosure of its own (docs/DEVICE.md §3, user ruling:
+ * "we shouldn't see the borders of the drawing pad because it should be
+ * the tamagotchi screen"). No background, no border, no corner radius —
+ * the bezel in the artwork is the only frame and the well's own value is
+ * the only ground. A pad carrying its own card reads as a card sitting ON
+ * the screen instead of BEING the screen. The world's own draw overlay
+ * (the single-mount path above) keeps its card: that surface has no bezel
+ * to belong to.
+ */
 .draw-canvas-fill {
   width: 100%;
   height: 100%;
   aspect-ratio: auto;
+  background: transparent;
+  border: none;
+  border-radius: 0;
 }
 `;
   document.head.appendChild(style);
@@ -164,30 +203,64 @@ export function mountDrawScreen(
   canvas.className = hosts ? 'draw-canvas draw-canvas-fill' : 'draw-canvas';
   canvas.setAttribute('aria-label', 'drawing canvas');
 
-  const controls = document.createElement('div');
-  controls.className = 'draw-controls';
-  const undoButton = iconButton('undo', ICON_UNDO);
-  const clearButton = iconButton('clear', ICON_CLEAR);
-  const doneButton = iconButton('done', ICON_DONE);
-  controls.append(undoButton, clearButton, doneButton);
+  // Supplied controls belong to the host and are already in the document;
+  // otherwise the screen builds its own hairline row.
+  const supplied = options.controls;
+  const controls = supplied ? null : document.createElement('div');
+  const undoButton = supplied ? supplied.undo : iconButton('undo', ICON_UNDO);
+  const clearButton = supplied ? supplied.clear : iconButton('clear', ICON_CLEAR);
+  const doneButton = supplied ? supplied.done : iconButton('done', ICON_DONE);
+  if (controls) {
+    controls.className = 'draw-controls';
+    controls.append(undoButton, clearButton, doneButton);
+  }
 
   // Split mount puts each part in the slot that owns it; the single mount
   // keeps the self-laid-out root the world overlay expects.
   let root: HTMLElement | null = null;
   if (hosts) {
     hosts.canvas.appendChild(canvas);
-    hosts.controls.appendChild(controls);
+    if (controls && hosts.controls) hosts.controls.appendChild(controls);
   } else {
     root = document.createElement('div');
     root.className = 'draw-screen';
-    root.append(canvas, controls);
+    root.append(canvas);
+    if (controls) root.appendChild(controls);
     container.appendChild(root);
   }
 
   const ctx = canvas.getContext('2d');
 
+  /**
+   * Paint the pad.
+   *
+   * `renderStrokes` lays its own SURFACE.canvas ground under the ink — the
+   * light role the pad has always carried, and the ground the EGG's paint-on
+   * stamp needs (src/egg/egg.ts shares that renderer, so it is not ours to
+   * change). Inside the device that ground is wrong: the pad must draw no
+   * enclosure and no field of its own, because it IS the tamagotchi screen
+   * (docs/DEVICE.md §3, user ruling "we shouldn't see the borders of the
+   * drawing pad").
+   *
+   * So the ground is brought down to the well's own value with one `darken`
+   * pass. Per channel it keeps the minimum, and SURFACE.ground is darker
+   * than SURFACE.canvas everywhere, so the field lands on exactly
+   * SURFACE.ground while the near-black ink is untouched — and the
+   * anti-aliased edge of every stroke stays a clean ramp from the ink to
+   * the screen's value instead of picking up a light fringe. No readback,
+   * no second canvas, and the shared renderer keeps its contract.
+   */
   const render = (strokes: StrokeList): void => {
-    if (ctx) renderStrokes(ctx, strokes, canvas.width);
+    if (ctx) {
+      renderStrokes(ctx, strokes, canvas.width);
+      if (hosts) {
+        ctx.save();
+        ctx.globalCompositeOperation = 'darken';
+        ctx.fillStyle = SURFACE.ground;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.restore();
+      }
+    }
     const empty = strokes.length === 0;
     undoButton.disabled = empty;
     clearButton.disabled = empty;
@@ -231,7 +304,9 @@ export function mountDrawScreen(
       if (root) root.remove();
       else {
         canvas.remove();
-        controls.remove();
+        // Supplied controls are the host's to remove — this screen only
+        // stops driving them.
+        controls?.remove();
       }
     },
   };

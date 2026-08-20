@@ -8,7 +8,14 @@
  * - EMOTE WHEEL: seven wordless stroke-only icon marks in a ring around the
  *   portrait, hairline circular borders, ≥44px hit areas. A tap thickens the
  *   tapped ring briefly on the tertiary token — acknowledgement without a
- *   bounce.
+ *   bounce, and the PORTRAIT PLAYS THE EMOTE (user ask, 2026-08-20: the
+ *   creature shows the same emote on mobile as it does in the world). It
+ *   plays locally on the tap rather than waiting for the world to echo:
+ *   the portrait is the identical pure pipeline, so it needs nothing from
+ *   the wire, and a round trip through the broker would put visible lag on
+ *   the person's own tap. An emote the WORLD reports for this creature is
+ *   mirrored too — but the echo of the tap that just played is not
+ *   double-played (see lastPoseEmote below).
  * - MINIMAP: a SMALL corner inset (~24vmin) — the portrait is the screen,
  *   the map is a glance. Top-down canvas: ground field inside a
  *   deterministic hand-wavering border, peers as neutral dots (clusters
@@ -24,8 +31,11 @@
  *
  * It mounts into the STAGE's slots (docs/PHONE-STAGE.md §2): the wheel is
  * the core — the third face of the one object the pad and the egg were —
- * the creature's name is the brow, and the minimap is the corner. The tools
- * row is empty here, which is a state of the slot, not a removal.
+ * the creature's name is the brow, and the minimap is the corner. All three
+ * of the device's keys are idle here (docs/DEVICE.md §2): disabled, never
+ * removed. The emote wheel stays in the core where it is — seven emotes do
+ * not map to three keys, and the wheel is screen content, not a control on
+ * the case.
  */
 
 import { Box3, OrthographicCamera, Scene, Vector3, WebGLRenderer } from 'three';
@@ -42,6 +52,7 @@ import {
 import type { StrokeList } from '../../shape/types';
 import { CHARACTER, MOTION, SURFACE, WORLD } from '../../taste/tokens';
 import { createLighting } from '../../world/lighting';
+import { createKeyRow } from '../device';
 import {
   mapBorderInset,
   mapMarkScale,
@@ -61,9 +72,42 @@ import type { Screen, StageSlots } from '../states';
 // faces and gestures reduced to marks, wordless (TASTE §4, §5).
 
 
-/** Emote buttons sit on this radius, as % of the wheel container. */
-const WHEEL_RADIUS_PCT = 42;
-const BUTTON_SIZE_PX = 52; // ≥44px hit area
+/**
+ * Emote button size. ≥44px hit area, unchanged.
+ *
+ * The ring they sit on is no longer a fixed percentage: it is the largest
+ * ring that keeps every button WHOLE inside the core — half the core, less
+ * half a button (see emoteButton). That resolves to ~40.5% on a 390px-wide
+ * handset, where the old fixed 42% put the outermost 4px of each ring
+ * outside the box. It never showed while the core was centred on a tall
+ * viewport; inside the device's screen well it would be clipped, so the
+ * measure is now stated as the fit it always meant.
+ */
+const BUTTON_SIZE_PX = 52;
+
+/**
+ * De-dupe for emotes arriving on the pose stream (unit-tested in
+ * test/phone).
+ *
+ * An emote rides on `PoseMsg.emote` as a transient MARKER, not as an event:
+ * it repeats on every pose frame while it is fresh (SameDeviceSession holds
+ * it for EMOTE_ECHO_MS at ~10Hz, and the world reports the same way). So a
+ * pose emote is a NEW event only when it differs from the marker last seen.
+ *
+ * That is also what stops the person's own tap playing twice. The tap plays
+ * locally at once — waiting for the wire would put a broker round trip of
+ * lag on their own press — and records itself as the marker, so its echo
+ * arrives already seen. When the marker clears, the same emote can fire
+ * again later.
+ */
+export function nextPoseEmote(
+  incoming: EmoteName | undefined,
+  marker: EmoteName | null,
+): { play: EmoteName | null; marker: EmoteName | null } {
+  if (incoming === undefined) return { play: null, marker: null };
+  if (incoming === marker) return { play: null, marker };
+  return { play: incoming, marker: incoming };
+}
 
 // ── Screen ──────────────────────────────────────────────────────────────────
 
@@ -158,11 +202,24 @@ function ensureStyle(): void {
 .alive-emote:active svg {
   transform: scale(0.92);
 }
+/*
+ * Centred in the brow band, as it always was. The well is PORTRAIT
+ * (DEVICE §3) — 70 wide by 86 tall — so even the alive core, which is as
+ * wide as the well, leaves a band above it that the wheel never reaches.
+ * That band is what the taller device was cut for. Ellipsis and the size
+ * clamp are the only additions: the screen is narrower than the viewport
+ * used to be, and a long creature name must trim rather than run into the
+ * bezel.
+ */
 .alive-name {
+  max-width: 92cqw;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   color: ${WORLD.ink};
   font-family: "helvetica neue", helvetica, arial, sans-serif;
   font-weight: 400;
-  font-size: 14px;
+  font-size: clamp(11px, 5cqw, 14px);
   letter-spacing: 0.02em;
   min-height: 1.2em;
 }
@@ -191,11 +248,13 @@ function emoteButton(
   button.setAttribute('aria-label', name);
 
   const angle = -Math.PI / 2 + (index * Math.PI * 2) / count;
-  const dx = Math.cos(angle) * WHEEL_RADIUS_PCT;
-  const dy = Math.sin(angle) * WHEEL_RADIUS_PCT;
+  const cx = Math.cos(angle);
+  const cy = Math.sin(angle);
   const half = BUTTON_SIZE_PX / 2;
-  button.style.left = `calc(50% + ${dx.toFixed(2)}% - ${half}px)`;
-  button.style.top = `calc(50% + ${dy.toFixed(2)}% - ${half}px)`;
+  // radius = 50% of the core less half a button, projected on each axis.
+  const radius = `(50% - ${half}px)`;
+  button.style.left = `calc(50% + ${radius} * ${cx.toFixed(4)} - ${half}px)`;
+  button.style.top = `calc(50% + ${radius} * ${cy.toFixed(4)} - ${half}px)`;
 
   const svg = document.createElementNS(SVG_NS, 'svg');
   svg.setAttribute('viewBox', '0 0 52 52');
@@ -266,6 +325,19 @@ export function mountAliveScreen(
 ): AliveScreenHandle {
   ensureStyle();
 
+  /**
+   * The portrait's emote state. `character.emote()` is the same call the
+   * world's creature takes, so the two play the identical deformation and
+   * eye expression from the identical mesh — parity is a wiring job, not a
+   * re-implementation. `marker` is the de-dupe state (see nextPoseEmote).
+   */
+  let character: Character | null = null;
+  let marker: EmoteName | null = null;
+  const playEmote = (emote: EmoteName): void => {
+    marker = emote;
+    character?.emote(emote);
+  };
+
   // ── DOM: wheel (portrait inside) → core, name → brow, map → corner ────────
   const wheel = document.createElement('div');
   wheel.className = 'alive-wheel';
@@ -276,7 +348,14 @@ export function mountAliveScreen(
   wheel.appendChild(portraitCanvas);
 
   EMOTE_NAMES.forEach((name, index) => {
-    wheel.appendChild(emoteButton(name, index, EMOTE_NAMES.length, options.onEmote));
+    wheel.appendChild(
+      emoteButton(name, index, EMOTE_NAMES.length, (emote) => {
+        // Both, in this order: the person's own creature reacts in their
+        // hand on the same frame as the tap, and the world hears about it.
+        playEmote(emote);
+        options.onEmote(emote);
+      }),
+    );
   });
 
   const nameLine = document.createElement('div');
@@ -286,12 +365,16 @@ export function mountAliveScreen(
   mapCanvas.className = 'alive-map';
   mapCanvas.setAttribute('aria-label', 'minimap');
 
+  // All three keys idle (DEVICE §2). They are disabled, not removed — the
+  // case is a solid object and its controls never leave it.
+  const keys = createKeyRow([null, null, null]);
+
   slots.core.appendChild(wheel);
   slots.brow.appendChild(nameLine);
+  slots.tools.appendChild(keys.el);
   slots.corner.appendChild(mapCanvas);
 
   // ── Portrait: the local deterministic pipeline (PLAN §6.3) ────────────────
-  let character: Character | null = null;
   let renderer: WebGLRenderer | null = null;
   let scene: Scene | null = null;
   let camera: OrthographicCamera | null = null;
@@ -479,6 +562,12 @@ export function mountAliveScreen(
 
   return {
     setPose(msg: PoseMsg): void {
+      // Mirror what the world says this creature is doing, without
+      // re-playing the echo of the tap that already played locally.
+      const next = nextPoseEmote(msg.emote, marker);
+      marker = next.marker;
+      if (next.play !== null) character?.emote(next.play);
+
       if (!hasPose) {
         hasPose = true;
         springX.reset(msg.x);
@@ -507,6 +596,7 @@ export function mountAliveScreen(
       renderer?.dispose();
       wheel.remove();
       nameLine.remove();
+      keys.el.remove();
       mapCanvas.remove();
     },
   };

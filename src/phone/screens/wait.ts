@@ -6,8 +6,25 @@
  *
  * It mounts into the STAGE's slots (docs/PHONE-STAGE.md §2), not into a
  * full-bleed root of its own: the egg is the core — the same object the
- * pad was — the lowercase countdown line is the brow, and the one hairline
- * icon control (hatch now) is the tools row.
+ * pad was — and every other slot is empty.
+ *
+ * User ruling, 2026-08-20: *"let's remove the count down and the hatch
+ * button. i want to set the hatch timing on my end."* So the brow carries
+ * no countdown line and all three of the device's keys are unassigned here
+ * (docs/DEVICE.md §2) — disabled, never removed, because the case is a
+ * solid object and its controls do not come and go. The TIMING signal is
+ * untouched: `hatchInMs` still drives hatchProgress, which is what ramps
+ * the shell's wobble and teases the cracks in. Only the text and the
+ * control went; the thing they were reading is still running.
+ *
+ * The egg is built with `entrance: false` (src/egg/egg.ts). The world's
+ * egg slides down into frame from ENTRANCE_DROP above the ground, which is
+ * right in a wide frame and wrong in a portrait: this camera is fitted to
+ * the egg's SETTLED bounds, so the slide would begin outside the frustum
+ * and the shell would be cut off on arrival (user report). Here the egg is
+ * at rest from its first frame and the entrance is the stage's core
+ * cross-fade, which is already an entrance and already on the settle
+ * curve. Nothing is frozen — the ambient drift floor still runs under it.
  *
  * The camera is NOT the iso rig — a simple perspective camera pulled to a
  * slight three-quarter, looking gently down, so the shell reads as a body
@@ -23,23 +40,17 @@
 import { Color, PerspectiveCamera, Scene, WebGLRenderer } from 'three';
 import { createEgg, EGG_HEIGHT } from '../../egg/egg';
 import type { StrokeList } from '../../shape/types';
-import { MOTION, WORLD, SURFACE } from '../../taste/tokens';
+import { WORLD, SURFACE } from '../../taste/tokens';
 import { GrainPass } from '../../world/grain';
 import { InkPass } from '../../world/ink';
 import { createLighting } from '../../world/lighting';
+import { createKeyRow } from '../device';
 import type { Screen, StageSlots } from '../states';
 
 // ── Pure helpers (unit-tested in test/phone) ────────────────────────────────
 
-/** The countdown line, lowercase (TASTE §5). */
-export function countdownLabel(remainingMs: number | null): string {
-  if (remainingMs === null) return 'the egg is warming';
-  const s = Math.max(0, Math.ceil(remainingMs / 1000));
-  return s > 0 ? `hatches in ${s}s` : 'hatching';
-}
-
 /**
- * Hatch progress 0→1 as the countdown advances — the same mapping the world
+ * Hatch progress 0→1 as the timer advances — the same mapping the world
  * uses (src/main.ts: elapsed / total). The phone holds a deadline and the
  * timer's initial span, so progress is 1 - remaining/initial, clamped.
  * Unknown timer → 0: the egg rests at its base wobble.
@@ -69,16 +80,19 @@ export function crackTeaser(p: number): number {
 
 export interface WaitScreenOptions {
   strokes: StrokeList;
-  /** ms until auto-hatch, or null when unknown. */
+  /** ms until the hatch deadline, or null when unknown. Drives the shell's
+   * wobble ramp and the late crack teaser — it is a VISUAL signal here, not
+   * a control. */
   hatchInMs: number | null;
-  /** Fired once — countdown end or manual tap. The session sends hatch;
-   * the transition to alive happens when the world (or local session)
-   * confirms with a state message. */
+  /** Fired once, when the deadline the world gave us runs out. The session
+   * sends hatch; the transition to alive happens when the world (or the
+   * local session) confirms with a state message — never on this call. It
+   * is no longer reachable by tapping: the timing is the world's to set. */
   onHatch(): void;
 }
 
 export interface WaitScreenHandle extends Screen {
-  /** Re-arm the countdown from a fresh StateMsg. */
+  /** Re-arm the hatch deadline from a fresh StateMsg. */
   setHatchIn(ms: number): void;
 }
 
@@ -92,13 +106,6 @@ const CAMERA_ELEVATION = 0.3;
 const CAMERA_DISTANCE = 7.6;
 const LOOK_Y = EGG_HEIGHT * 0.5;
 
-// Stroke-only crack squiggle inside an egg outline — soft curves, no
-// rectilinear geometry (icon mark, TASTE §4).
-const ICON_HATCH = [
-  'M12 4.4c3.3 0 5.9 3.3 5.9 7.3s-2.6 7.7-5.9 7.7-5.9-3.7-5.9-7.7 2.6-7.3 5.9-7.3',
-  'M8.3 11.4c1.2.7 2.3.5 3.3-.5 1 .9 2.2 1.2 3.5.6',
-].join(' ');
-
 function ensureStyle(): void {
   if (document.getElementById(STYLE_ID)) return;
   const style = document.createElement('style');
@@ -111,43 +118,6 @@ function ensureStyle(): void {
   height: 100%;
   display: block;
   touch-action: none;
-}
-.wait-countdown {
-  color: ${WORLD.ink};
-  font-family: "helvetica neue", helvetica, arial, sans-serif;
-  font-weight: 400;
-  font-size: 15px;
-  letter-spacing: 0.02em;
-  font-variant-numeric: tabular-nums;
-}
-.wait-hatch {
-  width: 52px;
-  height: 52px;
-  padding: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: transparent;
-  color: ${WORLD.ink};
-  border: 1px solid ${WORLD.ink};
-  border-radius: 50%;
-  cursor: pointer;
-  touch-action: manipulation;
-  -webkit-tap-highlight-color: transparent;
-  transition: opacity ${MOTION.tertiaryMs}ms ${MOTION.settleCurve};
-}
-.wait-hatch:disabled {
-  opacity: 0.3;
-  cursor: default;
-  pointer-events: none;
-}
-.wait-hatch:active {
-  opacity: 0.55;
-}
-.wait-hatch svg {
-  width: 24px;
-  height: 24px;
-  display: block;
 }
 `;
   document.head.appendChild(style);
@@ -163,35 +133,18 @@ export function mountWaitScreen(
   canvas.className = 'wait-egg';
   canvas.setAttribute('aria-label', 'your egg');
 
-  const countdown = document.createElement('div');
-  countdown.className = 'wait-countdown';
+  // All three keys unassigned here (DEVICE §2): disabled, never removed.
+  const keys = createKeyRow([null, null, null]);
 
-  const hatchButton = document.createElement('button');
-  hatchButton.type = 'button';
-  hatchButton.className = 'wait-hatch';
-  hatchButton.setAttribute('aria-label', 'hatch now');
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('viewBox', '0 0 24 24');
-  svg.setAttribute('aria-hidden', 'true');
-  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-  path.setAttribute('d', ICON_HATCH);
-  path.setAttribute('fill', 'none');
-  path.setAttribute('stroke', 'currentColor');
-  path.setAttribute('stroke-width', '1.5');
-  path.setAttribute('stroke-linecap', 'round');
-  path.setAttribute('stroke-linejoin', 'round');
-  svg.appendChild(path);
-  hatchButton.appendChild(svg);
-
-  // One part per slot. The corner stays empty — a state of the slot.
+  // The egg is the only occupant. Brow and corner stay empty — a state of
+  // a slot, never a removal.
   slots.core.appendChild(canvas);
-  slots.brow.appendChild(countdown);
-  slots.tools.appendChild(hatchButton);
+  slots.tools.appendChild(keys.el);
 
   // ── The 3D egg: same module, same lighting recipe as the world ────────────
   // One WebGL context per mount — created here, disposed in destroy(), never
   // recreated mid-slide.
-  const egg = createEgg(options.strokes);
+  const egg = createEgg(options.strokes, { entrance: false });
   const renderer = new WebGLRenderer({ canvas, antialias: true, alpha: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
   renderer.setClearAlpha(0); // the screen's ground shows through
@@ -236,31 +189,23 @@ export function mountWaitScreen(
   let deadline = options.hatchInMs === null ? null : mountedAt + options.hatchInMs;
   let initialMs = options.hatchInMs;
   let fired = false;
-  let lastLabel = '';
   let raf = 0;
   let last = mountedAt;
 
   const fireHatch = (): void => {
     if (fired) return;
     fired = true;
-    hatchButton.disabled = true;
     options.onHatch();
   };
-
-  hatchButton.addEventListener('click', fireHatch);
 
   const frame = (now: number): void => {
     raf = requestAnimationFrame(frame);
     const dt = Math.min(now - last, 100);
     last = now;
 
-    // Countdown line + auto-hatch.
+    // The deadline the world gave us. No text and no control read it any
+    // more — it drives the shell.
     const remaining = deadline === null ? null : deadline - now;
-    const label = fired ? countdownLabel(0) : countdownLabel(remaining);
-    if (label !== lastLabel) {
-      lastLabel = label;
-      countdown.textContent = label;
-    }
     if (remaining !== null && remaining <= 0) fireHatch();
 
     // The world's mapping: wobble ramps with progress, cracks tease in late.
@@ -295,11 +240,8 @@ export function mountWaitScreen(
     setHatchIn(ms: number): void {
       deadline = performance.now() + ms;
       if (initialMs === null || ms > initialMs) initialMs = ms;
-      if (ms > 0 && fired) {
-        // The world re-armed the timer; let the control work again.
-        fired = false;
-        hatchButton.disabled = false;
-      }
+      // The world re-armed the timer: arm the deadline again too.
+      if (ms > 0 && fired) fired = false;
     },
     destroy(): void {
       stop();
@@ -309,8 +251,7 @@ export function mountWaitScreen(
       ink.dispose();
       renderer.dispose();
       canvas.remove();
-      countdown.remove();
-      hatchButton.remove();
+      keys.el.remove();
     },
   };
 }
