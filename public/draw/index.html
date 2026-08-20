@@ -87,7 +87,7 @@
          seam must resolve the identical box. */
       height: 100%; height: 100dvh;
       box-sizing: border-box;
-      padding: calc(env(safe-area-inset-top, 0px) + 18px) 0
+      padding: calc(env(safe-area-inset-top, 0px) + 42px) 0
         calc(env(safe-area-inset-bottom, 0px) + 10px);
       background: var(--paper); overflow: hidden;
       display: grid; place-items: center;
@@ -156,6 +156,10 @@
        step darker than the body by the artwork itself, so it reads as inset
        with no shadow, no gradient and no rounding of ours. */
     .device-well {
+      /* the screen is a 3d object, not a document: a drag over it turns the
+         object, and must never start a text selection (user report — the
+         creature's name in the brow made the whole well highlight). */
+      user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
       position: absolute;
       left: 15%; top: 22.619%; width: 70%; height: 51.19%;
       overflow: hidden;

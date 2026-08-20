@@ -109,7 +109,7 @@ describe('spawn placement', () => {
     const spot = spawnSpot(0);
     const rock: Collider = { x: spot.x, z: spot.z, r: 1.5, hard: true };
     const world = stubWorld([rock]);
-    const manager = createCreatureManager(world);
+    const manager = createCreatureManager(world, { autoHatch: true });
     expect(manager.spawn('egg-on-rock', snowman, { hatchMs: 60_000 })).toBe(true);
     const [egg] = manager.positions();
     expect(egg).toBeDefined();
@@ -121,7 +121,7 @@ describe('spawn placement', () => {
 
   it('keeps a second egg clear of the first when spots collide', () => {
     const world = stubWorld([]);
-    const manager = createCreatureManager(world);
+    const manager = createCreatureManager(world, { autoHatch: true });
     manager.spawn('first', snowman, { hatchMs: 60_000 });
     manager.spawn('second', circleBlob, { hatchMs: 60_000 });
     const [a, b] = manager.positions();
@@ -142,7 +142,7 @@ describe('live population — nothing ever interpenetrates', () => {
       { x: -4, z: 7, r: 1.0, hard: false }, // a bush — soft, never blocks
     ];
     const world = stubWorld(props);
-    const manager = createCreatureManager(world);
+    const manager = createCreatureManager(world, { autoHatch: true });
 
     let now = performance.now();
     manager.spawn('a', snowman, { name: 'a', hatchMs: 0, personality: 'friends' });
@@ -211,7 +211,7 @@ describe('manual move — the gizmo owns a held creature', () => {
     manager: ReturnType<typeof createCreatureManager>;
     root: Group;
   } {
-    const manager = createCreatureManager(stubWorld([ROCK]));
+    const manager = createCreatureManager(stubWorld([ROCK]), { autoHatch: true });
     let now = performance.now();
     manager.spawn('held', snowman, { name: 'held', hatchMs: 0 });
     for (let i = 0; i < 200 && manager.hoverTargets().length < 1; i++) {
@@ -256,7 +256,7 @@ describe('manual move — the gizmo owns a held creature', () => {
   });
 
   it('a held creature is still an obstacle: neighbors part around it', () => {
-    const manager = createCreatureManager(stubWorld([]));
+    const manager = createCreatureManager(stubWorld([]), { autoHatch: true });
     let now = performance.now();
     manager.spawn('held', snowman, { name: 'held', hatchMs: 0 });
     manager.spawn('free', circleBlob, { name: 'free', hatchMs: 0 });

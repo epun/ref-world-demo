@@ -86,6 +86,7 @@ function recordedWorld(): {
     now: () => clock,
   });
   const creatures = createCreatureManager(stubWorld(), {
+    autoHatch: true,
     observer: recordCreatures(recorder),
   });
   const gate = createIngestGate<WorldDrawing>({
@@ -277,6 +278,7 @@ describe('replay against the live world', () => {
       now: () => 0,
     });
     const fresh = createCreatureManager(stubWorld(), {
+    autoHatch: true,
       observer: recordCreatures(replayRecorder),
     });
     replayNow(log, replayDriverFor(fresh));
@@ -302,7 +304,7 @@ describe('replay against the live world', () => {
     expect(new Set(recordedCensus.shapes).size).toBe(2);
 
     const log = parseSessionLog(w.recorder.toJson())!;
-    const fresh = createCreatureManager(stubWorld());
+    const fresh = createCreatureManager(stubWorld(), { autoHatch: true });
     replayNow(log, replayDriverFor(fresh));
     run(fresh, 420);
     expect(census(fresh)).toEqual(recordedCensus);
@@ -318,7 +320,7 @@ describe('replay against the live world', () => {
     expect(w.creatures.has('gone')).toBe(false);
 
     const log = parseSessionLog(w.recorder.toJson())!;
-    const fresh = createCreatureManager(stubWorld());
+    const fresh = createCreatureManager(stubWorld(), { autoHatch: true });
     replayNow(log, replayDriverFor(fresh));
     expect(fresh.has('keep')).toBe(true);
     expect(fresh.has('gone')).toBe(false);

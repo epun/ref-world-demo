@@ -69,8 +69,23 @@ const KEY_ENTER_TRAVEL_PX = 6;
  * satellite stagger (PHONE-STAGE §3): t.tertiary / 4. */
 const KEY_STAGGER_MS = MOTION.tertiaryMs / 4;
 
-export const DEVICE_TOP_AIR_PX = 18;
+export const DEVICE_TOP_AIR_PX = 42;
 export const DEVICE_BOTTOM_AIR_PX = 10;
+
+/**
+ * The screen is a 3d object, not a document.
+ *
+ * User report: dragging to rotate highlighted the whole well like a text
+ * selection, because the creature's name sits in the brow and a drag over
+ * type is a selection gesture to the browser. Nothing inside the well is
+ * selectable text — it is a display showing an object you turn — so the
+ * selection and the ios callout are both off, and the drag reads as a drag.
+ */
+const NO_SELECT = `
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+`;
 
 /**
  * Screen well, usable inner area: viewBox x 15..85, y 38..124.
@@ -228,7 +243,7 @@ function ensureStyle(): void {
   -webkit-user-drag: none;
 }
 /* The screen well. The stage mounts in here and owns everything inside. */
-.device-well {
+.device-well {${NO_SELECT}
   position: absolute;
   left: ${pct(DEVICE_WELL.leftPct)};
   top: ${pct(DEVICE_WELL.topPct)};

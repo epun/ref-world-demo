@@ -51,6 +51,25 @@ export const MAX_POPULATION = 24;
 const EGG_SHADOW_FIT = 0.85;
 
 /** Pre-hatch crack teaser share of the crack scrub. */
+/**
+ * Auto-hatch on the egg's own timer.
+ *
+ * OFF for the demo (user, 2026-08-20: *"I only want the eggs to hatch when I
+ * switch to the 3D world and I press H … let's disable the timer for now for
+ * demo purposes, but let's keep the code"*). The timer code below is intact
+ * and still drives the crack/wobble teaser — only the firing is gated, so
+ * turning this back on restores the old behaviour exactly.
+ */
+const AUTO_HATCH = false;
+
+/**
+ * Gap between eggs when hatchAll() fires. They should not all break at the
+ * same instant — a room of eggs opening in one frame reads as a switch being
+ * thrown, and the moment is worth more spread out. One t.tertiary apart, so
+ * the beat comes from the token scale rather than a picked number.
+ */
+const HATCH_STAGGER_MS = MOTION.tertiaryMs;
+
 const CRACK_TEASER = 0.3;
 
 /**
@@ -190,6 +209,8 @@ type Phase = 'egg' | 'hatching' | 'alive' | 'retiring';
 interface Slot {
   id: string;
   name: string | null;
+  /** When a staggered hatchAll() has scheduled this egg. null = not queued. */
+  forcedHatchAtMs: number | null;
   phase: Phase;
   spot: { x: number; z: number };
   egg: Egg | null;
@@ -249,6 +270,13 @@ export interface CreatureObserver {
 export interface CreatureManagerOptions {
   /** Session recorder (or any witness). Optional. */
   observer?: CreatureObserver;
+  /**
+   * Let eggs hatch on their own timer. Defaults to AUTO_HATCH — off, for
+   * the demo (see the constant). The timer code is untouched and still runs
+   * the crack/wobble teaser; this only gates the firing, so passing true
+   * restores the old behaviour exactly, which is what the tests do.
+   */
+  autoHatch?: boolean;
 }
 
 export interface CreatureManager {
@@ -309,6 +337,7 @@ export function createCreatureManager(
   options: CreatureManagerOptions = {},
 ): CreatureManager {
   const observer = options.observer;
+  const autoHatch = options.autoHatch ?? AUTO_HATCH;
   const slots = new Map<string, Slot>();
   let orderCounter = 0;
   let timersPaused = false;
@@ -512,6 +541,7 @@ export function createCreatureManager(
         // derived from the identity id, so it is the same on every device
         // and reproduces exactly on replay (src/creatures/naming.ts).
         name: resolveName(opts.name, id),
+        forcedHatchAtMs: null,
         phase: 'egg',
         spot,
         egg,
@@ -549,8 +579,16 @@ export function createCreatureManager(
     },
 
     hatchAll(): void {
+      // Queued, not fired: each egg gets its own moment, HATCH_STAGGER_MS
+      // apart in spawn order. The update loop opens them as their turn
+      // arrives, so this stays frame-driven — no timers to leak, and the
+      // session recorder sees the same `forced` hatches it always did.
+      const nowMs = performance.now();
+      let index = 0;
       for (const slot of slots.values()) {
-        if (slot.phase === 'egg') beginHatch(slot, 'forced');
+        if (slot.phase !== 'egg' || slot.forcedHatchAtMs !== null) continue;
+        slot.forcedHatchAtMs = nowMs + index * HATCH_STAGGER_MS;
+        index++;
       }
     },
 
@@ -661,7 +699,13 @@ export function createCreatureManager(
             const p = total <= 0 ? 1 : Math.min(1, (nowMs - slot.bornMs) / total);
             slot.egg.setHatchProgress(p);
             slot.egg.crack(CRACK_TEASER * smoothstep(0.62, 1, p));
-            if (p >= 1) beginHatch(slot, 'timer');
+            // A queued hatchAll() opens this one when its turn comes.
+            if (slot.forcedHatchAtMs !== null && nowMs >= slot.forcedHatchAtMs) {
+              slot.forcedHatchAtMs = null;
+              beginHatch(slot, 'forced');
+            } else if (autoHatch && p >= 1) {
+              beginHatch(slot, 'timer');
+            }
           }
         }
 
