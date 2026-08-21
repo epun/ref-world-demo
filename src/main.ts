@@ -180,6 +180,7 @@ function main(): void {
       hatch(id, cause) {
         recorder.hatch(id, cause);
         feed?.publishToPhones({ type: 'hatched', to: id, epoch });
+        saveSession();
       },
     },
   });
@@ -288,6 +289,53 @@ function main(): void {
     driver: replayDriver,
   };
   (window as Window & { __refworldSession?: unknown }).__refworldSession = sessionApi;
+
+  /**
+   * Autosave the session log to localStorage (recovery, 2026-08-20).
+   *
+   * The recorder was memory-only, so a refresh of the projection took the
+   * whole population with it — the one failure the log most needed to
+   * survive was the one that erased it. It is written after every drawing
+   * now, which is the event that actually matters and is rare enough that
+   * the cost is nothing.
+   *
+   * The previous session's log survives under its own epoch key, so a
+   * refresh leaves the old one recoverable rather than immediately
+   * overwriting it with an empty new one.
+   */
+  const SESSION_SAVE_PREFIX = 'refworld:session:';
+  const saveSession = (): void => {
+    try {
+      localStorage.setItem(SESSION_SAVE_PREFIX + epoch, sessionApi.json());
+      localStorage.setItem('refworld:session:latest', epoch);
+    } catch {
+      /* quota or private mode — the log is still in memory and downloadable */
+    }
+  };
+  /** Every autosaved session, newest first, for the panel and the console. */
+  (window as Window & { __refworldSessions?: unknown }).__refworldSessions = (): {
+    epoch: string;
+    events: number;
+    json: string;
+  }[] => {
+    const out: { epoch: string; events: number; json: string }[] = [];
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key === null || !key.startsWith(SESSION_SAVE_PREFIX)) continue;
+        const json = localStorage.getItem(key);
+        if (json === null) continue;
+        const parsed: unknown = JSON.parse(json);
+        const events = Array.isArray((parsed as { events?: unknown }).events)
+          ? ((parsed as { events: unknown[] }).events.length)
+          : 0;
+        out.push({ epoch: key.slice(SESSION_SAVE_PREFIX.length), events, json });
+      }
+    } catch {
+      /* unreadable store — report what we managed to read */
+    }
+    return out.sort((a, b) => b.events - a.events);
+  };
 
   // ── presentation tour (GENERATOR §scale+camera, PLAN §7.1) ────────────────
   // Autonomous drift between clusters, lone wanderers, and wide scenic beats.
@@ -399,6 +447,22 @@ function main(): void {
   // The world answers phones on the kit's down topic: a verdict for the
   // drawer who asked, and the session id it belongs to.
   let feed: Awaited<ReturnType<typeof connectWorldFeed>> = null;
+  /**
+   * Call every handset's drawing back (recovery, 2026-08-20).
+   *
+   * The session log lives in memory, so a refresh of the projection loses
+   * the population. Every handset still holds its own drawing in
+   * localStorage, and src/shape/ + src/inflate/ are pure — so re-publishing
+   * those strokes under the same id rebuilds the IDENTICAL creatures, not
+   * approximations. This asks them all to do that at once.
+   *
+   * Safe to press twice: the manager replaces a slot with the same id
+   * rather than adding one, so a duplicate re-send is a no-op.
+   */
+  const recallDrawings = (): void => {
+    feed?.publishToPhones({ type: 'recall', epoch });
+  };
+
   const tellPhone = (to: string, entry: { disposition: string; reason: string | null }): void => {
     feed?.publishToPhones({
       type: 'verdict',
@@ -415,6 +479,8 @@ function main(): void {
     room,
     onDrawing: (d) => {
       const entry = gate.offer({ ...d, hatchMs: HATCH_TIMER_MS, source: 'phone' });
+      // A drawing is the event worth surviving a refresh — save on each one.
+      saveSession();
       // Tell the drawer, on their own handset, when their drawing will
       // never appear (user ask). Still nothing on the projection: the
       // refusal is private to the person who made it.
@@ -483,6 +549,12 @@ function main(): void {
     // Other shifted presses belong to the dev surface (ghost panel toggles
     // on shift+d); plain d keeps the draw overlay.
     if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+    // r — call back every drawing the handsets still hold. The one way to
+    // rebuild a population after the projection was refreshed.
+    if (event.key === 'r' && !overlayOpen) {
+      recallDrawings();
+      return;
+    }
     if (event.key === 'd') {
       if (overlayOpen) closeOverlay();
       else openOverlay();

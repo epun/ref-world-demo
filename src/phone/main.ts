@@ -355,6 +355,16 @@ async function boot(): Promise<void> {
   // edge, rather than waiting for the local session's own timer to come
   // round. Guarded like the state path: only from the egg, and only when
   // this handset actually has a drawing in flight.
+  // The world lost its population and is asking for it back. This handset
+  // still has its own drawing; re-publishing the same strokes under the
+  // same id rebuilds the identical creature (src/shape/ and src/inflate/
+  // are pure — PLAN §6.3). Nothing is re-drawn and nothing is invented.
+  uplink?.onRecall(() => {
+    if (room.length === 0) return;
+    const mine = readSubmission(room);
+    if (!mine) return;
+    uplink.resend({ id: mine.id, name: mine.name, strokes: mine.strokes });
+  });
   uplink?.onHatched(() => {
     if (machine.state !== 'alive' && strokes.length > 0) hatch();
   });
@@ -373,7 +383,16 @@ async function boot(): Promise<void> {
     // longer exists (user ask).
     if (room.length === 0 || told) return;
     if (!isStale(readSubmission(room), worldEpoch)) return;
-    clearSubmission(room);
+    // NOT cleared (recovery, 2026-08-20). This used to delete the record
+    // and send the person to a blank pad, which meant a REFRESH of the
+    // projection destroyed every drawing on every handset the moment it
+    // reconnected — the one copy that survives a world restart, thrown
+    // away by the code that noticed the restart.
+    //
+    // The record stays. The handset is still free to draw again, and if
+    // the world calls a recall (onRecall below) this drawing can be
+    // re-published and the creature rebuilt exactly, because the pipeline
+    // is deterministic in (strokes, id).
     location.replace(`/draw/?room=${room}&w=${worldEpoch}`);
   });
 

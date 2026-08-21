@@ -80,6 +80,19 @@ export interface PhoneLink {
    * the same edge.
    */
   onHatched(handler: () => void): void;
+  /**
+   * The world asked every handset to re-send its drawing.
+   *
+   * RECOVERY (2026-08-20): the world's session log lives in memory, so a
+   * refresh of the projection loses the population — but every handset
+   * still holds its own drawing in localStorage, and the pipeline is
+   * deterministic, so re-publishing those strokes under the same id
+   * rebuilds the exact same creatures. This is the channel that asks.
+   */
+  onRecall(handler: () => void): void;
+  /** Re-publish a drawing this handset already sent, in the kit's own wire
+   * shape so the world's feed ingests it exactly as it did the first time. */
+  resend(payload: { id: string; name: string | null; strokes: unknown[] }): void;
   dispose(): void;
 }
 
@@ -107,6 +120,7 @@ export function createPhoneLink(
   let client: MqttClientLike | null = null;
   const verdictHandlers: ((v: Verdict) => void)[] = [];
   const hatchedHandlers: (() => void)[] = [];
+  const recallHandlers: (() => void)[] = [];
   const epochHandlers: ((epoch: string) => void)[] = [];
   // The world answers a hello within a round trip, while the phone is still
   // mounting its screens (a webgl screen easily takes longer than the
@@ -116,6 +130,7 @@ export function createPhoneLink(
   // slow handset. Only the latest of each is worth keeping.
   let heldVerdict: Verdict | null = null;
   let heldHatched = false;
+  let heldRecall = false;
   let heldEpoch: string | null = null;
 
   try {
@@ -173,6 +188,12 @@ export function createPhoneLink(
         if (epochHandlers.length === 0) heldEpoch = epoch;
         else for (const h of epochHandlers) h(epoch);
       }
+      if (readRecall(msg)) {
+        // Held like the rest: a recall that arrives before this screen has
+        // registered its handler must not be the one that gets away.
+        if (recallHandlers.length === 0) heldRecall = true;
+        else for (const h of recallHandlers) h();
+      }
       if (readHatched(msg, from)) {
         // Held like a verdict: the world can call the hatch before this
         // screen has registered its handler, and a missed hatch would
@@ -191,6 +212,33 @@ export function createPhoneLink(
     },
     hello(): void {
       publish({ type: 'hello' });
+    },
+    onRecall(handler): void {
+      recallHandlers.push(handler);
+      if (heldRecall) {
+        heldRecall = false;
+        handler();
+      }
+    },
+    resend(payload): void {
+      if (!client) return;
+      // The kit's wire shape, NOT the emote envelope: the world's feed
+      // reads {id, name, strokes, ts} and must ingest this exactly as it
+      // ingested the original publish from the draw page.
+      try {
+        client.publish(
+          topic,
+          JSON.stringify({
+            id: payload.id,
+            name: payload.name ?? '',
+            strokes: payload.strokes,
+            ts: Date.now(),
+          }),
+          { qos: 0 },
+        );
+      } catch {
+        /* offline — nothing to recover from this handset */
+      }
     },
     onHatched(handler): void {
       hatchedHandlers.push(handler);
@@ -244,6 +292,12 @@ export function readVerdict(msg: unknown, me: string): Verdict | null {
 }
 
 /** The world session id carried by any world → phone message, or null. */
+/** A broadcast recall: every handset re-sends what it already drew. */
+export function readRecall(msg: unknown): boolean {
+  if (typeof msg !== 'object' || msg === null) return false;
+  return (msg as { type?: unknown }).type === 'recall';
+}
+
 /** A `hatched` message addressed to this drawer. */
 export function readHatched(msg: unknown, me: string): boolean {
   if (typeof msg !== 'object' || msg === null) return false;
