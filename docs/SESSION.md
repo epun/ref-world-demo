@@ -168,16 +168,66 @@ __refworldSession.log()               // the log object
 __refworldSession.json()              // the log as json
 __refworldSession.replay(json, { speed: 4 })   // clear the world and re-drive it
 __refworldSession.stopReplay()
+__refworldSession.restore(json)       // the WHOLE log at once — see §4a
+__refworldRestore()                   // restore this machine's last session
 ```
 
 ### from the ghost panel (shift+d → `session`)
 
 - a readout: event count, session length, and counts by kind;
+- **restore last session** — the recovery button, see §4a;
+- **restore from a log file** — the same, from a downloaded json;
 - **download session log** — writes `session-<epoch>.json`;
-- **replay a session log** — pick a saved json and re-drive this world with it.
+- **replay a session log (at its recorded pace)** — re-drive this world with it.
 
 The panel is the only dev-gated part. **The recorder itself ships in every build** — a live
 event is exactly when you want the log.
+
+---
+
+## 4a. Restore — recovery, which is not replay
+
+> User report, 2026-08-20: *"chrome refreshed is there any way to recover the session where
+> people added their character"* — *"no i want to recover it."*
+
+A **replay** re-runs a session at the pace it was recorded. That is right for watching a
+session back and wrong for getting a refreshed projection its population back: press it on
+an hour-long log and the world sits empty for minutes while the panel says it is working.
+
+A **restore** walks the same log with `replayNow` — every spawn, hatch, emote and removal
+applied at once — so the world lands in the state the log ends in. Same driver, same
+recorded decisions, same ids. The pipeline is pure in `(strokes, id)`, so these are the
+**identical** creatures, not lookalikes.
+
+There are three copies of a drawing at any moment, and recovery tries them in the order
+that asks least of the room:
+
+| copy | where | how it comes back |
+|---|---|---|
+| the world's log | `localStorage` on the projection machine, written after every drawing and every hatch | **`r`**, or the panel's *restore last session*. Instant, offline, needs nobody |
+| the handset's record | `localStorage` on each phone | the phone **re-homes itself** the moment it hears a new epoch (below); **`r`** also broadcasts a recall |
+| the downloaded json | wherever it was saved | the panel's *restore from a log file* |
+
+`r` runs the first and broadcasts the second. Both are idempotent in the creature id — the
+manager replaces a slot rather than adding one — so running both is safe.
+
+**Fullest, not newest.** A refresh mints a new epoch and immediately starts an empty log, so
+"most recent" is reliably the one with nothing in it. Restore picks the log from a *previous*
+epoch with the most events.
+
+### the handsets re-home themselves
+
+When the world restarts it announces a new epoch. A handset holding a drawing from the old
+one used to be sent back to a blank pad — and the record was **deleted on the way out**. That
+was the single most destructive line in the project: the one copy of a drawing that survives
+a projection restart, thrown away by the code that noticed the restart. There were two of
+them, one in `src/phone/main.ts` and one in `public/draw/index.html`, and they are both gone
+(`test/session/recovery.test.ts` pins that).
+
+Now the handset re-publishes instead, under the same id, and adopts the new epoch. The
+population rebuilds itself within seconds of a refresh, with nobody pressing anything. Beyond
+`REHOME_WINDOW_MS` (6 hours) it stops — a drawing from yesterday is not walked into a new
+session — but even then the record is kept, so a recall can still ask for it.
 
 ---
 

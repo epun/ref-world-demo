@@ -23,10 +23,12 @@ import { createIngestGate } from './moderation/gate';
 import { EMOTE_NAMES, isRoomCode, roomCode, type EmoteName } from './net/protocol';
 import {
   createSessionRecorder,
+  expectedCreatures,
   parseSessionLog,
   readSessionLog,
   recordCreatures,
   recordGate,
+  replayNow,
   replaySession,
   type DrawingSource,
   type ReplayDriver,
@@ -286,6 +288,30 @@ function main(): void {
       return replayHandle;
     },
     stopReplay: () => replayHandle?.stop(),
+    /**
+     * RESTORE, not replay (recovery, 2026-08-21).
+     *
+     * A replay re-runs a session at the pace it was recorded — the right
+     * thing for watching a session back, and the wrong thing for getting a
+     * refreshed projection its population back, where a log spanning an
+     * hour would trickle creatures in over an hour. Restore walks the same
+     * log with `replayNow`: every spawn, hatch, emote and removal applied
+     * at once, so the world lands in the state the log ends in.
+     *
+     * Same driver, same decisions, same ids — the pipeline is pure in
+     * (strokes, id), so these are the identical creatures, not lookalikes.
+     * Returns how many are standing, or null when the log will not parse.
+     */
+    restore: (input: string | SessionLog | unknown): number | null => {
+      const log =
+        typeof input === 'string' ? parseSessionLog(input) : readSessionLog(input);
+      if (!log) return null;
+      replayHandle?.stop();
+      replayHandle = null;
+      creatures.clearAll();
+      replayNow(log, replayDriver);
+      return expectedCreatures(log).length;
+    },
     driver: replayDriver,
   };
   (window as Window & { __refworldSession?: unknown }).__refworldSession = sessionApi;
@@ -304,10 +330,16 @@ function main(): void {
    * overwriting it with an empty new one.
    */
   const SESSION_SAVE_PREFIX = 'refworld:session:';
+  // NOT under SESSION_SAVE_PREFIX. It used to be `refworld:session:latest`,
+  // which the scan below then read as a saved log and handed to JSON.parse —
+  // an epoch is not json, the parse threw, and the throw took every real
+  // entry after it out of the list with it. A pointer and the things it
+  // points at do not share a namespace.
+  const SESSION_LATEST_KEY = 'refworld:session-latest';
   const saveSession = (): void => {
     try {
       localStorage.setItem(SESSION_SAVE_PREFIX + epoch, sessionApi.json());
-      localStorage.setItem('refworld:session:latest', epoch);
+      localStorage.setItem(SESSION_LATEST_KEY, epoch);
     } catch {
       /* quota or private mode — the log is still in memory and downloadable */
     }
@@ -325,10 +357,17 @@ function main(): void {
         if (key === null || !key.startsWith(SESSION_SAVE_PREFIX)) continue;
         const json = localStorage.getItem(key);
         if (json === null) continue;
-        const parsed: unknown = JSON.parse(json);
-        const events = Array.isArray((parsed as { events?: unknown }).events)
-          ? ((parsed as { events: unknown[] }).events.length)
-          : 0;
+        // Per-entry, so one unreadable row cannot take the rest of the
+        // list with it — the whole point of a recovery list is that it
+        // still works when something in the store is wrong.
+        let events = 0;
+        try {
+          const parsed: unknown = JSON.parse(json);
+          if (!Array.isArray((parsed as { events?: unknown }).events)) continue;
+          events = (parsed as { events: unknown[] }).events.length;
+        } catch {
+          continue;
+        }
         out.push({ epoch: key.slice(SESSION_SAVE_PREFIX.length), events, json });
       }
     } catch {
@@ -336,6 +375,35 @@ function main(): void {
     }
     return out.sort((a, b) => b.events - a.events);
   };
+  const listSessions = (): { epoch: string; events: number; json: string }[] =>
+    (
+      window as Window & {
+        __refworldSessions?: () => { epoch: string; events: number; json: string }[];
+      }
+    ).__refworldSessions?.() ?? [];
+
+  /**
+   * Bring back the last population WITHOUT the handsets (recovery, 2026-08-21).
+   *
+   * The recall on `r` asks every phone to re-publish, which needs the phones
+   * to be awake, in earshot and still holding their drawing. This path needs
+   * none of them: the projection wrote its own log to localStorage after
+   * every drawing and every hatch, so the fullest log from a PREVIOUS epoch
+   * is the population, and restoring it is a local operation.
+   *
+   * Fullest, not newest: a refresh mints a new epoch and immediately starts
+   * an empty log, so "most recent" is reliably the one with nothing in it.
+   * Returns the number of creatures restored — 0 when there is nothing to
+   * restore, which is not a failure.
+   */
+  const restoreLastSession = (): number => {
+    const mine = listSessions().filter((s) => s.epoch !== epoch && s.events > 0);
+    const best = mine[0];
+    if (!best) return 0;
+    return sessionApi.restore(best.json) ?? 0;
+  };
+  (window as Window & { __refworldRestore?: unknown }).__refworldRestore =
+    restoreLastSession;
 
   // ── presentation tour (GENERATOR §scale+camera, PLAN §7.1) ────────────────
   // Autonomous drift between clusters, lone wanderers, and wide scenic beats.
@@ -418,6 +486,12 @@ function main(): void {
         // for it is (src/session/, docs/SESSION.md).
         session,
         replaySession: (json) => sessionApi.replay(json) !== null,
+        restoreSession: (json) => sessionApi.restore(json),
+        restoreLastSession: () => {
+          const n = restoreLastSession();
+          if (n > 0) saveSession();
+          return n;
+        },
         spawnFallback: (n) => {
           for (let i = 0; i < n; i++) {
             const strokes = m.FALLBACK_DRAWINGS[fallbackIndex % m.FALLBACK_DRAWINGS.length];
@@ -549,10 +623,21 @@ function main(): void {
     // Other shifted presses belong to the dev surface (ghost panel toggles
     // on shift+d); plain d keeps the draw overlay.
     if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
-    // r — call back every drawing the handsets still hold. The one way to
-    // rebuild a population after the projection was refreshed.
+    // r — rebuild the population after the projection was refreshed. TWO
+    // sources, tried in the order that needs the least of the room:
+    //
+    //   1. this machine's own autosaved log — instant, offline, needs
+    //      nobody to be holding a phone;
+    //   2. a recall to every handset, for anything the log missed (a
+    //      drawing that arrived after the last save, a session logged on a
+    //      different machine).
+    //
+    // Both are idempotent in the creature id, so running both is safe: the
+    // manager replaces a slot with the same id rather than adding one.
     if (event.key === 'r' && !overlayOpen) {
+      const restored = restoreLastSession();
       recallDrawings();
+      if (restored > 0) saveSession();
       return;
     }
     if (event.key === 'd') {

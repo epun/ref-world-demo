@@ -19,7 +19,13 @@ import { mountDraw } from './screens/draw';
 import { mountWaitScreen, type WaitScreenHandle } from './screens/wait';
 import { hatchPulse } from './haptics';
 import { resolveName } from '../creatures/naming';
-import { clearSubmission, drawerId, isStale, readSubmission } from './identity';
+import {
+  clearSubmission,
+  drawerId,
+  isStale,
+  readSubmission,
+  writeSubmission,
+} from './identity';
 import { createSession } from './session';
 import { SPIN_REST, type SpinState } from './spin';
 import {
@@ -351,6 +357,15 @@ async function boot(): Promise<void> {
   // from under them — the staleness check below would otherwise redirect on
   // the very message that carries the refusal.
   let told = false;
+  /** The world this handset last heard from, for a resend to address. */
+  let lastWorldEpoch: string | null = null;
+  /**
+   * How stale a drawing may be and still re-home itself into a restarted
+   * world. A projection refresh is a matter of seconds and this covers a
+   * whole evening of it; a handset opened the next morning is a new
+   * session and its creature stays retired.
+   */
+  const REHOME_WINDOW_MS = 6 * 60 * 60 * 1000;
   // The world opened this drawer's egg — play the hatch NOW, on the same
   // edge, rather than waiting for the local session's own timer to come
   // round. Guarded like the state path: only from the egg, and only when
@@ -359,11 +374,28 @@ async function boot(): Promise<void> {
   // still has its own drawing; re-publishing the same strokes under the
   // same id rebuilds the identical creature (src/shape/ and src/inflate/
   // are pure — PLAN §6.3). Nothing is re-drawn and nothing is invented.
-  uplink?.onRecall(() => {
-    if (room.length === 0) return;
+  /**
+   * Hand this handset's drawing back to the world, under the same id.
+   *
+   * `epoch` is the world it is going into — the record adopts it, so the
+   * staleness check does not fire again a second later and bounce the
+   * person off a creature that now exists. Returns whether anything was
+   * sent.
+   */
+  const resendMine = (epoch: string | null): boolean => {
+    if (room.length === 0) return false;
     const mine = readSubmission(room);
-    if (!mine) return;
-    uplink.resend({ id: mine.id, name: mine.name, strokes: mine.strokes });
+    if (!mine) return false;
+    uplink?.resend({ id: mine.id, name: mine.name, strokes: mine.strokes });
+    if (epoch !== null && epoch.length > 0) {
+      writeSubmission(room, { ...mine, epoch });
+    }
+    return true;
+  };
+  uplink?.onRecall(() => {
+    // The recall carries no epoch of its own; the last `world` message did,
+    // and that is the world asking.
+    resendMine(lastWorldEpoch);
   });
   uplink?.onHatched(() => {
     if (machine.state !== 'alive' && strokes.length > 0) hatch();
@@ -377,22 +409,29 @@ async function boot(): Promise<void> {
     showGuidelineNotice(drawAgain);
   });
   uplink?.onWorldEpoch((worldEpoch) => {
-    // The world running now is not the one this drawing went into: that
-    // world is gone and took every creature with it, so this handset is
-    // free to draw again rather than being held to a creature that no
-    // longer exists (user ask).
+    lastWorldEpoch = worldEpoch;
     if (room.length === 0 || told) return;
-    if (!isStale(readSubmission(room), worldEpoch)) return;
-    // NOT cleared (recovery, 2026-08-20). This used to delete the record
-    // and send the person to a blank pad, which meant a REFRESH of the
-    // projection destroyed every drawing on every handset the moment it
-    // reconnected — the one copy that survives a world restart, thrown
-    // away by the code that noticed the restart.
+    const mine = readSubmission(room);
+    if (!isStale(mine, worldEpoch)) return;
+    // The world running now is not the one this drawing went into. That
+    // used to mean one thing — the creature is gone, send the person back
+    // to a blank pad — and the record was deleted on the way out. It was
+    // the single most destructive line in the project: the ONE copy of a
+    // drawing that survives a projection restart, thrown away by the code
+    // that noticed the restart (recovery, 2026-08-20).
     //
-    // The record stays. The handset is still free to draw again, and if
-    // the world calls a recall (onRecall below) this drawing can be
-    // re-published and the creature rebuilt exactly, because the pipeline
-    // is deterministic in (strokes, id).
+    // Now the handset heals it instead. The pipeline is pure in
+    // (strokes, id), so re-publishing the same strokes under the same id
+    // rebuilds the IDENTICAL creature in the new world — no recall needed,
+    // no operator, nobody has to touch anything. The person keeps watching
+    // their companion and never learns the projection blinked.
+    if (mine && Date.now() - mine.ts < REHOME_WINDOW_MS && resendMine(worldEpoch)) {
+      return;
+    }
+    // Beyond the window this really is a new session on a later day, and a
+    // drawing from yesterday should not walk into it. The record still is
+    // not deleted — a recall can still ask for it — but the person is free
+    // to draw again.
     location.replace(`/draw/?room=${room}&w=${worldEpoch}`);
   });
 

@@ -806,11 +806,13 @@
     function alreadyDrew() {
       const rec = storedSubmission();
       if (!rec) return false;
-      if (staleRecord(rec)) {
-        // That world is gone; forget the creature it held.
-        try { localStorage.removeItem(SUBMISSION_KEY); } catch {}
-        return false;
-      }
+      // A stale record does NOT free the pad by being deleted (recovery,
+      // 2026-08-21). This used to remove it, which meant the one surviving
+      // copy of a drawing was destroyed by the very page a restarted world
+      // sent people to. The record stays where it is; the person is simply
+      // let through to draw again, and until they actually send something
+      // the old drawing is still here for a recall to hand back.
+      if (staleRecord(rec)) return false;
       return true;
     }
     function goToCompanion() {
@@ -942,7 +944,18 @@
       // two-way: the scene can push messages back to phones (e.g. an ack, a prompt)
       client.on('message', (t, payload) => {
         if (t !== UP_TOPIC) return;
-        try { const m = JSON.parse(payload.toString()); if (m && m.text) showToast(m.text); } catch {}
+        try {
+          const m = JSON.parse(payload.toString());
+          if (!m) return;
+          // The world lost its population and is asking for it back. This
+          // page is where a handset LANDS after a restart (the companion
+          // bounces here on a stale epoch), so the recall has to be
+          // answered from here too or the phones that most need to answer
+          // are the ones that cannot. Same id, same strokes — the pipeline
+          // is pure, so the world rebuilds the identical creature.
+          if (m.type === 'recall') { answerRecall(m.epoch || null); return; }
+          if (m.text) showToast(m.text);
+        } catch {}
       });
     } catch (err) { setStatus('off', 'no realtime'); }
 
@@ -1058,6 +1071,33 @@
       setState('refused');
       openModal(document.getElementById('refused'));
       return true;
+    }
+
+    /**
+     * Hand this handset's stored drawing back to a world that asked for it.
+     *
+     * Recovery only — it re-publishes a record that already exists and
+     * invents nothing. The record adopts the epoch it was handed back into,
+     * so the handset stops counting as stale and goes to the companion to
+     * watch the creature it just rebuilt.
+     */
+    function answerRecall(epoch) {
+      const rec = storedSubmission();
+      if (!rec || !rec.strokes || !rec.strokes.length || !connected) return;
+      try {
+        client.publish(TOPIC, JSON.stringify({
+          id: rec.id, name: rec.name || '', strokes: rec.strokes, ts: Date.now(),
+        }), { qos: 0 });
+      } catch { return; }
+      const use = epoch || WORLD_EPOCH || null;
+      try {
+        localStorage.setItem(SUBMISSION_KEY, JSON.stringify({ ...rec, epoch: use }));
+      } catch {}
+      // Only leave the pad if nothing has been drawn on it — a person part
+      // way through a new drawing is not navigated out from under.
+      if (!strokes.length) {
+        location.replace('/phone.html?room=' + room + (use ? '&w=' + use : ''));
+      }
     }
 
     function publish() {

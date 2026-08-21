@@ -149,6 +149,14 @@ export interface DevHandles {
   /** Replay a session log json into this world (src/main.ts). Returns false
    * when the text is not a log this build understands. */
   replaySession?(json: string): boolean;
+  /** RESTORE a session log json — the whole log applied at once, so the
+   * world lands in the state it ends in. The recovery path; a replay is for
+   * watching a session back. Returns the creature count, or null on a log
+   * this build cannot read. */
+  restoreSession?(json: string): number | null;
+  /** Restore the fullest autosaved log from a PREVIOUS epoch on this
+   * machine — the `r` key's own path. Returns how many came back. */
+  restoreLastSession?(): number;
 }
 
 /** Offscreen readback resolution for the pixel gates. */
@@ -799,9 +807,53 @@ export async function initDevPanel(
         URL.revokeObjectURL(url);
       });
 
+      // RECOVERY, first: after a refresh of the projection this is the
+      // button that matters, and it must not be below a replay control that
+      // looks like it does the same thing. A replay re-runs a session at
+      // the pace it was recorded — press it on an hour-long log and the
+      // world stays empty for minutes while the panel says it is working.
+      // Restore applies the whole log at once.
+      const restoreLast = handles.restoreLastSession;
+      if (restoreLast) {
+        folder.addButton('restore last session', () => {
+          const n = restoreLast();
+          folder
+            .get('session-readout')
+            ?.setText?.(
+              n > 0
+                ? `restored ${n} creature${n === 1 ? '' : 's'} from the last session`
+                : 'nothing autosaved on this machine to restore',
+            );
+        });
+      }
+
+      const restoreLog = handles.restoreSession;
+      if (restoreLog) {
+        folder.addButton('restore from a log file', () => {
+          const input = document.createElement('input');
+          input.type = 'file';
+          input.accept = 'application/json,.json';
+          input.addEventListener('change', () => {
+            const file = input.files?.[0];
+            if (!file) return;
+            void file.text().then((text) => {
+              const n = restoreLog(text);
+              folder
+                .get('session-readout')
+                ?.setText?.(
+                  n === null
+                    ? 'not a session log this build reads'
+                    : `restored ${n} creature${n === 1 ? '' : 's'}`,
+                );
+            });
+          });
+          input.click();
+        });
+      }
+
       const replayLog = handles.replaySession;
       if (replayLog) {
-        folder.addButton('replay a session log', () => {
+        folder.addButton('replay a session log (at its recorded pace)', () => {
           const input = document.createElement('input');
           input.type = 'file';
           input.accept = 'application/json,.json';
