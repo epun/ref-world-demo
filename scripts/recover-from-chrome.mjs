@@ -73,19 +73,34 @@ function expand(p) {
 }
 
 /**
- * Every complete json object in `text` that starts at a `{` whose following
- * bytes match `head`. Brace-matched with string awareness, so a `}` inside a
- * name does not truncate a record.
+ * The longest record we will try to brace-match. A drawing's stroke json runs
+ * to tens of kilobytes; a whole session log to a few megabytes. Past this a
+ * candidate is binary noise that happened to contain the head, and scanning
+ * on costs more than the record could ever be worth.
+ */
+const MAX_RECORD_CHARS = 4_000_000;
+
+/**
+ * Every complete json object in `text` beginning with `head`.
+ *
+ * `head` includes its opening brace — `{"id":"`, not `"id":` — and that is
+ * load-bearing for speed, not just tidiness. Searching for a bare key means
+ * every incidental occurrence in binary data starts a brace-match that runs
+ * to the cap before failing, and across twenty leveldb files that is minutes
+ * of scanning. Both records we want serialise with a known first key
+ * (`JSON.stringify` preserves insertion order), so anchoring on the brace
+ * makes a false start nearly impossible and each real one O(record).
+ *
+ * Brace-matched with string awareness, so a `}` inside a name does not
+ * truncate a record.
  */
 function carveObjects(text, head) {
   const found = [];
   let from = 0;
   for (;;) {
-    const at = text.indexOf(head, from);
-    if (at === -1) break;
-    from = at + 1;
-    const start = text.lastIndexOf('{', at);
-    if (start === -1) continue;
+    const start = text.indexOf(head, from);
+    if (start === -1) break;
+    from = start + 1;
     let depth = 0;
     let inString = false;
     let escaped = false;
@@ -116,7 +131,7 @@ function carveObjects(text, head) {
       // A record that runs past the end of its block is truncated garbage;
       // give up on it rather than scanning the whole file for a brace that
       // is not there.
-      if (i - start > 4_000_000) break;
+      if (i - start > MAX_RECORD_CHARS) break;
     }
   }
   return found;
@@ -262,9 +277,17 @@ function main() {
       continue;
     }
     scanned++;
+    // Twenty leveldb files, three decodings each, and no output for minutes
+    // reads as a hang. Say what is happening.
+    process.stderr.write(
+      `  ${file} (${(stat.size / 1024).toFixed(0)}kb) — ` +
+        `${submissions.size} drawing${submissions.size === 1 ? '' : 's'} so far\n`,
+    );
 
     for (const text of readable(buffer)) {
-      for (const raw of carveObjects(text, '"id":')) {
+      // `{"id":"` — the draw page and writeSubmission both build the record
+      // with `id` first, so the brace is right there.
+      for (const raw of carveObjects(text, '{"id":"')) {
         let rec;
         try {
           rec = JSON.parse(raw);
@@ -276,7 +299,7 @@ function main() {
         // Newest wins: a handset that redrew has two records on disk.
         if (!prev || (rec.ts ?? 0) >= (prev.ts ?? 0)) submissions.set(rec.id, rec);
       }
-      for (const raw of carveObjects(text, `"schema":"${SESSION_SCHEMA}"`)) {
+      for (const raw of carveObjects(text, `{"schema":"${SESSION_SCHEMA}"`)) {
         let rec;
         try {
           rec = JSON.parse(raw);
