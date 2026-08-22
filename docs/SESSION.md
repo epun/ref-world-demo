@@ -217,7 +217,15 @@ epoch with the most events.
 
 ### the handsets re-home themselves
 
-When the world restarts it announces a new epoch. A handset holding a drawing from the old
+When the world restarts it announces a new epoch — as a **retained** message
+(`announceEpochRetained`, src/net/drawFeed.ts). Retained is the whole trick.
+`publishToPhones` sends at qos 0 with no retain, which reaches exactly the
+handsets connected at that instant — and a projection restart is precisely the
+moment when phones are asleep, backgrounded or reconnecting. The broker holds a
+retained message and delivers it to every subscriber the moment it subscribes,
+however much later, so a phone that wakes in ten minutes still learns the new
+epoch on connect. The reply-to-`hello` path stays as a backstop rather than
+being the mechanism. A handset holding a drawing from the old
 one used to be sent back to a blank pad — and the record was **deleted on the way out**. That
 was the single most destructive line in the project: the one copy of a drawing that survives
 a projection restart, thrown away by the code that noticed the restart. There were two of

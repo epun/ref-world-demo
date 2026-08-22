@@ -61,6 +61,20 @@ The traps, in order of how easily they get violated:
 - **Durations come from motion tokens**, never literals.
 - **Everything in `src/dev/` is gated on `isDev`** and must tree-shake out of the demo build.
 
+## Running the room
+
+[`docs/RUNBOOK.md`](docs/RUNBOOK.md) — one page, read before a demo. The part
+worth knowing here: a refreshed projection **heals itself**. The world
+announces its epoch retained, handsets re-publish their own drawing under the
+same id, and the pure pipeline rebuilds the identical creatures. `r` is the
+manual path (local log first, then a recall). Never reach for *replay* to
+recover — that re-runs a session at its recorded pace; *restore* is the one
+that applies the whole log at once (docs/SESSION.md §4a).
+
+**Never delete a handset's stored drawing.** It is the only copy that survives
+a projection restart, and two separate code paths used to destroy it on exactly
+the event that made it precious. `test/session/recovery.test.ts` pins both gone.
+
 ## Taste gates
 
 TASTE §7 defines eight verification gates (achromatic, value histogram, damping audit,

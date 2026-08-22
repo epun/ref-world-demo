@@ -18,7 +18,12 @@
 import { Vector3 } from 'three';
 import { installHoverNames } from './creatures/hover';
 import { createCreatureManager } from './creatures/manager';
-import { connectWorldFeed, PERSONALITIES, type IncomingDrawing } from './net/drawFeed';
+import {
+  announceEpochRetained,
+  connectWorldFeed,
+  PERSONALITIES,
+  type IncomingDrawing,
+} from './net/drawFeed';
 import { createIngestGate } from './moderation/gate';
 import { EMOTE_NAMES, isRoomCode, roomCode, type EmoteName } from './net/protocol';
 import {
@@ -576,6 +581,12 @@ function main(): void {
     },
   }).then((handle) => {
     feed = handle;
+    // Say which world this is, RETAINED, the moment the feed is up. Every
+    // handset that connects from here on is told immediately — including one
+    // that wakes an hour from now — so a phone holding a drawing from a
+    // previous session re-homes it without anyone pressing anything
+    // (src/phone/main.ts, docs/SESSION.md §4a).
+    announceEpochRetained(handle, epoch);
   });
 
   // ── overlay (local, same-device drawing) ──────────────────────────────────

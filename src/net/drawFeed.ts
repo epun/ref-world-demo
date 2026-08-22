@@ -149,3 +149,46 @@ export async function connectWorldFeed(opts: WorldFeedOptions): Promise<DrawFeed
     return null;
   }
 }
+
+/**
+ * Announce this world's session id as a RETAINED message.
+ *
+ * The difference between retained and not is the difference between a
+ * recovery that works and one that needs luck. `publishToPhones` sends at
+ * qos 0 with no retain, so a message only reaches handsets that are
+ * connected at that instant — and a projection restart is exactly the moment
+ * when phones are asleep, backgrounded, or reconnecting. Those phones never
+ * hear that the world changed, so they never re-home their drawing, and the
+ * population comes back short.
+ *
+ * A retained message is held by the broker and delivered to every subscriber
+ * the moment it subscribes, however much later that is. So a phone that
+ * wakes up in ten minutes learns the new epoch on connect, sees its record
+ * is stale, and hands its drawing back with nobody pressing anything
+ * (src/phone/main.ts). It also makes the reply-to-hello path a backstop
+ * rather than the mechanism.
+ *
+ * Published through the feed's own client because the vendored
+ * `publishToPhones` hardcodes `{ qos: 0 }` and cannot carry the flag. The
+ * vendored file stays untouched.
+ *
+ * Best-effort by design: a client without `publish` (a test double, an
+ * offline page) is simply skipped. Recovery must never be able to throw
+ * inside the code path that starts the world.
+ */
+export function announceEpochRetained(feed: DrawFeed | null, epoch: string): boolean {
+  if (!feed || epoch.length === 0) return false;
+  const client = feed.client as {
+    publish?(topic: string, payload: string, opts: Record<string, unknown>): void;
+  } | null;
+  if (!client || typeof client.publish !== 'function') return false;
+  try {
+    client.publish(feed.upTopic, JSON.stringify({ type: 'world', epoch }), {
+      qos: 0,
+      retain: true,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
