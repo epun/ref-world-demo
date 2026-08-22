@@ -562,6 +562,15 @@ export function createCreatureManager(
         order: orderCounter++,
       };
       slot.eggShadow?.setPosition(spot.x, spot.z);
+      // Named so the ghost-panel outliner lists eggs, not only hatched
+      // creatures (user ask, 2026-08-21: *"i want to retain them to see if
+      // ref load the character meshes"*). The outliner registers named
+      // meshes and groups; an unnamed egg group meant a world full of eggs
+      // read as an empty scene there, which is exactly backwards for using
+      // the list to check that geometry actually built. Lowercase, and the
+      // same name the creature will carry when it hatches, so one drawer
+      // reads as one thing across both phases.
+      egg.group.name = `egg ${slot.name}`;
       world.scene.add(egg.group);
       world.cameraRig.frameAt(new Vector3(spot.x, 0, spot.z));
       slots.set(id, slot);

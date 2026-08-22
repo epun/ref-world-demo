@@ -20,6 +20,7 @@ import type { Group, Object3D } from 'three';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { createCharacter } from '../../src/character/character';
 import { createCreatureManager, measureBodyRadius, spawnSpot } from '../../src/creatures/manager';
+import { generatedName } from '../../src/creatures/naming';
 import { EGG_RADIUS } from '../../src/egg/egg';
 import type { Collider } from '../../src/physics/colliders';
 import type { WorldHandles } from '../../src/world/scene';
@@ -298,5 +299,37 @@ describe('manual move — the gizmo owns a held creature', () => {
     manager.endManualMove(stranger);
     expect(stranger.position.y).toBe(3);
     manager.clearAll();
+  });
+});
+
+describe('the outliner can see both phases', () => {
+  // The ghost-panel outliner registers NAMED meshes and groups off the scene
+  // graph. Only the hatched character used to carry a name, so a world full
+  // of eggs read as an empty list — exactly backwards for the thing the list
+  // is used for, which is checking that geometry actually built.
+  it('names the egg group, and the creature keeps the same name', () => {
+    const world = stubWorld([]);
+    const manager = createCreatureManager(world, { autoHatch: false });
+    expect(manager.spawn('drawer-1', snowman, { name: 'ada', hatchMs: 60_000 })).toBe(true);
+
+    const names: string[] = [];
+    world.scene.traverse((node) => {
+      if (node.name) names.push(node.name);
+    });
+    expect(names).toContain('egg ada');
+    // One drawer reads as one thing across both phases.
+    expect(names.every((n) => n === n.toLowerCase())).toBe(true);
+  });
+
+  it('names an unsigned egg with the generated name', () => {
+    const world = stubWorld([]);
+    const manager = createCreatureManager(world, { autoHatch: false });
+    manager.spawn('drawer-2', snowman, { hatchMs: 60_000 });
+    const names: string[] = [];
+    world.scene.traverse((node) => {
+      if (node.name.startsWith('egg ')) names.push(node.name);
+    });
+    expect(names).toHaveLength(1);
+    expect(names[0]).toBe(`egg ${generatedName('drawer-2')}`);
   });
 });
