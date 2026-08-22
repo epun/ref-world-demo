@@ -66,8 +66,9 @@ The traps, in order of how easily they get violated:
 [`docs/RUNBOOK.md`](docs/RUNBOOK.md) — one page, read before a demo. The part
 worth knowing here: a refreshed projection **heals itself**. The world
 announces its epoch retained, handsets re-publish their own drawing under the
-same id, and the pure pipeline rebuilds the identical creatures. `r` is the
-manual path (local log first, then a recall). Never reach for *replay* to
+same id, and the pure pipeline rebuilds the identical creatures. `shift+R` is
+the manual path (local log first, then a recall) and it always reports on
+screen what it did — shifted because the ghost panel owns plain `r`. Never reach for *replay* to
 recover — that re-runs a session at its recorded pace; *restore* is the one
 that applies the whole log at once (docs/SESSION.md §4a).
 

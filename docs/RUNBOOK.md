@@ -19,6 +19,7 @@ One page. Read it before the demo, not during.
 ## during
 
 - `h` hatches every waiting egg, staggered.
+- `shift+R` is recovery (below). It always reports on screen.
 - `t` toggles the camera tour. `d` opens the local draw overlay.
 - `shift+d` is the ghost panel. It has the moderation list, the session
   readout, and the recovery buttons.
@@ -37,11 +38,19 @@ seconds of the reload the population comes back on its own.
 
 Give it ten seconds. If it has not come back:
 
-1. **Press `r`.** It restores this machine's own autosaved log (instant,
-   offline, needs nobody) and broadcasts a recall to every handset.
+1. **Press `shift+R`.** It restores this machine's own autosaved log
+   (instant, offline, needs nobody) and broadcasts a recall to every handset,
+   then prints on screen what it did — `restored 3 from this machine · recall
+   sent to the phones`, or `nothing autosaved here to restore`. Shifted
+   because the ghost panel binds plain `r` to its gizmo's rotate mode.
 2. Still short? `shift+d` → `session` → **restore last session**. Same thing
    with a readout of how many came back.
 3. Have people re-open the room link. A handset that reconnects heals itself.
+4. Nothing worked, and the drawings matter? Send the room this link:
+   `…/draw/?room=<code>&recover=1`. One tap re-publishes whatever drawing that
+   handset has stored — ignoring the record's age and which room it was
+   originally drawn into, because nobody remembers the old code. Have the
+   projection open on that room first.
 
 Do **not** press *replay a session log*. A replay re-runs a session at the pace
 it was recorded — on an hour-long log the world sits empty for an hour and

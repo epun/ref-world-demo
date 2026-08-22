@@ -204,11 +204,11 @@ that asks least of the room:
 
 | copy | where | how it comes back |
 |---|---|---|
-| the world's log | `localStorage` on the projection machine, written after every drawing and every hatch | **`r`**, or the panel's *restore last session*. Instant, offline, needs nobody |
-| the handset's record | `localStorage` on each phone | the phone **re-homes itself** the moment it hears a new epoch (below); **`r`** also broadcasts a recall |
+| the world's log | `localStorage` on the projection machine, written on every gate decision and every hatch | **`shift+R`**, or the panel's *restore last session*. Instant, offline, needs nobody |
+| the handset's record | `localStorage` on each phone | the phone **re-homes itself** the moment it hears a new epoch (below); **`shift+R`** also broadcasts a recall; `?recover=1` is the deliberate link |
 | the downloaded json | wherever it was saved | the panel's *restore from a log file* |
 
-`r` runs the first and broadcasts the second. Both are idempotent in the creature id — the
+`shift+R` runs the first and broadcasts the second, and says on screen which of them found anything. Both are idempotent in the creature id — the
 manager replaces a slot rather than adding one — so running both is safe.
 
 **Fullest, not newest.** A refresh mints a new epoch and immediately starts an empty log, so

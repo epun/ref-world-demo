@@ -102,6 +102,35 @@ function ensureOverlayStyle(): void {
   opacity: 1;
   transform: translateY(0);
 }
+/*
+ * The operator line. A recovery that reports nothing is indistinguishable
+ * from a recovery that did not run — which is exactly how an evening was
+ * spent pressing a key that was working and saying so to nobody.
+ *
+ * Mark set stays legal: type and a hairline rule, no filled panel, no card,
+ * no shadow. It slides, like everything else.
+ */
+.world-say {
+  position: fixed;
+  left: 50%;
+  bottom: 4vmin;
+  z-index: 20;
+  transform: translate(-50%, 8px);
+  padding-top: 0.6em;
+  border-top: 1px solid ${WORLD.ink};
+  color: ${WORLD.ink};
+  font: 400 14px/1.4 ui-sans-serif, system-ui, sans-serif;
+  text-align: center;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity ${MOTION.secondaryMs}ms ${MOTION.settleCurve},
+    transform ${MOTION.secondaryMs}ms ${MOTION.settleCurve};
+}
+.world-say.visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
 `;
   document.head.appendChild(style);
 }
@@ -469,6 +498,32 @@ function main(): void {
   (window as Window & { __refworldRestore?: unknown }).__refworldRestore =
     restoreLastSession;
 
+  /**
+   * Say one line to the operator, on the projection.
+   *
+   * Used only by the recovery controls, and used by ALL of them: the whole
+   * failure mode being closed here is a key that works, does its job, and
+   * leaves the room unable to tell it apart from a key that is not wired.
+   */
+  let sayTimer = 0;
+  const say = (line: string): void => {
+    let el = document.querySelector<HTMLDivElement>('.world-say');
+    if (!el) {
+      el = document.createElement('div');
+      el.className = 'world-say';
+      // Announced, so this reaches an operator who is not looking at the
+      // projection when they press the key.
+      el.setAttribute('role', 'status');
+      document.body.appendChild(el);
+    }
+    el.textContent = line;
+    requestAnimationFrame(() => el?.classList.add('visible'));
+    window.clearTimeout(sayTimer);
+    sayTimer = window.setTimeout(() => {
+      el?.classList.remove('visible');
+    }, MOTION.ambientMs);
+  };
+
   // ── presentation tour (GENERATOR §scale+camera, PLAN §7.1) ────────────────
   // Autonomous drift between clusters, lone wanderers, and wide scenic beats.
   // Manual is the default; 't' toggles; the ghost panel has a mode select.
@@ -597,8 +652,10 @@ function main(): void {
    * Safe to press twice: the manager replaces a slot with the same id
    * rather than adding one, so a duplicate re-send is a no-op.
    */
-  const recallDrawings = (): void => {
-    feed?.publishToPhones({ type: 'recall', epoch });
+  const recallDrawings = (): boolean => {
+    if (!feed) return false;
+    feed.publishToPhones({ type: 'recall', epoch });
+    return true;
   };
 
   const tellPhone = (to: string, entry: { disposition: string; reason: string | null }): void => {
@@ -698,11 +755,15 @@ function main(): void {
       tour.hatchAllMoment(() => creatures.hatchAll());
       return;
     }
-    // Other shifted presses belong to the dev surface (ghost panel toggles
-    // on shift+d); plain d keeps the draw overlay.
-    if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
-    // r — rebuild the population after the projection was refreshed. TWO
-    // sources, tried in the order that needs the least of the room:
+    // shift+R — rebuild the population after the projection was refreshed.
+    //
+    // SHIFTED, and that is not a style choice: the ghost panel binds plain
+    // `r` to its transform gizmo's rotate mode, so with the panel open the
+    // recovery key never reached this handler at all, and with it closed the
+    // two bindings were one keystroke apart on the same key. A control you
+    // reach for in a bad moment cannot be ambiguous.
+    //
+    // TWO sources, tried in the order that asks least of the room:
     //
     //   1. this machine's own autosaved log — instant, offline, needs
     //      nobody to be holding a phone;
@@ -712,12 +773,32 @@ function main(): void {
     //
     // Both are idempotent in the creature id, so running both is safe: the
     // manager replaces a slot with the same id rather than adding one.
-    if (event.key === 'r' && !overlayOpen) {
+    if (
+      event.shiftKey &&
+      !event.metaKey &&
+      !event.ctrlKey &&
+      !event.altKey &&
+      (event.key === 'R' || event.key === 'r') &&
+      !overlayOpen
+    ) {
       const restored = restoreLastSession();
-      recallDrawings();
+      const recalled = recallDrawings();
       if (restored > 0) saveSession();
+      // Always says something. "nothing to restore" is a result, and the
+      // operator needs it more than they need the happy path.
+      const parts: string[] = [];
+      parts.push(
+        restored > 0
+          ? `restored ${restored} from this machine`
+          : 'nothing autosaved here to restore',
+      );
+      parts.push(recalled ? 'recall sent to the phones' : 'no connection — recall not sent');
+      say(parts.join(' · '));
       return;
     }
+    // Other shifted presses belong to the dev surface (ghost panel toggles
+    // on shift+d); plain d keeps the draw overlay.
+    if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
     if (event.key === 'd') {
       if (overlayOpen) closeOverlay();
       else openOverlay();
