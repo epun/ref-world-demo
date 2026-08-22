@@ -74,37 +74,42 @@ function expand(p) {
 
 /**
  * The longest record we will try to brace-match. A drawing's stroke json runs
- * to tens of kilobytes; a whole session log to a few megabytes. Past this a
- * candidate is binary noise that happened to contain the head, and scanning
- * on costs more than the record could ever be worth.
+ * to tens of kilobytes and a whole session log to a couple of megabytes, so
+ * this is generous. Past it a candidate is binary noise that happened to
+ * contain the head.
  */
-const MAX_RECORD_CHARS = 4_000_000;
+const MAX_RECORD_CHARS = 2_000_000;
 
 /**
- * Every complete json object in `text` beginning with `head`.
+ * Visit every complete json object in `text` beginning with `head`.
+ *
+ * A VISITOR, not an array of slices. Returning the matches meant holding
+ * every candidate string in memory at once, and on a real profile that is
+ * gigabytes — the first run of this script died with `JavaScript heap out of
+ * memory` inside `Array.prototype.push`. Each slice is now handed to the
+ * caller, parsed, and dropped.
  *
  * `head` includes its opening brace — `{"id":"`, not `"id":` — and that is
- * load-bearing for speed, not just tidiness. Searching for a bare key means
- * every incidental occurrence in binary data starts a brace-match that runs
- * to the cap before failing, and across twenty leveldb files that is minutes
- * of scanning. Both records we want serialise with a known first key
+ * load-bearing for speed. Searching for a bare key means every incidental
+ * occurrence in binary data starts a brace-match that runs to the cap before
+ * failing. Both records we want serialise with a known first key
  * (`JSON.stringify` preserves insertion order), so anchoring on the brace
  * makes a false start nearly impossible and each real one O(record).
  *
  * Brace-matched with string awareness, so a `}` inside a name does not
  * truncate a record.
  */
-function carveObjects(text, head) {
-  const found = [];
+function eachObject(text, head, visit) {
   let from = 0;
   for (;;) {
     const start = text.indexOf(head, from);
-    if (start === -1) break;
+    if (start === -1) return;
     from = start + 1;
+    const limit = Math.min(text.length, start + MAX_RECORD_CHARS);
     let depth = 0;
     let inString = false;
     let escaped = false;
-    for (let i = start; i < text.length; i++) {
+    for (let i = start; i < limit; i++) {
       const ch = text[i];
       if (escaped) {
         escaped = false;
@@ -123,27 +128,27 @@ function carveObjects(text, head) {
       else if (ch === '}') {
         depth--;
         if (depth === 0) {
-          found.push(text.slice(start, i + 1));
+          visit(text.slice(start, i + 1));
           from = i;
           break;
         }
       }
-      // A record that runs past the end of its block is truncated garbage;
-      // give up on it rather than scanning the whole file for a brace that
-      // is not there.
-      if (i - start > MAX_RECORD_CHARS) break;
     }
   }
-  return found;
 }
 
-/** Both of Chrome's string encodings, as one searchable latin-1 string. */
-function readable(buffer) {
-  const latin1 = buffer.toString('latin1');
+/**
+ * Chrome's two string encodings, yielded ONE AT A TIME.
+ *
+ * A generator, not an array: three decodings of a multi-megabyte block all
+ * resident at once is three times the peak for no reason, and peak is what
+ * killed the first version of this script.
+ */
+function* readable(buffer) {
+  yield buffer.toString('latin1');
   // UTF-16LE with an ascii payload is the same bytes with a NUL after each.
-  // Dropping every second byte recovers it; misaligned reads produce noise
-  // that simply will not match the heads we look for.
-  const utf16 = [];
+  // Both parities are tried because the run's alignment inside the block is
+  // not knowable up front.
   for (let offset = 0; offset < 2; offset++) {
     const out = Buffer.allocUnsafe(Math.max(0, buffer.length - offset));
     let n = 0;
@@ -154,9 +159,8 @@ function readable(buffer) {
       // it — which, in a leveldb block, is all of them but the last.
       out[n++] = buffer[i + 1] === 0 ? buffer[i] : 0x0a;
     }
-    utf16.push(out.subarray(0, n).toString('latin1'));
+    yield out.subarray(0, n).toString('latin1');
   }
-  return [latin1, ...utf16];
 }
 
 function isSubmission(rec) {
@@ -258,7 +262,7 @@ function main() {
   }
 
   const submissions = new Map(); // id → newest record
-  const logs = [];
+  const logs = []; // at most one entry: the fullest log seen
   let scanned = 0;
 
   for (const file of entries.sort()) {
@@ -287,37 +291,41 @@ function main() {
     for (const text of readable(buffer)) {
       // `{"id":"` — the draw page and writeSubmission both build the record
       // with `id` first, so the brace is right there.
-      for (const raw of carveObjects(text, '{"id":"')) {
+      eachObject(text, '{"id":"', (raw) => {
         let rec;
         try {
           rec = JSON.parse(raw);
         } catch {
-          continue;
+          return;
         }
-        if (!isSubmission(rec)) continue;
+        if (!isSubmission(rec)) return;
         const prev = submissions.get(rec.id);
         // Newest wins: a handset that redrew has two records on disk.
         if (!prev || (rec.ts ?? 0) >= (prev.ts ?? 0)) submissions.set(rec.id, rec);
-      }
-      for (const raw of carveObjects(text, `{"schema":"${SESSION_SCHEMA}"`)) {
+      });
+      eachObject(text, `{"schema":"${SESSION_SCHEMA}"`, (raw) => {
         let rec;
         try {
           rec = JSON.parse(raw);
         } catch {
-          continue;
+          return;
         }
-        if (isSessionLog(rec)) logs.push(rec);
-      }
+        // Keep only the fullest — a profile holds one log per epoch and we
+        // want exactly one of them, not all of them in memory.
+        if (!isSessionLog(rec)) return;
+        if (!logs[0] || rec.events.length > logs[0].events.length) logs[0] = rec;
+      });
     }
+    buffer = null;
   }
 
   console.log(`scanned ${scanned} file${scanned === 1 ? '' : 's'} in ${dir}`);
   console.log(`found ${submissions.size} drawing${submissions.size === 1 ? '' : 's'}`);
-  console.log(`found ${logs.length} session log${logs.length === 1 ? '' : 's'}`);
+  console.log(logs[0] ? `found a session log (${logs[0].events.length} events)` : 'found no session log');
 
   // A whole autosaved log beats reassembled drawings — it carries the names,
   // the hatch state and the operator decisions. Fullest wins.
-  const bestLog = logs.sort((a, b) => b.events.length - a.events.length)[0];
+  const bestLog = logs[0];
   if (bestLog && bestLog.events.length > 0) {
     writeFileSync(out, JSON.stringify(bestLog));
     console.log(
