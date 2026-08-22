@@ -361,11 +361,18 @@ async function boot(): Promise<void> {
   let lastWorldEpoch: string | null = null;
   /**
    * How stale a drawing may be and still re-home itself into a restarted
-   * world. A projection refresh is a matter of seconds and this covers a
-   * whole evening of it; a handset opened the next morning is a new
-   * session and its creature stays retired.
+   * world.
+   *
+   * Was six hours, which read as generous until a session was lost at night
+   * and the recovery was attempted the next day — the window itself refused
+   * the very drawings it existed to save. Two days is the honest bound: it
+   * spans an install that runs over an evening and a morning, and a drawing
+   * older than that really does belong to a different event.
+   *
+   * `?recover=1` bypasses it entirely (public/draw/), for the case where
+   * someone is deliberately asking a room to hand its drawings back.
    */
-  const REHOME_WINDOW_MS = 6 * 60 * 60 * 1000;
+  const REHOME_WINDOW_MS = 48 * 60 * 60 * 1000;
   // The world opened this drawer's egg — play the hatch NOW, on the same
   // edge, rather than waiting for the local session's own timer to come
   // round. Guarded like the state path: only from the egg, and only when

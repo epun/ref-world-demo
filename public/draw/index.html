@@ -785,6 +785,9 @@
     // and a handset holding a record from the old world is let in to draw
     // again rather than bounced to a creature that no longer exists.
     const WORLD_EPOCH = (params.get('w') || '').replace(/[^a-z0-9]/gi, '').slice(0, 16);
+    /** `?recover=1`: hand this handset's stored drawing back, then leave. */
+    const RECOVER_MODE = params.get('recover') === '1';
+    let recovered = false;
     function storedSubmission() {
       try { return JSON.parse(localStorage.getItem(SUBMISSION_KEY) || 'null'); } catch { return null; }
     }
@@ -819,6 +822,10 @@
       location.replace('/phone.html?room=' + room + (WORLD_EPOCH ? '&w=' + WORLD_EPOCH : ''));
     }
     function enforceSingleDrawing() {
+      // A recovery link is EXPECTED to arrive on a handset that already drew
+      // — that is the whole point of it. Let recoverFromLink() do its work
+      // and navigate afterwards.
+      if (RECOVER_MODE) return false;
       if (!alreadyDrew()) return false;
       // Freeze the pad even if the navigation is slow or blocked. Both pages
       // paint the same paper, so this hand-off has nothing to flash to.
@@ -937,7 +944,12 @@
     }
     try {
       client = mqtt.connect(BROKER, { clientId: 'draw_' + Math.random().toString(16).slice(2, 10), keepalive: 30, reconnectPeriod: 2000 });
-      client.on('connect', () => { connected = true; setStatus('on', 'connected'); syncKeys(); client.subscribe(UP_TOPIC); });
+      client.on('connect', () => {
+        connected = true; setStatus('on', 'connected'); syncKeys(); client.subscribe(UP_TOPIC);
+        // `?recover=1` — the link an operator sends round after a session was
+        // lost. Fires once, as soon as there is a connection to send on.
+        if (RECOVER_MODE && !recovered) { recovered = true; recoverFromLink(); }
+      });
       client.on('reconnect', () => setStatus('', 'reconnecting…'));
       client.on('close',  () => { connected = false; setStatus('off', 'offline'); });
       client.on('error',  () => setStatus('off', 'connection error'));
@@ -1081,6 +1093,56 @@
      * so the handset stops counting as stale and goes to the companion to
      * watch the creature it just rebuilt.
      */
+    /**
+     * Every drawing this handset has stored, for ANY room, newest first.
+     *
+     * A recovery link is sent to people after the fact, and by then nobody
+     * remembers which room code the lost session used — the person tapping
+     * the link certainly does not. So recovery does not require the room to
+     * match: it takes what this handset actually has and hands it to the
+     * room the link names.
+     */
+    function allStoredSubmissions() {
+      const out = [];
+      try {
+        for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i);
+          if (!key || key.indexOf('refworld:submission:') !== 0) continue;
+          try {
+            const rec = JSON.parse(localStorage.getItem(key) || 'null');
+            if (rec && rec.id && Array.isArray(rec.strokes) && rec.strokes.length) out.push(rec);
+          } catch {}
+        }
+      } catch {}
+      return out.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+    }
+
+    /**
+     * Hand this handset's drawing back on purpose — the `?recover=1` link.
+     *
+     * Unlike the automatic re-home this ignores the age of the record and
+     * ignores which room it was drawn into, because it is only ever reached
+     * by someone deliberately answering "please open this so your creature
+     * comes back". It publishes into the room the LINK names, so an operator
+     * can pull a lost population into whatever world is running now.
+     */
+    function recoverFromLink() {
+      if (!connected) return false;
+      const rec = allStoredSubmissions()[0];
+      if (!rec) { showToast('nothing saved on this phone to bring back'); return false; }
+      try {
+        client.publish(TOPIC, JSON.stringify({
+          id: rec.id, name: rec.name || '', strokes: rec.strokes, ts: Date.now(),
+        }), { qos: 0 });
+      } catch { return false; }
+      try {
+        localStorage.setItem(SUBMISSION_KEY, JSON.stringify({ ...rec, epoch: WORLD_EPOCH || null }));
+      } catch {}
+      showToast('sent your creature back');
+      setTimeout(goToCompanion, 900);
+      return true;
+    }
+
     function answerRecall(epoch) {
       const rec = storedSubmission();
       if (!rec || !rec.strokes || !rec.strokes.length || !connected) return;

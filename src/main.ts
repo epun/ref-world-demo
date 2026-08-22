@@ -199,8 +199,21 @@ function main(): void {
   // A refusal is silent ON THE PROJECTION — never reward the drawing with
   // attention on the shared screen. The drawer IS told, privately, on their
   // own handset (user ask), and the operator sees it in the panel readout.
+  const gateRecorder = recordGate(session, { hatchMs: HATCH_TIMER_MS, source: 'phone' });
   const gate = createIngestGate<WorldDrawing>({
-    observer: recordGate(session, { hatchMs: HATCH_TIMER_MS, source: 'phone' }),
+    observer: {
+      ...gateRecorder,
+      // Autosave hangs HERE, not on the network callback it used to hang on.
+      // The gate is the one seam every drawing passes through — the phone
+      // feed, the local overlay, the dev fallbacks — so a save wired to the
+      // mqtt handler silently missed every drawing that did not arrive over
+      // mqtt, and could be bypassed by any future ingest path. Wired to the
+      // seam, it cannot be.
+      decision(entry) {
+        gateRecorder.decision(entry);
+        saveSession();
+      },
+    },
     spawn: (d) =>
       creatures.spawn(d.id, d.strokes, {
         ...(d.name !== null ? { name: d.name } : {}),
@@ -341,14 +354,60 @@ function main(): void {
   // entry after it out of the list with it. A pointer and the things it
   // points at do not share a namespace.
   const SESSION_LATEST_KEY = 'refworld:session-latest';
+  /**
+   * Why an autosave failed, or null while it is fine. Read by the panel and
+   * by `__refworldSaveState`.
+   *
+   * The bare `catch {}` this replaces cost a real evening. The autosave was
+   * failing on the projection and NOTHING said so — not the panel, not the
+   * console, not the `r` key, which simply found no log and did nothing.
+   * There was no way to learn that the one safeguard was off, and the first
+   * anyone knew was a lost session. A recovery mechanism that can fail in
+   * silence is not a recovery mechanism.
+   */
+  let saveError: string | null = null;
+  let saveCount = 0;
   const saveSession = (): void => {
-    try {
+    const write = (): void => {
       localStorage.setItem(SESSION_SAVE_PREFIX + epoch, sessionApi.json());
       localStorage.setItem(SESSION_LATEST_KEY, epoch);
-    } catch {
-      /* quota or private mode — the log is still in memory and downloadable */
+    };
+    try {
+      write();
+      saveError = null;
+      saveCount++;
+      return;
+    } catch (err) {
+      // Almost always quota: a log carries every stroke of every drawing,
+      // and localStorage is a few megabytes per origin. An old session's log
+      // is worth less than this one's, so drop the oldest and try again
+      // rather than failing the save that matters.
+      const others = listSessions().filter((entry) => entry.epoch !== epoch);
+      const oldest = others[others.length - 1];
+      if (oldest) {
+        try {
+          localStorage.removeItem(SESSION_SAVE_PREFIX + oldest.epoch);
+          write();
+          saveError = null;
+          saveCount++;
+          return;
+        } catch {
+          /* fall through to reporting */
+        }
+      }
+      saveError = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+      // Loud, once per distinct failure. The operator cannot fix what they
+      // cannot see, and the panel readout below shows the same line.
+      console.warn('[refworld] session autosave FAILED —', saveError);
     }
   };
+  /** Is the safeguard actually on? One call, for the console and the panel. */
+  (window as Window & { __refworldSaveState?: unknown }).__refworldSaveState = () => ({
+    saves: saveCount,
+    error: saveError,
+    epoch,
+    keys: Object.keys(localStorage).filter((k) => k.startsWith('refworld:')),
+  });
   /** Every autosaved session, newest first, for the panel and the console. */
   (window as Window & { __refworldSessions?: unknown }).__refworldSessions = (): {
     epoch: string;
@@ -556,10 +615,18 @@ function main(): void {
 
   void connectWorldFeed({
     room,
+    // Re-announce on every (re)connect, not only once at boot. The publish
+    // below happens as soon as the feed object exists, which can be before
+    // the socket is actually up; and a broker that drops us must be told
+    // again, because a retained message lives on the broker and a new one
+    // has never heard of this world.
+    onStatus: (state) => {
+      if (state === 'on') announceEpochRetained(feed, epoch);
+    },
     onDrawing: (d) => {
       const entry = gate.offer({ ...d, hatchMs: HATCH_TIMER_MS, source: 'phone' });
-      // A drawing is the event worth surviving a refresh — save on each one.
-      saveSession();
+      // (the autosave runs on the gate's own observer, above — every ingest
+      // path is covered by it, so there is nothing to do here)
       // Tell the drawer, on their own handset, when their drawing will
       // never appear (user ask). Still nothing on the projection: the
       // refusal is private to the person who made it.
