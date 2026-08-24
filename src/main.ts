@@ -499,6 +499,35 @@ function main(): void {
     restoreLastSession;
 
   /**
+   * `?restore=/some/log.json` — open a world straight onto a saved session.
+   *
+   * The panel's file picker needs the log on the machine running the
+   * projection, which is the wrong shape for "here is the room we lost, go
+   * and look at it": that wants a LINK. This is the same restore, addressed
+   * by url.
+   *
+   * SAME-ORIGIN ONLY, and deliberately: a url that could name any host would
+   * let a link hand this world a population from somewhere else entirely.
+   * A leading slash, no scheme, no `//`.
+   */
+  const restoreParam = params.get('restore');
+  if (restoreParam !== null && /^\/[\w./-]*$/.test(restoreParam) && !restoreParam.includes('//')) {
+    void fetch(restoreParam)
+      .then((res) => (res.ok ? res.text() : Promise.reject(new Error(String(res.status)))))
+      .then((text) => {
+        const n = sessionApi.restore(text);
+        say(
+          n === null
+            ? 'that file is not a session log this build reads'
+            : `restored ${n} creature${n === 1 ? '' : 's'}`,
+        );
+      })
+      .catch((err: unknown) => {
+        say(`could not load ${restoreParam} — ${err instanceof Error ? err.message : 'failed'}`);
+      });
+  }
+
+  /**
    * Say one line to the operator, on the projection.
    *
    * Used only by the recovery controls, and used by ALL of them: the whole
