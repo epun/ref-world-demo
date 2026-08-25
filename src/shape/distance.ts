@@ -5,7 +5,7 @@
  * drives inflation depth, medial-axis extraction, and eye placement.
  */
 
-import type { DistanceField, Mask } from './types';
+import type { DistanceField, Mask } from './types.js';
 
 const INF = 1e20;
 

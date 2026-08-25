@@ -11,10 +11,10 @@
  * character is always the body token.
  */
 
-import type { Stroke, StrokeList } from '../shape/types';
-import { EMOTE_NAMES, type EmoteName } from './protocol';
-import { readEmoteMessage, readHello } from './phoneLink';
-import type { DrawFeed, DrawFeedOptions, FeedDrawing, FeedStroke } from './vendor/draw-feed';
+import type { Stroke, StrokeList } from '../shape/types.js';
+import { EMOTE_NAMES, type EmoteName } from './protocol.js';
+import { readEmoteMessage, readHello } from './phoneLink.js';
+import type { DrawFeed, DrawFeedOptions, FeedDrawing, FeedStroke } from './vendor/draw-feed.js';
 
 const EMOTE_SET = new Set<string>(EMOTE_NAMES);
 /** Guard for the wire: only the protocol's own emote names pass. */

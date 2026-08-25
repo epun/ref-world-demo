@@ -17,10 +17,10 @@
  *            harmless; it is a statement that nothing measurable fired.
  */
 
-import type { StrokeList } from '../shape/types';
-import { detectFourFold } from './fourfold';
-import { largestComponentShare, screenMask, SCREEN_SIZE } from './mask';
-import { detectPhallus, type DetectorScore } from './phallus';
+import type { StrokeList } from '../shape/types.js';
+import { detectFourFold } from './fourfold.js';
+import { largestComponentShare, screenMask, SCREEN_SIZE } from './mask.js';
+import { detectPhallus, type DetectorScore } from './phallus.js';
 
 export type Verdict = 'allow' | 'hold' | 'refuse';
 

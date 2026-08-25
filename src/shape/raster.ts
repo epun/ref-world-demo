@@ -6,8 +6,8 @@
  * needs no antialiasing.
  */
 
-import { distanceTransform } from './distance';
-import type { Mask, StrokeList } from './types';
+import { distanceTransform } from './distance.js';
+import type { Mask, StrokeList } from './types.js';
 
 /** Stamp a filled disc into the mask. */
 function stampDisc(mask: Uint8Array, size: number, cx: number, cy: number, r: number): void {

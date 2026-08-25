@@ -25,7 +25,7 @@ import {
   setDisposition,
   worldKey,
   type StoredDrawing,
-} from './_store';
+} from './_store.js';
 
 const DISPOSITIONS: StoredDrawing['disposition'][] = ['admitted', 'held', 'refused'];
 

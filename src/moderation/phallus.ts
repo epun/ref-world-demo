@@ -27,8 +27,8 @@
  * Pure: no DOM, no randomness, no clock.
  */
 
-import type { Mask } from '../shape/types';
-import { dtAt, inkAt, inkFrame, type InkFrame } from './mask';
+import type { Mask } from '../shape/types.js';
+import { dtAt, inkAt, inkFrame, type InkFrame } from './mask.js';
 
 export interface EndFeatures {
   /** +1 for the end at max u along the principal axis, -1 for the other. */

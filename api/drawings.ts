@@ -17,8 +17,8 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { feedDrawingToStrokes } from '../src/net/drawFeed';
-import { screenDrawing } from '../src/moderation/screen';
+import { feedDrawingToStrokes } from '../src/net/drawFeed.js';
+import { screenDrawing } from '../src/moderation/screen.js';
 import {
   addDrawing,
   deviceDrawing,
@@ -26,7 +26,7 @@ import {
   readDrawings,
   worldKey,
   type StoredDrawing,
-} from './_store';
+} from './_store.js';
 
 /** Mirrors src/main.ts, so a restored public world paces like the room. */
 const HATCH_MS = 20000;

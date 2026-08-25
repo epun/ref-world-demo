@@ -27,9 +27,9 @@
  * Pure: no DOM, no randomness, no clock.
  */
 
-import type { Mask } from '../shape/types';
-import type { DetectorScore } from './phallus';
-import { bestMirrorSymmetry, inkFrame, rotationSelfSimilarity, type InkFrame } from './mask';
+import type { Mask } from '../shape/types.js';
+import type { DetectorScore } from './phallus.js';
+import { bestMirrorSymmetry, inkFrame, rotationSelfSimilarity, type InkFrame } from './mask.js';
 
 export interface FourFoldFeatures {
   /** Self-overlap under a quarter turn (mean of +90 and -90). */

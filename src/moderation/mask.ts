@@ -7,9 +7,9 @@
  * screens identically on every other.
  */
 
-import { distanceTransform } from '../shape/distance';
-import { fillHoles, largestComponent, rasterize } from '../shape/raster';
-import type { DistanceField, Mask, StrokeList } from '../shape/types';
+import { distanceTransform } from '../shape/distance.js';
+import { fillHoles, largestComponent, rasterize } from '../shape/raster.js';
+import type { DistanceField, Mask, StrokeList } from '../shape/types.js';
 
 /** Screening raster size. Small on purpose: the screen runs on the world
  * thread at ingest, and every metric here is a ratio, not a pixel count. */

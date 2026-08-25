@@ -13,7 +13,7 @@
  *   room never pushes per-character data to every phone (PLAN §8).
  */
 
-import type { StrokeList } from '../shape/types';
+import type { StrokeList } from '../shape/types.js';
 
 /** Room codes: 4 lowercase letters (no uppercase anywhere — TASTE §5). */
 export const ROOM_CODE_LENGTH = 4;

@@ -33,7 +33,7 @@
  * lets its drawers in again).
  */
 
-import type { EmoteName } from './protocol';
+import type { EmoteName } from './protocol.js';
 
 /** Topic prefix — the vendored kit's, so we share the room with drawings. */
 const TOPIC_PREFIX = 'drawto3d/v1/';
