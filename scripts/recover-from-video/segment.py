@@ -124,9 +124,26 @@ def rdp(points, eps):
     return [a, b]
 
 
+def panel_open(L):
+    """Is the ghost panel on screen in this frame?
+
+    Its chrome is a near-black column down one side — the darkest thing in
+    the frame after the creatures, and big. It traced as a RECTANGLE and
+    came back as a creature-shaped nothing. Frames with the panel up are
+    skipped entirely: the same creatures are in hundreds of other frames.
+    """
+    h, w = L.shape
+    for band in (L[:, : int(w * 0.22)], L[:, int(w * 0.78) :]):
+        if float((band <= INK_MAX).mean()) > 0.45:
+            return True
+    return False
+
+
 def blobs_from_frame(img, min_area=MIN_AREA, reject_border=True):
     L = luma(img)
     h, w = L.shape
+    if panel_open(L):
+        return []
     ui = ui_mask(h, w)
     mask = (L <= INK_MAX) & ~ui
     # The world area, for the border test below.
@@ -169,6 +186,14 @@ def blobs_from_frame(img, min_area=MIN_AREA, reject_border=True):
             'area': int(len(pts)),
             'mask': filled,
         })
+    # Two creatures that overlap merge into one component, and the merge
+    # traces as a two-headed thing that was never in the room. A merge is
+    # conspicuously bigger than its neighbours at the same camera distance,
+    # so the frame's own median is the yardstick — no absolute size needed,
+    # which matters because the camera moves.
+    if len(found) >= 6:
+        med = sorted(b['area'] for b in found)[len(found) // 2]
+        found = [b for b in found if b['area'] <= med * 2.3]
     return found
 
 

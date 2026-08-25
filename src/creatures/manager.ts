@@ -45,7 +45,7 @@ import { resolveName } from './naming';
 export const WANDER_SPEED_DEFAULT = 1.4;
 
 /** Practical demo guard, not a design cap (see header). */
-export const MAX_POPULATION = 64;
+export const MAX_POPULATION = 96;
 
 /** Egg shadow sits a touch inside the shell footprint. */
 const EGG_SHADOW_FIT = 0.85;
