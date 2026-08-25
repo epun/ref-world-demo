@@ -237,6 +237,48 @@ function ensureStyle(): void {
 }
 /* The artwork. Static by ruling (DEVICE §1a) — no transition, no
    animation, no transform is declared on it anywhere in this file. */
+/*
+ * The device LEAVING, for the world view (user ruling, 2026-08-25: the
+ * world takes the whole viewport and the device slides away).
+ *
+ * A slide, never a fade to nothing and never a scale — entrances and exits
+ * slide here at confidence 1.00 (TASTE §2.1). The case is a solid object
+ * and a solid object leaves by going somewhere.
+ */
+.device.leaving {
+  transform: translateY(106%);
+  transition: transform ${MOTION.secondaryMs}ms ${MOTION.settleCurve};
+}
+/*
+ * The one control that is not a key on the case.
+ *
+ * It cannot be: the six keys are physical and fixed, and their meanings
+ * belong to the creature (docs/DEVICE.md §2). Looking at the world is not
+ * something you do TO your creature, so it sits outside the object as type
+ * over a hairline — icon + ruleLine + border is the whole mark set, and
+ * this is the rule line.
+ */
+.world-link {
+  position: fixed;
+  left: 50%;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 3vmin);
+  z-index: 40;
+  transform: translate(-50%, 10px);
+  padding-top: 0.55em;
+  border-top: 1px solid ${WORLD.ink};
+  color: ${WORLD.ink};
+  font: 400 15px/1.3 "helvetica neue", helvetica, arial, sans-serif;
+  text-decoration: none;
+  opacity: 0;
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    opacity ${MOTION.secondaryMs}ms ${MOTION.settleCurve},
+    transform ${MOTION.secondaryMs}ms ${MOTION.settleCurve};
+}
+.world-link.in { opacity: 1; transform: translate(-50%, 0); }
+.world-link.out { opacity: 0; transform: translate(-50%, 10px); }
+.world-link:active { opacity: 0.55; }
+
 .device-shell {
   position: absolute;
   inset: 0;

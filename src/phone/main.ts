@@ -27,6 +27,7 @@ import {
   writeSubmission,
 } from './identity';
 import { createSession } from './session';
+import { mountWorldLink } from './worldlink';
 import { SPIN_REST, type SpinState } from './spin';
 import {
   createMachine,
@@ -341,6 +342,24 @@ async function boot(): Promise<void> {
   };
 
   const machine = createMachine(root, mounts, initialState, { entrance });
+
+  /**
+   * The way out to the shared world, when there is one.
+   *
+   * Only for a PUBLIC world: an installation handset has no shared place to
+   * go — its world lives on a projection in the same room, which the person
+   * is already looking at. A control that leads nowhere is worse than no
+   * control, so `mountWorldLink` returns null and nothing is mounted.
+   */
+  const publicWorld = (new URLSearchParams(location.search).get('world') ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, '')
+    .slice(0, 24);
+  mountWorldLink(document.body, {
+    room,
+    world: publicWorld,
+    device: document.querySelector<HTMLElement>('.device'),
+  });
 
   // The stage is mounted; feed the session whatever the flow opened with,
   // so the egg timer and the local echo agree with what is on screen. The

@@ -43,6 +43,9 @@ import {
 import { MAX_POPULATION, WANDER_SPEED_DEFAULT } from './creatures/manager';
 import { mountDrawScreen } from './draw/ui';
 import { MOTION, SURFACE, WORLD } from './taste/tokens';
+import { createPhoneLink } from './net/phoneLink';
+import { readSubmission } from './phone/identity';
+import { mountWorldTray } from './world/tray';
 import { installJoinQr, QR_SIZE_CSS } from './ui/joinqr';
 import { installWorldMinimap } from './ui/minimap';
 import { start } from './world/scene';
@@ -196,10 +199,20 @@ function main(): void {
   const isPublic = publicWorld.length > 0;
   const worldParam = isPublic ? `&world=${encodeURIComponent(publicWorld)}` : '';
 
-  // A phone opening the world link goes to the drawing UI for this room —
-  // the mobile view IS the kit's draw page (user decision).
+  /**
+   * A phone opening the world link goes to the drawing UI for this room —
+   * the mobile view IS the kit's draw page (user decision).
+   *
+   * UNLESS it asked for the world. `?view=world` is a person on a handset
+   * who has already drawn and wants to see the place their creature lives:
+   * the shared world is the whole point of having added to it, and until
+   * now it was the one thing the people who built it could not look at.
+   */
+  const wantsWorldView = params.get('view') === 'world';
   const coarse = window.matchMedia('(pointer: coarse)').matches;
-  if (coarse && Math.min(window.innerWidth, window.innerHeight) < 620) {
+  const small = Math.min(window.innerWidth, window.innerHeight) < 620;
+  const handheld = coarse && small;
+  if (handheld && !wantsWorldView) {
     location.replace(`/draw/?room=${room}${worldParam}`);
     return;
   }
@@ -755,11 +768,40 @@ function main(): void {
   // a qr of this room's drawing url — mirroring it bottom-left at the same
   // size (user ask). Together with the pencil control above the code, that
   // is the whole of the world's persistent chrome.
+  /**
+   * On a handset these do not float in their own corners — they sit in the
+   * tray along the bottom (src/world/tray.ts), with the device between
+   * them. Same two components, given a place instead of a corner each.
+   */
+  /** Which creature on this screen is this handset's, if any. */
+  const myDrawerId = handheld && room.length > 0 ? (readSubmission(room)?.id ?? '') : '';
+
+  const tray = handheld
+    ? mountWorldTray(document.body, {
+        // Read once, at mount: a person who draws from here leaves the page
+        // to do it and comes back to a fresh mount, so there is no state to
+        // keep in sync — the next load asks again and is right again.
+        hasCreature: myDrawerId.length > 0,
+        companionHref: `/phone.html?room=${room}${worldParam}`,
+        emote: (name) => {
+          // Locally first, so the reaction is instant on the screen the
+          // person is holding, then out over the wire for every other
+          // projection. Same order the companion uses.
+          const mine = room.length > 0 ? readSubmission(room) : null;
+          const id = mine?.id ?? '';
+          if (!id) return false;
+          const played = creatures.emote(id, name, 'phone');
+          uplink?.send(name);
+          return played;
+        },
+      })
+    : null;
+
   installWorldMinimap({
     manager: creatures,
     cameraRig: world.cameraRig,
     scatter: world.scatter,
-    mount: document.body,
+    mount: tray ? tray.right : document.body,
   });
 
   // The join code has to carry the WORLD, or scanning it lands people on a
@@ -768,11 +810,15 @@ function main(): void {
   // be gone forever, with no sign anything was wrong. The qr is the only
   // route most people take into a public world, so it is the one url that
   // absolutely must be complete.
-  installJoinQr({
-    url:
-      `${location.origin}/draw/?room=${room}&w=${epoch}${worldParam}`,
-    mount: document.body,
-  });
+  // Not built at all when the tray does not want one — see TrayHandle.
+  if (!tray || tray.showsJoinCode) {
+    installJoinQr({
+      url: `${location.origin}/draw/?room=${room}&w=${epoch}${worldParam}`,
+      mount: tray ? tray.left : document.body,
+    });
+  }
+
+  // (the way back to your own creature is the tray's device — tap it)
 
   ensureOverlayStyle();
 
@@ -859,6 +905,16 @@ function main(): void {
   // The world answers phones on the kit's down topic: a verdict for the
   // drawer who asked, and the session id it belongs to.
   let feed: Awaited<ReturnType<typeof connectWorldFeed>> = null;
+  /**
+   * The phone's transport, on the world page.
+   *
+   * Only on a handset, and only for one thing: a person looking at the
+   * world from their phone is ALSO a drawer, and the tray lets them react
+   * with their own creature. The world page has always been a receiver of
+   * emotes; this is the one case where it is a sender too, because the
+   * person holding it owns one of the creatures on screen.
+   */
+  const uplink = myDrawerId ? createPhoneLink(room, myDrawerId) : null;
   /**
    * Call every handset's drawing back (recovery, 2026-08-20).
    *
