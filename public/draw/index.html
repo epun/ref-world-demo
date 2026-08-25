@@ -828,10 +828,29 @@
       if (staleRecord(rec)) return false;
       return true;
     }
+    /**
+     * The one way out of this pad.
+     *
+     * THREE routes reach the companion — a handset that already drew, a
+     * recovery hand-back, and the send that just happened — and two of them
+     * used to build this url by hand and drop `?world` while doing it. A
+     * companion with no world on it has no shared place to go, so
+     * `mountWorldLink` mounts nothing and the toggle between the world and
+     * the device is simply absent for everybody who arrived by scanning the
+     * code — which is everybody (user report, 2026-08-25).
+     *
+     * One builder, so there is nowhere left to forget it.
+     */
+    function companionUrl(opts) {
+      const o = opts || {};
+      const epoch = o.epoch === undefined ? WORLD_EPOCH : o.epoch;
+      return '/phone.html?room=' + room
+        + (o.handoff ? '&handoff=1' : '')
+        + (epoch ? '&w=' + epoch : '')
+        + (WORLD ? '&world=' + encodeURIComponent(WORLD) : '');
+    }
     function goToCompanion() {
-      location.replace('/phone.html?room=' + room
-        + (WORLD_EPOCH ? '&w=' + WORLD_EPOCH : '')
-        + (WORLD ? '&world=' + encodeURIComponent(WORLD) : ''));
+      location.replace(companionUrl());
     }
     function enforceSingleDrawing() {
       // A recovery link is EXPECTED to arrive on a handset that already drew
@@ -1170,7 +1189,7 @@
       // Only leave the pad if nothing has been drawn on it — a person part
       // way through a new drawing is not navigated out from under.
       if (!strokes.length) {
-        location.replace('/phone.html?room=' + room + (use ? '&w=' + use : ''));
+        location.replace(companionUrl({ epoch: use }));
       }
     }
 
@@ -1215,8 +1234,7 @@
       // content changed. Which is exactly what happened.
       setState('sending');
       setTimeout(() => {
-        location.href = '/phone.html?room=' + room + '&handoff=1'
-          + (WORLD_EPOCH ? '&w=' + WORLD_EPOCH : '');
+        location.href = companionUrl({ handoff: true });
       }, MOTION.secondaryMs);
     }
 

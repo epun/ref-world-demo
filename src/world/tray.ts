@@ -105,44 +105,68 @@ export interface Rect {
   height: number;
 }
 
+/** The box the companion draws its device in, for a given viewport. */
+export interface DeviceBox {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
 /**
- * Where the mini device has to travel to become the full one.
+ * Where the companion will draw the device.
  *
- * The tap GROWS the device into the companion, and for that to read as one
- * object coming closer rather than two screens swapping, it has to arrive
- * exactly where the companion will draw it — same place, same size, so the
- * last frame here and the first frame there are the same picture. It used
- * to scale to a fixed 6× and fade out, which lands nowhere in particular
- * and dissolves the object on the way (user report, 2026-08-25).
- *
- * So this recomputes the companion's own layout: `.device` is the viewport
+ * Mirrored from the CSS in src/phone/device.ts: `.device` is the viewport
  * inset by the safe area plus its air, and `.device-box` is the largest box
- * of the artwork's proportions that fits, centred. Mirrored from the CSS in
- * src/phone/device.ts — pinned by test, because the two drifting apart is
- * the failure mode.
- *
- * The transform origin is the device's BOTTOM CENTRE, so a scale pins that
- * point and the translate is simply where that point has to end up.
+ * of the artwork's proportions that fits inside, centred. Pinned by test,
+ * because the two drifting apart is the failure mode.
  */
-export function companionLanding(
+export function companionBox(
   viewport: { width: number; height: number },
   insets: { top: number; bottom: number },
-  mini: Rect,
-): { dx: number; dy: number; scale: number } {
+): DeviceBox {
   const padTop = insets.top + DEVICE_TOP_AIR_PX;
   const padBottom = insets.bottom + DEVICE_BOTTOM_AIR_PX;
   const containerH = Math.max(1, viewport.height - padTop - padBottom);
-  const boxW = Math.min(
+  const width = Math.min(
     viewport.width,
     (containerH * DEVICE_VIEWBOX.width) / DEVICE_VIEWBOX.height,
   );
-  const boxH = (boxW * DEVICE_VIEWBOX.height) / DEVICE_VIEWBOX.width;
-  const destLeft = (viewport.width - boxW) / 2;
-  const destTop = padTop + (containerH - boxH) / 2;
+  const height = (width * DEVICE_VIEWBOX.height) / DEVICE_VIEWBOX.width;
   return {
-    dx: destLeft + boxW / 2 - (mini.left + mini.width / 2),
-    dy: destTop + boxH - (mini.top + mini.height),
-    scale: boxW / Math.max(1, mini.width),
+    left: (viewport.width - width) / 2,
+    top: padTop + (containerH - height) / 2,
+    width,
+    height,
+  };
+}
+
+/**
+ * The transform that puts a box ALREADY LAID OUT at `dest` back over `mini`.
+ *
+ * This is the direction that matters, and getting it backwards is what made
+ * the growth look broken (user report, 2026-08-25: *"super janky … pixelated
+ * and broken"*). Scaling a 62px element up to 390 rasterizes the layer once
+ * at thumbnail size and stretches that bitmap for the whole flight — the
+ * hand-drawn shell turns to mush and the creature, which really is a 46px
+ * canvas, is blown up six times.
+ *
+ * So the element is laid out at its FINAL size and inverted back onto the
+ * thumbnail instead: every raster happens at full resolution, the start of
+ * the move is a downscale (which only ever looks better than it needs to),
+ * and the end is exact. Same picture on screen, opposite arithmetic.
+ *
+ * Origin is the top-left, so the scale pins that corner and the translate
+ * is simply the offset between the two boxes.
+ */
+export function invertOnto(
+  dest: DeviceBox,
+  mini: Rect,
+): { dx: number; dy: number; scale: number } {
+  return {
+    dx: mini.left - dest.left,
+    dy: mini.top - dest.top,
+    scale: mini.width / Math.max(1, dest.width),
   };
 }
 
@@ -426,19 +450,34 @@ export function mountWorldTray(root: HTMLElement, options: TrayOptions): TrayHan
     }
     going = true;
     setOpen(false);
-    // Travel to where the companion will draw the device, THEN navigate:
-    // the two frames meet at the same place and size, so nothing cuts.
-    const move = companionLanding(
+
+    const dest = companionBox(
       { width: window.innerWidth, height: window.innerHeight },
       safeInsets(),
-      device.getBoundingClientRect(),
     );
+    const inv = invertOnto(dest, device.getBoundingClientRect());
+
+    // Lay the device out at its FINAL size and place, right now. Nothing
+    // reflows: the tray's left column collapses and the 1fr spacer takes
+    // the space, so the minimap stays pinned to the same right edge.
+    device.style.position = 'fixed';
+    device.style.left = `${dest.left}px`;
+    device.style.top = `${dest.top}px`;
+    device.style.width = `${dest.width}px`;
+    device.style.height = `${dest.height}px`;
+    device.style.transformOrigin = '0 0';
+    // ...then put it straight back over the thumbnail, with no transition,
+    // so this inverted state is the START of the move rather than a move
+    // of its own. The reflow read is what commits it.
+    device.style.transition = 'none';
+    device.style.transform = `translate(${inv.dx}px, ${inv.dy}px) scale(${inv.scale})`;
+    void device.offsetWidth;
+
     device.classList.add('growing');
-    // Next frame, not this one: the class carries the slower duration, and
-    // setting both at once can be batched into a single style change that
-    // the old transition picks up instead.
     requestAnimationFrame(() => {
-      device.style.transform = `translate(${move.dx}px, ${move.dy}px) scale(${move.scale})`;
+      // Hand the transition back to the class, and release to identity.
+      device.style.transition = '';
+      device.style.transform = 'translate(0px, 0px) scale(1)';
       window.setTimeout(() => go(options.companionHref), MOTION.secondaryMs);
     });
   };

@@ -355,6 +355,23 @@ async function boot(): Promise<void> {
     .toLowerCase()
     .replace(/[^a-z0-9-]/g, '')
     .slice(0, 24);
+  /**
+   * Back to the pad — carrying the world, always.
+   *
+   * The world a handset belongs to travels in the url and nowhere else, so
+   * every hop between the pad, this companion, and the shared world has to
+   * pass it along. Two of these dropped it, and a person who came back to
+   * the pad from here silently lost the public world: they would draw
+   * again, land on a companion with no world on it, and find no way to the
+   * place their creature lives (user report, 2026-08-25).
+   *
+   * One builder on this side too, matching companionUrl() in public/draw/.
+   */
+  const padUrl = (epoch?: string): string =>
+    `/draw/?room=${room}` +
+    (epoch ? `&w=${epoch}` : '') +
+    (publicWorld ? `&world=${encodeURIComponent(publicWorld)}` : '');
+
   // Into the screen well, not the page: fixed to the viewport it landed
   // under the case's own bottom edge and could not be tapped (user report,
   // 2026-08-25). The well is the container, and the foot of the screen is
@@ -375,7 +392,7 @@ async function boot(): Promise<void> {
   // ── what the world says back ─────────────────────────────────────────────
   const drawAgain = (): void => {
     if (room.length > 0) clearSubmission(room);
-    location.href = `/draw/?room=${room}`;
+    location.href = padUrl();
   };
   // Once the person is being told something, nothing else navigates out
   // from under them — the staleness check below would otherwise redirect on
@@ -463,7 +480,7 @@ async function boot(): Promise<void> {
     // drawing from yesterday should not walk into it. The record still is
     // not deleted — a recall can still ask for it — but the person is free
     // to draw again.
-    location.replace(`/draw/?room=${room}&w=${worldEpoch}`);
+    location.replace(padUrl(worldEpoch));
   });
 
   /**

@@ -14,7 +14,13 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { HOLD_MS, TRAY_EMOTES, companionLanding, pressMeans } from '../../src/world/tray';
+import {
+  HOLD_MS,
+  TRAY_EMOTES,
+  companionBox,
+  invertOnto,
+  pressMeans,
+} from '../../src/world/tray';
 import {
   DEVICE_BOTTOM_AIR_PX,
   DEVICE_TOP_AIR_PX,
@@ -172,14 +178,9 @@ describe('growing into the companion', () => {
     { w: 393, h: 852, top: 59, bottom: 34 },
   ];
 
-  it('lands exactly where the companion draws the device', () => {
+  it('puts the device where the companion draws it', () => {
     for (const v of VIEWPORTS) {
-      const mini = miniAt(v.w, v.h, v.bottom);
-      const move = companionLanding(
-        { width: v.w, height: v.h },
-        { top: v.top, bottom: v.bottom },
-        mini,
-      );
+      const box = companionBox({ width: v.w, height: v.h }, { top: v.top, bottom: v.bottom });
 
       // Recompute the companion's own layout independently (src/phone/
       // device.ts: .device is the viewport inset by the safe area plus its
@@ -188,41 +189,61 @@ describe('growing into the companion', () => {
       const padTop = v.top + DEVICE_TOP_AIR_PX;
       const padBottom = v.bottom + DEVICE_BOTTOM_AIR_PX;
       const containerH = v.h - padTop - padBottom;
-      const boxW = Math.min(
-        v.w,
-        (containerH * DEVICE_VIEWBOX.width) / DEVICE_VIEWBOX.height,
+      const w = Math.min(v.w, (containerH * DEVICE_VIEWBOX.width) / DEVICE_VIEWBOX.height);
+      const h = (w * DEVICE_VIEWBOX.height) / DEVICE_VIEWBOX.width;
+
+      expect(box.width).toBeCloseTo(w, 3);
+      expect(box.height).toBeCloseTo(h, 3);
+      expect(box.left).toBeCloseTo((v.w - w) / 2, 3);
+      expect(box.top).toBeCloseTo(padTop + (containerH - h) / 2, 3);
+      // It keeps the artwork's proportions, never stretching the line work.
+      expect(box.height / box.width).toBeCloseTo(
+        DEVICE_VIEWBOX.height / DEVICE_VIEWBOX.width,
+        6,
       );
-      const boxH = (boxW * DEVICE_VIEWBOX.height) / DEVICE_VIEWBOX.width;
-
-      // Where the device's bottom-centre ends up — the transform origin, so
-      // this is the point the scale pins and the translate places.
-      const landedCentreX = mini.left + mini.width / 2 + move.dx;
-      const landedBottom = mini.top + mini.height + move.dy;
-
-      expect(landedCentreX).toBeCloseTo(v.w / 2, 3);
-      expect(landedBottom).toBeCloseTo(padTop + (containerH - boxH) / 2 + boxH, 3);
-      expect(mini.width * move.scale).toBeCloseTo(boxW, 3);
+      // ...and it fits inside the band it is allowed.
+      expect(box.top).toBeGreaterThanOrEqual(padTop - 0.001);
+      expect(box.top + box.height).toBeLessThanOrEqual(v.h - padBottom + 0.001);
+      expect(box.left).toBeGreaterThanOrEqual(-0.001);
     }
   });
 
-  it('always grows — the companion is never smaller than the thumbnail', () => {
+  it('inverts the FULL-SIZE box back onto the thumbnail, not the reverse', () => {
+    // The direction is the whole fix. Laid out at 62px and scaled up, the
+    // layer is rasterized once at thumbnail size and stretched for the
+    // whole flight — the shell turns to mush and the creature, a real 46px
+    // canvas, is blown up six times (user report, 2026-08-25). Laid out at
+    // full size and inverted, every raster is full resolution.
     for (const v of VIEWPORTS) {
-      const move = companionLanding(
-        { width: v.w, height: v.h },
-        { top: v.top, bottom: v.bottom },
-        miniAt(v.w, v.h, v.bottom),
-      );
-      expect(move.scale).toBeGreaterThan(1);
-      // ...and it travels up and to the right, out of the left corner.
-      expect(move.dx).toBeGreaterThan(0);
-      expect(move.dy).toBeLessThan(0);
+      const box = companionBox({ width: v.w, height: v.h }, { top: v.top, bottom: v.bottom });
+      const mini = miniAt(v.w, v.h, v.bottom);
+      const inv = invertOnto(box, mini);
+
+      // A DOWN-scale: the element is bigger than the thumbnail it starts on.
+      expect(inv.scale).toBeGreaterThan(0);
+      expect(inv.scale).toBeLessThan(1);
+
+      // Applied with a top-left origin, it lands exactly on the thumbnail.
+      expect(box.left + inv.dx).toBeCloseTo(mini.left, 3);
+      expect(box.top + inv.dy).toBeCloseTo(mini.top, 3);
+      expect(box.width * inv.scale).toBeCloseTo(mini.width, 3);
+      expect(box.height * inv.scale).toBeCloseTo(mini.height, 1);
     }
+  });
+
+  it('releases to identity, so the end of the move is exactly the box', () => {
+    // The animation runs the inverse to `transform: none`, so the resting
+    // state has to BE the destination with no transform applied.
+    const src = readFileSync(join(process.cwd(), 'src/world/tray.ts'), 'utf8');
+    expect(src).toMatch(/transform = 'translate\(0px, 0px\) scale\(1\)'/);
+    // The inverted start must not itself animate, or it is a move of its own.
+    expect(src).toMatch(/transition = 'none'/);
+    expect(src).toMatch(/void device\.offsetWidth/);
   });
 
   it('moves — it does not dissolve', () => {
     // A solid object that fades on its way somewhere is two things
-    // happening. It used to scale to a fixed 6× and fade to nothing, which
-    // also landed nowhere in particular (user report, 2026-08-25).
+    // happening. It used to scale to a fixed 6x and fade to nothing.
     const src = readFileSync(join(process.cwd(), 'src/world/tray.ts'), 'utf8');
     const rule = /\.tray-device\.growing \{[\s\S]*?\n\}/.exec(src)?.[0] ?? '';
     expect(rule).toBeTruthy();
