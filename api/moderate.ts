@@ -21,9 +21,11 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
   hasStore,
   isModerator,
+  readConfig,
   readDrawings,
   setDisposition,
   worldKey,
+  writeConfig,
   type StoredDrawing,
 } from './_store.js';
 
@@ -48,20 +50,25 @@ export default async function handler(
 
   if (req.method === 'GET') {
     const rows = await readDrawings(world);
+    const config = await readConfig(world);
     res.setHeader('cache-control', 'no-store');
     res.status(200).json({
       world,
+      config,
       counts: {
         admitted: rows.filter((r) => r.disposition === 'admitted').length,
         held: rows.filter((r) => r.disposition === 'held').length,
         refused: rows.filter((r) => r.disposition === 'refused').length,
       },
-      // Strokes are the bulk and the moderator's tools render them from the
-      // drawing endpoint; this is the decision list, not the artwork.
-      drawings: rows.map(({ strokes, ...rest }) => ({
-        ...rest,
-        strokeCount: Array.isArray(strokes) ? strokes.length : 0,
-      })),
+      // Strokes ride along ONLY for what needs deciding on. A moderator has
+      // to see the drawing to judge it, and the held queue is small; sending
+      // every admitted creature's strokes would make this megabytes on a
+      // phone, for artwork nobody is being asked about.
+      drawings: rows.map(({ strokes, ...rest }) =>
+        rest.disposition === 'admitted'
+          ? { ...rest, strokeCount: Array.isArray(strokes) ? strokes.length : 0 }
+          : { ...rest, strokeCount: Array.isArray(strokes) ? strokes.length : 0, strokes },
+      ),
     });
     return;
   }
@@ -76,6 +83,18 @@ export default async function handler(
     typeof req.body === 'string'
       ? (JSON.parse(req.body) as Record<string, unknown>)
       : ((req.body ?? {}) as Record<string, unknown>);
+  // Two shapes of POST: one rules on a drawing, one sets the world's own
+  // switches. Both are the moderator's, so they share the gate above.
+  if (body['closed'] !== undefined || body['ipPerHour'] !== undefined) {
+    const next: { closed?: boolean; ipPerHour?: number } = {};
+    if (body['closed'] !== undefined) next.closed = body['closed'] === true;
+    if (typeof body['ipPerHour'] === 'number' && body['ipPerHour'] >= 0) {
+      next.ipPerHour = Math.floor(body['ipPerHour']);
+    }
+    res.status(200).json({ world, config: await writeConfig(world, next) });
+    return;
+  }
+
   const id = typeof body['id'] === 'string' ? body['id'] : '';
   const disposition = body['disposition'] as StoredDrawing['disposition'];
 

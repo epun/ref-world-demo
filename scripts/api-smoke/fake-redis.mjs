@@ -12,6 +12,17 @@ const run = (cmd) => {
       keys.set(k, v); return 'OK';
     }
     case 'get': return keys.has(args[0]) ? keys.get(args[0]) : null;
+    // incr and expire exist because the rate limiter uses them. A double
+    // that silently returns null for a command under test does not fail the
+    // test — it passes it for the wrong reason, which is worse.
+    case 'incr': {
+      const k = args[0];
+      const n = Number(keys.get(k) ?? 0) + 1;
+      keys.set(k, String(n));
+      return n;
+    }
+    case 'expire': return 1;
+    case 'del': { const had = keys.delete(args[0]); return had ? 1 : 0; }
     case 'rpush': {
       const [k, ...vals] = args;
       const l = lists.get(k) ?? []; l.push(...vals); lists.set(k, l); return l.length;

@@ -94,5 +94,48 @@ r = await call(moderate, { method: 'POST', query: {}, headers: { 'x-moderator': 
   body: { id: 'phone-a', disposition: 'nonsense' } });
 check('an unknown disposition is rejected', r.code === 400);
 
+
+// ---- the world's switches -------------------------------------------
+r = await call(moderate, { method: 'POST', query: { world: 'public' }, headers: { 'x-moderator': 'a-long-enough-secret' },
+  body: { closed: true } });
+check('the moderator can close a world', r.code === 200 && r.body.config.closed === true, JSON.stringify(r.body?.config));
+
+r = await call(drawings, { method: 'POST', query: { world: 'public' }, headers: {},
+  body: { id: 'phone-z', name: '', strokes: blob(0.3, 0.25) } });
+check('a closed world refuses new drawings', r.code === 403, JSON.stringify(r.body));
+
+r = await call(drawings, { method: 'GET', query: { world: 'public' }, headers: {} });
+check('a closed world is still VIEWABLE', r.code === 200 && r.body.events.length > 0);
+
+r = await call(moderate, { method: 'POST', query: { world: 'public' }, headers: { 'x-moderator': 'a-long-enough-secret' },
+  body: { closed: false } });
+check('and can be opened again', r.code === 200 && r.body.config.closed === false);
+r = await call(drawings, { method: 'POST', query: { world: 'public' }, headers: {},
+  body: { id: 'phone-z', name: '', strokes: blob(0.3, 0.25) } });
+check('an opened world accepts again', r.code === 201);
+
+// ---- rate limiting is OFF by default, and works when switched on -----
+r = await call(moderate, { method: 'GET', query: { world: 'fresh' }, headers: { 'x-moderator': 'a-long-enough-secret' } });
+check('a new world is open with NO rate limit', r.body.config.closed === false && r.body.config.ipPerHour === 0, JSON.stringify(r.body?.config));
+
+for (let i = 0; i < 4; i++) {
+  r = await call(drawings, { method: 'POST', query: { world: 'unlimited' }, headers: { 'x-forwarded-for': '9.9.9.9' },
+    body: { id: 'dev-' + i, name: '', strokes: blob(0.24 + i * 0.02, 0.3) } });
+}
+check('with no limit, one address may keep drawing', r.code === 201, JSON.stringify(r.body));
+
+await call(moderate, { method: 'POST', query: { world: 'capped' }, headers: { 'x-moderator': 'a-long-enough-secret' },
+  body: { ipPerHour: 2 } });
+let last;
+for (let i = 0; i < 4; i++) {
+  last = await call(drawings, { method: 'POST', query: { world: 'capped' }, headers: { 'x-forwarded-for': '8.8.8.8' },
+    body: { id: 'cap-' + i, name: '', strokes: blob(0.24 + i * 0.02, 0.3) } });
+}
+check('when switched on, the limit bites', last.code === 429, JSON.stringify(last.body));
+
+r = await call(drawings, { method: 'POST', query: { world: 'capped' }, headers: { 'x-forwarded-for': '7.7.7.7' },
+  body: { id: 'other-addr', name: '', strokes: blob(0.3, 0.22) } });
+check('and only for the address that went over', r.code === 201, JSON.stringify(r.body));
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);

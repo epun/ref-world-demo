@@ -21,8 +21,11 @@ import { feedDrawingToStrokes } from '../src/net/drawFeed.js';
 import { screenDrawing } from '../src/moderation/screen.js';
 import {
   addDrawing,
+  addressOf,
   deviceDrawing,
   hasStore,
+  overRate,
+  readConfig,
   readDrawings,
   worldKey,
   type StoredDrawing,
@@ -112,6 +115,16 @@ export default async function handler(
     return;
   }
 
+  // A CLOSED world is still viewable — only submissions stop. That is what
+  // makes this usable as an event switch (open for the room, closed after)
+  // as well as a panic button, and it is why closing never hides anything
+  // that is already standing.
+  const config = await readConfig(world);
+  if (config.closed) {
+    res.status(403).json({ error: 'this world is not accepting drawings right now' });
+    return;
+  }
+
   const body = readBody(req);
   const id = typeof body?.['id'] === 'string' ? (body['id'] as string).slice(0, 64) : '';
   const rawName = typeof body?.['name'] === 'string' ? (body['name'] as string) : '';
@@ -138,6 +151,15 @@ export default async function handler(
   const already = await deviceDrawing(world, id);
   if (already !== null) {
     res.status(409).json({ error: 'this device already has a creature', id: already });
+    return;
+  }
+
+  // The backstop for the one-creature rule, which lives in localStorage and
+  // takes two taps to clear. Counted only for submissions that got this far,
+  // so a person who simply reloads the page is never counted against.
+  if (await overRate(world, addressOf(req.headers), config.ipPerHour)) {
+    res.setHeader('retry-after', '3600');
+    res.status(429).json({ error: 'too many drawings from here for now' });
     return;
   }
 

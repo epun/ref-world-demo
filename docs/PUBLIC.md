@@ -100,6 +100,56 @@ that confirms it exists to an unauthorised caller has told them something.
 A moderation endpoint that opens itself when misconfigured is worse than
 one that never works.
 
+## the switches
+
+Two things an operator changes without a deploy, both on `/api/moderate`:
+
+| switch | default | what it does |
+|---|---|---|
+| `closed` | `false` | stops NEW drawings. The world stays viewable and nothing already standing disappears. This is both the panic button and the event switch — open for the room, closed when the event ends. |
+| `ipPerHour` | `0` (off) | submissions per address per hour. |
+
+**Rate limiting is off by default, on purpose** (user ruling, 2026-08-25:
+*"i don't think we should limit the open one"*). An address is a bad proxy
+for a person here: a conference is one NAT, so the limit that would protect
+a public link is the same limit that would lock out the event this was
+built for. The lever exists because the cost of being wrong is one bad
+night — turn it on the moment one person is filling a world.
+
+```bash
+curl -X POST -H "x-moderator: $MODERATOR_SECRET" -H 'content-type: application/json' \
+  -d '{"closed":true}' 'https://<host>/api/moderate?world=public'
+```
+
+Rate limiting fails OPEN — a store that cannot count must not become a
+store that refuses everyone. Moderation fails closed. Those are opposite on
+purpose.
+
+## /moderate — the phone view
+
+`https://<host>/moderate/` is the moderator's own screen: the held queue
+with each drawing rendered **as it was drawn**, admit and refuse under each
+one, the counts, and the open/close switch. Paste the secret once and it is
+remembered on that device only.
+
+It renders the ink rather than the creature deliberately. The pipeline
+turns a drawing into a silhouette, and a silhouette hides exactly the
+detail a moderator is being asked to judge.
+
+## seeding a world
+
+An empty field is a bad invitation — the first person to arrive has nothing
+to join. `scripts/seed-world.mjs` puts an existing population in:
+
+```bash
+node scripts/seed-world.mjs https://<host> public
+```
+
+It posts through the ordinary submission endpoint: same screen, same
+dispositions, same device claims. No privileged path, because a seed that
+could bypass the gate would be a hole in the gate shaped like a script.
+Idempotent — a second run reports every drawing as already there.
+
 ## setting it up
 
 The code ships working; the store does not exist until you make it. Until

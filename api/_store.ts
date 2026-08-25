@@ -79,6 +79,115 @@ export function worldKey(raw: unknown): string {
 const listKey = (world: string): string => `refworld:${world}:drawings`;
 const deviceKey = (world: string, device: string): string =>
   `refworld:${world}:device:${device}`;
+const configKey = (world: string): string => `refworld:${world}:config`;
+const rateKey = (world: string, who: string, hour: number): string =>
+  `refworld:${world}:rate:${hour}:${who}`;
+
+/** What a world's operator can change without a deploy. */
+export interface WorldConfig {
+  /** Closed worlds are still VIEWABLE. Only submissions stop. */
+  closed: boolean;
+  /**
+   * Submissions allowed per address per hour. **0 means no limit, and 0 is
+   * the default** (user ruling, 2026-08-25: *"i don't think we should limit
+   * the open one"*).
+   *
+   * OFF on purpose, not by oversight. An address is a bad proxy for a
+   * person here: a conference is one NAT, so two hundred people behind a
+   * venue's wifi share it, and the limit that would protect a public link
+   * is the same limit that would lock out the event this was built for.
+   * Rate limiting the honest case to inconvenience the dishonest one is the
+   * wrong trade when the dishonest case costs a moderator one tap.
+   *
+   * The lever stays because the cost of being wrong is a bad night: set it
+   * from /api/moderate the moment a public world is being filled by one
+   * person, without a deploy.
+   */
+  ipPerHour: number;
+}
+
+export const DEFAULT_CONFIG: WorldConfig = { closed: false, ipPerHour: 0 };
+
+export async function readConfig(world: string): Promise<WorldConfig> {
+  const db = store();
+  if (!db) return { ...DEFAULT_CONFIG };
+  try {
+    const raw = await db.get<WorldConfig | string>(configKey(world));
+    if (!raw) return { ...DEFAULT_CONFIG };
+    const rec = typeof raw === 'string' ? (JSON.parse(raw) as WorldConfig) : raw;
+    return {
+      closed: rec.closed === true,
+      ipPerHour:
+        typeof rec.ipPerHour === 'number' && rec.ipPerHour >= 0
+          ? rec.ipPerHour
+          : DEFAULT_CONFIG.ipPerHour,
+    };
+  } catch {
+    return { ...DEFAULT_CONFIG };
+  }
+}
+
+export async function writeConfig(
+  world: string,
+  next: Partial<WorldConfig>,
+): Promise<WorldConfig> {
+  const db = store();
+  const merged = { ...(await readConfig(world)), ...next };
+  if (db) {
+    try {
+      await db.set(configKey(world), JSON.stringify(merged));
+    } catch {
+      /* the caller reports what it reads back, not what it hoped */
+    }
+  }
+  return merged;
+}
+
+/**
+ * The address behind a request, as far as it can be known.
+ *
+ * `x-forwarded-for` is a chain and only the FIRST entry is the client;
+ * the rest are proxies and the whole header is client-settable upstream of
+ * a proxy that does not rewrite it. Vercel does rewrite it, so the first
+ * entry is trustworthy here — but this is a rate limit, not an identity,
+ * and it is written to be wrong safely rather than to be certain.
+ */
+export function addressOf(headers: Record<string, string | string[] | undefined>): string {
+  const raw = headers['x-forwarded-for'] ?? headers['x-real-ip'] ?? '';
+  const first = (Array.isArray(raw) ? (raw[0] ?? '') : raw).split(',')[0]?.trim() ?? '';
+  return first.slice(0, 45) || 'unknown';
+}
+
+/**
+ * Count one submission against an address, and say whether it is over.
+ *
+ * A fixed window, not a sliding one: the failure mode of a fixed window is
+ * that someone gets double the limit across a boundary, which for a
+ * courtesy rail is nothing. A sliding window would cost a sorted set and
+ * more round trips to buy precision nobody here needs.
+ */
+export async function overRate(
+  world: string,
+  who: string,
+  limit: number,
+): Promise<boolean> {
+  const db = store();
+  if (!db || limit <= 0) return false;
+  const hour = Math.floor(Date.now() / 3_600_000);
+  try {
+    const key = rateKey(world, who, hour);
+    const n = await db.incr(key);
+    // Only the first write needs the expiry, but setting it every time is
+    // one command and removes the window where a crash between incr and
+    // expire leaves a key that never dies.
+    await db.expire(key, 3700);
+    return n > limit;
+  } catch {
+    // A store that cannot count must not become a store that refuses
+    // everyone. Rate limiting fails OPEN; moderation fails closed.
+    return false;
+  }
+}
 
 /** Every drawing in a world, oldest first. */
 export async function readDrawings(world: string): Promise<StoredDrawing[]> {
