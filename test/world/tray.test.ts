@@ -15,6 +15,8 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { HOLD_MS, TRAY_EMOTES, pressMeans } from '../../src/world/tray';
+import { PHONE_EMOTES } from '../../src/phone/emotes';
+import { BUBBLE_EMOJI } from '../../src/character/bubble';
 import { EMOTE_NAMES } from '../../src/net/protocol';
 
 describe('what a press means', () => {
@@ -55,6 +57,28 @@ describe('the tray emotes', () => {
     expect(TRAY_EMOTES).not.toContain('angry');
   });
 
+  it('ARE the phone list, not a copy of it', () => {
+    // A hand-written copy drifted within a day: the tray offered 💃/😮 for
+    // dance and surprised while the case and the world's speech bubbles
+    // used 🎶/😲 (user report, 2026-08-25). One person, one creature, two
+    // pictures of the same feeling. Identity, not deep equality — a second
+    // array that happens to match today can be edited apart tomorrow.
+    expect(TRAY_EMOTES).toBe(PHONE_EMOTES);
+  });
+
+  it('draw their glyphs from the same table the speech bubbles do', () => {
+    // Pinned as a source fact: the rendering is DOM-shaped and this project
+    // keeps no jsdom, so the browser check covers the painting and this
+    // covers where the glyphs come from.
+    const src = readFileSync(join(process.cwd(), 'src/world/tray.ts'), 'utf8');
+    expect(src).toMatch(/BUBBLE_EMOJI\[name\]/);
+    // ...and no second table to fall out of step with it.
+    expect(src).not.toMatch(/const GLYPH/);
+    for (const name of TRAY_EMOTES) {
+      expect(BUBBLE_EMOJI[name]).toBeTruthy();
+    }
+  });
+
   it('holds long enough to be deliberate and short enough to feel instant', () => {
     expect(HOLD_MS).toBeGreaterThanOrEqual(250);
     expect(HOLD_MS).toBeLessThanOrEqual(500);
@@ -76,5 +100,51 @@ describe('the qr and the device are never both there', () => {
     // decided a second time. The caller owns the qr component, so a tray
     // that merely hides the code still gets one mounted into a dead cell.
     expect(src).toMatch(/showsJoinCode: !options\.hasCreature/);
+  });
+});
+
+describe('the tray layout', () => {
+  const src = () => readFileSync(join(process.cwd(), 'src/world/tray.ts'), 'utf8');
+
+  it('puts what is yours in the left corner, not the middle', () => {
+    // User ruling, 2026-08-25. The corner means one thing — "yours" —
+    // whether that is a join code or your own device, which is what makes
+    // them exchangeable rather than two things competing for the centre.
+    // The middle column is the spacer, so nothing sits over the world.
+    expect(src()).toMatch(/grid-template-columns:\s*auto 1fr auto/);
+    expect(src()).toMatch(/\.tray-device \{[^}]*justify-self: start/);
+  });
+
+  it('lifts the emote ring by the device HEIGHT, never a picked number', () => {
+    // The ring sat at a literal 76px — shorter than the 118px device it
+    // belongs to — so the device covered the thing the hold had just
+    // opened (user report, 2026-08-25). A number picked by eye can be
+    // shorter than the thing it must clear; one derived from that thing
+    // cannot.
+    expect(src()).toMatch(/bottom: calc\([\s\S]*?DEVICE_H_PX \+ RING_GAP_PX/);
+    expect(src()).toMatch(
+      /DEVICE_H_PX = \(DEVICE_W_PX \* DEVICE_VIEWBOX\.height\) \/ DEVICE_VIEWBOX\.width/,
+    );
+  });
+});
+
+describe('the way back to the world, on the companion', () => {
+  it('sits inside the screen well, not pinned to the viewport', () => {
+    // Fixed to the bottom of the viewport it landed under the case's own
+    // bottom edge on a phone — visible nowhere, tappable nowhere (user
+    // report, 2026-08-25). The well is the positioned ancestor, so
+    // `position: absolute` here means "in the screen, below the creature".
+    const src = readFileSync(join(process.cwd(), 'src/phone/device.ts'), 'utf8');
+    const rule = /\.world-link \{[\s\S]*?\n\}/.exec(src)?.[0] ?? '';
+    expect(rule).toBeTruthy();
+    expect(rule).toMatch(/position: absolute/);
+    expect(rule).not.toMatch(/position: fixed/);
+  });
+
+  it('is mounted into the well, so that absolute has something to hold to', () => {
+    // The rule above is inert if the element is still a child of <body>.
+    const src = readFileSync(join(process.cwd(), 'src/phone/main.ts'), 'utf8');
+    expect(src).toMatch(/querySelector<HTMLElement>\('\.device-well'\)/);
+    expect(src).toMatch(/mountWorldLink\(wellForLink \?\? document\.body/);
   });
 });

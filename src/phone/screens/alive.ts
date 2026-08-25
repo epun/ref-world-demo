@@ -55,29 +55,16 @@ import { GrainPass } from '../../world/grain';
 import { InkPass } from '../../world/ink';
 import { createLighting } from '../../world/lighting';
 import { createKeyRow, type KeyRowSpec } from '../device';
+import { PHONE_EMOTE_KEYS } from '../emotes';
 import { createSpin, type SpinHandle, type SpinState } from '../spin';
 import { CORE_SHARE, wellElement, type Screen, type StageSlots } from '../states';
 
 // ── The phone's emote set (DEVICE §2) ───────────────────────────────────────
 
-/**
- * Six emotes on six keys, in the order the case reads them: the top row
- * left to right, then the bottom row. Six and not seven — `angry` is
- * dropped from the PHONE's set by ruling and stays in `EMOTE_NAMES`,
- * because the world still uses it for autonomous behaviour. Typed as
- * EmoteName, so dropping one from the protocol breaks the build here
- * rather than silently sending an emote nothing understands.
- */
-export const PHONE_EMOTE_KEYS: Record<'top' | 'bottom', readonly EmoteName[]> = {
-  top: ['wave', 'happy', 'surprised'],
-  bottom: ['dance', 'sleepy', 'sad'],
-};
-
-/** Every emote the phone can send, in key order. */
-export const PHONE_EMOTES: readonly EmoteName[] = [
-  ...PHONE_EMOTE_KEYS.top,
-  ...PHONE_EMOTE_KEYS.bottom,
-];
+// Moved to ../emotes so the world view's tray can read the same six
+// without importing this module (and its renderer) — re-exported here so
+// this stays the name the phone code reaches for.
+export { PHONE_EMOTES, PHONE_EMOTE_KEYS } from '../emotes';
 
 /**
  * De-dupe for emotes arriving on the pose stream (unit-tested in

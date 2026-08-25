@@ -355,7 +355,12 @@ async function boot(): Promise<void> {
     .toLowerCase()
     .replace(/[^a-z0-9-]/g, '')
     .slice(0, 24);
-  mountWorldLink(document.body, {
+  // Into the screen well, not the page: fixed to the viewport it landed
+  // under the case's own bottom edge and could not be tapped (user report,
+  // 2026-08-25). The well is the container, and the foot of the screen is
+  // just below the creature.
+  const wellForLink = document.querySelector<HTMLElement>('.device-well');
+  mountWorldLink(wellForLink ?? document.body, {
     room,
     world: publicWorld,
     device: document.querySelector<HTMLElement>('.device'),

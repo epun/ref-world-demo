@@ -259,10 +259,23 @@ function ensureStyle(): void {
  * this is the rule line.
  */
 .world-link {
-  position: fixed;
+  /*
+   * INSIDE the screen, at the foot of it (user report, 2026-08-25).
+   *
+   * It used to be fixed to the bottom of the VIEWPORT, which on a phone is
+   * where the case's own bottom edge lands — so the one control that takes
+   * you back to the world sat under the device and could be neither seen
+   * nor tapped. Anchoring it to the well instead puts it where it belongs
+   * anyway: just below the creature, in the screen's own generous negative
+   * space, reading as something this device shows rather than something
+   * lying beside it.
+   *
+   * Absolute against .device-well, which is the positioned ancestor.
+   */
+  position: absolute;
   left: 50%;
-  bottom: calc(env(safe-area-inset-bottom, 0px) + 3vmin);
-  z-index: 40;
+  bottom: 5%;
+  z-index: 2;
   transform: translate(-50%, 10px);
   padding-top: 0.55em;
   border-top: 1px solid ${WORLD.ink};

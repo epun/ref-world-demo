@@ -6,8 +6,12 @@
  * live. So they get one row along the bottom, in the order they are
  * reached for:
  *
- *     [ qr ]        [ the device ]        [ minimap ]
- *      join            yours                 where
+ *     [ qr | device ]                      [ minimap ]
+ *      join   yours                            where
+ *
+ * The device sits in the LEFT corner (user ruling, 2026-08-25), in the
+ * same cell the join code uses — which is what makes them exchangeable
+ * rather than two things competing for the middle.
  *
  * The qr and the device are MUTUALLY EXCLUSIVE, because the questions they
  * answer are (user ruling, 2026-08-25). Before you have a creature the qr
@@ -31,30 +35,41 @@
  * row is a layout, not a surface.
  */
 
+import { BUBBLE_EMOJI } from '../character/bubble';
+import { DEVICE_VIEWBOX, DEVICE_WELL } from '../phone/device';
 import { MOTION, SURFACE, WORLD } from '../taste/tokens';
+import { PHONE_EMOTES } from '../phone/emotes';
+import { mountMiniCreature, type MiniCreatureHandle } from './minicreature';
 import type { EmoteName } from '../net/protocol';
+import type { StrokeList } from '../shape/types';
 
-/** The six the phone can send (mirrors src/phone/screens/alive.ts). */
-export const TRAY_EMOTES: readonly EmoteName[] = [
-  'wave',
-  'happy',
-  'surprised',
-  'dance',
-  'sleepy',
-  'sad',
-];
-
-const GLYPH: Record<string, string> = {
-  wave: '👋',
-  happy: '😊',
-  surprised: '😮',
-  dance: '💃',
-  sleepy: '😴',
-  sad: '😢',
-};
+/**
+ * The six, in the phone's own order — not a copy of them.
+ *
+ * A hand-written copy here drifted from the case within a day: the tray
+ * offered 💃 for `dance` and 😮 for `surprised` while the companion and
+ * the world's speech bubbles used 🎶 and 😲 (user report, 2026-08-25).
+ * Same person, same creature, two different pictures of the same feeling.
+ * Both the list and the glyphs now come from where they are defined.
+ */
+export const TRAY_EMOTES: readonly EmoteName[] = PHONE_EMOTES;
 
 /** How long a press has to last before it means "the emotes", not "open". */
 export const HOLD_MS = 320;
+
+/** The mini device's width on screen. Everything else is derived from it. */
+const DEVICE_W_PX = 62;
+/** ...including its height, from the real artwork's proportions. */
+const DEVICE_H_PX = (DEVICE_W_PX * DEVICE_VIEWBOX.height) / DEVICE_VIEWBOX.width;
+/**
+ * Air between the top of the device and the emote ring.
+ *
+ * The ring used to sit at a picked 76px, which is SHORTER than the device
+ * it belongs to — so the device covered the thing the hold had just opened
+ * (user report, 2026-08-25). Deriving the offset from the device's own
+ * height is what stops that recurring the next time the device resizes.
+ */
+const RING_GAP_PX = 12;
 
 /** What a finished press meant. Pure, so the split is testable without a DOM. */
 export type PressResult = 'open-companion' | 'nothing';
@@ -89,6 +104,13 @@ export interface TrayOptions {
   hasCreature: boolean;
   /** Where the mini device leads on a tap. */
   companionHref: string;
+  /**
+   * This handset's own drawing, for the creature in the mini screen. Absent
+   * (or unbuildable) leaves the screen empty rather than faking one.
+   */
+  strokes?: StrokeList;
+  /** Their drawing id, so the mini creature matches the world's exactly. */
+  identity?: string;
   /** Play an emote. Returns false when there is no creature to play it on. */
   emote(name: EmoteName): boolean;
   /** Injectable for tests; defaults to a real navigation. */
@@ -130,7 +152,10 @@ function ensureStyle(): void {
   bottom: 0;
   z-index: 30;
   display: grid;
-  grid-template-columns: 1fr auto 1fr;
+  /* Two ends and the air between them: whatever is yours on the left,
+     where you are on the right. Nothing takes the middle — the middle is
+     the world. */
+  grid-template-columns: auto 1fr auto;
   align-items: end;
   gap: 3vw;
   padding: 0 4vw calc(env(safe-area-inset-bottom, 0px) + 3vw);
@@ -139,14 +164,12 @@ function ensureStyle(): void {
 .world-tray > * { pointer-events: auto; }
 .tray-left { justify-self: start; }
 .tray-right { justify-self: end; }
-/* the join code, when it is standing where the device would be */
-.tray-centre { justify-self: center; }
 
 /* The device, small. Same artwork, further away. */
 .tray-device {
-  justify-self: center;
+  justify-self: start;
   position: relative;
-  width: 62px;
+  width: ${DEVICE_W_PX}px;
   border: 0;
   padding: 0;
   background: transparent;
@@ -184,11 +207,28 @@ function ensureStyle(): void {
   opacity: 0;
 }
 
+/*
+ * The screen. A live creature, not a picture of one — see minicreature.ts.
+ * Clipped to the well the artwork already draws, so the shell's own rounded
+ * corner is what frames it.
+ */
+.tray-device-screen {
+  position: absolute;
+  left: ${DEVICE_WELL.leftPct}%;
+  top: ${DEVICE_WELL.topPct}%;
+  width: ${DEVICE_WELL.widthPct}%;
+  height: ${DEVICE_WELL.heightPct}%;
+  display: block;
+  pointer-events: none;
+}
+
 /* The emote ring — only while held. */
 .tray-emotes {
   position: fixed;
+  /* Above the device, clear of it: the offset is the device's own height
+     plus air, so it cannot end up shorter than the thing it must clear. */
   left: 50%;
-  bottom: calc(env(safe-area-inset-bottom, 0px) + 3vw + 76px);
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 3vw + ${Math.round(DEVICE_H_PX + RING_GAP_PX)}px);
   transform: translate(-50%, 10px);
   display: flex;
   gap: 2.5vw;
@@ -245,6 +285,10 @@ export function mountWorldTray(root: HTMLElement, options: TrayOptions): TrayHan
   shell.decoding = 'async';
   device.appendChild(shell);
 
+  // Assigned below, once the device is built; the ring's handlers close
+  // over this rather than over the handle, because the ring is built first.
+  let miniRef: MiniCreatureHandle | null = null;
+
   const ring = document.createElement('div');
   ring.className = 'tray-emotes';
   ring.setAttribute('role', 'group');
@@ -253,11 +297,15 @@ export function mountWorldTray(root: HTMLElement, options: TrayOptions): TrayHan
     const b = document.createElement('button');
     b.type = 'button';
     b.className = 'tray-emote';
-    b.textContent = GLYPH[name] ?? '·';
+    b.textContent = BUBBLE_EMOJI[name];
     b.setAttribute('aria-label', name);
     b.addEventListener('click', (e) => {
       e.stopPropagation();
-      options.emote(name);
+      // Play it locally too, exactly as the companion does: the portrait
+      // is the identical pipeline, so it needs nothing from the wire, and
+      // a round trip through the broker would put visible lag on the
+      // person's own tap.
+      if (options.emote(name)) miniRef?.emote(name);
       setOpen(false);
     });
     ring.appendChild(b);
@@ -317,17 +365,26 @@ export function mountWorldTray(root: HTMLElement, options: TrayOptions): TrayHan
   };
   window.addEventListener('pointerdown', dismiss, true);
 
+  // The left corner holds whichever of the two this person needs, and the
+  // spacer keeps the minimap at the far end either way.
+  let mini: MiniCreatureHandle | null = null;
   if (options.hasCreature) {
-    // No join code: an empty cell keeps the three columns, so the device
-    // stays centred on the screen rather than drifting to fill the gap.
-    tray.append(document.createElement('div'), device, right);
+    if (options.strokes && options.strokes.length > 0 && options.identity) {
+      // A live creature in the screen, built from this handset's own
+      // strokes through the same pure pipeline the world used — so it is
+      // the same creature, not a likeness of it.
+      mini = mountMiniCreature({ strokes: options.strokes, identity: options.identity });
+      if (mini) {
+        device.appendChild(mini.canvas);
+        miniRef = mini;
+      }
+    }
+    tray.append(device, document.createElement('div'), right);
     root.append(tray, ring);
   } else {
-    // No creature yet: the join code takes the middle, where the device
-    // would be. It is the only thing on this screen a person without a
-    // creature can act on, so it gets the place the eye goes.
-    left.classList.add('tray-centre');
-    tray.append(document.createElement('div'), left, right);
+    // No creature yet: the join code stands where the device would, so the
+    // corner means one thing — "yours" — whether or not you have one.
+    tray.append(left, document.createElement('div'), right);
     root.append(tray);
   }
 
@@ -341,6 +398,7 @@ export function mountWorldTray(root: HTMLElement, options: TrayOptions): TrayHan
     destroy(): void {
       window.clearTimeout(holdTimer);
       window.removeEventListener('pointerdown', dismiss, true);
+      mini?.dispose();
       tray.remove();
       ring.remove();
     },

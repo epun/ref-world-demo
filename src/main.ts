@@ -46,6 +46,8 @@ import { MOTION, SURFACE, WORLD } from './taste/tokens';
 import { createPhoneLink } from './net/phoneLink';
 import { readSubmission } from './phone/identity';
 import { mountWorldTray } from './world/tray';
+import { feedDrawingToStrokes } from './net/drawFeed';
+import type { StrokeList } from './shape/types';
 import { installJoinQr, QR_SIZE_CSS } from './ui/joinqr';
 import { installWorldMinimap } from './ui/minimap';
 import { start } from './world/scene';
@@ -770,11 +772,22 @@ function main(): void {
   // is the whole of the world's persistent chrome.
   /**
    * On a handset these do not float in their own corners — they sit in the
-   * tray along the bottom (src/world/tray.ts), with the device between
-   * them. Same two components, given a place instead of a corner each.
+   * tray along the bottom (src/world/tray.ts): whatever is yours in the
+   * left corner, the minimap in the right. Same two components, given a
+   * place instead of a corner each.
    */
+  /** This handset's own drawing, if it made one. */
+  const mySubmission = handheld && room.length > 0 ? readSubmission(room) : null;
   /** Which creature on this screen is this handset's, if any. */
-  const myDrawerId = handheld && room.length > 0 ? (readSubmission(room)?.id ?? '') : '';
+  const myDrawerId = mySubmission?.id ?? '';
+  /**
+   * Their drawing, as the shape pipeline wants it. Stored in the kit's WIRE
+   * form, which is what the world and the companion both parse it from —
+   * same conversion here, so all three build the identical creature.
+   */
+  const myStrokes: StrokeList = mySubmission
+    ? feedDrawingToStrokes({ strokes: mySubmission.strokes as never })
+    : [];
 
   const tray = handheld
     ? mountWorldTray(document.body, {
@@ -783,6 +796,12 @@ function main(): void {
         // keep in sync — the next load asks again and is right again.
         hasCreature: myDrawerId.length > 0,
         companionHref: `/phone.html?room=${room}${worldParam}`,
+        // The same strokes under the same id the world built from, so the
+        // creature in the mini screen IS the one standing in the world —
+        // the pipeline is deterministic, so this needs nothing from the wire.
+        ...(myStrokes.length > 0 && mySubmission
+          ? { strokes: myStrokes, identity: mySubmission.id }
+          : {}),
         emote: (name) => {
           // Locally first, so the reaction is instant on the screen the
           // person is holding, then out over the wire for every other
