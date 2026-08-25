@@ -788,6 +788,16 @@
     /** `?recover=1`: hand this handset's stored drawing back, then leave. */
     const RECOVER_MODE = params.get('recover') === '1';
     let recovered = false;
+    /**
+     * `?world=public` — a PUBLIC world, which has a server behind it.
+     *
+     * mqtt alone reaches only the projections that happen to be open right
+     * now. A public world has to keep the drawing whether or not anybody is
+     * watching, so it is also posted to the api. Both, not either: mqtt is
+     * what makes the egg appear on the screen in the room within a second,
+     * and the api is what makes it still be there tomorrow.
+     */
+    const WORLD = (params.get('world') || '').toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 24);
     function storedSubmission() {
       try { return JSON.parse(localStorage.getItem(SUBMISSION_KEY) || 'null'); } catch { return null; }
     }
@@ -819,7 +829,9 @@
       return true;
     }
     function goToCompanion() {
-      location.replace('/phone.html?room=' + room + (WORLD_EPOCH ? '&w=' + WORLD_EPOCH : ''));
+      location.replace('/phone.html?room=' + room
+        + (WORLD_EPOCH ? '&w=' + WORLD_EPOCH : '')
+        + (WORLD ? '&world=' + encodeURIComponent(WORLD) : ''));
     }
     function enforceSingleDrawing() {
       // A recovery link is EXPECTED to arrive on a handset that already drew
@@ -1170,6 +1182,19 @@
       if (refusedHere()) return;
       const msg = { id: MY_ID, name: userName, strokes, ts: Date.now() };
       client.publish(TOPIC, JSON.stringify(msg), { qos: 0 });
+      // The durable copy. Fire and forget: the drawing has already gone out
+      // over mqtt and the person is already being walked to their egg, so a
+      // slow or failing api must not hold up the hand-off. A rejection is
+      // recorded for the notice below rather than thrown.
+      if (WORLD) {
+        fetch('/api/drawings?world=' + encodeURIComponent(WORLD), {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ id: msg.id, name: userName || '', strokes: msg.strokes }),
+        }).then(function (r) {
+          if (r.status === 409) showToast('you already have a creature in this world');
+        }).catch(function () { /* offline — mqtt already carried it */ });
+      }
       // Hand off to the companion's egg view: stash the drawing for the
       // wait screen (3D egg painted with it), then navigate.
       try {

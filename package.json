@@ -15,11 +15,13 @@
     "relay:dev": "tsx src/net/devRelay.ts"
   },
   "dependencies": {
+    "@upstash/redis": "^1.38.2",
     "three": "0.180.0"
   },
   "devDependencies": {
     "@types/three": "0.180.0",
     "@types/ws": "^8.18.1",
+    "@vercel/node": "^7.0.0",
     "ghost-panel": "git+https://github.com/epun/ghost-panel.git#2498c5bc4b75ae62504d080c5da8e84229ca8ffe",
     "jsqr": "^1.4.0",
     "tsx": "^4.19.2",

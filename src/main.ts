@@ -52,6 +52,17 @@ import { createTour } from './world/tour';
 export const HATCH_TIMER_MS = 20000;
 
 /**
+ * How often a public world asks the server what it missed.
+ *
+ * Not a live channel — mqtt is that, and it is instant. This is the
+ * backstop for the two cases mqtt cannot cover: drawings made while this
+ * page was closed, and drawings made while its socket was down. Twenty
+ * seconds is slow enough to be free and fast enough that a person who just
+ * drew sees their creature before they put the phone away.
+ */
+const PUBLIC_POLL_MS = 20000;
+
+/**
  * What this world offers its gate: the feed's drawing, the hatch delay it is
  * admitted with, and where it came in from. `source` exists only so the
  * session log can say whether a creature came from a phone, the local pad, or
@@ -525,6 +536,68 @@ function main(): void {
       .catch((err: unknown) => {
         say(`could not load ${restoreParam} — ${err instanceof Error ? err.message : 'failed'}`);
       });
+  }
+
+  /**
+   * A PUBLIC world: `?world=public`.
+   *
+   * The installation world is ephemeral on purpose — drawings live in the
+   * browser showing them, which is right for a room you can see and wrong
+   * for a link anyone can open. With `?world=` this page also has a
+   * history: it asks the server for every drawing admitted so far and
+   * rebuilds them, then keeps the live mqtt feed for whatever arrives while
+   * it is open.
+   *
+   * TWO CHANNELS, on purpose. mqtt is the live one and is instant; the api
+   * is the durable one and is the only thing that survives nobody watching.
+   * The poll below is the seam between them: it catches drawings that
+   * arrived while this page was closed, or while its socket was down, and
+   * it spawns them THROUGH THE GATE rather than restoring — a restore
+   * clears the world, which would be a strange thing to do to a room every
+   * twenty seconds.
+   */
+  const publicWorld = (params.get('world') ?? '').toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 24);
+  if (publicWorld.length > 0) {
+    const endpoint = `/api/drawings?world=${encodeURIComponent(publicWorld)}`;
+    const pull = async (first: boolean): Promise<void> => {
+      let log: SessionLog | null = null;
+      try {
+        const res = await fetch(endpoint, { cache: 'no-store' });
+        if (!res.ok) throw new Error(String(res.status));
+        log = readSessionLog(await res.json());
+      } catch (err) {
+        if (first) say(`could not reach the world — ${err instanceof Error ? err.message : 'failed'}`);
+        return;
+      }
+      if (!log) return;
+      let added = 0;
+      for (const event of log.events) {
+        if (event.k !== 'drawing') continue;
+        // Already standing? Leave it alone. This is what makes the poll
+        // additive instead of a world-clearing restore.
+        if (creatures.has(event.id)) continue;
+        const entry = gate.offer({
+          id: event.id,
+          name: event.name,
+          personality: null,
+          strokes: event.strokes,
+          hatchMs: event.hatchMs,
+          source: 'phone',
+        });
+        if (entry.disposition === 'admitted') added++;
+      }
+      if (added > 0) {
+        // Public creatures arrive already grown: nobody is watching an egg
+        // that hatched an hour ago on somebody else's screen.
+        creatures.hatchAll();
+        saveSession();
+      }
+      if (first) {
+        say(added > 0 ? `${added} creature${added === 1 ? '' : 's'} in ${publicWorld}` : `${publicWorld} is empty — draw the first one`);
+      }
+    };
+    void pull(true);
+    window.setInterval(() => void pull(false), PUBLIC_POLL_MS);
   }
 
   /**
