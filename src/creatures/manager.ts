@@ -248,6 +248,16 @@ export interface SpawnOptions {
   personality?: 'friends' | 'snacks' | 'sleep' | 'adventure' | 'chaos' | null;
   /** ms until auto-hatch. */
   hatchMs: number;
+  /**
+   * Already grown — no egg, no shell, no hatch.
+   *
+   * For a population that exists before the viewer does: a public world's
+   * residents were drawn days ago and are simply standing there. Without
+   * this every visitor watched the entire world hatch on arrival, which is
+   * both a lie about when it happened and, at sixty-eight creatures, most
+   * of the page's load cost.
+   */
+  grown?: boolean;
 }
 
 /**
@@ -467,6 +477,38 @@ export function createCreatureManager(
     observer?.retire(slot.id, 'population');
   }
 
+  /**
+   * The moment a slot stops being an egg and becomes a living creature.
+   *
+   * Split out of the hatch so it can happen WITHOUT one. A creature that
+   * hatched last month is not hatching now, and a visitor opening a link
+   * should not have to watch sixty-eight shells break to see a world that
+   * has been standing for weeks (user ruling, 2026-08-25: *"we shouldn't
+   * have to hatch on every user's load"*). The hatch animation is the
+   * arrival; this is the life, and only arrivals need both.
+   */
+  function becomeAlive(slot: Slot, root: Group, character: Character): void {
+    slot.character = character;
+    slot.pending = null;
+    slot.characterRoot = root;
+    // Named so the ghost-panel scene outliner lists each creature legibly
+    // (user ask). Lowercase, name over id when the drawer signed one.
+    root.name = slot.name ? `creature ${slot.name}` : `creature ${slot.id}`;
+    slot.characterShadow = world.shadows.addShadow(`char-${slot.id}`, character.radius);
+    // Collision circle from the REAL mesh footprint (wide fish ≠ narrow
+    // triangle) — never the tucked-in shadow radius.
+    slot.bodyR = measureBodyRadius(character);
+    world.shadows.removeShadow(`egg-${slot.id}`);
+    slot.eggShadow = null;
+    slot.egg = null;
+    slot.phase = 'alive';
+    // The hidden life: seed from the slot id, personality from the audience
+    // answer (null → mild seeded variation).
+    const seed = behaviorSeed(slot.id);
+    slot.agent = new BehaviorAgent(seed, personalityFromChoice(slot.personalityChoice, seed));
+    slot.agent.setSpeedMultiplier(wanderSpeedMult);
+  }
+
   function beginHatch(slot: Slot, cause: 'timer' | 'forced'): void {
     if (!slot.egg || slot.hatch || !slot.pending) return;
     const next = slot.pending;
@@ -474,35 +516,37 @@ export function createCreatureManager(
     observer?.hatch(slot.id, cause);
     slot.hatch = startHatch(world.scene, slot.egg, next, {
       onBurst: (root) => {
-        slot.character = next;
-        slot.pending = null;
-        slot.characterRoot = root;
-        // Named so the ghost-panel scene outliner lists each creature
-        // legibly (user ask). Lowercase, name over id when the drawer
-        // signed one.
-        root.name = slot.name ? `creature ${slot.name}` : `creature ${slot.id}`;
-        slot.characterShadow = world.shadows.addShadow(`char-${slot.id}`, next.radius);
-        // Collision circle from the REAL mesh footprint (wide fish ≠ narrow
-        // triangle) — never the tucked-in shadow radius.
-        slot.bodyR = measureBodyRadius(next);
-        world.shadows.removeShadow(`egg-${slot.id}`);
-        slot.eggShadow = null;
-        slot.egg = null; // the hatch owns the egg's disposal from here
-        slot.phase = 'alive';
-        // Hatch mints the hidden life: seed from the slot id, personality
-        // from the audience answer (null → mild seeded variation).
-        const seed = behaviorSeed(slot.id);
-        slot.agent = new BehaviorAgent(
-          seed,
-          personalityFromChoice(slot.personalityChoice, seed),
-        );
-        slot.agent.setSpeedMultiplier(wanderSpeedMult);
+        becomeAlive(slot, root, next);
+        // the egg's disposal belongs to the hatch from here
         world.cameraRig.frameAt(root.position);
       },
       onDone: () => {
         slot.hatch = null;
       },
     });
+  }
+
+  /**
+   * Put a creature straight into the world, grown, with no egg at all.
+   *
+   * Not a shortcut through the hatch — there is no hatch. No egg mesh is
+   * built, no shell animation runs, no `hatch` event is recorded, and the
+   * camera does not swing to it. It is simply already here, which is the
+   * truth about a creature somebody drew last month.
+   */
+  function placeGrown(slot: Slot): boolean {
+    const character = slot.pending;
+    if (!character) return false;
+    if (slot.egg) {
+      world.scene.remove(slot.egg.group);
+      slot.egg.dispose();
+      slot.egg = null;
+    }
+    const root = character.group;
+    root.position.set(slot.spot.x, 0, slot.spot.z);
+    world.scene.add(root);
+    becomeAlive(slot, root, character);
+    return true;
   }
 
   const manager: CreatureManager = {
@@ -561,6 +605,18 @@ export function createCreatureManager(
         retireStartMs: 0,
         order: orderCounter++,
       };
+      slots.set(id, slot);
+
+      // Already here, so: no egg mesh, no shell animation, no `hatch` in the
+      // log, and the camera does not swing to it. Nothing arrived.
+      if (opts.grown === true) {
+        if (!placeGrown(slot)) {
+          slots.delete(id);
+          return false;
+        }
+        return true;
+      }
+
       slot.eggShadow?.setPosition(spot.x, spot.z);
       // Named so the ghost-panel outliner lists eggs, not only hatched
       // creatures (user ask, 2026-08-21: *"i want to retain them to see if
@@ -573,7 +629,6 @@ export function createCreatureManager(
       egg.group.name = `egg ${slot.name}`;
       world.scene.add(egg.group);
       world.cameraRig.frameAt(new Vector3(spot.x, 0, spot.z));
-      slots.set(id, slot);
       observer?.egg(id, spot.x, spot.z);
       return true;
     },

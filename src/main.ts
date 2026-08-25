@@ -63,12 +63,28 @@ export const HATCH_TIMER_MS = 20000;
 const PUBLIC_POLL_MS = 20000;
 
 /**
+ * How long a new creature spends as an egg in a PUBLIC world.
+ *
+ * The room's twenty seconds is paced for an audience watching a shared
+ * screen together, with an operator holding the moment. Alone on a phone,
+ * twenty seconds of watching an egg is just waiting — long enough to put
+ * the phone away and miss the hatch you came for. Seven is long enough to
+ * feel like something is happening to it and short enough to stay for.
+ */
+const PUBLIC_HATCH_MS = 7000;
+
+/**
  * What this world offers its gate: the feed's drawing, the hatch delay it is
  * admitted with, and where it came in from. `source` exists only so the
  * session log can say whether a creature came from a phone, the local pad, or
  * a fixture (src/session/).
  */
-type WorldDrawing = IncomingDrawing & { hatchMs: number; source: DrawingSource };
+type WorldDrawing = IncomingDrawing & {
+  hatchMs: number;
+  source: DrawingSource;
+  /** Already standing when this page opened — spawn grown, with no egg. */
+  grown?: boolean;
+};
 
 // ── draw overlay chrome ──────────────────────────────────────────────────────
 // TASTE §4: icons, hairline rules, thin borders — and nothing else. The
@@ -162,11 +178,29 @@ function main(): void {
   const fromUrl = (params.get('room') ?? '').toLowerCase();
   const room = isRoomCode(fromUrl) ? fromUrl : roomCode(Math.random);
 
+  /**
+   * A PUBLIC world: `?world=public`. Read here, before anything else, for
+   * one reason — the mobile redirect two lines down has to carry it.
+   *
+   * A shared link is opened on a phone far more often than on a laptop, and
+   * a phone that lands on `/draw/?room=…` with no world publishes over mqtt
+   * and stores NOTHING. Their creature would appear on any projection that
+   * happened to be open, then vanish with it, and nothing anywhere would
+   * say a word about it. Dropping the world here was silent data loss on
+   * the most travelled path in the whole thing.
+   */
+  const publicWorld = (params.get('world') ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, '')
+    .slice(0, 24);
+  const isPublic = publicWorld.length > 0;
+  const worldParam = isPublic ? `&world=${encodeURIComponent(publicWorld)}` : '';
+
   // A phone opening the world link goes to the drawing UI for this room —
   // the mobile view IS the kit's draw page (user decision).
   const coarse = window.matchMedia('(pointer: coarse)').matches;
   if (coarse && Math.min(window.innerWidth, window.innerHeight) < 620) {
-    location.replace(`/draw/?room=${room}`);
+    location.replace(`/draw/?room=${room}${worldParam}`);
     return;
   }
 
@@ -220,8 +254,13 @@ function main(): void {
   // its own hatch off this edge instead of running an independent timer,
   // which is what made the creature appear on the projection and, seconds
   // later and unrelated, on the phone (user report).
+  // A public world hatches on a timer: in a room an operator presses `h`
+  // and the whole clutch opens together, which is the moment everybody came
+  // for. On a link there is no operator and nobody to wait for, and an egg
+  // that never hatches is a person who drew something and got nothing.
   const recorder = recordCreatures(session);
   const creatures = createCreatureManager(world, {
+    autoHatch: isPublic,
     observer: {
       ...recorder,
       hatch(id, cause) {
@@ -259,6 +298,7 @@ function main(): void {
         ...(d.name !== null ? { name: d.name } : {}),
         ...(d.personality !== null ? { personality: d.personality } : {}),
         hatchMs: d.hatchMs,
+        ...(d.grown === true ? { grown: true } : {}),
       }),
     clear: (id) => creatures.clear(id),
     live: (id) => creatures.has(id),
@@ -556,14 +596,31 @@ function main(): void {
    * clears the world, which would be a strange thing to do to a room every
    * twenty seconds.
    */
-  const publicWorld = (params.get('world') ?? '').toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 24);
-  if (publicWorld.length > 0) {
+  if (isPublic) {
     const endpoint = `/api/drawings?world=${encodeURIComponent(publicWorld)}`;
 
-    /** Spawn a log's drawings, skipping anything already standing.
-     * Returns the ids it actually admitted. */
-    const absorb = (log: SessionLog): string[] => {
+    /**
+     * Spawn a log's drawings, A FEW PER FRAME.
+     *
+     * Building a creature is the whole pure pipeline — rasterise, distance
+     * transform, marching squares, simplify, smooth, medial axis, inflate —
+     * and it runs on the main thread because it has to be deterministic and
+     * shared with the phone. One creature is nothing. Sixty-eight in a loop
+     * measured as an 8.5 SECOND FROZEN TAB: not a slow page, a broken one,
+     * with no first paint, no scroll, no cursor.
+     *
+     * Yielding between slices costs a little total time and buys the only
+     * thing that matters here — the world is on screen and interactive
+     * while its population arrives. It reads as the field filling up, which
+     * is a better landing than a blank page that suddenly has everything.
+     *
+     * Skips anything already standing, so it stays additive and the poll
+     * can call it every twenty seconds without disturbing the world.
+     */
+    const SPAWN_PER_FRAME = 3;
+    const absorb = async (log: SessionLog, grown: boolean): Promise<string[]> => {
       const ids: string[] = [];
+      let sinceYield = 0;
       for (const event of log.events) {
         if (event.k !== 'drawing') continue;
         if (creatures.has(event.id)) continue;
@@ -572,10 +629,15 @@ function main(): void {
           name: event.name,
           personality: null,
           strokes: event.strokes,
-          hatchMs: event.hatchMs,
+          hatchMs: PUBLIC_HATCH_MS,
           source: 'phone',
+          ...(grown ? { grown: true } : {}),
         });
         if (entry.disposition === 'admitted') ids.push(event.id);
+        if (++sinceYield >= SPAWN_PER_FRAME) {
+          sinceYield = 0;
+          await new Promise((resolve) => requestAnimationFrame(resolve));
+        }
       }
       return ids;
     };
@@ -601,15 +663,9 @@ function main(): void {
         if (!res.ok) return 0;
         const log = readSessionLog(await res.json());
         if (!log) return 0;
-        const ids = absorb(log);
-        // Hatched AT ONCE, not through hatchAll(). The stagger exists so a
-        // roomful of eggs opens one at a time and everybody gets their
-        // moment — lovely for a live room, and wrong here twice over: these
-        // creatures are already residents rather than arrivals, and at
-        // 456ms apart a population of sixty-eight would take half a minute
-        // to finish appearing to somebody who just opened a link.
-        for (const id of ids) creatures.hatch(id);
-        return ids.length;
+        // GROWN. No egg, no shell, no hatch — they have been standing here
+        // since long before this visitor opened the link.
+        return (await absorb(log, true)).length;
       } catch {
         // An empty field is a worse landing than a slow one, but a missing
         // seed must not stop the live world from loading.
@@ -631,13 +687,12 @@ function main(): void {
       // Additive, never a restore: anything already standing is left alone,
       // which is what lets this run every twenty seconds without disturbing
       // a world somebody is looking at.
-      const added = absorb(log).length;
-      if (added > 0) {
-        // Public creatures arrive already grown: nobody is watching an egg
-        // that hatched an hour ago on somebody else's screen.
-        creatures.hatchAll();
-        saveSession();
-      }
+      // The FIRST pull is history — everything the store already held was
+      // there before this page opened, so it is grown like the seed. Every
+      // pull after it is news: somebody drew that in the last twenty
+      // seconds, and an arrival gets its egg and its hatch.
+      const added = (await absorb(log, first)).length;
+      if (added > 0) saveSession();
       if (first) {
         say(
           added > 0
@@ -707,8 +762,15 @@ function main(): void {
     mount: document.body,
   });
 
+  // The join code has to carry the WORLD, or scanning it lands people on a
+  // pad that publishes over mqtt and stores nothing — their creature would
+  // appear on the projection for as long as that tab stayed open and then
+  // be gone forever, with no sign anything was wrong. The qr is the only
+  // route most people take into a public world, so it is the one url that
+  // absolutely must be complete.
   installJoinQr({
-    url: `${location.origin}/draw/?room=${room}&w=${epoch}`,
+    url:
+      `${location.origin}/draw/?room=${room}&w=${epoch}${worldParam}`,
     mount: document.body,
   });
 
