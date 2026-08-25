@@ -19,6 +19,17 @@
  */
 
 import { MOTION } from '../taste/tokens';
+import { CLOSE_MESSAGE } from '../world/companionpanel';
+
+/** Are we the companion inside the world's panel, rather than a page? */
+function framed(): boolean {
+  try {
+    return window.parent !== window;
+  } catch {
+    // Cross-origin parent: not our panel, so behave as a page.
+    return false;
+  }
+}
 
 export interface WorldLinkOptions {
   /** The room, so the world opens on the same one. */
@@ -74,9 +85,19 @@ export function mountWorldLink(
     if (el.dataset['going'] === 'true') return;
     el.dataset['going'] = 'true';
 
-    options.device?.classList.add('leaving');
     el.classList.remove('in');
     el.classList.add('out');
+
+    if (framed()) {
+      // Inside the world's panel: the PANEL slides, and the world behind it
+      // is still standing exactly as it was left — nothing to navigate to
+      // and nothing to rebuild. Sliding the case as well would be two
+      // objects leaving at once for one gesture.
+      window.parent.postMessage(CLOSE_MESSAGE, window.location.origin);
+      return;
+    }
+
+    options.device?.classList.add('leaving');
     // The case is mid-slide; navigating now would cut it. Waiting for the
     // move it is already making is the whole seam.
     window.setTimeout(() => go(href), MOTION.secondaryMs);

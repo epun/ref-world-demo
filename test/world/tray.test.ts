@@ -153,25 +153,38 @@ describe('the way back to the world, on the companion', () => {
 describe('opening the companion', () => {
   const trayFor = () => readFileSync(join(process.cwd(), 'src/world/tray.ts'), 'utf8');
 
-  it('just goes — the tray plays no growth of its own', () => {
-    // Scaling the 62px thumbnail up to full screen rasterizes the layer
-    // once at thumbnail size and stretches it for the whole flight, so the
-    // shell turned to mush and the creature, a real 46px canvas, was blown
-    // up six times (user report, 2026-08-25). The move belongs to the
-    // companion now.
+  it('opens a panel — it does not navigate', () => {
+    // Navigating unloaded the world, and coming back rebuilt all sixty-eight
+    // creatures from nothing: three documents and two full rebuilds for one
+    // round trip (user report, 2026-08-25). It was slow, and animating a
+    // slide while the next document booted is what made it feel rough.
     const src = trayFor();
-    expect(src).not.toMatch(/growing/);
-    expect(src).not.toMatch(/companionBox|invertOnto|safeInsets/);
-    // No inline geometry left behind on the device either.
-    expect(src).not.toMatch(/device\.style\.(transform|position|left|top|width|height)/);
+    expect(src).toMatch(/options\.openCompanion\(\)/);
+    expect(src).not.toMatch(/window\.location\.href/);
+    expect(src).not.toMatch(/companionHref/);
+    // ...and no leftover growth, which is what this replaced.
+    expect(src).not.toMatch(/growing|companionBox|invertOnto|safeInsets/);
   });
 
-  it('tells the companion where the person came from', () => {
-    // The companion slides its case up only for `from=world`; the /draw/
-    // handoff must not, because that seam works by the case already being
-    // exactly where it was (PHONE-STAGE §4.1).
+  it('frames the real companion rather than rebuilding one', () => {
+    // A lookalike device in the world page would drift from the actual
+    // companion; /phone.html is a whole page with its own boot and stage.
     const src = readFileSync(join(process.cwd(), 'src/main.ts'), 'utf8');
-    expect(src).toMatch(/companionHref: `\/phone\.html\?room=\$\{room\}\$\{worldParam\}&from=world`/);
+    expect(src).toMatch(/createCompanionPanel\(document\.body, \{/);
+    // The url itself, not the prose around it: the frame is what slides, so
+    // the case inside must NOT be told to (no `from=world`, which is why
+    // the arriving class no longer exists anywhere).
+    const href = /href: `\/phone\.html\?[^`]*`/.exec(src)?.[0] ?? '';
+    expect(href).toBe('href: `/phone.html?room=${room}${worldParam}`');
+    expect(readFileSync(join(process.cwd(), 'phone.html'), 'utf8')).not.toMatch(/arriving/);
+    expect(readFileSync(join(process.cwd(), 'src/phone/device.ts'), 'utf8')).not.toMatch(/arriving/);
+  });
+
+  it('stops drawing what the panel covers', () => {
+    const src = readFileSync(join(process.cwd(), 'src/main.ts'), 'utf8');
+    expect(src).toMatch(/world\.setPaused\(visible\)/);
+    // The thumbnail is a second gl context, and it is under the panel too.
+    expect(src).toMatch(/tray\?\.setPortraitPaused\(visible\)/);
   });
 
   it('left-aligns the emote ring to the device', () => {
@@ -184,38 +197,53 @@ describe('opening the companion', () => {
   });
 });
 
-describe('the case slides, both directions', () => {
-  // One move played forwards and backwards: out to the world, back to the
-  // device. Same offset, same duration, same curve — anything else and the
-  // two read as unrelated events rather than one gesture reversed.
-  const deviceTs = () => readFileSync(join(process.cwd(), 'src/phone/device.ts'), 'utf8');
-  const phoneHtml = () => readFileSync(join(process.cwd(), 'phone.html'), 'utf8');
+describe('the companion panel', () => {
+  const src = () => readFileSync(join(process.cwd(), 'src/world/companionpanel.ts'), 'utf8');
 
-  it('leaves and arrives by the same offset', () => {
-    expect(deviceTs()).toMatch(/\.device\.leaving,\s*\n\.device\.arriving \{\s*\n\s*transform: translateY\(106%\);/);
+  it('slides by the same offset the case does on the way out', () => {
+    // One gesture, one distance: the panel arriving and the case leaving
+    // are the same move, so they must not be two different numbers.
+    expect(src()).toMatch(/transform: translateY\(106%\)/);
+    const deviceTs = readFileSync(join(process.cwd(), 'src/phone/device.ts'), 'utf8');
+    expect(deviceTs).toMatch(/\.device\.leaving \{[\s\S]*?translateY\(106%\)/);
   });
 
-  it('drives the arrival inline, not from the module', () => {
-    // The module is ~840kB and does not run for about a second. An arrival
-    // that waited for it would leave the person looking at bare paper for
-    // that whole second before anything moved.
-    const html = phoneHtml();
-    expect(html).toMatch(/\.device\.arriving \{[\s\S]*?translateY\(106%\)/);
-    expect(html).toMatch(/transition: transform 912ms cubic-bezier\(0\.17, 0\.72, 0\.24, 1\)/);
-    // ...and it is set before the first paint, or the case animates the
-    // wrong way first.
-    expect(html).toMatch(/classList\.add\('arriving'\)/);
-    expect(html).toMatch(/requestAnimationFrame\([\s\S]*?requestAnimationFrame/);
+  it('takes itself out of reach when closed, not just out of sight', () => {
+    // A frame merely translated away still swallows taps meant for the
+    // tray underneath it.
+    expect(src()).toMatch(/visibility: hidden/);
+    expect(src()).toMatch(/visibility 0s linear \$\{MOTION\.secondaryMs\}ms/);
   });
 
-  it('only slides in when the person came from the world', () => {
-    expect(phoneHtml()).toMatch(/get\('from'\) !== 'world'\) return/);
+  it('only listens to its own origin', () => {
+    // The listener is on `window`; anything on the page can post to it.
+    expect(src()).toMatch(/event\.origin !== window\.location\.origin/);
+    expect(src()).toMatch(/event\.data !== CLOSE_MESSAGE/);
   });
 
-  it('mirrors the inline duration from the motion token', () => {
-    // phone.html cannot import from src/, so the number is copied — and a
-    // copy that drifts is the failure mode (DEVICE §3).
-    expect(MOTION.secondaryMs).toBe(912);
-    expect(MOTION.settleCurve.replace(/\s/g, '')).toBe('cubic-bezier(0.17,0.72,0.24,1.0)');
+  it('keeps the frame once built, so the second toggle costs nothing', () => {
+    expect(src()).toMatch(/if \(frame\) return frame/);
+    // close() must not tear it down.
+    const close = /function close\(\)[\s\S]*?\n  \}/.exec(src())?.[0] ?? '';
+    expect(close).toBeTruthy();
+    expect(close).not.toMatch(/remove\(\)|destroy/);
+  });
+});
+
+describe('the framed companion asks to be closed', () => {
+  it('posts to its parent instead of navigating', () => {
+    // Navigating would reload the world it is sitting on top of, which is
+    // the entire thing this avoids.
+    const src = readFileSync(join(process.cwd(), 'src/phone/worldlink.ts'), 'utf8');
+    expect(src).toMatch(/window\.parent\.postMessage\(CLOSE_MESSAGE, window\.location\.origin\)/);
+    expect(src).toMatch(/if \(framed\(\)\) \{/);
+    // A cross-origin parent is not our panel — behave as a page.
+    expect(src).toMatch(/return false;/);
+  });
+
+  it('still navigates when it really is a page', () => {
+    const src = readFileSync(join(process.cwd(), 'src/phone/worldlink.ts'), 'utf8');
+    expect(src).toMatch(/options\.device\?\.classList\.add\('leaving'\)/);
+    expect(src).toMatch(/setTimeout\(\(\) => go\(href\), MOTION\.secondaryMs\)/);
   });
 });

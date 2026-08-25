@@ -51,6 +51,16 @@ export interface WorldHandles {
   setBackgroundColor(color: string): void;
   /** Register per-frame work (entity drift, gaits, …). Runs before render. */
   onFrame(callback: FrameCallback): void;
+  /**
+   * Stop drawing without tearing anything down.
+   *
+   * For when something opaque covers the whole viewport (the companion
+   * panel on a handset). The scene, the creatures and the gl context all
+   * stay exactly as they are, so coming back is instant — the point is to
+   * stop paying for frames nobody can see, and to leave the main thread
+   * free for whatever is on top.
+   */
+  setPaused(paused: boolean): void;
 }
 
 export function start(canvas: HTMLCanvasElement): WorldHandles {
@@ -175,6 +185,8 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
 
   const frameCallbacks: FrameCallback[] = [];
   let last = performance.now();
+  /** Nothing visible is on screen — see setPaused. */
+  let paused = false;
 
   const loop = (nowMs: number): void => {
     // Integrate real elapsed time up to DT_CLAMP_MS so low fps never turns
@@ -184,6 +196,16 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
     // not a pacing mechanism.
     const dt = Math.min(nowMs - last, DT_CLAMP_MS);
     last = nowMs;
+
+    // Covered by something opaque and full-screen (the companion panel):
+    // keep the scene and every built creature exactly as they are, and
+    // stop spending a phone's battery and main thread drawing what nobody
+    // can see. The clock is NOT advanced past the pause, so the world does
+    // not lurch forward on the frame it comes back.
+    if (paused) {
+      requestAnimationFrame(loop);
+      return;
+    }
 
     cameraRig.update(dt, nowMs);
     environment.update(dt, nowMs);
@@ -219,6 +241,16 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
     },
     onFrame: (callback: FrameCallback): void => {
       frameCallbacks.push(callback);
+    },
+    setPaused: (next: boolean): void => {
+      if (next === paused) return;
+      paused = next;
+      // Resuming: forget how long we were away. `last` is what dt is
+      // measured from, so leaving it stale would hand the first live frame
+      // a dt of however many seconds the panel was open — every creature
+      // would jump. The clamp would cap it, but a clamped jump is still a
+      // jump, and nothing here is allowed to move discontinuously.
+      if (!paused) last = performance.now();
     },
   };
 }

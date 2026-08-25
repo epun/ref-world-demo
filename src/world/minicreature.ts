@@ -58,6 +58,13 @@ export interface MiniCreatureOptions {
 export interface MiniCreatureHandle {
   /** The canvas, for the caller to place inside the device's well. */
   canvas: HTMLCanvasElement;
+  /**
+   * Stop drawing without losing anything — for when the companion panel
+   * covers the tray. The creature, its mesh and the gl context all stay;
+   * only the frames stop, which is the whole cost of a thumbnail nobody
+   * can currently see.
+   */
+  setPaused(paused: boolean): void;
   /** Play an emote on the portrait, mirroring what the world will show. */
   emote(name: EmoteName): void;
   /** Stop drawing and release the GL context. */
@@ -145,9 +152,11 @@ export function mountMiniCreature(options: MiniCreatureOptions): MiniCreatureHan
   let raf = 0;
   let last = 0;
   let alive = true;
+  let paused = false;
   const frame = (now: number): void => {
     if (!alive) return;
     raf = requestAnimationFrame(frame);
+    if (paused) return;
     const dt = last === 0 ? 16 : Math.min(now - last, 100);
     last = now;
     sizeToWell();
@@ -164,6 +173,14 @@ export function mountMiniCreature(options: MiniCreatureOptions): MiniCreatureHan
 
   return {
     canvas,
+    setPaused(next: boolean): void {
+      if (next === paused) return;
+      paused = next;
+      // Coming back: forget the gap. `last` is what dt is measured from,
+      // so a stale one hands the first live frame however long the panel
+      // was open and the drift floor jumps.
+      if (!paused) last = 0;
+    },
     emote(name: EmoteName): void {
       character.emote(name);
     },

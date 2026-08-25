@@ -102,8 +102,8 @@ export interface TrayOptions {
    * already in, next to a door onto a creature that does not exist.
    */
   hasCreature: boolean;
-  /** Where the mini device leads on a tap. */
-  companionHref: string;
+  /** Open the companion. The tray does not navigate — see companionpanel.ts. */
+  openCompanion(): void;
   /**
    * This handset's own drawing, for the creature in the mini screen. Absent
    * (or unbuildable) leaves the screen empty rather than faking one.
@@ -113,8 +113,6 @@ export interface TrayOptions {
   identity?: string;
   /** Play an emote. Returns false when there is no creature to play it on. */
   emote(name: EmoteName): boolean;
-  /** Injectable for tests; defaults to a real navigation. */
-  navigate?: (href: string) => void;
 }
 
 export interface TrayHandle {
@@ -132,6 +130,11 @@ export interface TrayHandle {
   left: HTMLElement;
   /** Right cell — the minimap mounts here. */
   right: HTMLElement;
+  /**
+   * Stop drawing the creature in the mini screen — for when the companion
+   * panel is covering the whole tray. A no-op when there is no creature.
+   */
+  setPortraitPaused(paused: boolean): void;
   /** Open/close the emote ring from outside (tests). */
   setEmotesOpen(open: boolean): void;
   emotesOpen(): boolean;
@@ -259,8 +262,6 @@ function ensureStyle(): void {
  */
 export function mountWorldTray(root: HTMLElement, options: TrayOptions): TrayHandle {
   ensureStyle();
-  const go = options.navigate ?? ((href: string) => { window.location.href = href; });
-
   const tray = document.createElement('div');
   tray.className = 'world-tray';
 
@@ -318,7 +319,7 @@ export function mountWorldTray(root: HTMLElement, options: TrayOptions): TrayHan
   // that ends the press, or a hold that becomes a tap opens both.
   let holdTimer = 0;
   let held = false;
-  let going = false;
+  const going = false;
 
   const startPress = (): void => {
     if (going) return;
@@ -335,15 +336,14 @@ export function mountWorldTray(root: HTMLElement, options: TrayOptions): TrayHan
     if (pressMeans({ heldLongEnough: held, emotesOpen: open, alreadyGoing: going }) !== 'open-companion') {
       return;
     }
-    going = true;
     setOpen(false);
-    // Nothing happens HERE. The move belongs to the companion: its case
-    // slides up into place from the bottom, the exact reverse of the way it
-    // slides down when the person leaves for the world (user ruling,
-    // 2026-08-25). Growing the thumbnail into it instead meant scaling a
-    // 62px element to full screen, which rasterizes once at thumbnail size
-    // and stretches whatever it rasterized — it looked broken, and it was.
-    go(options.companionHref);
+    // The move belongs to the panel: the companion slides up from the
+    // bottom over a world that stays exactly where it is. Nothing here
+    // navigates, so nothing unloads and nothing is rebuilt on the way back.
+    //
+    // `going` is deliberately NOT latched — the panel can be opened again
+    // after it closes, and this page never goes away to reset it.
+    options.openCompanion();
   };
 
   const cancelPress = (): void => {
@@ -392,6 +392,7 @@ export function mountWorldTray(root: HTMLElement, options: TrayOptions): TrayHan
     showsJoinCode: !options.hasCreature,
     left,
     right,
+    setPortraitPaused: (next: boolean): void => mini?.setPaused(next),
     setEmotesOpen: setOpen,
     emotesOpen: () => open,
     destroy(): void {

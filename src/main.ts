@@ -46,6 +46,7 @@ import { MOTION, SURFACE, WORLD } from './taste/tokens';
 import { createPhoneLink } from './net/phoneLink';
 import { readSubmission } from './phone/identity';
 import { mountWorldTray } from './world/tray';
+import { createCompanionPanel } from './world/companionpanel';
 import { feedDrawingToStrokes } from './net/drawFeed';
 import type { StrokeList } from './shape/types';
 import { installJoinQr, QR_SIZE_CSS } from './ui/joinqr';
@@ -789,16 +790,46 @@ function main(): void {
     ? feedDrawingToStrokes({ strokes: mySubmission.strokes as never })
     : [];
 
+  /**
+   * The companion, over this world, in this document.
+   *
+   * NOT a navigation. The world behind it keeps its gl context, its scene
+   * and all sixty-eight built creatures, so coming back is instant instead
+   * of a full rebuild — which is what it was, measured at three documents
+   * and two full rebuilds for one round trip (user report, 2026-08-25).
+   *
+   * No `from=world`: the case inside must NOT slide, because the frame it
+   * sits in is the thing sliding. Two objects moving for one gesture reads
+   * as a stutter.
+   */
+  const companion = handheld
+    ? createCompanionPanel(document.body, {
+        href: `/phone.html?room=${room}${worldParam}`,
+        onVisibilityChange: (visible) => {
+          // Nothing of the world is visible under an opaque full-screen
+          // panel. Stop drawing it: the phone gets its battery back and,
+          // more to the point, the panel gets the main thread it needs to
+          // boot and to slide smoothly.
+          world.setPaused(visible);
+          // The thumbnail is under the panel too, and it is a whole second
+          // gl context drawing a creature nobody can see.
+          tray?.setPortraitPaused(visible);
+        },
+      })
+    : null;
+
+  // Boot the companion quietly, once the thread is free, so the first tap
+  // is only a slide. Only when there is a creature to open onto — a person
+  // who has not drawn has no device in the tray to tap.
+  if (companion && myDrawerId.length > 0) companion.prewarm();
+
   const tray = handheld
     ? mountWorldTray(document.body, {
         // Read once, at mount: a person who draws from here leaves the page
         // to do it and comes back to a fresh mount, so there is no state to
         // keep in sync — the next load asks again and is right again.
         hasCreature: myDrawerId.length > 0,
-        // `from=world` is what tells the companion to slide the case up
-        // into place. The /draw/ handoff deliberately does NOT set it —
-        // that seam works by the case already being where it was.
-        companionHref: `/phone.html?room=${room}${worldParam}&from=world`,
+        openCompanion: () => companion?.open(),
         // The same strokes under the same id the world built from, so the
         // creature in the mini screen IS the one standing in the world —
         // the pipeline is deterministic, so this needs nothing from the wire.
