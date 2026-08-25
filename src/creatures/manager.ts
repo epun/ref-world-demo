@@ -13,8 +13,8 @@
  * creature sinks and fades out over t.primary, then disposes.
  */
 
-import { Mesh, Vector3 } from 'three';
-import type { Group, Object3D } from 'three';
+import { Group, Mesh, Vector3 } from 'three';
+import type { Object3D } from 'three';
 import { BehaviorAgent, MAX_SPEED, type AgentPeer, type AgentProp } from '../behavior/agent';
 import { personalityFromChoice, type PersonalityChoice } from '../behavior/personality';
 import { projectOutOfHard } from '../behavior/steering';
@@ -542,8 +542,21 @@ export function createCreatureManager(
       slot.egg.dispose();
       slot.egg = null;
     }
-    const root = character.group;
+    // The SAME two-level rig the hatch builds (src/egg/hatch.ts §onBurst):
+    // an empty wrapper owns the WORLD position, and `character.group` hangs
+    // inside it owning only the creature's own local offset — the lean and
+    // bob that `character.update()` rewrites every single frame.
+    //
+    // These two must never be the same object. Collapsing them (as this
+    // did) hands the animation the world transform: the spawn position is
+    // erased on the next tick, sixty-eight creatures land on the origin in
+    // one heap, and the physics pass then spends every frame fighting the
+    // animation for the same three floats — which is what the spazzing was.
+    // The double-counted shadow (`root.position + character.group.position`
+    // in the step loop) is the same mistake seen from the other side.
+    const root = new Group();
     root.position.set(slot.spot.x, 0, slot.spot.z);
+    root.add(character.group);
     world.scene.add(root);
     becomeAlive(slot, root, character);
     return true;
@@ -576,7 +589,10 @@ export function createCreatureManager(
 
       // Projected clear of props and residents — an egg never incubates
       // half-inside a rock (the raw spiral can reach planted ground).
-      const spot = clearSpawnSpot(spawnSpot(orderCounter % 64));
+      // Wrap at the population cap, not below it: at `% 64` a room of 68
+      // put four creatures on EXACTLY the spot of the first four, which no
+      // separation pass can undo cleanly (zero distance has no direction).
+      const spot = clearSpawnSpot(spawnSpot(orderCounter % MAX_POPULATION));
       const egg = createEgg(strokes, { x: spot.x, z: spot.z });
       const nowMs = performance.now();
       const slot: Slot = {

@@ -15,11 +15,18 @@
  *    hard prop.
  */
 
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { Mesh, Scene, Vector3 } from 'three';
 import type { Group, Object3D } from 'three';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { createCharacter } from '../../src/character/character';
-import { createCreatureManager, measureBodyRadius, spawnSpot } from '../../src/creatures/manager';
+import {
+  MAX_POPULATION,
+  createCreatureManager,
+  measureBodyRadius,
+  spawnSpot,
+} from '../../src/creatures/manager';
 import { generatedName } from '../../src/creatures/naming';
 import { EGG_RADIUS } from '../../src/egg/egg';
 import type { Collider } from '../../src/physics/colliders';
@@ -331,5 +338,115 @@ describe('the outliner can see both phases', () => {
     });
     expect(names).toHaveLength(1);
     expect(names[0]).toBe(`egg ${generatedName('drawer-2')}`);
+  });
+});
+
+describe('grown arrivals — a creature that is already here', () => {
+  /**
+   * The regression this file exists to prevent recurring.
+   *
+   * The hatch builds a TWO-LEVEL rig: an empty wrapper owns the world
+   * position, and `character.group` hangs inside it owning only the lean
+   * and bob that `character.update()` rewrites every frame. `placeGrown`
+   * once used `character.group` itself as the root, which handed the
+   * animation the world transform — every creature's spawn position was
+   * erased on the next tick, the whole population landed on the origin in
+   * one heap, and the physics pass then fought the animation for the same
+   * three floats. On screen: a clump of sixty-eight creatures vibrating.
+   *
+   * Three separate assertions because the collapse had three separate
+   * tells, and any one of them alone could be argued away.
+   */
+
+  function grownWorld(count: number) {
+    const world = stubWorld([]);
+    const manager = createCreatureManager(world, { autoHatch: false });
+    const kinds = [snowman, circleBlob, quadruped, bird];
+    for (let i = 0; i < count; i++) {
+      manager.spawn(`grown-${i}`, kinds[i % kinds.length]!, { hatchMs: 60_000, grown: true });
+    }
+    return { world, manager };
+  }
+
+  it('never uses the character group as the root — the two frames stay separate', () => {
+    const { world, manager } = grownWorld(6);
+    // Every creature root in the scene must be a wrapper holding the
+    // character, not the character's own group.
+    let checked = 0;
+    for (const child of world.scene.children) {
+      if (!child.name.startsWith('creature ')) continue;
+      checked++;
+      // A wrapper is empty: it holds the character group and nothing else.
+      // Collapsed, this IS the character group, whose own direct children
+      // are the creature's meshes — so a mesh one level down is the tell.
+      expect(child.children.length).toBeGreaterThan(0);
+      const holdsGeometryDirectly = child.children.some((c) => c instanceof Mesh);
+      expect(holdsGeometryDirectly).toBe(false);
+    }
+    expect(checked).toBe(6);
+    manager.clearAll();
+  });
+
+  it('holds its spawn position across frames instead of collapsing to the origin', () => {
+    const { manager } = grownWorld(12);
+    const before = manager.positions().map((p) => ({ x: p.x, z: p.z }));
+    // Radii must already be spread — nobody starts on top of anybody.
+    expect(Math.max(...before.map((p) => Math.hypot(p.x, p.z)))).toBeGreaterThan(5);
+
+    // Run frames. The character's own animation writes its local offset on
+    // every one of these; the world position must survive all of them.
+    for (let f = 0; f < 60; f++) manager.update(16, 1000 + f * 16);
+
+    const after = manager.positions();
+    for (let i = 0; i < after.length; i++) {
+      const drift = Math.hypot(after[i]!.x - before[i]!.x, after[i]!.z - before[i]!.z);
+      // A creature walks; it does not teleport. 60 frames at 16ms is under
+      // a second, and MAX_SPEED is 1.2 — so a whole world unit is already
+      // generous, while the collapse moved every one of them ~15.
+      expect(drift).toBeLessThan(1);
+    }
+    manager.clearAll();
+  }, 60_000);
+
+  it('spreads a full room instead of piling it at the centre', () => {
+    // 68 is the demo's seeded population — the size that surfaced this.
+    const { manager } = grownWorld(68);
+    const live = manager.positions();
+    expect(live).toHaveLength(68);
+
+    const radii = live.map((p) => Math.hypot(p.x, p.z)).sort((a, b) => a - b);
+    // The spiral reaches 3.2 + 2.1*sqrt(67) ≈ 20.4 at this population.
+    expect(radii[radii.length - 1]).toBeGreaterThan(15);
+    expect(radii[(radii.length / 2) | 0]).toBeGreaterThan(8);
+
+    // And nobody is standing inside anybody.
+    let overlaps = 0;
+    for (let i = 0; i < live.length; i++) {
+      for (let j = i + 1; j < live.length; j++) {
+        const d = Math.hypot(live[i]!.x - live[j]!.x, live[i]!.z - live[j]!.z);
+        if (d < live[i]!.r + live[j]!.r) overlaps++;
+      }
+    }
+    expect(overlaps).toBe(0);
+    manager.clearAll();
+  }, 120_000);
+
+  it('wraps the spawn spiral at the population cap, never below it', () => {
+    // At `% 64` a room of 68 put four creatures on EXACTLY the first four
+    // spots, and zero distance has no separation direction, so no later
+    // pass could undo it. A literal here is the bug: the wrap has to track
+    // the cap, so pin the relationship rather than either number.
+    const src = readFileSync(join(process.cwd(), 'src/creatures/manager.ts'), 'utf8');
+    expect(src).toMatch(/spawnSpot\(orderCounter % MAX_POPULATION\)/);
+
+    // ...and the spiral really is injective across that whole range, so
+    // the cap is a safe modulus to wrap at.
+    const seen = new Set<string>();
+    for (let i = 0; i < MAX_POPULATION; i++) {
+      const spot = spawnSpot(i);
+      const key = `${spot.x.toFixed(4)},${spot.z.toFixed(4)}`;
+      expect(seen.has(key)).toBe(false);
+      seen.add(key);
+    }
   });
 });
