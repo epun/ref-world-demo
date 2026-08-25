@@ -14,7 +14,12 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { HOLD_MS, TRAY_EMOTES, pressMeans } from '../../src/world/tray';
+import { HOLD_MS, TRAY_EMOTES, companionLanding, pressMeans } from '../../src/world/tray';
+import {
+  DEVICE_BOTTOM_AIR_PX,
+  DEVICE_TOP_AIR_PX,
+  DEVICE_VIEWBOX,
+} from '../../src/phone/device';
 import { PHONE_EMOTES } from '../../src/phone/emotes';
 import { BUBBLE_EMOJI } from '../../src/character/bubble';
 import { EMOTE_NAMES } from '../../src/net/protocol';
@@ -146,5 +151,95 @@ describe('the way back to the world, on the companion', () => {
     const src = readFileSync(join(process.cwd(), 'src/phone/main.ts'), 'utf8');
     expect(src).toMatch(/querySelector<HTMLElement>\('\.device-well'\)/);
     expect(src).toMatch(/mountWorldLink\(wellForLink \?\? document\.body/);
+  });
+});
+
+describe('growing into the companion', () => {
+  // The mini device as the tray places it: 62 wide, the artwork's
+  // proportions, sitting in the 4vw gutter above the 3vw bottom padding.
+  const miniAt = (vw: number, vh: number, insetBottom: number) => {
+    const width = 62;
+    const height = (width * DEVICE_VIEWBOX.height) / DEVICE_VIEWBOX.width;
+    const bottom = vh - insetBottom - vw * 0.03;
+    return { left: vw * 0.04, top: bottom - height, width, height };
+  };
+
+  const VIEWPORTS = [
+    { w: 390, h: 844, top: 0, bottom: 0 },
+    { w: 414, h: 896, top: 0, bottom: 0 },
+    { w: 360, h: 640, top: 0, bottom: 0 },
+    // a notched phone, where guessing zero insets would land it wrong
+    { w: 393, h: 852, top: 59, bottom: 34 },
+  ];
+
+  it('lands exactly where the companion draws the device', () => {
+    for (const v of VIEWPORTS) {
+      const mini = miniAt(v.w, v.h, v.bottom);
+      const move = companionLanding(
+        { width: v.w, height: v.h },
+        { top: v.top, bottom: v.bottom },
+        mini,
+      );
+
+      // Recompute the companion's own layout independently (src/phone/
+      // device.ts: .device is the viewport inset by the safe area plus its
+      // air; .device-box is the largest box of the artwork's proportions
+      // that fits, centred).
+      const padTop = v.top + DEVICE_TOP_AIR_PX;
+      const padBottom = v.bottom + DEVICE_BOTTOM_AIR_PX;
+      const containerH = v.h - padTop - padBottom;
+      const boxW = Math.min(
+        v.w,
+        (containerH * DEVICE_VIEWBOX.width) / DEVICE_VIEWBOX.height,
+      );
+      const boxH = (boxW * DEVICE_VIEWBOX.height) / DEVICE_VIEWBOX.width;
+
+      // Where the device's bottom-centre ends up — the transform origin, so
+      // this is the point the scale pins and the translate places.
+      const landedCentreX = mini.left + mini.width / 2 + move.dx;
+      const landedBottom = mini.top + mini.height + move.dy;
+
+      expect(landedCentreX).toBeCloseTo(v.w / 2, 3);
+      expect(landedBottom).toBeCloseTo(padTop + (containerH - boxH) / 2 + boxH, 3);
+      expect(mini.width * move.scale).toBeCloseTo(boxW, 3);
+    }
+  });
+
+  it('always grows — the companion is never smaller than the thumbnail', () => {
+    for (const v of VIEWPORTS) {
+      const move = companionLanding(
+        { width: v.w, height: v.h },
+        { top: v.top, bottom: v.bottom },
+        miniAt(v.w, v.h, v.bottom),
+      );
+      expect(move.scale).toBeGreaterThan(1);
+      // ...and it travels up and to the right, out of the left corner.
+      expect(move.dx).toBeGreaterThan(0);
+      expect(move.dy).toBeLessThan(0);
+    }
+  });
+
+  it('moves — it does not dissolve', () => {
+    // A solid object that fades on its way somewhere is two things
+    // happening. It used to scale to a fixed 6× and fade to nothing, which
+    // also landed nowhere in particular (user report, 2026-08-25).
+    const src = readFileSync(join(process.cwd(), 'src/world/tray.ts'), 'utf8');
+    const rule = /\.tray-device\.growing \{[\s\S]*?\n\}/.exec(src)?.[0] ?? '';
+    expect(rule).toBeTruthy();
+    expect(rule).not.toMatch(/opacity/);
+    expect(rule).toMatch(/transition: transform/);
+    // The destination depends on the viewport, so it cannot be a constant.
+    expect(rule).not.toMatch(/transform:/);
+  });
+
+  it('left-aligns the emote ring to the device', () => {
+    // User ruling, 2026-08-25. Both sit in the tray's own 4vw gutter, so
+    // the ring's left edge and the device's left edge are one line.
+    const src = readFileSync(join(process.cwd(), 'src/world/tray.ts'), 'utf8');
+    const ring = /\.tray-emotes \{[\s\S]*?\n\}/.exec(src)?.[0] ?? '';
+    expect(ring).toMatch(/left: 4vw/);
+    expect(ring).not.toMatch(/left: 50%/);
+    // The tray's gutter is the same 4vw the ring aligns to.
+    expect(src).toMatch(/padding: 0 4vw calc/);
   });
 });

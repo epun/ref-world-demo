@@ -36,7 +36,12 @@
  */
 
 import { BUBBLE_EMOJI } from '../character/bubble';
-import { DEVICE_VIEWBOX, DEVICE_WELL } from '../phone/device';
+import {
+  DEVICE_BOTTOM_AIR_PX,
+  DEVICE_TOP_AIR_PX,
+  DEVICE_VIEWBOX,
+  DEVICE_WELL,
+} from '../phone/device';
 import { MOTION, SURFACE, WORLD } from '../taste/tokens';
 import { PHONE_EMOTES } from '../phone/emotes';
 import { mountMiniCreature, type MiniCreatureHandle } from './minicreature';
@@ -90,6 +95,73 @@ export function pressMeans(state: {
   if (state.alreadyGoing) return 'nothing';
   if (state.heldLongEnough || state.emotesOpen) return 'nothing';
   return 'open-companion';
+}
+
+/** Just enough of a DOMRect to compute the move, so this stays testable. */
+export interface Rect {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * Where the mini device has to travel to become the full one.
+ *
+ * The tap GROWS the device into the companion, and for that to read as one
+ * object coming closer rather than two screens swapping, it has to arrive
+ * exactly where the companion will draw it — same place, same size, so the
+ * last frame here and the first frame there are the same picture. It used
+ * to scale to a fixed 6× and fade out, which lands nowhere in particular
+ * and dissolves the object on the way (user report, 2026-08-25).
+ *
+ * So this recomputes the companion's own layout: `.device` is the viewport
+ * inset by the safe area plus its air, and `.device-box` is the largest box
+ * of the artwork's proportions that fits, centred. Mirrored from the CSS in
+ * src/phone/device.ts — pinned by test, because the two drifting apart is
+ * the failure mode.
+ *
+ * The transform origin is the device's BOTTOM CENTRE, so a scale pins that
+ * point and the translate is simply where that point has to end up.
+ */
+export function companionLanding(
+  viewport: { width: number; height: number },
+  insets: { top: number; bottom: number },
+  mini: Rect,
+): { dx: number; dy: number; scale: number } {
+  const padTop = insets.top + DEVICE_TOP_AIR_PX;
+  const padBottom = insets.bottom + DEVICE_BOTTOM_AIR_PX;
+  const containerH = Math.max(1, viewport.height - padTop - padBottom);
+  const boxW = Math.min(
+    viewport.width,
+    (containerH * DEVICE_VIEWBOX.width) / DEVICE_VIEWBOX.height,
+  );
+  const boxH = (boxW * DEVICE_VIEWBOX.height) / DEVICE_VIEWBOX.width;
+  const destLeft = (viewport.width - boxW) / 2;
+  const destTop = padTop + (containerH - boxH) / 2;
+  return {
+    dx: destLeft + boxW / 2 - (mini.left + mini.width / 2),
+    dy: destTop + boxH - (mini.top + mini.height),
+    scale: boxW / Math.max(1, mini.width),
+  };
+}
+
+/**
+ * The safe-area insets, in px. They are only readable through `env()`, so
+ * this asks the engine by measuring a throwaway element — guessing zero
+ * lands the device wrong on exactly the notched phones where it matters.
+ */
+function safeInsets(): { top: number; bottom: number } {
+  const probe = document.createElement('div');
+  probe.style.cssText =
+    'position:fixed;visibility:hidden;pointer-events:none;' +
+    'padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);';
+  document.body.appendChild(probe);
+  const cs = getComputedStyle(probe);
+  const top = parseFloat(cs.paddingTop) || 0;
+  const bottom = parseFloat(cs.paddingBottom) || 0;
+  probe.remove();
+  return { top, bottom };
 }
 
 export interface TrayOptions {
@@ -198,13 +270,21 @@ function ensureStyle(): void {
   -webkit-user-drag: none;
 }
 .tray-device:active { transform: scale(0.96); }
-/* Tapped: it grows into the full device before the page changes, so the
- * companion's first frame lands on something already the right size. */
+/*
+ * Tapped: it TRAVELS to where the companion opens, growing on the way, and
+ * the page changes underneath it at full size — so the companion's first
+ * frame lands on a device already in the right place at the right size.
+ *
+ * No fade. A solid object that dissolves on its way somewhere is two
+ * things happening; this is one thing moving (TASTE §2.1 — entrances and
+ * exits slide, at confidence 1.00). The transform itself is set inline,
+ * because where it has to go depends on the viewport — see
+ * companionLanding() above.
+ */
 .tray-device.growing {
-  transition: transform ${MOTION.secondaryMs}ms ${MOTION.settleCurve},
-              opacity ${MOTION.secondaryMs}ms ${MOTION.settleCurve};
-  transform: scale(6);
-  opacity: 0;
+  transition: transform ${MOTION.secondaryMs}ms ${MOTION.settleCurve};
+  /* Over the minimap and the ring on the way past them. */
+  z-index: 2;
 }
 
 /*
@@ -227,9 +307,13 @@ function ensureStyle(): void {
   position: fixed;
   /* Above the device, clear of it: the offset is the device's own height
      plus air, so it cannot end up shorter than the thing it must clear. */
-  left: 50%;
   bottom: calc(env(safe-area-inset-bottom, 0px) + 3vw + ${Math.round(DEVICE_H_PX + RING_GAP_PX)}px);
-  transform: translate(-50%, 10px);
+  /* LEFT-ALIGNED TO THE DEVICE (user ruling, 2026-08-25), sharing the
+     tray's own 4vw gutter — so the ring's left edge and the device's left
+     edge are the same line, and the ring reads as belonging to the thing
+     that opened it rather than floating over the middle of the world. */
+  left: 4vw;
+  transform: translate(0, 10px);
   display: flex;
   gap: 2.5vw;
   padding: 2.5vw 3.5vw;
@@ -242,7 +326,7 @@ function ensureStyle(): void {
     opacity ${MOTION.tertiaryMs}ms ${MOTION.settleCurve},
     transform ${MOTION.tertiaryMs}ms ${MOTION.settleCurve};
 }
-.tray-emotes.open { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
+.tray-emotes.open { opacity: 1; transform: translate(0, 0); pointer-events: auto; }
 .tray-emote {
   font-size: 22px;
   line-height: 1;
@@ -341,10 +425,22 @@ export function mountWorldTray(root: HTMLElement, options: TrayOptions): TrayHan
       return;
     }
     going = true;
-    // Grow into the full device, THEN navigate. The companion paints its
-    // own case on the first frame, so the two sizes meet and nothing cuts.
+    setOpen(false);
+    // Travel to where the companion will draw the device, THEN navigate:
+    // the two frames meet at the same place and size, so nothing cuts.
+    const move = companionLanding(
+      { width: window.innerWidth, height: window.innerHeight },
+      safeInsets(),
+      device.getBoundingClientRect(),
+    );
     device.classList.add('growing');
-    window.setTimeout(() => go(options.companionHref), MOTION.secondaryMs);
+    // Next frame, not this one: the class carries the slower duration, and
+    // setting both at once can be batched into a single style change that
+    // the old transition picks up instead.
+    requestAnimationFrame(() => {
+      device.style.transform = `translate(${move.dx}px, ${move.dy}px) scale(${move.scale})`;
+      window.setTimeout(() => go(options.companionHref), MOTION.secondaryMs);
+    });
   };
 
   const cancelPress = (): void => {
