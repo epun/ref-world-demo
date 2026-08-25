@@ -14,21 +14,11 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import {
-  HOLD_MS,
-  TRAY_EMOTES,
-  companionBox,
-  invertOnto,
-  pressMeans,
-} from '../../src/world/tray';
-import {
-  DEVICE_BOTTOM_AIR_PX,
-  DEVICE_TOP_AIR_PX,
-  DEVICE_VIEWBOX,
-} from '../../src/phone/device';
+import { HOLD_MS, TRAY_EMOTES, pressMeans } from '../../src/world/tray';
 import { PHONE_EMOTES } from '../../src/phone/emotes';
 import { BUBBLE_EMOJI } from '../../src/character/bubble';
 import { EMOTE_NAMES } from '../../src/net/protocol';
+import { MOTION } from '../../src/taste/tokens';
 
 describe('what a press means', () => {
   it('a short press opens the companion', () => {
@@ -160,107 +150,72 @@ describe('the way back to the world, on the companion', () => {
   });
 });
 
-describe('growing into the companion', () => {
-  // The mini device as the tray places it: 62 wide, the artwork's
-  // proportions, sitting in the 4vw gutter above the 3vw bottom padding.
-  const miniAt = (vw: number, vh: number, insetBottom: number) => {
-    const width = 62;
-    const height = (width * DEVICE_VIEWBOX.height) / DEVICE_VIEWBOX.width;
-    const bottom = vh - insetBottom - vw * 0.03;
-    return { left: vw * 0.04, top: bottom - height, width, height };
-  };
+describe('opening the companion', () => {
+  const trayFor = () => readFileSync(join(process.cwd(), 'src/world/tray.ts'), 'utf8');
 
-  const VIEWPORTS = [
-    { w: 390, h: 844, top: 0, bottom: 0 },
-    { w: 414, h: 896, top: 0, bottom: 0 },
-    { w: 360, h: 640, top: 0, bottom: 0 },
-    // a notched phone, where guessing zero insets would land it wrong
-    { w: 393, h: 852, top: 59, bottom: 34 },
-  ];
-
-  it('puts the device where the companion draws it', () => {
-    for (const v of VIEWPORTS) {
-      const box = companionBox({ width: v.w, height: v.h }, { top: v.top, bottom: v.bottom });
-
-      // Recompute the companion's own layout independently (src/phone/
-      // device.ts: .device is the viewport inset by the safe area plus its
-      // air; .device-box is the largest box of the artwork's proportions
-      // that fits, centred).
-      const padTop = v.top + DEVICE_TOP_AIR_PX;
-      const padBottom = v.bottom + DEVICE_BOTTOM_AIR_PX;
-      const containerH = v.h - padTop - padBottom;
-      const w = Math.min(v.w, (containerH * DEVICE_VIEWBOX.width) / DEVICE_VIEWBOX.height);
-      const h = (w * DEVICE_VIEWBOX.height) / DEVICE_VIEWBOX.width;
-
-      expect(box.width).toBeCloseTo(w, 3);
-      expect(box.height).toBeCloseTo(h, 3);
-      expect(box.left).toBeCloseTo((v.w - w) / 2, 3);
-      expect(box.top).toBeCloseTo(padTop + (containerH - h) / 2, 3);
-      // It keeps the artwork's proportions, never stretching the line work.
-      expect(box.height / box.width).toBeCloseTo(
-        DEVICE_VIEWBOX.height / DEVICE_VIEWBOX.width,
-        6,
-      );
-      // ...and it fits inside the band it is allowed.
-      expect(box.top).toBeGreaterThanOrEqual(padTop - 0.001);
-      expect(box.top + box.height).toBeLessThanOrEqual(v.h - padBottom + 0.001);
-      expect(box.left).toBeGreaterThanOrEqual(-0.001);
-    }
+  it('just goes — the tray plays no growth of its own', () => {
+    // Scaling the 62px thumbnail up to full screen rasterizes the layer
+    // once at thumbnail size and stretches it for the whole flight, so the
+    // shell turned to mush and the creature, a real 46px canvas, was blown
+    // up six times (user report, 2026-08-25). The move belongs to the
+    // companion now.
+    const src = trayFor();
+    expect(src).not.toMatch(/growing/);
+    expect(src).not.toMatch(/companionBox|invertOnto|safeInsets/);
+    // No inline geometry left behind on the device either.
+    expect(src).not.toMatch(/device\.style\.(transform|position|left|top|width|height)/);
   });
 
-  it('inverts the FULL-SIZE box back onto the thumbnail, not the reverse', () => {
-    // The direction is the whole fix. Laid out at 62px and scaled up, the
-    // layer is rasterized once at thumbnail size and stretched for the
-    // whole flight — the shell turns to mush and the creature, a real 46px
-    // canvas, is blown up six times (user report, 2026-08-25). Laid out at
-    // full size and inverted, every raster is full resolution.
-    for (const v of VIEWPORTS) {
-      const box = companionBox({ width: v.w, height: v.h }, { top: v.top, bottom: v.bottom });
-      const mini = miniAt(v.w, v.h, v.bottom);
-      const inv = invertOnto(box, mini);
-
-      // A DOWN-scale: the element is bigger than the thumbnail it starts on.
-      expect(inv.scale).toBeGreaterThan(0);
-      expect(inv.scale).toBeLessThan(1);
-
-      // Applied with a top-left origin, it lands exactly on the thumbnail.
-      expect(box.left + inv.dx).toBeCloseTo(mini.left, 3);
-      expect(box.top + inv.dy).toBeCloseTo(mini.top, 3);
-      expect(box.width * inv.scale).toBeCloseTo(mini.width, 3);
-      expect(box.height * inv.scale).toBeCloseTo(mini.height, 1);
-    }
-  });
-
-  it('releases to identity, so the end of the move is exactly the box', () => {
-    // The animation runs the inverse to `transform: none`, so the resting
-    // state has to BE the destination with no transform applied.
-    const src = readFileSync(join(process.cwd(), 'src/world/tray.ts'), 'utf8');
-    expect(src).toMatch(/transform = 'translate\(0px, 0px\) scale\(1\)'/);
-    // The inverted start must not itself animate, or it is a move of its own.
-    expect(src).toMatch(/transition = 'none'/);
-    expect(src).toMatch(/void device\.offsetWidth/);
-  });
-
-  it('moves — it does not dissolve', () => {
-    // A solid object that fades on its way somewhere is two things
-    // happening. It used to scale to a fixed 6x and fade to nothing.
-    const src = readFileSync(join(process.cwd(), 'src/world/tray.ts'), 'utf8');
-    const rule = /\.tray-device\.growing \{[\s\S]*?\n\}/.exec(src)?.[0] ?? '';
-    expect(rule).toBeTruthy();
-    expect(rule).not.toMatch(/opacity/);
-    expect(rule).toMatch(/transition: transform/);
-    // The destination depends on the viewport, so it cannot be a constant.
-    expect(rule).not.toMatch(/transform:/);
+  it('tells the companion where the person came from', () => {
+    // The companion slides its case up only for `from=world`; the /draw/
+    // handoff must not, because that seam works by the case already being
+    // exactly where it was (PHONE-STAGE §4.1).
+    const src = readFileSync(join(process.cwd(), 'src/main.ts'), 'utf8');
+    expect(src).toMatch(/companionHref: `\/phone\.html\?room=\$\{room\}\$\{worldParam\}&from=world`/);
   });
 
   it('left-aligns the emote ring to the device', () => {
     // User ruling, 2026-08-25. Both sit in the tray's own 4vw gutter, so
     // the ring's left edge and the device's left edge are one line.
-    const src = readFileSync(join(process.cwd(), 'src/world/tray.ts'), 'utf8');
-    const ring = /\.tray-emotes \{[\s\S]*?\n\}/.exec(src)?.[0] ?? '';
+    const ring = /\.tray-emotes \{[\s\S]*?\n\}/.exec(trayFor())?.[0] ?? '';
     expect(ring).toMatch(/left: 4vw/);
     expect(ring).not.toMatch(/left: 50%/);
-    // The tray's gutter is the same 4vw the ring aligns to.
-    expect(src).toMatch(/padding: 0 4vw calc/);
+    expect(trayFor()).toMatch(/padding: 0 4vw calc/);
+  });
+});
+
+describe('the case slides, both directions', () => {
+  // One move played forwards and backwards: out to the world, back to the
+  // device. Same offset, same duration, same curve — anything else and the
+  // two read as unrelated events rather than one gesture reversed.
+  const deviceTs = () => readFileSync(join(process.cwd(), 'src/phone/device.ts'), 'utf8');
+  const phoneHtml = () => readFileSync(join(process.cwd(), 'phone.html'), 'utf8');
+
+  it('leaves and arrives by the same offset', () => {
+    expect(deviceTs()).toMatch(/\.device\.leaving,\s*\n\.device\.arriving \{\s*\n\s*transform: translateY\(106%\);/);
+  });
+
+  it('drives the arrival inline, not from the module', () => {
+    // The module is ~840kB and does not run for about a second. An arrival
+    // that waited for it would leave the person looking at bare paper for
+    // that whole second before anything moved.
+    const html = phoneHtml();
+    expect(html).toMatch(/\.device\.arriving \{[\s\S]*?translateY\(106%\)/);
+    expect(html).toMatch(/transition: transform 912ms cubic-bezier\(0\.17, 0\.72, 0\.24, 1\)/);
+    // ...and it is set before the first paint, or the case animates the
+    // wrong way first.
+    expect(html).toMatch(/classList\.add\('arriving'\)/);
+    expect(html).toMatch(/requestAnimationFrame\([\s\S]*?requestAnimationFrame/);
+  });
+
+  it('only slides in when the person came from the world', () => {
+    expect(phoneHtml()).toMatch(/get\('from'\) !== 'world'\) return/);
+  });
+
+  it('mirrors the inline duration from the motion token', () => {
+    // phone.html cannot import from src/, so the number is copied — and a
+    // copy that drifts is the failure mode (DEVICE §3).
+    expect(MOTION.secondaryMs).toBe(912);
+    expect(MOTION.settleCurve.replace(/\s/g, '')).toBe('cubic-bezier(0.17,0.72,0.24,1.0)');
   });
 });

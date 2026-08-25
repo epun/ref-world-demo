@@ -36,12 +36,7 @@
  */
 
 import { BUBBLE_EMOJI } from '../character/bubble';
-import {
-  DEVICE_BOTTOM_AIR_PX,
-  DEVICE_TOP_AIR_PX,
-  DEVICE_VIEWBOX,
-  DEVICE_WELL,
-} from '../phone/device';
+import { DEVICE_VIEWBOX, DEVICE_WELL } from '../phone/device';
 import { MOTION, SURFACE, WORLD } from '../taste/tokens';
 import { PHONE_EMOTES } from '../phone/emotes';
 import { mountMiniCreature, type MiniCreatureHandle } from './minicreature';
@@ -95,97 +90,6 @@ export function pressMeans(state: {
   if (state.alreadyGoing) return 'nothing';
   if (state.heldLongEnough || state.emotesOpen) return 'nothing';
   return 'open-companion';
-}
-
-/** Just enough of a DOMRect to compute the move, so this stays testable. */
-export interface Rect {
-  left: number;
-  top: number;
-  width: number;
-  height: number;
-}
-
-/** The box the companion draws its device in, for a given viewport. */
-export interface DeviceBox {
-  left: number;
-  top: number;
-  width: number;
-  height: number;
-}
-
-/**
- * Where the companion will draw the device.
- *
- * Mirrored from the CSS in src/phone/device.ts: `.device` is the viewport
- * inset by the safe area plus its air, and `.device-box` is the largest box
- * of the artwork's proportions that fits inside, centred. Pinned by test,
- * because the two drifting apart is the failure mode.
- */
-export function companionBox(
-  viewport: { width: number; height: number },
-  insets: { top: number; bottom: number },
-): DeviceBox {
-  const padTop = insets.top + DEVICE_TOP_AIR_PX;
-  const padBottom = insets.bottom + DEVICE_BOTTOM_AIR_PX;
-  const containerH = Math.max(1, viewport.height - padTop - padBottom);
-  const width = Math.min(
-    viewport.width,
-    (containerH * DEVICE_VIEWBOX.width) / DEVICE_VIEWBOX.height,
-  );
-  const height = (width * DEVICE_VIEWBOX.height) / DEVICE_VIEWBOX.width;
-  return {
-    left: (viewport.width - width) / 2,
-    top: padTop + (containerH - height) / 2,
-    width,
-    height,
-  };
-}
-
-/**
- * The transform that puts a box ALREADY LAID OUT at `dest` back over `mini`.
- *
- * This is the direction that matters, and getting it backwards is what made
- * the growth look broken (user report, 2026-08-25: *"super janky … pixelated
- * and broken"*). Scaling a 62px element up to 390 rasterizes the layer once
- * at thumbnail size and stretches that bitmap for the whole flight — the
- * hand-drawn shell turns to mush and the creature, which really is a 46px
- * canvas, is blown up six times.
- *
- * So the element is laid out at its FINAL size and inverted back onto the
- * thumbnail instead: every raster happens at full resolution, the start of
- * the move is a downscale (which only ever looks better than it needs to),
- * and the end is exact. Same picture on screen, opposite arithmetic.
- *
- * Origin is the top-left, so the scale pins that corner and the translate
- * is simply the offset between the two boxes.
- */
-export function invertOnto(
-  dest: DeviceBox,
-  mini: Rect,
-): { dx: number; dy: number; scale: number } {
-  return {
-    dx: mini.left - dest.left,
-    dy: mini.top - dest.top,
-    scale: mini.width / Math.max(1, dest.width),
-  };
-}
-
-/**
- * The safe-area insets, in px. They are only readable through `env()`, so
- * this asks the engine by measuring a throwaway element — guessing zero
- * lands the device wrong on exactly the notched phones where it matters.
- */
-function safeInsets(): { top: number; bottom: number } {
-  const probe = document.createElement('div');
-  probe.style.cssText =
-    'position:fixed;visibility:hidden;pointer-events:none;' +
-    'padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);';
-  document.body.appendChild(probe);
-  const cs = getComputedStyle(probe);
-  const top = parseFloat(cs.paddingTop) || 0;
-  const bottom = parseFloat(cs.paddingBottom) || 0;
-  probe.remove();
-  return { top, bottom };
 }
 
 export interface TrayOptions {
@@ -294,23 +198,6 @@ function ensureStyle(): void {
   -webkit-user-drag: none;
 }
 .tray-device:active { transform: scale(0.96); }
-/*
- * Tapped: it TRAVELS to where the companion opens, growing on the way, and
- * the page changes underneath it at full size — so the companion's first
- * frame lands on a device already in the right place at the right size.
- *
- * No fade. A solid object that dissolves on its way somewhere is two
- * things happening; this is one thing moving (TASTE §2.1 — entrances and
- * exits slide, at confidence 1.00). The transform itself is set inline,
- * because where it has to go depends on the viewport — see
- * companionLanding() above.
- */
-.tray-device.growing {
-  transition: transform ${MOTION.secondaryMs}ms ${MOTION.settleCurve};
-  /* Over the minimap and the ring on the way past them. */
-  z-index: 2;
-}
-
 /*
  * The screen. A live creature, not a picture of one — see minicreature.ts.
  * Clipped to the well the artwork already draws, so the shell's own rounded
@@ -450,36 +337,13 @@ export function mountWorldTray(root: HTMLElement, options: TrayOptions): TrayHan
     }
     going = true;
     setOpen(false);
-
-    const dest = companionBox(
-      { width: window.innerWidth, height: window.innerHeight },
-      safeInsets(),
-    );
-    const inv = invertOnto(dest, device.getBoundingClientRect());
-
-    // Lay the device out at its FINAL size and place, right now. Nothing
-    // reflows: the tray's left column collapses and the 1fr spacer takes
-    // the space, so the minimap stays pinned to the same right edge.
-    device.style.position = 'fixed';
-    device.style.left = `${dest.left}px`;
-    device.style.top = `${dest.top}px`;
-    device.style.width = `${dest.width}px`;
-    device.style.height = `${dest.height}px`;
-    device.style.transformOrigin = '0 0';
-    // ...then put it straight back over the thumbnail, with no transition,
-    // so this inverted state is the START of the move rather than a move
-    // of its own. The reflow read is what commits it.
-    device.style.transition = 'none';
-    device.style.transform = `translate(${inv.dx}px, ${inv.dy}px) scale(${inv.scale})`;
-    void device.offsetWidth;
-
-    device.classList.add('growing');
-    requestAnimationFrame(() => {
-      // Hand the transition back to the class, and release to identity.
-      device.style.transition = '';
-      device.style.transform = 'translate(0px, 0px) scale(1)';
-      window.setTimeout(() => go(options.companionHref), MOTION.secondaryMs);
-    });
+    // Nothing happens HERE. The move belongs to the companion: its case
+    // slides up into place from the bottom, the exact reverse of the way it
+    // slides down when the person leaves for the world (user ruling,
+    // 2026-08-25). Growing the thumbnail into it instead meant scaling a
+    // 62px element to full screen, which rasterizes once at thumbnail size
+    // and stretches whatever it rasterized — it looked broken, and it was.
+    go(options.companionHref);
   };
 
   const cancelPress = (): void => {

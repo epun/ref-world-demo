@@ -795,7 +795,10 @@ function main(): void {
         // to do it and comes back to a fresh mount, so there is no state to
         // keep in sync — the next load asks again and is right again.
         hasCreature: myDrawerId.length > 0,
-        companionHref: `/phone.html?room=${room}${worldParam}`,
+        // `from=world` is what tells the companion to slide the case up
+        // into place. The /draw/ handoff deliberately does NOT set it —
+        // that seam works by the case already being where it was.
+        companionHref: `/phone.html?room=${room}${worldParam}&from=world`,
         // The same strokes under the same id the world built from, so the
         // creature in the mini screen IS the one standing in the world —
         // the pipeline is deterministic, so this needs nothing from the wire.

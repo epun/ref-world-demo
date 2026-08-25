@@ -238,16 +238,29 @@ function ensureStyle(): void {
 /* The artwork. Static by ruling (DEVICE §1a) — no transition, no
    animation, no transform is declared on it anywhere in this file. */
 /*
- * The device LEAVING, for the world view (user ruling, 2026-08-25: the
- * world takes the whole viewport and the device slides away).
+ * The device LEAVING and ARRIVING, for the world view (user ruling,
+ * 2026-08-25: the world takes the whole viewport and the device slides
+ * away — and comes back the same way, reversed).
  *
  * A slide, never a fade to nothing and never a scale — entrances and exits
  * slide here at confidence 1.00 (TASTE §2.1). The case is a solid object
  * and a solid object leaves by going somewhere.
+ *
+ * One move, both directions: same offset, same duration, same curve, so
+ * the way out and the way back are legibly the same gesture.
+ *
+ * ⚠️ The ARRIVAL is also declared inline in phone.html and is DRIVEN from
+ * there, because this module is ~840kB and does not run for about a
+ * second — a case that waited for it would leave the person looking at
+ * bare paper for that whole second. Mirrored here under DEVICE §3: these
+ * may not be edited on one side only.
  */
-.device.leaving {
-  transform: translateY(106%);
+.device {
   transition: transform ${MOTION.secondaryMs}ms ${MOTION.settleCurve};
+}
+.device.leaving,
+.device.arriving {
+  transform: translateY(106%);
 }
 /*
  * The one control that is not a key on the case.

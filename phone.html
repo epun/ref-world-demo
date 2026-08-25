@@ -73,10 +73,20 @@
        * here can drift into a second geometry — it can only be stale, and
        * stale would move the case on both pages at once, not one of them.
        *
-       * Nothing here transitions or animates: the shell is a physical object
-       * and it never moves (DEVICE §1a).
+       * The shell is a physical object and it never moves ON ITS OWN
+       * (DEVICE §1a). The two exceptions are the same move in opposite
+       * directions, both by ruling: it slides DOWN out of the way when the
+       * person goes to look at the world, and it slides UP into place when
+       * they come back from it.
+       *
+       * The arrival is declared HERE, inline, rather than in
+       * src/phone/device.ts — the module is ~840kB and does not run for
+       * something like a second, and a case that waits for it would leave
+       * the person looking at bare paper for that whole second before
+       * anything moved. Mirrored into device.ts all the same (DEVICE §3).
        */
       .device {
+        transition: transform 912ms cubic-bezier(0.17, 0.72, 0.24, 1);
         position: fixed;
         left: 0;
         right: 0;
@@ -91,6 +101,16 @@
         overflow: hidden;
         background: #dfdfdf;
         container-type: size;
+      }
+      /*
+       * Off the bottom of the screen, for the first paint only. Removed on
+       * the next frame (see the inline script below the case), which is
+       * what turns it into a slide rather than a jump. Same 106% and same
+       * duration as `.device.leaving`, so the way in and the way out are
+       * one move played both directions.
+       */
+      .device.arriving {
+        transform: translateY(106%);
       }
       .device-box {
         position: relative;
@@ -149,6 +169,37 @@
     </div>
     <!-- vendored MQTT client, same tag the world and draw pages carry: the
          emote uplink publishes on the room's own topic (src/net/emoteUplink.ts) -->
+    <!--
+      ARRIVING FROM THE WORLD (user ruling, 2026-08-25).
+
+      Inline and synchronous, so the case is already off-screen in the
+      FIRST painted frame — a class added by the module would animate the
+      device downwards first, which is the move backwards.
+
+      Only for `?from=world`. The /draw/ handoff must never take this path:
+      that seam works precisely because the case is already exactly where
+      it was in the previous document (PHONE-STAGE §4.1), and sliding it in
+      there would replace an invisible seam with a visible one.
+    -->
+    <script>
+      (function () {
+        try {
+          if (new URLSearchParams(location.search).get('from') !== 'world') return;
+          var el = document.querySelector('.device');
+          if (!el) return;
+          el.classList.add('arriving');
+          // Two frames: the first paints it off-screen, the second starts
+          // the transition from there. One frame is not reliably enough —
+          // the style change can be coalesced into the initial paint and
+          // then there is nothing to transition FROM.
+          requestAnimationFrame(function () {
+            requestAnimationFrame(function () {
+              el.classList.remove('arriving');
+            });
+          });
+        } catch (e) {}
+      })();
+    </script>
     <script src="/vendor/mqtt.min.js"></script>
     <script type="module" src="/src/phone/main.ts"></script>
   </body>
