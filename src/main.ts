@@ -559,6 +559,64 @@ function main(): void {
   const publicWorld = (params.get('world') ?? '').toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 24);
   if (publicWorld.length > 0) {
     const endpoint = `/api/drawings?world=${encodeURIComponent(publicWorld)}`;
+
+    /** Spawn a log's drawings, skipping anything already standing.
+     * Returns the ids it actually admitted. */
+    const absorb = (log: SessionLog): string[] => {
+      const ids: string[] = [];
+      for (const event of log.events) {
+        if (event.k !== 'drawing') continue;
+        if (creatures.has(event.id)) continue;
+        const entry = gate.offer({
+          id: event.id,
+          name: event.name,
+          personality: null,
+          strokes: event.strokes,
+          hatchMs: event.hatchMs,
+          source: 'phone',
+        });
+        if (entry.disposition === 'admitted') ids.push(event.id);
+      }
+      return ids;
+    };
+
+    /**
+     * The world's EXISTING POPULATION, shipped with the world.
+     *
+     * The creatures recovered from the designers-and-machines room are not
+     * submissions — nobody is offering them and nobody is deciding on them.
+     * They are what is already standing in this field, the way trees are.
+     * So they load from a static asset rather than the store: no database
+     * to reach, nothing to seed, nothing an operator has to run, and the
+     * link works before any of that exists.
+     *
+     * It also means they cannot be moderated away or rate-limited, which is
+     * right for an exhibit and would be wrong for a submission. Live
+     * drawings layer on top and are governed normally.
+     */
+    const seedUrl = '/recovered/session.json';
+    const loadSeed = async (): Promise<number> => {
+      try {
+        const res = await fetch(seedUrl, { cache: 'force-cache' });
+        if (!res.ok) return 0;
+        const log = readSessionLog(await res.json());
+        if (!log) return 0;
+        const ids = absorb(log);
+        // Hatched AT ONCE, not through hatchAll(). The stagger exists so a
+        // roomful of eggs opens one at a time and everybody gets their
+        // moment — lovely for a live room, and wrong here twice over: these
+        // creatures are already residents rather than arrivals, and at
+        // 456ms apart a population of sixty-eight would take half a minute
+        // to finish appearing to somebody who just opened a link.
+        for (const id of ids) creatures.hatch(id);
+        return ids.length;
+      } catch {
+        // An empty field is a worse landing than a slow one, but a missing
+        // seed must not stop the live world from loading.
+        return 0;
+      }
+    };
+
     const pull = async (first: boolean): Promise<void> => {
       let log: SessionLog | null = null;
       try {
@@ -570,22 +628,10 @@ function main(): void {
         return;
       }
       if (!log) return;
-      let added = 0;
-      for (const event of log.events) {
-        if (event.k !== 'drawing') continue;
-        // Already standing? Leave it alone. This is what makes the poll
-        // additive instead of a world-clearing restore.
-        if (creatures.has(event.id)) continue;
-        const entry = gate.offer({
-          id: event.id,
-          name: event.name,
-          personality: null,
-          strokes: event.strokes,
-          hatchMs: event.hatchMs,
-          source: 'phone',
-        });
-        if (entry.disposition === 'admitted') added++;
-      }
+      // Additive, never a restore: anything already standing is left alone,
+      // which is what lets this run every twenty seconds without disturbing
+      // a world somebody is looking at.
+      const added = absorb(log).length;
       if (added > 0) {
         // Public creatures arrive already grown: nobody is watching an egg
         // that hatched an hour ago on somebody else's screen.
@@ -593,10 +639,19 @@ function main(): void {
         saveSession();
       }
       if (first) {
-        say(added > 0 ? `${added} creature${added === 1 ? '' : 's'} in ${publicWorld}` : `${publicWorld} is empty — draw the first one`);
+        say(
+          added > 0
+            ? `${added} creature${added === 1 ? '' : 's'} joined ${publicWorld}`
+            : `${publicWorld} — draw the first new one`,
+        );
       }
     };
-    void pull(true);
+
+    // The residents first, then whoever has joined since. In that order on
+    // purpose: the seed is local and instant, the live pull is a network
+    // round trip, and a person arriving should never see an empty field
+    // while a request is in flight.
+    void loadSeed().then(() => pull(true));
     window.setInterval(() => void pull(false), PUBLIC_POLL_MS);
   }
 
