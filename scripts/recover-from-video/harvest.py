@@ -79,11 +79,17 @@ def main():
                 clusters.append({'sig': sig, 'best_area': blob['area'],
                                  'best_mask': blob['mask'], 'seen': 1,
                                  'frame': i, 'crop': crop,
-                                 'instances': [(sig, blob['area'], blob['mask'], crop, i)]})
+                                 'instances': [(sig, blob['area'], blob['mask'], crop, i)],
+                                 'prov': [(i, blob['bbox'])]})
             else:
                 hit['seen'] += 1
                 if len(hit['instances']) < 40:
                     hit['instances'].append((sig, blob['area'], blob['mask'], crop, i))
+                # PROVENANCE: exactly which blob, in which frame, went into
+                # this cluster. Shape matching cannot separate lookalikes,
+                # but "the creature standing at these pixels in this frame"
+                # is not a similarity question at all.
+                hit['prov'].append((i, blob['bbox']))
                 if blob['area'] > hit['best_area']:
                     # A bigger view of the same creature is a better trace,
                     # and its signature is the more trustworthy one.
@@ -146,6 +152,7 @@ def main():
             am = aspect(m['sig'])
             if match(c['sig'], m['sig']) >= SAME + 0.03 and 0.78 <= ac / am <= 1.28:
                 m['seen'] += c['seen']
+                m['prov'].extend(c['prov'])
                 break
         else:
             merged.append(c)
@@ -196,6 +203,14 @@ def main():
     print(f'{len(strokes)} traced')
     with open(os.path.join(OUT, 'harvest.json'), 'w') as f:
         json.dump(strokes, f)
+    # The REAL masks, not just the traced outlines. Matching a silhouette
+    # from the footage against a re-rasterised RDP polygon compares a
+    # photograph to a diagram and scores everything alike; comparing it to
+    # the mask it was actually cut from is apples to apples.
+    with open(os.path.join(OUT, 'provenance.json'), 'w') as f:
+        json.dump([c['prov'] for c in keep], f)
+    np.savez_compressed(os.path.join(OUT, 'masks.npz'),
+                        **{f'm{n}': c['best_mask'] for n, c in enumerate(keep)})
 
 
 if __name__ == '__main__':

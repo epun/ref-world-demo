@@ -13,6 +13,17 @@ HATCH_MS = 20000
 
 rows = json.load(open(os.path.join(HERE, 'harvest.json')))
 
+# Names the FOOTAGE shows, bound to a creature by provenance — the same blob
+# in the same frame under the hover label, not a shape that looked similar.
+# Only bindings that are exact go in. A guessed name would put a real
+# person's word on somebody else's creature, which is worse than the honest
+# generated one.
+try:
+    BOUND = json.load(open(os.path.join(HERE, 'bound-names.json')))
+except Exception:
+    BOUND = {}
+BY_INDEX = {v: k for k, v in BOUND.items()}
+
 # A rectangle simplifies to a handful of points; a creature does not. This
 # catches the frame-clip artefacts that survived the earlier filters.
 rows = [r for r in rows if len(r['stroke']['pts']) >= 14]
@@ -26,7 +37,9 @@ for n, r in enumerate(rows):
     events.append({
         't': t, 'k': 'drawing',
         'id': f'rec-{n:03d}',
-        'name': None,              # the world names it from the id
+        # A name only when the recording proves it; otherwise the world
+        # names it from the id (src/creatures/naming.ts).
+        'name': BY_INDEX.get(r['index']),
         'personality': None,
         'source': 'phone',
         'strokes': [{
