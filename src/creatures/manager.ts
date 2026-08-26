@@ -619,7 +619,20 @@ export function createCreatureManager(
       // put four creatures on EXACTLY the spot of the first four, which no
       // separation pass can undo cleanly (zero distance has no direction).
       const spot = clearSpawnSpot(spawnSpot(orderCounter % MAX_POPULATION));
-      const egg = createEgg(strokes, { x: spot.x, z: spot.z });
+      /*
+       * A creature that is ALREADY HERE never had an egg here.
+       *
+       * This used to build one for it anyway and throw it away on the next
+       * line — and an egg is not cheap: `createEgg` paints a CanvasTexture
+       * from the stroke list, builds the ellipsoid, and takes a shadow
+       * stamp. Thirty of those on the load path, painted and disposed
+       * microseconds later, for a shell nobody ever saw.
+       *
+       * Nothing else has to change: the slot already carries `egg` and
+       * `eggShadow` as nullable, because becoming alive clears them both.
+       */
+      const grown = opts.grown === true;
+      const egg = grown ? null : createEgg(strokes, { x: spot.x, z: spot.z });
       const nowMs = performance.now();
       const slot: Slot = {
         id,
@@ -631,7 +644,7 @@ export function createCreatureManager(
         phase: 'egg',
         spot,
         egg,
-        eggShadow: world.shadows.addShadow(`egg-${id}`, egg.radius * EGG_SHADOW_FIT),
+        eggShadow: egg ? world.shadows.addShadow(`egg-${id}`, egg.radius * EGG_SHADOW_FIT) : null,
         bornMs: nowMs,
         hatchAtMs: nowMs + opts.hatchMs,
         pending: next,
@@ -652,7 +665,7 @@ export function createCreatureManager(
 
       // Already here, so: no egg mesh, no shell animation, no `hatch` in the
       // log, and the camera does not swing to it. Nothing arrived.
-      if (opts.grown === true) {
+      if (grown) {
         if (!placeGrown(slot)) {
           slots.delete(id);
           return false;
@@ -660,6 +673,7 @@ export function createCreatureManager(
         return true;
       }
 
+      if (!egg) return false; // unreachable: only a grown spawn has no egg
       slot.eggShadow?.setPosition(spot.x, spot.z);
       // Named so the ghost-panel outliner lists eggs, not only hatched
       // creatures (user ask, 2026-08-21: *"i want to retain them to see if

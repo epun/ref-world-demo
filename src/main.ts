@@ -460,6 +460,122 @@ function main(): void {
   (window as Window & { __refworldSession?: unknown }).__refworldSession = sessionApi;
 
   /**
+   * What a frame actually costs. Same family as the probes above.
+   *
+   * Draw calls are the number that decides whether a room of three hundred
+   * creatures runs, and it is invisible from the outside — a world that
+   * looks identical can be spending twice as much to draw itself. This is
+   * how a load test says something other than "it felt alright".
+   */
+  (window as Window & { __refworldRender?: unknown }).__refworldRender =
+    async (): Promise<unknown> => {
+      const info = world.renderer.info;
+      /*
+       * A FRAME here is several render passes — the ink pass, then grain
+       * composing over it — and `info.render` resets on every one of them.
+       * Read it after the fact and you get the last pass alone, which for
+       * this pipeline is one fullscreen triangle and reads as a world that
+       * costs nothing to draw.
+       *
+       * So: stop the auto-reset, clear, let exactly one frame go by, read
+       * the accumulated total, and put the renderer back as it was found.
+       */
+      info.autoReset = false;
+      info.reset();
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+      const drawCalls = info.render.calls;
+      const triangles = info.render.triangles;
+      info.autoReset = true;
+      info.reset();
+
+      let objects = 0;
+      let meshes = 0;
+      /*
+       * Triangles BY WHAT DREW THEM. A total says a frame is expensive; it
+       * does not say whether that is thirty creatures or one field of
+       * grass, and those have opposite fixes.
+       */
+      const byOwner: Record<string, { tris: number; meshes: number }> = {};
+      world.scene.traverse((o) => {
+        objects++;
+        const mesh = o as unknown as {
+          isMesh?: boolean;
+          isInstancedMesh?: boolean;
+          count?: number;
+          name?: string;
+          geometry?: { index?: { count: number }; attributes?: { position?: { count: number } } };
+          parent?: { name?: string } | null;
+        };
+        if (!mesh.isMesh) return;
+        meshes++;
+        const g = mesh.geometry;
+        const verts = g?.index?.count ?? g?.attributes?.position?.count ?? 0;
+        const instances = mesh.isInstancedMesh ? (mesh.count ?? 1) : 1;
+        // Walk UP to whatever named thing owns this mesh. A creature's
+        // meshes sit two levels under its named root, so stopping at the
+        // immediate parent files every one of them under "unnamed" — which
+        // is the bucket you least want to be the biggest.
+        let owner = mesh.name ?? '';
+        let up = mesh.parent as { name?: string; parent?: unknown } | null | undefined;
+        while (!owner && up) {
+          owner = up.name ?? '';
+          up = up.parent as { name?: string; parent?: unknown } | null | undefined;
+        }
+        const key = owner.startsWith('creature ')
+          ? 'creatures'
+          : owner.startsWith('egg ')
+            ? 'eggs'
+            : owner.replace(/ \(\d+\)$/, '') || 'unnamed';
+        const bucket = (byOwner[key] ??= { tris: 0, meshes: 0 });
+        bucket.tris += Math.floor(verts / 3) * instances;
+        bucket.meshes += instances;
+      });
+      // One creature, mesh by mesh — a per-creature total says they are
+      // expensive, not WHICH part of one is.
+      const oneCreature: { name: string; tris: number; verts: number }[] = [];
+      let sample: { children?: unknown[] } | null = null;
+      world.scene.traverse((o) => {
+        const named = o as { name?: string };
+        if (!sample && named.name?.startsWith('creature ')) {
+          sample = o as unknown as { children?: unknown[] };
+          (o as unknown as { traverse(cb: (c: unknown) => void): void }).traverse((c) => {
+            const m = c as {
+              isMesh?: boolean;
+              name?: string;
+              geometry?: {
+                index?: { count: number };
+                attributes?: { position?: { count: number } };
+              };
+            };
+            if (!m.isMesh) return;
+            const verts = m.geometry?.attributes?.position?.count ?? 0;
+            const idx = m.geometry?.index?.count ?? verts;
+            oneCreature.push({ name: m.name || '(unnamed part)', tris: Math.floor(idx / 3), verts });
+          });
+        }
+      });
+
+      const sorted = Object.entries(byOwner).sort((a, b) => b[1].tris - a[1].tris);
+      const sceneTris = sorted.reduce((n, [, v]) => n + v.tris, 0);
+      return {
+        creatures: creatures.count(),
+        drawCalls,
+        triangles,
+        geometries: info.memory.geometries,
+        textures: info.memory.textures,
+        programs: info.programs?.length ?? 0,
+        objects,
+        meshes,
+        sceneTris,
+        // Everything, not a top-n: the bucket you are not shown is the one
+        // that turns out to be the problem.
+        byOwner: sorted,
+        oneCreature: oneCreature.sort((a, b) => b.tris - a.tris),
+      };
+    };
+
+  /**
    * Autosave the session log to localStorage (recovery, 2026-08-20).
    *
    * The recorder was memory-only, so a refresh of the projection took the

@@ -38,6 +38,51 @@ const KEY = 0x200000; // 2^21
 
 /** Refinement guards: passes halve the longest edge, so 16 is generous. */
 const MAX_PASSES = 16;
+
+/**
+ * Interior refinement, in mask pixels. Do not raise this.
+ *
+ * It is the single biggest number in the frame budget — creatures are 79.6%
+ * of every triangle the world draws, measured, at ~63k each, and the next
+ * heaviest thing is a rock at 4.5%. So it looks like the obvious lever, and
+ * raising it does exactly what you would hope to the triangle count:
+ *
+ *     gridStep   6 → 85,416 tris     10 → 28,034     12 → 21,354     16 → 12,966
+ *
+ * It also looks free. The rim is seeded from the contour and pinned, so the
+ * SILHOUETTE is untouched whatever this is (a quadruped traces 113 rim
+ * points at 6 and 113 at 20), and the silhouette is the drawing (PLAN §1).
+ * Rendered at the largest a creature is ever shown — the device screen —
+ * gridStep 12 moves 1.3% of pixels by a mean of 1.7/255, against a 0.19%
+ * floor from the grain alone. Invisible, by measurement.
+ *
+ * IT IS NOT FREE. The refinement is conforming midpoint bisection, and
+ * conformity has a margin that depends on how thin the shape is. Past this
+ * step, some silhouettes stop closing — a directed edge appears twice, and
+ * the surface has a crack in it. Across the fixture set at mask size 512:
+ *
+ *     step  6   every fixture manifold
+ *     step 10   thinLine breaks
+ *     step 12   thinLine, disconnectedBlobs break
+ *     step 16   six of fourteen break
+ *
+ * Thin, spindly and disconnected drawings are the ones that break, and
+ * those are drawings people actually make. The failure is silent, produces
+ * a holed creature rather than an error, and only shows up for some of the
+ * room — which is the worst possible way to find out.
+ *
+ * 6 is where every shape survives. It is not a number picked for looks.
+ *
+ * ⚠️ It must also be the SAME on every device: the phone builds its
+ * portrait from the same strokes through the same pipeline and the two are
+ * meant to be the identical creature (PLAN §6.3). Change it in one place or
+ * not at all.
+ *
+ * `test/inflate/inflate.test.ts` pins the manifold property across the whole
+ * fixture set at this value, so a future raise fails immediately rather
+ * than at an event.
+ */
+export const DEFAULT_GRID_STEP = 6;
 const MAX_VERTS = 262144;
 
 function edgeKey(a: number, b: number): number {
@@ -119,7 +164,7 @@ function emitSplit(
  */
 export function inflate(analysis: ShapeAnalysis, opts: InflateOptions = {}): InflatedMesh {
   const depthScale = opts.depthScale ?? 0.9;
-  const gridStep = opts.gridStep ?? 6;
+  const gridStep = opts.gridStep ?? DEFAULT_GRID_STEP;
   const contour = analysis.contour;
   const size = analysis.mask.size;
 

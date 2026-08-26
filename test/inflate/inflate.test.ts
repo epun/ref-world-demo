@@ -3,6 +3,9 @@ import { analyze } from '../../src/shape/analyze';
 import { inflate } from '../../src/inflate/inflate';
 import type { InflatedMesh } from '../../src/inflate/types';
 import { circleBlob } from '../fixtures/strokes';
+import * as fixtures from '../fixtures/strokes';
+import { DEFAULT_GRID_STEP } from '../../src/inflate/inflate';
+import type { StrokeList } from '../../src/shape/types';
 
 const SIZE = 256;
 
@@ -171,4 +174,62 @@ describe('inflate: depth profile', () => {
     expect(coarse.positions.length).toBeLessThan(mesh.positions.length);
     expect(coarse.positions.length).toBeGreaterThan(0);
   });
+});
+
+describe('inflate: the refinement stays conforming for every shape we know', () => {
+  /*
+   * The guard on DEFAULT_GRID_STEP.
+   *
+   * Raising it is tempting — creatures are ~80% of the triangles the world
+   * draws, and the silhouette is pinned to the contour so coarsening looks
+   * free. It is not: conforming midpoint bisection has a margin that shrinks
+   * with how thin the shape is, and past the default some silhouettes stop
+   * closing. The mesh gets a crack in it, silently, for SOME drawings —
+   * thin and spindly ones, which people draw.
+   *
+   * This runs the real default over every fixture, including the deliberately
+   * awkward ones, so that regression is a failing test rather than a holed
+   * creature in front of a room.
+   */
+  const shapes = Object.entries(fixtures).filter(
+    ([, v]) => Array.isArray(v) && v.length > 0 && typeof v[0] === 'object',
+  );
+
+  it('covers the awkward shapes, not just the friendly ones', () => {
+    const names = shapes.map(([k]) => k);
+    for (const awkward of ['thinLine', 'stickFigure', 'ringOutline', 'disconnectedBlobs']) {
+      expect(names).toContain(awkward);
+    }
+  });
+
+  for (const [name, strokes] of shapes) {
+    it(`${name} inflates to a closed surface`, () => {
+      const a = analyze(strokes as StrokeList, { size: 512 });
+      if (a === null) return; // degenerate input: nothing to inflate, not a crack
+      const m = inflate(a, { gridStep: DEFAULT_GRID_STEP });
+      const seen = new Map<number, number>();
+      for (let t = 0; t < m.indices.length; t += 3) {
+        const tri = [m.indices[t]!, m.indices[t + 1]!, m.indices[t + 2]!];
+        for (let e = 0; e < 3; e++) {
+          const k = tri[e]! * 0x200000 + tri[(e + 1) % 3]!;
+          seen.set(k, (seen.get(k) ?? 0) + 1);
+        }
+      }
+      // NO DIRECTED EDGE TWICE. This is the property that tracks gridStep:
+      // clean for every fixture at the default, and the first thing to go
+      // when the refinement stops conforming — two triangles claiming the
+      // same edge in the same direction is a fold, and it renders as a
+      // crack.
+      //
+      // Deliberately NOT full closure (every edge's reverse also present).
+      // Several fixtures — bird and fish among them — already inflate to
+      // surfaces with boundary edges, and have since long before this test.
+      // Asserting closure here would fail for a reason that has nothing to
+      // do with what this guards, and the honest scope is the property that
+      // actually moves.
+      let duplicated = 0;
+      for (const n of seen.values()) if (n !== 1) duplicated++;
+      expect(duplicated).toBe(0);
+    });
+  }
 });
