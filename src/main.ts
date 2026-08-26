@@ -27,6 +27,18 @@ import {
 import { createIngestGate } from './moderation/gate';
 import { EMOTE_NAMES, isRoomCode, roomCode, type EmoteName } from './net/protocol';
 import {
+  HOST_HEARTBEAT_MS,
+  POSE_INTERVAL_MS,
+  ROLE_SETTLE_MS,
+  ROSTER_REPEAT_MS,
+  electHost,
+  makeHostId,
+  packPoses,
+  pruneClaims,
+  readWorldSyncMessage,
+  unpackPoses,
+} from './net/worldsync';
+import {
   createSessionRecorder,
   expectedCreatures,
   parseSessionLog,
@@ -235,7 +247,24 @@ function main(): void {
   // which world is running; it travels in the join code and in every reply
   // to a phone, so a handset holding a creature this world never knew is
   // let in to draw again instead of being locked out forever (user ask).
-  const epoch = 'w' + Math.floor(Math.random() * 0xffffffff).toString(36);
+  /*
+   * A PUBLIC world's session id is the world, not the page.
+   *
+   * A random one per load is right for an installation: a refresh really
+   * is a new world, and a handset holding a creature the new world never
+   * knew has to be let in to draw again. But a public world is persistent
+   * — its drawings live in the store, not in this tab — and every viewer
+   * announces this id to the handsets in the room, RETAINED. With one id
+   * per page, two viewers meant phones being told the world had changed
+   * every time either of them announced, and drawings going stale that
+   * were not.
+   *
+   * Derived from the world's name, so every viewer of it, on every device,
+   * across every reload, announces the same thing.
+   */
+  const epoch = isPublic
+    ? `w-${publicWorld}`
+    : 'w' + Math.floor(Math.random() * 0xffffffff).toString(36);
 
   // ── session recorder (src/session/, docs/SESSION.md) ──────────────────────
   // Ships in EVERY build, not just dev: a live event is exactly when you want
@@ -959,6 +988,17 @@ function main(): void {
   // drawer who asked, and the session id it belongs to.
   let feed: Awaited<ReturnType<typeof connectWorldFeed>> = null;
   /**
+   * Is this page the one that speaks for the world?
+   *
+   * True until an election says otherwise, and an election only happens in
+   * a public world — an installation room is one projection and always its
+   * own authority. Everything the world says TO HANDSETS goes through this:
+   * verdicts, recalls, and the retained world announcement. Every open
+   * viewer used to send all three, so two laptops on the live link meant
+   * phones receiving two of everything, from two different simulations.
+   */
+  let isHostNow = (): boolean => true;
+  /**
    * The phone's transport, on the world page.
    *
    * Only on a handset, and only for one thing: a person looking at the
@@ -981,12 +1021,13 @@ function main(): void {
    * rather than adding one, so a duplicate re-send is a no-op.
    */
   const recallDrawings = (): boolean => {
-    if (!feed) return false;
+    if (!feed || !isHostNow()) return false;
     feed.publishToPhones({ type: 'recall', epoch });
     return true;
   };
 
   const tellPhone = (to: string, entry: { disposition: string; reason: string | null }): void => {
+    if (!isHostNow()) return;
     feed?.publishToPhones({
       type: 'verdict',
       to,
@@ -998,15 +1039,32 @@ function main(): void {
     });
   };
 
+  /**
+   * Which broker to talk to.
+   *
+   * Overridable because the default is a free public one, and a room that
+   * matters should not depend on it — a self-hosted broker is a url swap,
+   * not a code change. It is also the only way to exercise two clients
+   * against each other in a test, since the public broker is unreachable
+   * from a sandbox.
+   *
+   * Validated to a websocket scheme: this value opens a socket, and an
+   * unchecked one out of the query string is somewhere to point a page at
+   * a host of somebody else's choosing.
+   */
+  const brokerParam = params.get('broker') ?? '';
+  const brokerOverride = /^wss?:\/\//.test(brokerParam) ? brokerParam : '';
+
   void connectWorldFeed({
     room,
+    ...(brokerOverride ? { broker: brokerOverride } : {}),
     // Re-announce on every (re)connect, not only once at boot. The publish
     // below happens as soon as the feed object exists, which can be before
     // the socket is actually up; and a broker that drops us must be told
     // again, because a retained message lives on the broker and a new one
     // has never heard of this world.
     onStatus: (state) => {
-      if (state === 'on') announceEpochRetained(feed, epoch);
+      if (state === 'on' && isHostNow()) announceEpochRetained(feed, epoch);
     },
     onDrawing: (d) => {
       const entry = gate.offer({ ...d, hatchMs: HATCH_TIMER_MS, source: 'phone' });
@@ -1029,7 +1087,7 @@ function main(): void {
     onHello: ({ from }) => {
       const seen = gate.log().find((e) => e.id === from);
       if (seen && seen.disposition !== 'admitted') tellPhone(from, seen);
-      else feed?.publishToPhones({ type: 'world', epoch });
+      else if (isHostNow()) feed?.publishToPhones({ type: 'world', epoch });
     },
   }).then((handle) => {
     feed = handle;
@@ -1038,8 +1096,188 @@ function main(): void {
     // that wakes an hour from now — so a phone holding a drawing from a
     // previous session re-homes it without anyone pressing anything
     // (src/phone/main.ts, docs/SESSION.md §4a).
-    announceEpochRetained(handle, epoch);
+    if (isHostNow()) announceEpochRetained(handle, epoch);
+    startWorldSync(handle);
   });
+
+  /**
+   * One world, many screens (src/net/worldsync.ts).
+   *
+   * Every page used to run its own simulation, so two people on the same
+   * link watched two different worlds. Now one page simulates and the rest
+   * follow it, and which one is decided by an election nobody administers:
+   * smallest live id wins.
+   *
+   * Only for a PUBLIC world. An installation room is one projection with
+   * phones attached — there is no second screen to disagree with, and
+   * putting an election in front of it would be a way for a stray tab to
+   * take the room's world away from it.
+   */
+  function startWorldSync(handle: Awaited<ReturnType<typeof connectWorldFeed>>): void {
+    if (!handle || !isPublic) return;
+    const client = (handle as unknown as {
+      client?: {
+        publish?(topic: string, payload: string, opts?: Record<string, unknown>): void;
+        subscribe?(topic: string): void;
+        on?(event: string, cb: (topic: string, payload: unknown) => void): void;
+      };
+    }).client;
+    if (!client?.publish || !client.subscribe || !client.on) return;
+
+    const syncTopic = `${handle.topic}/world`;
+    const me = makeHostId(params.get('host') === '1');
+    /** Every claim heard, by id. Pruned, so it cannot grow unbounded. */
+    const claims = new Map<string, number>();
+    let hosting = true;
+    let rosterRev = 0;
+    let roster: string[] = [];
+    let rosterSentAt = 0;
+    /** Rosters the host has told us about, so a pose frame can be trusted. */
+    const knownRosters = new Map<number, string[]>();
+
+    /*
+     * Subscribe on CONNECT, not just once now.
+     *
+     * `startWorldSync` runs as soon as the feed object exists, which is
+     * before the socket is necessarily up — and a subscribe sent into a
+     * socket that is not there is simply lost. It has to be re-sent on
+     * every reconnect too: the session is clean, so the broker forgets
+     * what this client was listening to the moment it drops. (The vendored
+     * feed subscribes inside its own connect handler for exactly this
+     * reason — src/net/vendor/draw-feed.js.)
+     *
+     * Both: now in case we are already connected, and on every connect
+     * after. Subscribing twice is harmless.
+     */
+    const subscribe = (): void => client.subscribe?.(syncTopic);
+    subscribe();
+    client.on('connect', () => subscribe());
+    client.on('message', (topic, payload) => {
+      if (topic !== syncTopic) return;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(String(payload));
+      } catch {
+        return;
+      }
+      const msg = readWorldSyncMessage(parsed);
+      if (!msg || msg.id === me) return;
+
+      if (msg.t === 'host') {
+        claims.set(msg.id, Date.now());
+        return;
+      }
+      // Anything else is the host describing the world. Hearing it is also
+      // proof that page is alive, so it counts as a claim — otherwise a
+      // host that is busy publishing poses could be voted out for not
+      // heartbeating often enough.
+      claims.set(msg.id, Date.now());
+      // A page hearing a smaller id must stand down NOW, not at its next
+      // heartbeat: until it does, two pages are both publishing poses.
+      settleRole();
+      if (hosting) return;
+
+      if (msg.t === 'roster') {
+        knownRosters.set(msg.rev, msg.ids);
+        // Two is enough to cover a pose frame that crosses a roster change.
+        if (knownRosters.size > 2) {
+          const oldest = Math.min(...knownRosters.keys());
+          knownRosters.delete(oldest);
+        }
+        return;
+      }
+      const against = knownRosters.get(msg.rev);
+      // No roster for this revision yet: drop the frame rather than apply
+      // it to the wrong creatures. The host repeats the roster every couple
+      // of seconds, so this resolves itself.
+      if (!against) return;
+      creatures.followPoses(unpackPoses(msg.p, against));
+    });
+
+    /**
+     * Work out the role. Cheap, and deliberately NOT tied to the heartbeat.
+     *
+     * Demotion has to be prompt: two pages both believing they are the host
+     * is the state this whole thing exists to prevent, and if the only
+     * moment a page can notice it has lost is when it next publishes, that
+     * window is a whole heartbeat wide — wider still in a background tab,
+     * where the browser throttles timers. Recomputing often and publishing
+     * rarely costs nothing and closes it.
+     */
+    const settleRole = (): void => {
+      const now = Date.now();
+      pruneClaims(claims, now);
+      const shouldHost = electHost(me, claims, now) === me;
+      if (shouldHost === hosting) return;
+      hosting = shouldHost;
+      // A viewer runs no agents: its creatures are placed by the host's
+      // poses, and a local simulation underneath would fight them.
+      creatures.pauseAi(!hosting);
+      if (hosting) {
+        // Taking over. The roster this world publishes is its own, so it
+        // starts from a revision no viewer can already be holding — and
+        // whatever the previous host last said about our creatures is now
+        // just a stale opinion, so it goes.
+        rosterRev = Math.floor(now / 1000);
+        roster = [];
+        creatures.followPoses([]);
+      }
+    };
+
+    const beat = (): void => {
+      settleRole();
+      client.publish?.(syncTopic, JSON.stringify({ t: 'host', id: me, at: Date.now() }), { qos: 0 });
+    };
+    beat();
+    window.setInterval(beat, HOST_HEARTBEAT_MS);
+    window.setInterval(settleRole, ROLE_SETTLE_MS);
+
+    window.setInterval(() => {
+      if (!hosting) return;
+      const live = creatures.liveIds();
+      const now = Date.now();
+      const changed = live.length !== roster.length || live.some((id, i) => id !== roster[i]);
+      if (changed || now - rosterSentAt > ROSTER_REPEAT_MS) {
+        if (changed) rosterRev++;
+        roster = live;
+        rosterSentAt = now;
+        client.publish?.(
+          syncTopic,
+          JSON.stringify({ t: 'roster', id: me, rev: rosterRev, ids: roster }),
+          { qos: 0 },
+        );
+      }
+      if (roster.length === 0) return;
+      client.publish?.(
+        syncTopic,
+        JSON.stringify({ t: 'poses', id: me, rev: rosterRev, p: packPoses(creatures.poses(), roster) }),
+        { qos: 0 },
+      );
+    }, POSE_INTERVAL_MS);
+
+    // Only the host speaks to the handsets. Every open viewer used to, so
+    // two laptops on the live link meant phones receiving two interleaved
+    // simulations (see worldsync.ts).
+    isHostNow = () => hosting;
+
+    // Same idiom as __refworldSession above: a readout of what this page
+    // thinks its role is, which is the only way to see an election from
+    // outside.
+    (window as unknown as Record<string, unknown>)['__refworldSync'] = () => {
+      const now = Date.now();
+      return {
+        me,
+        hosting,
+        winner: electHost(me, claims, now),
+        rosterRev,
+        roster: roster.length,
+        // Age of each claim, so a page that looks wrong can be told apart
+        // from a page whose peer simply went quiet.
+        claims: [...claims].map(([id, at]) => `${id}:${now - at}ms`),
+        knownRosters: [...knownRosters.keys()],
+      };
+    };
+  }
 
   // ── overlay (local, same-device drawing) ──────────────────────────────────
   const overlay = document.createElement('div');

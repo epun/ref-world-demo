@@ -36,6 +36,7 @@ import { startHatch, type HatchHandle } from '../egg/hatch';
 import type { EmoteName } from '../net/protocol';
 import type { StrokeList } from '../shape/types';
 import { MOTION } from '../taste/tokens';
+import { FOLLOW_TAU_MS, followFraction, shortestAngle } from '../net/worldsync';
 import type { WorldHandles } from '../world/scene';
 import type { ShadowHandle } from '../world/shadows';
 import { resolveName } from './naming';
@@ -209,6 +210,17 @@ type Phase = 'egg' | 'hatching' | 'alive' | 'retiring';
 interface Slot {
   id: string;
   name: string | null;
+  /**
+   * Where the HOST says this creature is (src/net/worldsync.ts).
+   *
+   * Set only on a viewer. The creature eases toward it rather than being
+   * placed on it: pose frames arrive five times a second and snapping to
+   * each one is a step, which is the hard cut the motion law forbids
+   * outright. Null on the host, and on a viewer that has not heard about
+   * this creature yet — in which case it simply stands where it spawned
+   * rather than guessing.
+   */
+  follow: { x: number; z: number; heading: number } | null;
   /** When a staggered hatchAll() has scheduled this egg. null = not queued. */
   forcedHatchAtMs: number | null;
   phase: Phase;
@@ -328,6 +340,20 @@ export interface CreatureManager {
   /** Freeze autonomous behavior (demo panel). Separate from pauseTimers:
    * eggs keep hatching; characters hold still (ambient floor stays alive). */
   pauseAi(paused: boolean): void;
+  /**
+   * Take the world's positions from somewhere else.
+   *
+   * For a viewer of a shared world: the host simulates and sends poses, and
+   * these are what the creatures ease toward. Ids this world has never
+   * heard of are ignored — a drawing whose strokes have not arrived yet has
+   * nothing to move. Returns how many were matched, which is what tells the
+   * caller whether it is actually in sync or just receiving.
+   */
+  followPoses(poses: readonly { id: string; x: number; z: number; heading: number }[]): number;
+  /** Live creature ids, in a stable order — the roster a host publishes. */
+  liveIds(): string[];
+  /** Every live creature's place, for a host to publish. */
+  poses(): { id: string; x: number; z: number; heading: number }[];
   /** Wander speed multiplier (demo panel tuning). 1 = spec speed. */
   setWanderSpeed(mult: number): void;
   /**
@@ -615,6 +641,7 @@ export function createCreatureManager(
         characterShadow: null,
         bodyR: 0,
         personalityChoice: opts.personality ?? null,
+        follow: null,
         agent: null,
         pose: null,
         manualHold: false,
@@ -821,6 +848,40 @@ export function createCreatureManager(
               held: true,
             });
             slot.character.setLocomotion(0, root.rotation.y);
+          } else if (root && slot.phase === 'alive' && aiPaused && slot.follow) {
+            /*
+             * A VIEWER of somebody else's world (src/net/worldsync.ts).
+             *
+             * The host simulates; this creature's only job is to be where
+             * the host says it is. It EASES there rather than being placed:
+             * frames arrive five times a second, and setting the position
+             * on each one is a step — visible, and the hard cut the motion
+             * law forbids at confidence 1.00.
+             *
+             * Exponential convergence, so it is monotone and cannot
+             * overshoot however late or bunched the frames are. It also
+             * never quite arrives, which is the ambient drift floor that
+             * has to run under everything anyway.
+             */
+            const k = followFraction(dt, FOLLOW_TAU_MS);
+            const beforeX = root.position.x;
+            const beforeZ = root.position.z;
+            root.position.x += (slot.follow.x - beforeX) * k;
+            root.position.z += (slot.follow.z - beforeZ) * k;
+            root.rotation.y += shortestAngle(root.rotation.y, slot.follow.heading) * k;
+
+            // The gait reads the speed it is ACTUALLY travelling at, so a
+            // followed creature walks for the same reason a simulated one
+            // does — because it is moving — rather than being told to.
+            const moved = Math.hypot(root.position.x - beforeX, root.position.z - beforeZ);
+            slot.character.setLocomotion(dt > 0 ? (moved / dt) * 1000 : 0, root.rotation.y);
+            slot.characterShadow?.setPosition(
+              root.position.x + slot.character.group.position.x,
+              root.position.z + slot.character.group.position.z,
+            );
+            // Deliberately NOT entered into the physics pass: the host has
+            // already resolved every overlap, and a second solver running
+            // on top of the answer would fight it.
           } else if (root && slot.agent && slot.phase === 'alive' && !aiPaused) {
             const peers: AgentPeer[] = [];
             for (const other of slots.values()) {
@@ -975,6 +1036,35 @@ export function createCreatureManager(
 
     pauseTimers(paused): void {
       timersPaused = paused;
+    },
+
+    followPoses(poses): number {
+      let matched = 0;
+      for (const pose of poses) {
+        const slot = slots.get(pose.id);
+        if (!slot || slot.phase !== 'alive') continue;
+        slot.follow = { x: pose.x, z: pose.z, heading: pose.heading };
+        matched++;
+      }
+      return matched;
+    },
+
+    liveIds(): string[] {
+      const out: string[] = [];
+      for (const slot of slots.values()) {
+        if (slot.phase === 'alive' && slot.characterRoot) out.push(slot.id);
+      }
+      return out;
+    },
+
+    poses() {
+      const out: { id: string; x: number; z: number; heading: number }[] = [];
+      for (const slot of slots.values()) {
+        const root = slot.characterRoot;
+        if (slot.phase !== 'alive' || !root) continue;
+        out.push({ id: slot.id, x: root.position.x, z: root.position.z, heading: root.rotation.y });
+      }
+      return out;
     },
 
     pauseAi(paused): void {
