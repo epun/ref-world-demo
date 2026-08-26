@@ -8,3 +8,7 @@ dist/
 .vite/
 coverage/
 .wrangler/
+
+# python bytecode, from the recovery tooling in scripts/recover-from-video/
+__pycache__/
+*.pyc
