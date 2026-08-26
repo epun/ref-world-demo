@@ -51,7 +51,7 @@ function readBody(req: VercelRequest): Record<string, unknown> | null {
 }
 
 /** Admitted drawings, shaped as the log `sessionApi.restore` already reads. */
-function asSessionLog(world: string, rows: StoredDrawing[]) {
+function asSessionLog(world: string, rows: StoredDrawing[], store: boolean) {
   const events: unknown[] = [];
   let t = 0;
   for (const row of rows) {
@@ -81,7 +81,23 @@ function asSessionLog(world: string, rows: StoredDrawing[]) {
     epoch: `public-${world}`,
     room: world,
     startedAt: new Date(0).toISOString(),
-    config: { hatchMs: HATCH_MS, maxPopulation: 96, public: true },
+    config: {
+      hatchMs: HATCH_MS,
+      maxPopulation: 96,
+      public: true,
+      /*
+       * Is there a store behind this world?
+       *
+       * Without one, GET answers 200 with an empty list and POST answers
+       * 503 — so from the outside a world nobody has drawn in and a world
+       * that CANNOT be drawn in look exactly alike. That is the difference
+       * between "quiet night" and "every drawing since Tuesday was
+       * dropped", and it should not take a POST to tell them apart.
+       *
+       * Says whether a store is configured. Never what or where it is.
+       */
+      store: store ? 'live' : 'none',
+    },
     events,
   };
 }
@@ -98,7 +114,7 @@ export default async function handler(
     // with revalidation keeps a busy projection off the store without ever
     // showing a creature that was removed minutes ago.
     res.setHeader('cache-control', 'public, s-maxage=10, stale-while-revalidate=60');
-    res.status(200).json(asSessionLog(world, rows));
+    res.status(200).json(asSessionLog(world, rows, hasStore()));
     return;
   }
 
