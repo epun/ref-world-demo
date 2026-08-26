@@ -19,7 +19,13 @@
  */
 
 import { MOTION } from '../taste/tokens';
+import { wavyBorderPath, wavyBorderPoints } from './minimap';
 import { CLOSE_MESSAGE } from '../world/companionpanel';
+
+/** This control's own hand — not the map's seed, not the join code's. */
+const BORDER_SEED = 41.7;
+/** Room for the waver to move without clipping at the element's edge. */
+const BORDER_INSET = 2.5;
 
 /** Are we the companion inside the world's panel, rather than a page? */
 function framed(): boolean {
@@ -71,9 +77,54 @@ export function mountWorldLink(
 
   const el = document.createElement('a');
   el.className = 'world-link';
-  el.textContent = 'the world';
   const href = worldHref(options.room, options.world);
   el.href = href;
+
+  /*
+   * A BUTTON, drawn by the same hand as the minimap (user ruling,
+   * 2026-08-25). It was type over a hairline rule, which reads as a
+   * caption — and this is the only way out of the device, so it has to
+   * look like something you press.
+   *
+   * A border, not a fill and not a shadow: the mark set is icon +
+   * ruleLine + border and nothing else (TASTE §4). What makes it a button
+   * rather than a card is that the border goes all the way round and the
+   * text sits inside it with room to breathe.
+   *
+   * The border is the project's own wavering loop — the identical
+   * generator and smoothing the minimap and the join code frame use, so
+   * the three read as drawn by one person rather than three.
+   *
+   * Lowercase, always: no uppercase type anywhere in this world (TASTE
+   * §5), which is why it is 'view world' and not 'View World'.
+   */
+  const frame = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  frame.setAttribute('class', 'world-link-frame');
+  frame.setAttribute('aria-hidden', 'true');
+  const outline = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  outline.setAttribute('fill', 'none');
+  outline.setAttribute('stroke', 'currentColor');
+  outline.setAttribute('stroke-width', '1');
+  outline.setAttribute('stroke-linejoin', 'round');
+  frame.appendChild(outline);
+
+  const label = document.createElement('span');
+  label.className = 'world-link-label';
+  label.textContent = 'view world';
+  el.append(frame, label);
+
+  /** Redraw the border at the element's real size. Idempotent. */
+  let drawnAt = '';
+  const drawFrame = (): void => {
+    const w = Math.round(el.offsetWidth);
+    const h = Math.round(el.offsetHeight);
+    if (w < 2 || h < 2) return;
+    const key = `${w}x${h}`;
+    if (key === drawnAt) return;
+    drawnAt = key;
+    frame.setAttribute('viewBox', `0 0 ${w} ${h}`);
+    outline.setAttribute('d', wavyBorderPath(wavyBorderPoints(w, h, BORDER_INSET, BORDER_SEED)));
+  };
 
   const go = options.navigate ?? ((to: string) => { window.location.href = to; });
 
@@ -94,6 +145,18 @@ export function mountWorldLink(
       // and nothing to rebuild. Sliding the case as well would be two
       // objects leaving at once for one gesture.
       window.parent.postMessage(CLOSE_MESSAGE, window.location.origin);
+      // AND PUT IT BACK. The frame is kept alive between opens (that is
+      // the whole point of the panel), so this document is not reloaded —
+      // which means the faded-out, already-going state would still be
+      // here the next time the panel slid up, and the only way out of the
+      // device would be invisible and dead (user report, 2026-08-25).
+      // Restored after the panel has finished leaving, so the fade is
+      // still seen on the way out.
+      window.setTimeout(() => {
+        delete el.dataset['going'];
+        el.classList.remove('out');
+        el.classList.add('in');
+      }, MOTION.secondaryMs);
       return;
     }
 
@@ -104,11 +167,16 @@ export function mountWorldLink(
   });
 
   root.appendChild(el);
+  drawFrame();
+  // The label's own font may land after this, and the box grows with it.
+  const observer = new ResizeObserver(drawFrame);
+  observer.observe(el);
   requestAnimationFrame(() => el.classList.add('in'));
 
   return {
     el,
     destroy(): void {
+      observer.disconnect();
       el.remove();
     },
   };

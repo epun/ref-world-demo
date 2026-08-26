@@ -278,6 +278,14 @@ function ensureStyle(): void {
    * space, reading as something this device shows rather than something
    * lying beside it.
    *
+   * A BUTTON, not a caption (user ruling, 2026-08-25). It was type over a
+   * hairline rule, which reads as a label on the screen rather than a
+   * thing to press — and this is the only way out of the device. The
+   * border goes all the way round now and the text sits inside it with
+   * room to breathe, which is the whole difference; still a border and
+   * nothing else, because the mark set is icon + ruleLine + border and
+   * admits no fill and no shadow (TASTE §4).
+   *
    * Absolute against .device-well, which is the positioned ancestor.
    */
   position: absolute;
@@ -285,20 +293,43 @@ function ensureStyle(): void {
   bottom: 5%;
   z-index: 2;
   transform: translate(-50%, 10px);
-  padding-top: 0.55em;
-  border-top: 1px solid ${WORLD.ink};
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* A finger's worth of target, whatever the type metrics do. */
+  min-height: 44px;
+  padding: 0 1.15em;
   color: ${WORLD.ink};
   font: 400 15px/1.3 "helvetica neue", helvetica, arial, sans-serif;
   text-decoration: none;
   opacity: 0;
   -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
   transition:
     opacity ${MOTION.secondaryMs}ms ${MOTION.settleCurve},
     transform ${MOTION.secondaryMs}ms ${MOTION.settleCurve};
 }
+/* The wavering loop, drawn by the same generator as the minimap and the
+   join code frame (src/phone/minimap.ts) — one hand, three marks. */
+.world-link-frame {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+.world-link-label {
+  position: relative;
+  /* Optical: the waver reads a touch heavier on the left, so the label
+     sits a hair right of true centre inside it. */
+  padding-left: 0.04em;
+}
 .world-link.in { opacity: 1; transform: translate(-50%, 0); }
 .world-link.out { opacity: 0; transform: translate(-50%, 10px); }
-.world-link:active { opacity: 0.55; }
+/* Pressed: the whole mark gives a little. No fill appears — there is
+   nothing to fill — so the press reads in the movement and the weight. */
+.world-link:active { opacity: 0.6; transform: translate(-50%, 0) scale(0.97); }
 
 .device-shell {
   position: absolute;

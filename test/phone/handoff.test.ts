@@ -97,3 +97,56 @@ describe('the world hands off to the pad', () => {
     expect(src).toMatch(/worldParam = isPublic \? `&world=\$\{encodeURIComponent\(publicWorld\)\}` : ''/);
   });
 });
+
+describe('the way back to the world, as a control', () => {
+  const src = () => read('src/phone/worldlink.ts');
+  const css = () => read('src/phone/device.ts');
+
+  it('says what it does, in lowercase', () => {
+    // "the world" read as a caption. It is the only way out of the device,
+    // so it says what pressing it does (user ruling, 2026-08-25) — and it
+    // says it in lowercase, because no type in this world is uppercase
+    // (TASTE §5), which is why it is not "View World".
+    const assigned = /label\.textContent = '([^']*)'/.exec(src())?.[1];
+    expect(assigned).toBe('view world');
+    expect(assigned).toBe(assigned!.toLowerCase());
+    // and the old caption is gone from the code, comments aside
+    expect(src()).not.toMatch(/textContent = 'the world'/);
+  });
+
+  it('is a border all the way round, and nothing else', () => {
+    // What makes it a button rather than a caption is the closed border
+    // and the room inside it. Not a fill and not a shadow: the mark set is
+    // icon + ruleLine + border and admits neither (TASTE §4).
+    const rule = /\.world-link \{[\s\S]*?\n\}/.exec(css())?.[0] ?? '';
+    expect(rule).toBeTruthy();
+    expect(rule).not.toMatch(/box-shadow/);
+    expect(rule).not.toMatch(/background/);
+    // The old single rule is gone.
+    expect(rule).not.toMatch(/border-top/);
+    // A finger's worth of target.
+    expect(rule).toMatch(/min-height: 44px/);
+  });
+
+  it('draws that border with the same hand as the minimap', () => {
+    // One generator, one smoothing — see wavyBorderPath. A hand-rolled
+    // rounded rectangle here would be a second hand on the same screen.
+    expect(src()).toMatch(/wavyBorderPath\(wavyBorderPoints\(/);
+    expect(src()).toMatch(/from '\.\/minimap'/);
+  });
+
+  it('comes BACK after the panel closes', () => {
+    // The regression this exists for. The panel keeps its frame alive
+    // between opens, so this document is not reloaded — and the faded-out,
+    // already-going state survived with it. Reproduced on the old code:
+    // round 1 opacity 1, rounds 2 and 3 opacity 0 with going="true", so
+    // the only way out of the device was invisible and dead.
+    const framed = /if \(framed\(\)\) \{[\s\S]*?\n    \}/.exec(src())?.[0] ?? '';
+    expect(framed).toBeTruthy();
+    expect(framed).toMatch(/delete el\.dataset\['going'\]/);
+    expect(framed).toMatch(/classList\.remove\('out'\)/);
+    expect(framed).toMatch(/classList\.add\('in'\)/);
+    // ...after the panel has finished leaving, so the fade is still seen.
+    expect(framed).toMatch(/MOTION\.secondaryMs/);
+  });
+});

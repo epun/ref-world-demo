@@ -128,3 +128,34 @@ export function wavyBorderPoints(
   for (let i = 0; i < perEdge; i++) push(x0, y1 - along(i) * (y1 - y0), 1, 0); // left
   return points;
 }
+
+/**
+ * The same loop as an SVG path.
+ *
+ * `traceLoop` (src/ui/minimap.ts, src/ui/joinqr.ts) strokes these points
+ * onto a canvas with quadratic midpoint smoothing — start at the midpoint
+ * between the last point and the first, then curve through each point to
+ * the midpoint after it. That smoothing is what rounds the skipped corners
+ * organically, so it is the shape, not a detail of the renderer.
+ *
+ * This is that identical construction emitted as path data, for the places
+ * that draw the border in the DOM rather than on a canvas (the way back to
+ * the world, src/phone/worldlink.ts). Same generator, same smoothing, same
+ * hand — a second implementation would be a second hand.
+ *
+ * Pure. Returns '' for a degenerate loop rather than a broken path.
+ */
+export function wavyBorderPath(points: readonly BorderPoint[]): string {
+  const n = points.length;
+  if (n < 3) return '';
+  const last = points[n - 1]!;
+  const first = points[0]!;
+  const r = (v: number): string => v.toFixed(2);
+  let d = `M ${r((last.x + first.x) / 2)} ${r((last.y + first.y) / 2)}`;
+  for (let i = 0; i < n; i++) {
+    const p = points[i]!;
+    const next = points[(i + 1) % n]!;
+    d += ` Q ${r(p.x)} ${r(p.y)} ${r((p.x + next.x) / 2)} ${r((p.y + next.y) / 2)}`;
+  }
+  return `${d} Z`;
+}

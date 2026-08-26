@@ -12,9 +12,10 @@ import {
   mapMarkScale,
   nearestAngleTarget,
   peerDotRadius,
+  type MapFrame,
+  wavyBorderPath,
   wavyBorderPoints,
   worldToMap,
-  type MapFrame,
 } from '../../src/phone/minimap';
 
 const frame: MapFrame = { w: 280, h: 200, inset: 14 };
@@ -155,5 +156,51 @@ describe('wavyBorderPoints', () => {
     const topEdge = points.slice(0, 12);
     const ys = new Set(topEdge.map((p) => p.y.toFixed(4)));
     expect(ys.size).toBeGreaterThan(1);
+  });
+});
+
+describe('the wavering border, as a path', () => {
+  // The DOM draws this border too now (the way back to the world,
+  // src/phone/worldlink.ts). It has to be the SAME loop the canvas strokes
+  // — a second construction would be a second hand, and the minimap, the
+  // join code frame and the button would stop looking drawn by one person.
+
+  it('closes the loop, starting where the canvas starts', () => {
+    const pts = wavyBorderPoints(120, 44, 2.5, 41.7);
+    const d = wavyBorderPath(pts);
+    // traceLoop moves to the midpoint between the LAST point and the first.
+    const first = pts[0]!;
+    const last = pts[pts.length - 1]!;
+    expect(d.startsWith(`M ${((last.x + first.x) / 2).toFixed(2)} ${((last.y + first.y) / 2).toFixed(2)}`)).toBe(true);
+    expect(d.endsWith(' Z')).toBe(true);
+  });
+
+  it('curves through every point, one quadratic each', () => {
+    const pts = wavyBorderPoints(120, 44, 2.5, 41.7);
+    expect((wavyBorderPath(pts).match(/Q/g) ?? []).length).toBe(pts.length);
+  });
+
+  it('stays inside the box it was given', () => {
+    // It is stroked at the element's edge; a point outside would clip.
+    const w = 105;
+    const h = 44;
+    const inset = 2.5;
+    for (const pt of wavyBorderPoints(w, h, inset, 41.7)) {
+      expect(pt.x).toBeGreaterThanOrEqual(0);
+      expect(pt.y).toBeGreaterThanOrEqual(0);
+      expect(pt.x).toBeLessThanOrEqual(w);
+      expect(pt.y).toBeLessThanOrEqual(h);
+    }
+  });
+
+  it('is deterministic, and different per seed', () => {
+    const a = wavyBorderPath(wavyBorderPoints(105, 44, 2.5, 41.7));
+    expect(wavyBorderPath(wavyBorderPoints(105, 44, 2.5, 41.7))).toBe(a);
+    expect(wavyBorderPath(wavyBorderPoints(105, 44, 2.5, 7.3))).not.toBe(a);
+  });
+
+  it('gives back nothing for a degenerate loop, rather than a broken path', () => {
+    expect(wavyBorderPath([])).toBe('');
+    expect(wavyBorderPath([{ x: 0, y: 0 }, { x: 1, y: 1 }])).toBe('');
   });
 });
