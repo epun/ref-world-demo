@@ -82,8 +82,24 @@ export function generatedName(id: string): string {
  * The name to show for a creature: what the person signed, or a generated
  * one when they skipped. Whitespace-only counts as skipped — a name of
  * three spaces is not a name.
+ *
+ * LOWERCASED here, at the one place a creature's name is decided.
+ *
+ * No type in this world is uppercase (TASTE §5, confidence 1.00) — room
+ * codes render `xkcd`, never `XKCD`. But the static gate can only read
+ * string literals in the source, so it never sees a name somebody types
+ * into a phone. The first real drawing on the public world came in signed
+ * `Bob` and went straight past it (2026-08-26).
+ *
+ * It was half-handled: the companion lowercased at render, the moderation
+ * screen did not, and the same creature was `bob` on one screen and `Bob`
+ * on another. Doing it at the source means every consumer is consistent
+ * and no new one has to remember.
+ *
+ * What was STORED stays exactly as typed — this is a display decision, and
+ * the record of what somebody wrote is theirs, not ours to overwrite.
  */
 export function resolveName(signed: string | null | undefined, id: string): string {
   const trimmed = (signed ?? '').trim();
-  return trimmed.length > 0 ? trimmed : generatedName(id);
+  return trimmed.length > 0 ? trimmed.toLowerCase() : generatedName(id);
 }

@@ -5,6 +5,8 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { generatedName, NAME_SPACE, resolveName } from '../../src/creatures/naming';
 
 describe('generated names', () => {
@@ -58,5 +60,35 @@ describe('signed beats generated', () => {
     expect(resolveName(undefined, 'id-1')).toBe(fallback);
     expect(resolveName('', 'id-1')).toBe(fallback);
     expect(resolveName('   ', 'id-1')).toBe(fallback);
+  });
+});
+
+describe('a signed name is lowercased', () => {
+  // No type in this world is uppercase (TASTE §5, confidence 1.00). The
+  // static gate reads string literals in the source, so it cannot see a
+  // name somebody types into a phone — the first real drawing on the
+  // public world came in signed `Bob` and went straight past it.
+  it('however it was typed', () => {
+    expect(resolveName('Bob', 'id-1')).toBe('bob');
+    expect(resolveName('EVAN', 'id-1')).toBe('evan');
+    expect(resolveName('  Ana  ', 'id-1')).toBe('ana');
+    expect(resolveName('McTavish', 'id-1')).toBe('mctavish');
+  });
+
+  it('and a generated one is lowercase already', () => {
+    // The word lists are lowercase, but a fallback that ever gained a
+    // capital would slip past the same blind spot.
+    for (const id of ['a', 'rec-000', 'zzz', 'dsly2pqawg']) {
+      const name = resolveName(null, id);
+      expect(name).toBe(name.toLowerCase());
+    }
+  });
+
+  it('everywhere a name is shown, not just on the handset', () => {
+    // It was lowercased at render on the companion and nowhere else, so the
+    // same creature read `bob` on a phone and `Bob` in moderation. The
+    // moderation page cannot import from src/, so it mirrors this.
+    const page = readFileSync(join(process.cwd(), 'public/moderate/index.html'), 'utf8');
+    expect(page).toMatch(/d\.name\.toLowerCase\(\)/);
   });
 });

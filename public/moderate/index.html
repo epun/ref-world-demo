@@ -178,7 +178,12 @@
         const info = document.createElement('div');
         const when = d.ts ? new Date(d.ts).toLocaleString() : 'unknown time';
         info.innerHTML =
-          '<div class="meta"><b>' + (d.name ? escapeHtml(d.name) : 'unsigned') + '</b> · ' +
+          // Lowercased, as everywhere else a name is shown: no type in this
+          // world is uppercase (TASTE §5). This page cannot import from src/,
+          // so it mirrors resolveName() in src/creatures/naming.ts — the
+          // moderation screen showing `Bob` while the handset showed `bob`
+          // is exactly the drift that mirroring is meant to prevent.
+          '<div class="meta"><b>' + (d.name ? escapeHtml(d.name.toLowerCase()) : 'unsigned') + '</b> · ' +
           escapeHtml(when) + '</div>' +
           '<div class="meta">' + escapeHtml(d.id) + '</div>' +
           (d.reason ? '<div class="meta why">flagged: ' + escapeHtml(d.reason) + '</div>' : '');
