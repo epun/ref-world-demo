@@ -9,9 +9,12 @@ log: these are rebuilds traced from a recording, not the drawings.
 import json, os
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# The harvest lives in its own directory beside this script — masks, traces,
+# provenance and the contact sheet are one artefact and travel together.
+HARVEST = os.path.join(HERE, 'harvested')
 HATCH_MS = 20000
 
-rows = json.load(open(os.path.join(HERE, 'harvest.json')))
+rows = json.load(open(os.path.join(HARVEST, 'harvest.json')))
 
 # Names the FOOTAGE shows, bound to a creature by provenance — the same blob
 # in the same frame under the hover label, not a shape that looked similar.
@@ -19,7 +22,7 @@ rows = json.load(open(os.path.join(HERE, 'harvest.json')))
 # person's word on somebody else's creature, which is worse than the honest
 # generated one.
 try:
-    BOUND = json.load(open(os.path.join(HERE, 'bound-names.json')))
+    BOUND = json.load(open(os.path.join(HARVEST, 'bound-names.json')))
 except Exception:
     BOUND = {}
 BY_INDEX = {v: k for k, v in BOUND.items()}

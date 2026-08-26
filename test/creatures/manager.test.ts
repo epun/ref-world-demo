@@ -409,7 +409,9 @@ describe('grown arrivals — a creature that is already here', () => {
   }, 60_000);
 
   it('spreads a full room instead of piling it at the centre', () => {
-    // 68 is the demo's seeded population — the size that surfaced this.
+    // 68 was the seeded population when this surfaced. The seed is 30 now
+    // (the recording was re-harvested), but the stress size is kept: the
+    // bug scaled with population, so the test should not shrink with it.
     const { manager } = grownWorld(68);
     const live = manager.positions();
     expect(live).toHaveLength(68);
