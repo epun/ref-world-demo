@@ -25,7 +25,13 @@ import {
   type IncomingDrawing,
 } from './net/drawFeed';
 import { createIngestGate } from './moderation/gate';
-import { EMOTE_NAMES, isRoomCode, roomCode, type EmoteName } from './net/protocol';
+import {
+  EMOTE_NAMES,
+  isRoomCode,
+  roomCode,
+  roomForWorld,
+  type EmoteName,
+} from './net/protocol';
 import {
   HOST_HEARTBEAT_MS,
   POSE_INTERVAL_MS,
@@ -194,7 +200,23 @@ function main(): void {
   // the edge, per protocol.ts).
   const params = new URLSearchParams(location.search);
   const fromUrl = (params.get('room') ?? '').toLowerCase();
-  const room = isRoomCode(fromUrl) ? fromUrl : roomCode(Math.random);
+  /*
+   * A named world always meets in the same room; only an unnamed one mints
+   * a fresh code. Without this every visitor to the public link got a
+   * private mqtt topic — see roomForWorld().
+   *
+   * An explicit `?room=` still wins, so a projection can be pinned to a
+   * room of its own inside a public world if that is ever wanted.
+   */
+  const worldName = (params.get('world') ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, '')
+    .slice(0, 24);
+  const room = isRoomCode(fromUrl)
+    ? fromUrl
+    : worldName
+      ? roomForWorld(worldName)
+      : roomCode(Math.random);
 
   /**
    * A PUBLIC world: `?world=public`. Read here, before anything else, for

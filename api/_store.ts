@@ -272,6 +272,31 @@ export async function setDisposition(
     if (index === -1) return false;
     const next: StoredDrawing = { ...rows[index]!, disposition };
     await db.lset(listKey(world), index, JSON.stringify(next));
+    /*
+     * A REFUSAL releases the device.
+     *
+     * The id a drawing is stored under IS the drawer's device id, and
+     * `addDrawing` claims a key on it so one handset makes one creature.
+     * Refusing used to leave that claim standing, so a person whose
+     * drawing was taken down could never make another — the pad answered
+     * 409 forever, with nothing on screen to explain why.
+     *
+     * That is too harsh to be the rule, and at an event it means somebody
+     * stands there unable to join with no way back in. Taking the creature
+     * down and letting them try again are the same decision.
+     *
+     * Only on refusal: `held` is still waiting on the moderator, and
+     * `admitted` is the creature they already have.
+     */
+    if (disposition === 'refused') {
+      try {
+        await db.del(deviceKey(world, id));
+      } catch {
+        // The row is already updated and the creature is gone from the
+        // world, which is the part that matters. A stuck claim is worth
+        // less than pretending the refusal failed.
+      }
+    }
     return true;
   } catch {
     return false;

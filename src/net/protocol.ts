@@ -167,6 +167,40 @@ export function roomCode(random: () => number): string {
   return code;
 }
 
+/**
+ * The room a NAMED world always meets in.
+ *
+ * A room code is normally random — an installation mints one per session
+ * and puts it in the join code. A public world cannot work that way: the
+ * link carries a world name and no room, so every visitor was minting their
+ * own, and two people on the same url ended up on two different mqtt topics
+ * (found 2026-08-26).
+ *
+ * The store hid it. Everybody read the same drawings from the same world
+ * and saw the same population, so it looked shared — but only on the 20s
+ * poll, and the live seam was per-visitor: arrivals did not cross in real
+ * time, and the host election (src/net/worldsync.ts) ran inside each
+ * visitor's private room, so every one of them elected itself. "One world,
+ * many screens" quietly meant one screen each.
+ *
+ * Derived from the name, so it is the same on every device forever without
+ * anything being stored or agreed. fnv-1a, then folded into the alphabet.
+ */
+export function roomForWorld(world: string): string {
+  let h = 2166136261;
+  for (let i = 0; i < world.length; i++) {
+    h ^= world.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  let code = '';
+  let n = h >>> 0;
+  for (let i = 0; i < ROOM_CODE_LENGTH; i++) {
+    code += ROOM_CODE_ALPHABET[n % ROOM_CODE_ALPHABET.length]!;
+    n = Math.floor(n / ROOM_CODE_ALPHABET.length);
+  }
+  return code;
+}
+
 /** Validate a room code (lowercase, right length, in-alphabet). */
 export function isRoomCode(s: string): boolean {
   if (s.length !== ROOM_CODE_LENGTH) return false;

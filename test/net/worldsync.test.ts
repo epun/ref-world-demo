@@ -7,7 +7,10 @@
  * in a browser — this is the arithmetic those two clients agree on.
  */
 
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { isRoomCode, roomForWorld } from '../../src/net/protocol';
 import {
   FOLLOW_TAU_MS,
   HOST_STALE_MS,
@@ -168,5 +171,40 @@ describe('following without stepping', () => {
     expect(Math.abs(shortestAngle(3.0, -3.0))).toBeLessThan(Math.PI);
     expect(shortestAngle(0, Math.PI / 2)).toBeCloseTo(Math.PI / 2, 6);
     expect(shortestAngle(0, -Math.PI / 2)).toBeCloseTo(-Math.PI / 2, 6);
+  });
+});
+
+describe('a named world meets in one room', () => {
+  // The store made this invisible: everyone read the same drawings and saw
+  // the same population, so it LOOKED shared — but only on the 20s poll.
+  // The live seam was per-visitor, because the public link carries a world
+  // and no room, so every visitor minted a random one. Arrivals did not
+  // cross in real time, and the host election ran inside each visitor's
+  // private topic, so every one of them elected itself.
+  it('is the same room on every device, forever', () => {
+    expect(roomForWorld('public')).toBe(roomForWorld('public'));
+    // ...and it does not depend on anything but the name.
+    expect(roomForWorld('valiocon')).toBe(roomForWorld('valiocon'));
+  });
+
+  it('gives different worlds different rooms', () => {
+    const names = ['public', 'valiocon', 'refdesign', 'a', 'b', 'test'];
+    const rooms = names.map(roomForWorld);
+    expect(new Set(rooms).size).toBe(names.length);
+  });
+
+  it('produces a code the rest of the system accepts', () => {
+    // It travels in join codes and mqtt topics like any other room.
+    for (const name of ['public', 'valiocon', 'x', 'a-very-long-world-name']) {
+      expect(isRoomCode(roomForWorld(name))).toBe(true);
+    }
+  });
+
+  it('is what the world page uses when a world is named', () => {
+    const src = readFileSync(join(process.cwd(), 'src/main.ts'), 'utf8');
+    // An explicit ?room= still wins; only the unnamed case stays random.
+    expect(src).toMatch(/isRoomCode\(fromUrl\)\s*\n?\s*\? fromUrl/);
+    expect(src).toMatch(/roomForWorld\(worldName\)/);
+    expect(src).toMatch(/roomCode\(Math\.random\)/);
   });
 });

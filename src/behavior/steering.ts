@@ -194,7 +194,24 @@ export function pickWanderTarget(
   rand01: () => number,
   colliders: ColliderGrid | null = null,
 ): Vec2 {
-  const roamRadius = 5 + 20 * energy;
+  /*
+   * How far a single wander target sits from the creature.
+   *
+   * This was 5 + 20 * energy, and it is what kept the population in a
+   * huddle (user report, 2026-08-26: they should "wander farther than a
+   * circle across the map"). The legs were the problem, not the pace: a
+   * wander state runs 2-4 ambient periods at ~1.7 u/s, which is a long way
+   * — but each target sat a few steps off, and on arrival the next one was
+   * drawn from the NEW position. Lots of path, little displacement. A
+   * random walk diffuses as the square root of its steps, so short legs
+   * keep everyone near where they spawned however long they walk.
+   *
+   * Long legs instead: an energetic creature now strikes out across a
+   * good share of the field in one go, a sleepy one still potters. The
+   * fold below keeps any of it inside the extent, so this cannot throw
+   * anybody off the world.
+   */
+  const roamRadius = 10 + 45 * energy;
   const maxVisits = Math.max(...quadrantVisits);
 
   let best: Vec2 = self;
@@ -220,7 +237,12 @@ export function pickWanderTarget(
     const visits = quadrantVisits[quadrantOf(candidate)];
     const novelty = (maxVisits - visits) / (maxVisits + 1);
 
-    const score = novelty * 0.8 - crowd * 1.5;
+    // Novelty carries more weight than it did (0.8). Crowding only pushes
+    // a creature off its neighbours — it has no idea where the world's
+    // edges are, so on its own it produces a slowly widening huddle. The
+    // novelty term is the only thing that knows about somewhere-it-has-not-
+    // been, and it was quiet enough that the huddle won.
+    const score = novelty * 1.6 - crowd * 1.5;
     if (score > bestScore) {
       bestScore = score;
       best = candidate;
