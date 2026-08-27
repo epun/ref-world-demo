@@ -28,6 +28,7 @@ import { createIngestGate } from './moderation/gate';
 import {
   EMOTE_NAMES,
   isRoomCode,
+  joinUrl,
   roomCode,
   roomForWorld,
   type EmoteName,
@@ -108,6 +109,16 @@ type WorldDrawing = IncomingDrawing & {
   source: DrawingSource;
   /** Already standing when this page opened — spawn grown, with no egg. */
   grown?: boolean;
+  /**
+   * Part of the world rather than a submission: exempt from the population
+   * guard's eviction order (SpawnOptions.resident).
+   *
+   * Deliberately separate from `grown`, which they share. Everything the
+   * store held before this page opened is grown as well, and those are
+   * people's drawings — evictable like any other. Only the seed is the
+   * world itself.
+   */
+  resident?: boolean;
 };
 
 // ── draw overlay chrome ──────────────────────────────────────────────────────
@@ -366,6 +377,7 @@ function main(): void {
         ...(d.personality !== null ? { personality: d.personality } : {}),
         hatchMs: d.hatchMs,
         ...(d.grown === true ? { grown: true } : {}),
+        ...(d.resident === true ? { resident: true } : {}),
       }),
     clear: (id) => creatures.clear(id),
     live: (id) => creatures.has(id),
@@ -801,7 +813,11 @@ function main(): void {
      * can call it every twenty seconds without disturbing the world.
      */
     const SPAWN_PER_FRAME = 3;
-    const absorb = async (log: SessionLog, grown: boolean): Promise<string[]> => {
+    const absorb = async (
+      log: SessionLog,
+      grown: boolean,
+      resident = false,
+    ): Promise<string[]> => {
       const ids: string[] = [];
       let sinceYield = 0;
       for (const event of log.events) {
@@ -815,6 +831,7 @@ function main(): void {
           hatchMs: PUBLIC_HATCH_MS,
           source: 'phone',
           ...(grown ? { grown: true } : {}),
+          ...(resident ? { resident: true } : {}),
         });
         if (entry.disposition === 'admitted') ids.push(event.id);
         if (++sinceYield >= SPAWN_PER_FRAME) {
@@ -839,16 +856,48 @@ function main(): void {
      * right for an exhibit and would be wrong for a submission. Live
      * drawings layer on top and are governed normally.
      */
-    const seedUrl = '/recovered/session.json';
+    /*
+     * A VERSIONED url, because `public/` is served verbatim.
+     *
+     * Vite fingerprints what it bundles; it does not touch `public/`, so
+     * this asset keeps one address forever and a browser's copy of it is
+     * whatever it fetched the first time. The population went 68 → 30 → 23
+     * while people were watching, and everyone who had already opened the
+     * link kept seeing the number they first loaded — no amount of
+     * redeploying the file could reach them.
+     *
+     * Bump this whenever `public/recovered/session.json` changes. A new
+     * query string is a new cache key, so a stale entry is not revalidated,
+     * it is not consulted at all.
+     */
+    const SEED_VERSION = '23';
+    const seedUrl = `/recovered/session.json?v=${SEED_VERSION}`;
     const loadSeed = async (): Promise<number> => {
       try {
-        const res = await fetch(seedUrl, { cache: 'force-cache' });
+        /*
+         * `no-cache`, NOT `force-cache`.
+         *
+         * force-cache means "use any stored copy whatever its age, and do
+         * not revalidate" — it ignores the response's own cache headers.
+         * It was here to make the landing fast, and it did, but it also
+         * made the seed UNUPDATABLE: a browser that had ever loaded an
+         * older one kept serving it from disk forever. The seed went
+         * 68 → 30 → 23 and returning visitors still saw the first number
+         * they ever fetched (user report, 2026-08-27).
+         *
+         * no-cache still uses the cache — it just asks first. Vercel sends
+         * an etag with `max-age=0, must-revalidate`, so an unchanged seed
+         * costs one conditional request and comes back 304 with no body.
+         * Nearly free, and correct.
+         */
+        const res = await fetch(seedUrl, { cache: 'no-cache' });
         if (!res.ok) return 0;
         const log = readSessionLog(await res.json());
         if (!log) return 0;
         // GROWN. No egg, no shell, no hatch — they have been standing here
         // since long before this visitor opened the link.
-        return (await absorb(log, true)).length;
+        // grown AND resident: this is the world, not a queue of offers.
+        return (await absorb(log, true, true)).length;
       } catch {
         // An empty field is a worse landing than a slow one, but a missing
         // seed must not stop the live world from loading.
@@ -1024,16 +1073,37 @@ function main(): void {
     mount: tray ? tray.right : document.body,
   });
 
-  // The join code has to carry the WORLD, or scanning it lands people on a
-  // pad that publishes over mqtt and stores nothing — their creature would
-  // appear on the projection for as long as that tab stayed open and then
-  // be gone forever, with no sign anything was wrong. The qr is the only
-  // route most people take into a public world, so it is the one url that
-  // absolutely must be complete.
-  // Not built at all when the tray does not want one — see TrayHandle.
+  /*
+   * What the qr encodes.
+   *
+   * In a NAMED world: the world's own link, the same one that gets shared
+   * anywhere else. The room is derived from the world name (roomForWorld),
+   * so nothing is lost by leaving it out, and a phone opening it is
+   * redirected to the pad with the world still attached — the identical
+   * destination, reached by the identical path as every other visitor. The
+   * point is that there is only ONE address for this place. A qr that
+   * encoded a deep link meant the projection was handing out a url nobody
+   * else had, so a scan and a shared link could drift apart, and the one
+   * printed on the wall was the one nobody could check.
+   *
+   * In an UNNAMED world the deep link is the only option and stays: the
+   * room was minted at random and cannot be derived from anything in the
+   * address, so dropping it would strand the scan in a different room.
+   *
+   * Either way the url must carry the world, or a scan lands on a pad that
+   * publishes over mqtt and stores nothing — the creature shows on the
+   * projection while that tab is open and is then gone forever, with
+   * nothing anywhere saying so.
+   *
+   * Not built at all when the tray does not want one — see TrayHandle.
+   */
   if (!tray || tray.showsJoinCode) {
     installJoinQr({
-      url: `${location.origin}/draw/?room=${room}&w=${epoch}${worldParam}`,
+      url: joinUrl(location.origin, {
+        world: isPublic ? publicWorld : null,
+        room,
+        epoch,
+      }),
       mount: tray ? tray.left : document.body,
     });
   }
@@ -1351,6 +1421,11 @@ function main(): void {
       // A viewer runs no agents: its creatures are placed by the host's
       // poses, and a local simulation underneath would fight them.
       creatures.pauseAi(!hosting);
+      // BOTH directions. Becoming a viewer has to forget the positions this
+      // page simulated as host just as much as becoming a host has to
+      // forget the last host's — either stale answer, eased into, drags the
+      // whole cast across the field.
+      creatures.clearFollow();
       if (hosting) {
         // Taking over. The roster this world publishes is its own, so it
         // starts from a revision no viewer can already be holding — and
@@ -1358,7 +1433,7 @@ function main(): void {
         // just a stale opinion, so it goes.
         rosterRev = Math.floor(now / 1000);
         roster = [];
-        creatures.followPoses([]);
+        creatures.clearFollow();
       }
     };
 

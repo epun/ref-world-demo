@@ -23,11 +23,13 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { createCharacter } from '../../src/character/character';
 import {
   MAX_POPULATION,
+  chooseEviction,
   createCreatureManager,
   measureBodyRadius,
   spawnSpot,
 } from '../../src/creatures/manager';
 import { generatedName } from '../../src/creatures/naming';
+import { MOTION } from '../../src/taste/tokens';
 import { EGG_RADIUS } from '../../src/egg/egg';
 import type { Collider } from '../../src/physics/colliders';
 import type { WorldHandles } from '../../src/world/scene';
@@ -450,5 +452,173 @@ describe('grown arrivals — a creature that is already here', () => {
       expect(seen.has(key)).toBe(false);
       seen.add(key);
     }
+  });
+});
+
+describe('following a host — arriving at a world already in motion', () => {
+  /**
+   * The glitch: *"there's a glitch where the characters fly across the map"*
+   * (user report, 2026-08-27).
+   *
+   * A viewer builds the cast locally and stands each creature on its
+   * deterministic spawn spot — that is genuinely all it knows. The host has
+   * been simulating for minutes and has them spread across the field. The
+   * follow branch then EASED into the first pose it heard, so the entire
+   * population set off from the spawn spiral and travelled to wherever they
+   * really were, together, every time somebody opened the link.
+   *
+   * The first pose is not movement. It is finding out. So it is written,
+   * and every pose after it eases.
+   */
+
+  function viewing(count: number) {
+    const world = stubWorld([]);
+    const manager = createCreatureManager(world, { autoHatch: false });
+    for (let i = 0; i < count; i++) {
+      manager.spawn(`v-${i}`, circleBlob, { hatchMs: 60_000, grown: true });
+    }
+    // A viewer runs no agents of its own.
+    manager.pauseAi(true);
+    return manager;
+  }
+
+  /** Somewhere far from any spawn spot, so a flight would be unmistakable. */
+  const farPose = (id: string, i: number) => ({
+    id,
+    x: 90 + i * 3,
+    z: -90 - i * 3,
+    heading: 0,
+  });
+
+  it('lands on the first pose within one frame instead of travelling to it', () => {
+    const manager = viewing(8);
+    const ids = manager.poses().map((p) => p.id);
+    expect(ids.length).toBe(8);
+
+    manager.followPoses(ids.map((id, i) => farPose(id, i)));
+    manager.update(16, 1000);
+
+    // ONE frame. Eased at FOLLOW_TAU_MS a 16ms step covers a small fraction
+    // of the distance, so a creature still mid-flight fails this by a wide
+    // margin — this is not a tolerance question.
+    for (const [i, pose] of manager.poses().entries()) {
+      const want = farPose(ids[i]!, i);
+      expect(Math.hypot(pose.x - want.x, pose.z - want.z)).toBeLessThan(0.001);
+    }
+    manager.clearAll();
+  });
+
+  it('still eases every pose after the first — the fix is not a permanent snap', () => {
+    const manager = viewing(1);
+    const id = manager.poses()[0]!.id;
+
+    manager.followPoses([{ id, x: 20, z: 0, heading: 0 }]);
+    manager.update(16, 1000);
+    const settled = manager.poses()[0]!;
+    expect(settled.x).toBeCloseTo(20, 3);
+
+    // A second, different pose must be approached, not jumped to.
+    manager.followPoses([{ id, x: 40, z: 0, heading: 0 }]);
+    manager.update(16, 1016);
+    const moving = manager.poses()[0]!;
+    expect(moving.x).toBeGreaterThan(20);
+    expect(moving.x).toBeLessThan(39);
+    manager.clearAll();
+  });
+
+  it('clearFollow drops the held pose, so the next one places again', () => {
+    const manager = viewing(1);
+    const id = manager.poses()[0]!.id;
+
+    manager.followPoses([{ id, x: 20, z: 0, heading: 0 }]);
+    manager.update(16, 1000);
+    expect(manager.poses()[0]!.x).toBeCloseTo(20, 3);
+
+    // A change of role. Whatever the last host said is now a stale opinion.
+    manager.clearFollow();
+    manager.followPoses([{ id, x: -35, z: 12, heading: 0 }]);
+    manager.update(16, 1016);
+
+    // Placed, not flown — the same guarantee as a first join, because for
+    // this creature it IS one.
+    const after = manager.poses()[0]!;
+    expect(Math.hypot(after.x - -35, after.z - 12)).toBeLessThan(0.001);
+    manager.clearAll();
+  });
+});
+
+describe('chooseEviction — a world does not eat its own cast', () => {
+  /**
+   * *"fix the population cap so the seeded ones don't get retired"* (user
+   * ask, 2026-08-27).
+   *
+   * The guard retired the oldest live slot past MAX_POPULATION, and the
+   * world's own residents load before anybody arrives — so they hold every
+   * one of the lowest arrival numbers, and oldest-first took them in order.
+   * A busy public world emptied out the field a person had come to look at,
+   * one resident per arrival.
+   */
+
+  const slot = (order: number, resident = false, phase = 'alive') => ({
+    order,
+    resident,
+    phase,
+  });
+
+  it('takes the oldest arrival, not the older resident beside it', () => {
+    // The exact shape of the public world: residents first (lowest orders),
+    // arrivals after them.
+    const world = [
+      ...Array.from({ length: 23 }, (_, i) => slot(i, true)),
+      ...Array.from({ length: 73 }, (_, i) => slot(23 + i)),
+    ];
+    expect(chooseEviction(world)).toBe(world[23]);
+  });
+
+  it('walks through the arrivals and never reaches the residents', () => {
+    const residents = Array.from({ length: 23 }, (_, i) => slot(i, true));
+    const guests = Array.from({ length: 20 }, (_, i) => slot(23 + i));
+    // Retire repeatedly, as a busy world does. Under the old rule the first
+    // twenty-three of these were the seed.
+    for (let n = 0; n < 20; n++) {
+      const going = chooseEviction([...residents, ...guests])!;
+      expect(going.resident).toBe(false);
+      guests.splice(guests.indexOf(going), 1);
+    }
+    expect(residents.every((r) => r.resident)).toBe(true);
+  });
+
+  it('still evicts when a world is nothing but residents — the cap is not optional', () => {
+    // A preference, not an exemption: a frame-rate guarantee with a
+    // carve-out is a leak.
+    const all = Array.from({ length: 96 }, (_, i) => slot(i, true));
+    expect(chooseEviction(all)).toBe(all[0]);
+  });
+
+  it('skips a slot that is already leaving, so a slide is never restarted', () => {
+    const world = [slot(0, false, 'retiring'), slot(1, true), slot(2)];
+    expect(chooseEviction(world)).toBe(world[2]);
+  });
+
+  it('returns null when there is nobody available to retire', () => {
+    expect(chooseEviction([])).toBeNull();
+    expect(chooseEviction([slot(0, false, 'retiring')])).toBeNull();
+  });
+});
+
+describe('resident spawns survive the cap end to end', () => {
+  it('marks a resident spawn so the guard can see it', () => {
+    // The thread that matters: SpawnOptions.resident has to reach the slot,
+    // or chooseEviction is correct about data nothing ever sets. Kept to
+    // two creatures — the choosing is proved above, this is the wiring.
+    const manager = createCreatureManager(stubWorld([]), { autoHatch: false });
+    manager.spawn('res', circleBlob, { hatchMs: 60_000, grown: true, resident: true });
+    manager.spawn('guest', circleBlob, { hatchMs: 60_000, grown: true });
+    const live = manager.evictable();
+    expect(live.find((s) => s.id === 'res')?.resident).toBe(true);
+    expect(live.find((s) => s.id === 'guest')?.resident).toBe(false);
+    // And the guard would take the guest, despite the resident being older.
+    expect(chooseEviction(live)?.id).toBe('guest');
+    manager.clearAll();
   });
 });

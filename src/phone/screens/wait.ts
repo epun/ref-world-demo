@@ -68,7 +68,7 @@ import { createEgg, EGG_HEIGHT } from '../../egg/egg';
 import { startHatch, type HatchHandle } from '../../egg/hatch';
 import { Spring } from '../../motion/spring';
 import type { StrokeList } from '../../shape/types';
-import { MOTION, SURFACE } from '../../taste/tokens';
+import { MOTION, SURFACE, WORLD } from '../../taste/tokens';
 import { GrainPass } from '../../world/grain';
 import { InkPass } from '../../world/ink';
 import { createLighting } from '../../world/lighting';
@@ -91,6 +91,36 @@ export function hatchProgress(
 ): number {
   if (remainingMs === null || initialMs === null || initialMs <= 0) return 0;
   return Math.min(1, Math.max(0, 1 - remainingMs / initialMs));
+}
+
+/**
+ * The countdown line, or null when there is nothing honest to say.
+ *
+ * BACK BY REQUEST (user, 2026-08-27: *"for the user on mobile we should
+ * show the count down for the egg"*), reversing the 2026-08-20 ruling that
+ * took it out. Only the text came back: the hatch BUTTON stays gone, and
+ * this line still does not open anything. The deadline drives the shell's
+ * wobble and its cracks, and the world's `hatched` message is the only
+ * thing that opens an egg — so what this shows is a forecast, not a switch.
+ *
+ * Which is why it says "hatching" rather than "0:00" at the end. The world
+ * and the handset are two clocks started at different instants, so the last
+ * second is a coin flip, and a timer that sits at zero for a beat reads as
+ * broken while a word does not.
+ *
+ * No timer at all → null, and the line is not shown. An empty brow is a
+ * state of the slot; a line that says "--:--" is a bug on screen.
+ */
+export function countdownLabel(remainingMs: number | null): string | null {
+  if (remainingMs === null) return null;
+  if (remainingMs <= 0) return 'hatching';
+  // Ceil, so a fresh 20s timer reads "0:20" and not "0:19" on its first
+  // frame, and so it never shows 0:00 while there is still time left.
+  const total = Math.ceil(remainingMs / 1000);
+  const mins = Math.floor(total / 60);
+  const secs = total % 60;
+  // lowercase everywhere, and no uppercase anywhere in this project.
+  return `hatching in ${mins}:${String(secs).padStart(2, '0')}`;
 }
 
 /** Teaser ceiling for the pre-hatch cracks — mirrors the world's value. */
@@ -232,6 +262,30 @@ function ensureStyle(): void {
   display: block;
   touch-action: none;
 }
+/* The same line the alive screen sets its creature's name in — this is the
+   brow, and the brow has one voice. No panel, no chip, no border: the mark
+   set is icon + ruleLine + border and a countdown is none of those, so it
+   is bare type on paper. */
+.wait-countdown {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  color: ${WORLD.ink};
+  font-family: "helvetica neue", helvetica, arial, sans-serif;
+  font-weight: 400;
+  font-size: clamp(11px, 5cqw, 14px);
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  /* Fades in on the settle curve rather than appearing. The value is a
+     token; the curve is the one every entrance in this project uses. */
+  opacity: 0;
+  transition: opacity ${MOTION.secondaryMs}ms ${MOTION.settleCurve};
+}
+.wait-countdown[data-shown='true'] {
+  opacity: 1;
+}
 `;
   document.head.appendChild(style);
 }
@@ -254,9 +308,16 @@ export function mountWaitScreen(
   // genuinely bare rather than showing six empty circles.
   const keys = createKeyRow(NO_KEYS);
 
-  // The egg is the only occupant. Brow and corner stay empty — a state of
-  // a slot, never a removal.
+  // The brow carries the countdown; the corner stays empty — a state of a
+  // slot, never a removal.
+  const countdown = document.createElement('div');
+  countdown.className = 'wait-countdown';
+  // Polite, not assertive: this updates every second and an assertive live
+  // region would have a screen reader interrupt itself sixty times over.
+  countdown.setAttribute('role', 'status');
+
   slots.core.appendChild(canvas);
+  slots.brow.appendChild(countdown);
   slots.tools.appendChild(keys.el);
 
   // ── The 3D egg: same module, same lighting recipe as the world ────────────
@@ -444,6 +505,9 @@ export function mountWaitScreen(
   let raf = 0;
   let last = mountedAt;
 
+  /** What the brow currently reads, so it is written only when it changes. */
+  let shownLabel: string | null = null;
+
   const fireHatch = (): void => {
     if (fired) return;
     fired = true;
@@ -468,6 +532,16 @@ export function mountWaitScreen(
       // countdown is left to ramp the wobble and tease the cracks, which is
       // the whole reason the signal is still here.
       // The world's mapping: wobble ramps with progress, cracks tease late.
+      // Repainted only when the SECOND changes, not on all sixty frames:
+      // writing identical text still dirties the node and re-runs layout on
+      // the brow, and this loop is the one thing standing between the
+      // handset and a smooth egg.
+      const label = countdownLabel(remaining);
+      if (label !== shownLabel) {
+        shownLabel = label;
+        countdown.textContent = label ?? '';
+        countdown.dataset['shown'] = label === null ? 'false' : 'true';
+      }
       const p = hatchProgress(remaining, initialMs);
       egg.setHatchProgress(p);
       egg.crack(crackTeaser(p));
@@ -475,6 +549,14 @@ export function mountWaitScreen(
       if (eggFacing === null) eggFacing = egg.group.rotation.y;
       egg.group.rotation.y = eggFacing + yaw;
     } else if (phase === 'crack') {
+      // The shell is breaking: the forecast has been overtaken by the
+      // event, so the line goes. It FADES — the whole screen is about to
+      // cross-fade to the creature and a word blinking out under it would
+      // be the one hard cut in the sequence.
+      if (shownLabel !== null) {
+        shownLabel = null;
+        countdown.dataset['shown'] = 'false';
+      }
       // Exactly the world's order (src/creatures/manager.ts): the egg is
       // still updated while it exists, and the hatch drives the crack.
       egg.update(dt, now);

@@ -201,6 +201,30 @@ export function roomForWorld(world: string): string {
   return code;
 }
 
+/**
+ * The url the join qr encodes.
+ *
+ * A NAMED world gets its own link — the same address that is shared
+ * anywhere else. The room is derived from the name, so leaving it out loses
+ * nothing, and a phone opening it is redirected to the pad with the world
+ * still attached: the identical destination, reached by the identical path
+ * as every other visitor. The point is that a place has ONE address. A qr
+ * carrying a deep link meant the projection handed out a url nobody else
+ * had, so a scan and a shared link could quietly drift apart and the one
+ * printed on the wall was the one nobody ever checked.
+ *
+ * An UNNAMED world keeps the deep link, because it has no choice: its room
+ * was minted at random and cannot be derived from anything in the address,
+ * so dropping it would strand the scan in a room of its own.
+ */
+export function joinUrl(
+  origin: string,
+  where: { world: string | null; room: string; epoch: string },
+): string {
+  if (where.world) return `${origin}/?world=${encodeURIComponent(where.world)}`;
+  return `${origin}/draw/?room=${where.room}&w=${where.epoch}`;
+}
+
 /** Validate a room code (lowercase, right length, in-alphabet). */
 export function isRoomCode(s: string): boolean {
   if (s.length !== ROOM_CODE_LENGTH) return false;

@@ -2,12 +2,14 @@
  * Wait-screen pure logic: the timer→hatch progress mapping (the same
  * elapsed/total read the world uses) and the late crack teaser scrub.
  *
- * The countdown LINE is gone (user ruling, 2026-08-20: *"let's remove the
- * count down and the hatch button. i want to set the hatch timing on my
- * end."*) and `countdownLabel` went with it. The timer itself did not: it
- * still feeds hatchProgress, which is what ramps the shell's wobble and
- * teases the cracks in — so these two are exactly the part that survived,
- * and they are what these tests cover.
+ * The countdown LINE was removed on 2026-08-20 (*"let's remove the count
+ * down and the hatch button. i want to set the hatch timing on my end."*)
+ * and asked for again on 2026-08-27 (*"for the user on mobile we should
+ * show the count down for the egg"*). Only the text came back — the hatch
+ * BUTTON is still gone, and the line still opens nothing: the world's
+ * `hatched` message is the only thing that breaks a shell, so the label is
+ * a forecast reading the same timer that ramps the wobble and teases the
+ * cracks.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -20,6 +22,7 @@ import {
 import {
   blendFraming,
   CAMERA_FOV,
+  countdownLabel,
   crackTeaser,
   CRACK_TEASER,
   EGG_FRAMING,
@@ -180,5 +183,41 @@ describe('the wait camera lands on the portrait', () => {
     expect(creature).toBeLessThan(visible);
     // Real air, not a hair: at least a tenth of the frame on each side.
     expect(creature / visible).toBeLessThan(0.9);
+  });
+});
+
+describe('countdownLabel', () => {
+  it('counts down in minutes and seconds, lowercase throughout', () => {
+    expect(countdownLabel(20_000)).toBe('hatching in 0:20');
+    expect(countdownLabel(65_000)).toBe('hatching in 1:05');
+    expect(countdownLabel(600_000)).toBe('hatching in 10:00');
+  });
+
+  it('never renders uppercase — the taste rule, on the one string a stranger reads', () => {
+    for (const ms of [20_000, 65_000, 600_000, 1, 0, -5_000]) {
+      const label = countdownLabel(ms);
+      if (label === null) continue;
+      expect(label).toBe(label.toLowerCase());
+    }
+  });
+
+  it('rounds up, so a fresh 20s timer never opens on 0:19', () => {
+    expect(countdownLabel(19_999)).toBe('hatching in 0:20');
+    // And never shows 0:00 while there is still time on the clock.
+    expect(countdownLabel(1)).toBe('hatching in 0:01');
+  });
+
+  it('says a word rather than sitting on zero', () => {
+    // The world and the handset are two clocks started at different
+    // instants, so the last second is a coin flip. A timer parked at 0:00
+    // reads as broken; a word does not.
+    expect(countdownLabel(0)).toBe('hatching');
+    expect(countdownLabel(-5_000)).toBe('hatching');
+  });
+
+  it('shows nothing at all when there is no timer', () => {
+    // Not "--:--", not "0:00". An empty brow is a state of the slot; a
+    // placeholder is a bug on screen.
+    expect(countdownLabel(null)).toBeNull();
   });
 });

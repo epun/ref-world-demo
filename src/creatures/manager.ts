@@ -48,6 +48,46 @@ export const WANDER_SPEED_DEFAULT = 1.4;
 /** Practical demo guard, not a design cap (see header). */
 export const MAX_POPULATION = 96;
 
+/** The eviction decision, as little of a slot as it actually needs. */
+export interface Evictable {
+  order: number;
+  resident: boolean;
+  phase: string;
+}
+
+/**
+ * Who leaves when the world is full — a SUBMISSION before a resident.
+ *
+ * Pulled out of the spawn path and made pure because the interesting cases
+ * (an all-resident world, a world already mid-retirement) need a hundred
+ * creatures each to reach through `spawn`, and building a hundred real
+ * creatures to assert one comparison is a test that cannot be run often.
+ *
+ * The rule it replaces was plain oldest-first, and "oldest" and "resident"
+ * are the same set in practice: a world's own cast loads before anybody
+ * arrives, so it holds every one of the lowest arrival numbers. A busy
+ * public world therefore retired the field a person had come to look at,
+ * one resident per arrival, until only the newcomers were left.
+ *
+ * Residents are a PREFERENCE, not an exemption — if every slot is a
+ * resident the oldest one still goes. The cap is a frame-rate guarantee,
+ * and a guarantee with a carve-out is a leak.
+ *
+ * Already-retiring slots are skipped: they are on their way out and
+ * retiring one twice restarts its slide.
+ */
+export function chooseEviction<T extends Evictable>(candidates: Iterable<T>): T | null {
+  let oldestGuest: T | null = null;
+  let oldestAny: T | null = null;
+  for (const s of candidates) {
+    if (s.phase === 'retiring') continue;
+    if (!oldestAny || s.order < oldestAny.order) oldestAny = s;
+    if (s.resident) continue;
+    if (!oldestGuest || s.order < oldestGuest.order) oldestGuest = s;
+  }
+  return oldestGuest ?? oldestAny;
+}
+
 /** Egg shadow sits a touch inside the shell footprint. */
 const EGG_SHADOW_FIT = 0.85;
 
@@ -220,7 +260,15 @@ interface Slot {
    * this creature yet — in which case it simply stands where it spawned
    * rather than guessing.
    */
-  follow: { x: number; z: number; heading: number } | null;
+  /**
+   * Where the host says this creature is (src/net/worldsync.ts).
+   *
+   * `settled` is false until the first frame has been APPLIED. A viewer
+   * spawns the whole cast at its deterministic spawn spots and only then
+   * hears where the host actually has them — so the first pose is not a
+   * movement, it is finding out. See the update loop.
+   */
+  follow: { x: number; z: number; heading: number; settled: boolean } | null;
   /** When a staggered hatchAll() has scheduled this egg. null = not queued. */
   forcedHatchAtMs: number | null;
   phase: Phase;
@@ -250,6 +298,8 @@ interface Slot {
   /** retire animation state */
   retireStartMs: number;
   order: number;
+  /** Part of the world rather than a submission — see SpawnOptions. */
+  resident: boolean;
 }
 
 export interface SpawnOptions {
@@ -270,6 +320,26 @@ export interface SpawnOptions {
    * of the page's load cost.
    */
   grown?: boolean;
+  /**
+   * A RESIDENT: never retired to make room for somebody else.
+   *
+   * The population guard retires the oldest live slot past the cap, and the
+   * oldest slots are always the world's own residents — they load first, so
+   * they hold the lowest arrival numbers. A busy public world therefore ate
+   * its own cast: the recovered creatures went first, one per arrival, and
+   * the field a person had come to see emptied out behind them (user ask,
+   * 2026-08-27: *"fix the population cap so the seeded ones don't get
+   * retired"*).
+   *
+   * Set only by the seed loader. NOT by `grown` — the store's first pull is
+   * grown too (everything it holds predates the page), and those ARE
+   * submissions and must stay evictable.
+   *
+   * The guard still holds: if a world is somehow all residents it retires
+   * the oldest one anyway rather than growing without limit. The cap is a
+   * frame-rate guarantee and there is no exemption from arithmetic.
+   */
+  resident?: boolean;
 }
 
 /**
@@ -350,6 +420,10 @@ export interface CreatureManager {
    * caller whether it is actually in sync or just receiving.
    */
   followPoses(poses: readonly { id: string; x: number; z: number; heading: number }[]): number;
+  /** Drop every held host pose — call on any change of role. */
+  clearFollow(): void;
+  /** Live slots as the population guard sees them (see chooseEviction). */
+  evictable(): { id: string; order: number; resident: boolean; phase: string }[];
   /** Live creature ids, in a stable order — the roster a host publishes. */
   liveIds(): string[];
   /** Every live creature's place, for a host to publish. */
@@ -603,14 +677,27 @@ export function createCreatureManager(
         disposeSlot(existing);
       }
 
-      // Population guard: retire the oldest live slot beyond the cap.
+      /*
+       * Population guard: retire the oldest live slot beyond the cap —
+       * PREFERRING A SUBMISSION over a resident.
+       *
+       * "Oldest" and "resident" used to be the same set. The world's own
+       * cast loads before anybody arrives, so it holds every one of the
+       * lowest arrival numbers, and an unqualified oldest-first rule
+       * retired them in order the moment a busy world reached the cap: the
+       * field a person came to look at emptied out one creature per
+       * arrival, and the only thing left was whoever had just walked in.
+       *
+       * Two passes, not a sort — this runs on the spawn path with a full
+       * pipeline behind it, and the cap is 96.
+       *
+       * Residents are the fallback, not an exemption. If a world is
+       * somehow ALL residents the oldest of them still goes: the cap is a
+       * frame-rate guarantee, and a guarantee with a carve-out is a leak.
+       */
       if (slots.size >= MAX_POPULATION) {
-        let oldest: Slot | null = null;
-        for (const s of slots.values()) {
-          if (s.phase === 'retiring') continue;
-          if (!oldest || s.order < oldest.order) oldest = s;
-        }
-        if (oldest) beginRetire(oldest, performance.now());
+        const going = chooseEviction(slots.values());
+        if (going) beginRetire(going, performance.now());
       }
 
       // Projected clear of props and residents — an egg never incubates
@@ -660,6 +747,7 @@ export function createCreatureManager(
         manualHold: false,
         retireStartMs: 0,
         order: orderCounter++,
+        resident: opts.resident === true,
       };
       slots.set(id, slot);
 
@@ -877,7 +965,30 @@ export function createCreatureManager(
              * never quite arrives, which is the ambient drift floor that
              * has to run under everything anyway.
              */
-            const k = followFraction(dt, FOLLOW_TAU_MS);
+            /*
+             * THE FIRST FRAME IS A PLACEMENT, NOT A JOURNEY.
+             *
+             * A viewer builds the cast locally and stands each creature on
+             * its deterministic spawn spot, because that is all it knows.
+             * The host has been simulating for minutes and has them spread
+             * across the field. Easing into the first pose therefore flew
+             * the ENTIRE population from the spawn spiral to wherever they
+             * really were, all at once, every time somebody opened the link
+             * (user report, 2026-08-27: *"characters fly across the map"*).
+             *
+             * That flight was never motion — nothing moved, we just did not
+             * know yet. So the first frame writes the position, and the
+             * motion law is not in play: the rule forbids cutting between
+             * two states of a thing, and this is the creature's first
+             * truthful frame. Every frame after it eases, which is where
+             * the rule does apply and does hold.
+             *
+             * Same on a role change: `clearFollow` drops `settled` so a
+             * page that has just stopped hosting re-places rather than
+             * flying its cast to the new host's answer.
+             */
+            const k = slot.follow.settled ? followFraction(dt, FOLLOW_TAU_MS) : 1;
+            slot.follow.settled = true;
             const beforeX = root.position.x;
             const beforeZ = root.position.z;
             root.position.x += (slot.follow.x - beforeX) * k;
@@ -1057,10 +1168,48 @@ export function createCreatureManager(
       for (const pose of poses) {
         const slot = slots.get(pose.id);
         if (!slot || slot.phase !== 'alive') continue;
-        slot.follow = { x: pose.x, z: pose.z, heading: pose.heading };
+        slot.follow = {
+          x: pose.x,
+          z: pose.z,
+          heading: pose.heading,
+          // Carried forward, never reset: only the update loop sets this,
+          // on the frame it actually places the creature.
+          settled: slot.follow?.settled === true,
+        };
         matched++;
       }
       return matched;
+    },
+
+    /**
+     * Forget the host's opinion entirely.
+     *
+     * Called on every role change. `followPoses([])` used to be the way to
+     * say this and it never said anything — it iterates the poses it is
+     * given, so an empty list matched nothing and left every slot's follow
+     * standing. Harmless while hosting (the branch that reads it needs
+     * `aiPaused`), and NOT harmless on the way back down: a page that
+     * hosted, lost the election, and started following again would ease
+     * from its own simulated positions to the new host's, which is the
+     * fly-across-the-map glitch by another route.
+     */
+    /**
+     * The live slots as the population guard sees them.
+     *
+     * A readout, not a control: it exists so a test can prove that
+     * `SpawnOptions.resident` actually reaches the slot, rather than
+     * proving `chooseEviction` is correct about a field nothing sets.
+     */
+    evictable(): { id: string; order: number; resident: boolean; phase: string }[] {
+      const out: { id: string; order: number; resident: boolean; phase: string }[] = [];
+      for (const slot of slots.values()) {
+        out.push({ id: slot.id, order: slot.order, resident: slot.resident, phase: slot.phase });
+      }
+      return out;
+    },
+
+    clearFollow(): void {
+      for (const slot of slots.values()) slot.follow = null;
     },
 
     liveIds(): string[] {
