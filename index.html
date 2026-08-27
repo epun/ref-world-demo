@@ -4,6 +4,36 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>ref world</title>
+    <!--
+      THE CARD a shared link unfurls into.
+
+      The image is a real frame of the world, not a mockup of one — thirty
+      creatures somebody drew, rendered by the same pipeline that renders
+      them live, with the room's own chrome (the join code, the minimap)
+      hidden because neither is legible at preview size. It goes stale the
+      honest way: re-run scripts/og.mjs and it is the world as it is now.
+
+      Lowercase throughout, like every other piece of type here (TASTE §5).
+    -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="ref world" />
+    <meta property="og:title" content="ref world" />
+    <meta
+      property="og:description"
+      content="draw a creature on your phone. it hatches into a world everyone can see."
+    />
+    <meta property="og:url" content="https://ref-world-demo.vercel.app/?world=public" />
+    <meta property="og:image" content="https://ref-world-demo.vercel.app/og.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="a grey field with thirty small black creatures standing on it" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="ref world" />
+    <meta
+      name="twitter:description"
+      content="draw a creature on your phone. it hatches into a world everyone can see."
+    />
+    <meta name="twitter:image" content="https://ref-world-demo.vercel.app/og.png" />
     <!-- inline ink-blob favicon (qa audit p1): a loose hand-drawn dot in the environment ink value, no binary asset -->
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path d='M12.3 4.6c3.9.2 6.9 3.4 7 7.3.1 4.1-3 7.6-7.1 7.7-4 .1-7.4-3-7.5-7.1-.1-4.2 3.4-8.1 7.6-7.9z' fill='%23353534'/></svg>" />
     <style>
