@@ -22,8 +22,13 @@ import {
   rippleSpots,
   sampleLandscape,
   shoreSamples,
+  TERRAIN,
+  terrainHeight,
+  terrainNormal,
   waterColliders,
+  WATER_COLLIDER_R,
   waterFillOutline,
+  waterLevel,
   waterOutline,
   WATER_BODIES,
   WOBBLE_MAX,
@@ -34,8 +39,21 @@ import {
 
 /** The hatch clearing scatter also keeps open (ORIGIN_CLEAR_PROPS). */
 const ORIGIN_CLEAR = 11;
-/** Scatter's half-extent plus slack — nothing authored may leave the region. */
-const REGION_LIMIT = 110;
+/**
+ * …and the clearing the SPREAD-OUT layout keeps: with the features pushed
+ * out to the edges of the field (2026-09-03), no feature edge comes within
+ * this of the origin, so the hatch ground has a real horizon around it.
+ */
+const FEATURE_CLEAR = 40;
+/**
+ * Scatter's half-extent (160) minus slack — nothing authored may leave the
+ * region. 155, not 110: the field scaled up and the range runs along the
+ * north edge, where the (-5, -118) mass reaches z ≈ -147 at full wobble.
+ */
+const REGION_LIMIT = 155;
+/** Open plain the layout keeps between any two distinct environments,
+ * measured edge to edge on 1.2 × the authored radius. */
+const ENVIRONMENT_GAP = 20;
 
 const LAKE: WaterBody = WATER_BODIES[0]!;
 const PONDS: readonly WaterBody[] = WATER_BODIES.slice(1);
@@ -436,26 +454,34 @@ describe('landscape — water fill outline', () => {
 });
 
 describe('landscape — colliders', () => {
-  it('gives each pond one hard circle and the lake a ring', () => {
-    const cols = waterColliders();
-    expect(cols.length).toBeGreaterThan(WATER_BODIES.length);
+  const cols = waterColliders();
+
+  it('tiles every body with same-size hard circles, and not too many', () => {
+    expect(cols.length).toBeGreaterThan(WATER_BODIES.length * 4);
+    // A budget, not a fixture: the tiling is what the collider grid indexes
+    // every frame. Measured 1176 for the shipped layout, ~1100 of them the
+    // lake.
+    expect(cols.length).toBeLessThanOrEqual(2500);
     for (const c of cols) {
       expect(c.hard).toBe(true);
-      expect(c.r).toBeGreaterThan(0);
-    }
-    for (const p of PONDS) {
-      const own = cols.filter((c) => c.x === p.x && c.z === p.z);
-      expect(own).toHaveLength(1);
-      expect(own[0]!.r).toBe(p.r);
+      expect(c.r).toBe(WATER_COLLIDER_R);
     }
   });
 
   it('centers every collider on water', () => {
-    for (const c of waterColliders()) expect(isWater(c.x, c.z)).toBe(true);
+    for (const c of cols) expect(isWater(c.x, c.z)).toBe(true);
+  });
+
+  it('covers each pond, center included', () => {
+    for (const p of PONDS) {
+      const own = cols.filter((c) => Math.hypot(c.x - p.x, c.z - p.z) <= c.r);
+      // The tiling is anchored on the body center, so a pond always gets a
+      // circle dead on it — no pond is ever left as an open puddle.
+      expect(own.length, `pond at ${p.x},${p.z}`).toBeGreaterThan(0);
+    }
   });
 
   it('leaves the land bridge physically open', () => {
-    const cols = waterColliders();
     const isl = LAKE.island!;
     const ist = LAKE.isthmus!;
     const rm = (LAKE.r + isl.r) / 2;
@@ -464,30 +490,75 @@ describe('landscape — colliders', () => {
       const x = LAKE.x + Math.cos(ist.angle) * d;
       const z = LAKE.z + Math.sin(ist.angle) * d;
       for (const c of cols) {
-        expect(Math.hypot(x - c.x, z - c.z)).toBeGreaterThan(c.r);
+        expect(Math.hypot(x - c.x, z - c.z), `collider on the causeway at d=${d}`).toBeGreaterThan(
+          c.r,
+        );
       }
     }
   });
 
-  it('overlaps neighboring ring circles so nothing squeezes through', () => {
+  it('blocks the water beside the causeway', () => {
+    // Step off the bridge sideways and you are inside a hard circle within a
+    // stride. Measured worst case over the six probes: 1.6 units of open
+    // water, which is the design bound — a circle center has to sit
+    // WATER_COLLIDER_R - 0.6 inside every shore, the causeway's edges
+    // included.
     const isl = LAKE.island!;
+    const ist = LAKE.isthmus!;
     const rm = (LAKE.r + isl.r) / 2;
-    const ring = waterColliders().filter(
-      (c) => Math.abs(Math.hypot(c.x - LAKE.x, c.z - LAKE.z) - rm) < 1e-6,
-    );
-    expect(ring.length).toBeGreaterThan(8);
-    // Every ring circle has a neighbor it overlaps (the bridge gap aside).
-    let overlapping = 0;
-    for (const a of ring) {
-      for (const b of ring) {
-        if (a === b) continue;
-        if (Math.hypot(a.x - b.x, a.z - b.z) < a.r + b.r) {
-          overlapping++;
-          break;
+    const ringHalf = (LAKE.r - isl.r) / 2;
+    for (const d of [rm - ringHalf * 0.5, rm, rm + ringHalf * 0.5]) {
+      for (const side of [1, -1]) {
+        // Find the bridge edge at this radius, then walk out into the water.
+        let edge = -1;
+        for (let a = 0; a < 0.6; a += 0.0005) {
+          const th = ist.angle + side * a;
+          if (isWater(LAKE.x + Math.cos(th) * d, LAKE.z + Math.sin(th) * d)) {
+            edge = a;
+            break;
+          }
+        }
+        expect(edge, `water beside the causeway at d=${d}`).toBeGreaterThan(0);
+        let blocked = Infinity;
+        for (let into = 0.05; into <= 4; into += 0.05) {
+          const th = ist.angle + side * (edge + into / d);
+          const x = LAKE.x + Math.cos(th) * d;
+          const z = LAKE.z + Math.sin(th) * d;
+          if (cols.some((c) => Math.hypot(x - c.x, z - c.z) < c.r)) {
+            blocked = into;
+            break;
+          }
+        }
+        expect(
+          blocked,
+          `open water beside the causeway at d=${d.toFixed(1)}, side ${side}`,
+        ).toBeLessThanOrEqual(1.8);
+      }
+    }
+  });
+
+  it('leaves no wadeable pocket of open water', () => {
+    // The design bound: a creature gets at most ~1.6 units past a shore
+    // before a circle stops it. The causeway is the deliberate exception —
+    // the tiling is held off it so the bridge stays walkable, which leaves a
+    // wider shelf of shallow water either side of it (measured 4.0 at its
+    // widest, against 1.2 everywhere else).
+    const ist = LAKE.isthmus!;
+    for (const body of WATER_BODIES) {
+      const reach = body.r * WOBBLE_MAX;
+      for (let x = body.x - reach; x <= body.x + reach; x += 0.4) {
+        for (let z = body.z - reach; z <= body.z + reach; z += 0.4) {
+          if (!isWater(x, z)) continue;
+          if (body === LAKE) {
+            const theta = Math.atan2(z - LAKE.z, x - LAKE.x) - ist.angle;
+            if (Math.abs(Math.atan2(Math.sin(theta), Math.cos(theta))) < 0.35) continue;
+          }
+          let clear = Infinity;
+          for (const c of cols) clear = Math.min(clear, Math.hypot(x - c.x, z - c.z) - c.r);
+          expect(clear, `open water at ${x.toFixed(1)},${z.toFixed(1)}`).toBeLessThan(1.8);
         }
       }
     }
-    expect(overlapping).toBe(ring.length);
   });
 });
 
@@ -579,6 +650,297 @@ describe('landscape — ripple spots', () => {
     for (const body of WATER_BODIES) {
       expect(rippleSpots(body, 6).length).toBeLessThanOrEqual(rippleSpots(body).length);
     }
-    expect(rippleSpots(LAKE, 12)).toHaveLength(0);
+    // A margin wider than the lake's own water empties it. 20, not 12: the
+    // body is a 33-unit-wide sheet of water now, not the old 10-unit ring.
+    expect(rippleSpots(LAKE, 20)).toHaveLength(0);
+  });
+});
+
+describe('landscape — the environments are spread out', () => {
+  /** Closest approach of one wobbled edge to another, edge to edge. Negative
+   * means the two blobs overlap. */
+  function edgeGap(a: Blob, b: Blob): number {
+    let gap = Infinity;
+    for (const [x, z] of edgePoints(a, 720)) {
+      const theta = Math.atan2(z - b.z, x - b.x);
+      gap = Math.min(gap, Math.hypot(x - b.x, z - b.z) - wobbledRadius(b, theta));
+    }
+    return gap;
+  }
+
+  const waterBlobs: Blob[] = WATER_BODIES.map((b) => ({ x: b.x, z: b.z, r: b.r, seed: b.seed }));
+
+  it('holds every feature edge at least a horizon off the origin', () => {
+    for (const b of ALL_BLOBS) {
+      for (const [x, z] of edgePoints(b)) {
+        expect(
+          Math.hypot(x, z),
+          `feature at ${b.x},${b.z} r=${b.r}`,
+        ).toBeGreaterThanOrEqual(FEATURE_CLEAR);
+      }
+    }
+  });
+
+  it('keeps 20 units of open plain between any two environments', () => {
+    // Environments, not blobs: the forest's two masses overlap each other on
+    // purpose and so do the range's four, but no two DIFFERENT environments
+    // may come near one another. 1.2 × r is the authored radius plus the
+    // wobble's headroom.
+    const environments: [string, readonly Blob[]][] = [
+      ['forest', FOREST_BLOBS],
+      ['range', MOUNTAIN_BLOBS],
+      ...WATER_BODIES.map(
+        (b, i) => [`${b.kind} ${i}`, [{ x: b.x, z: b.z, r: b.r, seed: b.seed }]] as [string, Blob[]],
+      ),
+    ];
+    for (let i = 0; i < environments.length; i++) {
+      for (let j = i + 1; j < environments.length; j++) {
+        const [an, as_] = environments[i]!;
+        const [bn, bs] = environments[j]!;
+        let gap = Infinity;
+        for (const a of as_) {
+          for (const b of bs) {
+            gap = Math.min(gap, Math.hypot(a.x - b.x, a.z - b.z) - 1.2 * (a.r + b.r));
+          }
+        }
+        expect(gap, `${an} <-> ${bn}`).toBeGreaterThanOrEqual(ENVIRONMENT_GAP);
+      }
+    }
+  });
+
+  it('never grows a forest or a range into a body of water', () => {
+    for (const land of [...FOREST_BLOBS, ...MOUNTAIN_BLOBS]) {
+      for (const wet of waterBlobs) {
+        expect(edgeGap(land, wet), `${land.x},${land.z} <-> ${wet.x},${wet.z}`).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it('spreads them across the field, not into one corner', () => {
+    // Each of the four environments sits on its own bearing from the origin:
+    // forest west, range north, lake east, ponds scattered between them.
+    const bearing = (b: { x: number; z: number }): number => Math.atan2(b.z, b.x);
+    const forest = bearing(FOREST_BLOBS[0]!);
+    const range = bearing(MOUNTAIN_BLOBS[1]!);
+    const lake = bearing(LAKE);
+    const apart = (a: number, b: number): number =>
+      Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b)));
+    expect(apart(forest, range)).toBeGreaterThan(1);
+    expect(apart(range, lake)).toBeGreaterThan(1);
+    expect(apart(lake, forest)).toBeGreaterThan(1);
+  });
+
+  it('keeps the lake reading as a body of water, not a moat', () => {
+    // Four fifths of the lake disc is wet: an island in open water, not a
+    // ring of water around a landmass.
+    const isl = LAKE.island!;
+    expect(LAKE.r / isl.r).toBeGreaterThan(3.5);
+    const reach = LAKE.r * WOBBLE_MAX;
+    let wet = 0;
+    let dry = 0;
+    for (let x = LAKE.x - reach; x <= LAKE.x + reach; x += 0.25) {
+      for (let z = LAKE.z - reach; z <= LAKE.z + reach; z += 0.25) {
+        const d = Math.hypot(x - LAKE.x, z - LAKE.z);
+        if (d >= wobbledRadius(LAKE, Math.atan2(z - LAKE.z, x - LAKE.x))) continue;
+        if (isWater(x, z)) wet++;
+        else dry++;
+      }
+    }
+    expect(wet / (wet + dry)).toBeGreaterThan(0.8);
+  });
+});
+
+describe('landscape — terrain height', () => {
+  const FIELD = 155;
+  /** Every sample is a `terrainHeight` call, so the field walks are coarse on
+   * purpose. */
+  const walk = (step: number, fn: (x: number, z: number) => void): void => {
+    for (let x = -FIELD; x <= FIELD; x += step) for (let z = -FIELD; z <= FIELD; z += step) fn(x, z);
+  };
+
+  it('is deterministic', () => {
+    for (let i = 0; i < 400; i++) {
+      const x = -140 + ((i * 137) % 280);
+      const z = -140 + ((i * 61) % 280);
+      expect(terrainHeight(x, z)).toBe(terrainHeight(x, z));
+      expect(terrainNormal(x, z)).toEqual(terrainNormal(x, z));
+    }
+  });
+
+  it('leaves the whole hatch clearing exactly flat at zero', () => {
+    expect(terrainHeight(0, 0)).toBe(0);
+    for (let i = 0; i <= 100; i++) {
+      for (let j = 0; j <= 100; j++) {
+        const x = -TERRAIN.clearRadius + i * 0.2;
+        const z = -TERRAIN.clearRadius + j * 0.2;
+        if (x * x + z * z > TERRAIN.clearRadius * TERRAIN.clearRadius) continue;
+        expect(terrainHeight(x, z), `${x.toFixed(1)},${z.toFixed(1)}`).toBe(0);
+      }
+    }
+  });
+
+  it('holds every slope inside the bound, risers included', () => {
+    // The terrace multiplies the smooth field's gradient by 1.5 / the riser
+    // width, so this is the number the [D] falloffs were tuned against:
+    // terraceRiser 0.2–0.8, mountainShelfFalloff 70, shoreRamp 16. Measured
+    // 0.5476 on the shipped layout, at the range's southern apron.
+    let worst = 0;
+    walk(0.5, (x, z) => {
+      const gx = terrainHeight(x + 0.5, z) - terrainHeight(x - 0.5, z);
+      const gz = terrainHeight(x, z + 0.5) - terrainHeight(x, z - 0.5);
+      worst = Math.max(worst, Math.hypot(gx, gz));
+    });
+    expect(worst).toBeLessThanOrEqual(0.6);
+  });
+
+  it('keeps the whole field inside ±10 units of height', () => {
+    let lo = Infinity;
+    let hi = -Infinity;
+    walk(1, (x, z) => {
+      const h = terrainHeight(x, z);
+      lo = Math.min(lo, h);
+      hi = Math.max(hi, h);
+    });
+    // Measured [-3.10, 8.00] — the bound is the design budget, not the value.
+    expect(lo).toBeGreaterThan(-10);
+    expect(hi).toBeLessThan(10);
+  });
+
+  it('reads as tiers, not a swell — four levels between the origin and the range', () => {
+    const target = MOUNTAIN_BLOBS[1]!;
+    const len = Math.hypot(target.x, target.z);
+    const line: number[] = [];
+    for (let d = 0; d <= len; d += 1) {
+      line.push(terrainHeight((target.x * d) / len, (target.z * d) / len));
+    }
+    // Plateaus: runs of the same height (to a tenth of a unit) at least six
+    // units long. A smooth swell has none; a terrace has one per tread.
+    const levels: number[] = [];
+    let current = Math.round(line[0]! * 10) / 10;
+    let run = 1;
+    for (let i = 1; i <= line.length; i++) {
+      const h = i < line.length ? Math.round(line[i]! * 10) / 10 : NaN;
+      if (h === current) {
+        run++;
+        continue;
+      }
+      if (run >= 6) levels.push(current);
+      current = h;
+      run = 1;
+    }
+    expect(new Set(levels).size).toBeGreaterThanOrEqual(4);
+    // …and they are genuine tiers of the terrace, not arbitrary heights.
+    for (const level of levels) {
+      expect(Math.abs(level / TERRAIN.terraceStep - Math.round(level / TERRAIN.terraceStep))).toBeLessThan(
+        0.05,
+      );
+    }
+  });
+
+  it('flattens every water body to exactly its own level', () => {
+    for (const body of WATER_BODIES) {
+      const level = waterLevel(body);
+      for (let i = 0; i < 240; i++) {
+        const theta = (i / 240) * Math.PI * 2;
+        for (const f of [0, 0.35, 0.7, 0.95]) {
+          const r = wobbledRadius(body, theta) * f;
+          const x = body.x + Math.cos(theta) * r;
+          const z = body.z + Math.sin(theta) * r;
+          // The island and the causeway are inside the outer shore too: the
+          // whole disc is one flat basin, so water can never sit above land.
+          expect(terrainHeight(x, z), `${body.kind} at ${x.toFixed(1)},${z.toFixed(1)}`).toBe(level);
+        }
+      }
+    }
+  });
+
+  it('never lets a shore sit below the water it borders', () => {
+    for (const body of WATER_BODIES) {
+      const level = waterLevel(body);
+      for (let i = 0; i < 720; i++) {
+        const theta = (i / 720) * Math.PI * 2;
+        const r = wobbledRadius(body, theta) + 1;
+        const x = body.x + Math.cos(theta) * r;
+        const z = body.z + Math.sin(theta) * r;
+        expect(
+          terrainHeight(x, z),
+          `${body.kind} shore at ${theta.toFixed(2)}`,
+        ).toBeGreaterThanOrEqual(level);
+      }
+    }
+  });
+
+  it('sinks every basin — the land around a body of water stands over it', () => {
+    for (const body of WATER_BODIES) {
+      const level = waterLevel(body);
+      let sum = 0;
+      let n = 0;
+      for (let i = 0; i < 360; i++) {
+        const theta = (i / 360) * Math.PI * 2;
+        for (let out = 8; out <= 14; out += 1) {
+          const r = wobbledRadius(body, theta) + out;
+          sum += terrainHeight(body.x + Math.cos(theta) * r, body.z + Math.sin(theta) * r);
+          n++;
+        }
+      }
+      // Measured: the lake stands 2.17 under its own shoulder, the ponds
+      // 1.09–1.85. A body of water reads as sunk, not painted on.
+      expect(sum / n - level, `${body.kind} at ${body.x},${body.z}`).toBeGreaterThanOrEqual(1);
+    }
+  });
+
+  it('puts each environment on its own level', () => {
+    const meanWhere = (pick: (x: number, z: number) => boolean): number => {
+      let sum = 0;
+      let n = 0;
+      walk(2, (x, z) => {
+        if (!pick(x, z)) return;
+        sum += terrainHeight(x, z);
+        n++;
+      });
+      expect(n).toBeGreaterThan(200);
+      return sum / n;
+    };
+    // Open plain: an annulus clear of every region weight and every body of
+    // water, the reference the shelves are measured against.
+    const plain = meanWhere((x, z) => {
+      const r = Math.hypot(x, z);
+      if (r < 35 || r > 90) return false;
+      const l = sampleLandscape(x, z);
+      return l.forest === 0 && l.mountain === 0 && !l.water && !l.island;
+    });
+    const forest = meanWhere((x, z) => sampleLandscape(x, z).forest >= 0.8);
+    const range = meanWhere((x, z) => sampleLandscape(x, z).mountain >= 0.8);
+    // Measured: plain 1.70, forest 3.53, range 5.23.
+    expect(forest - plain).toBeGreaterThanOrEqual(1.5);
+    expect(range - forest).toBeGreaterThan(1);
+  });
+
+  it('meets the flat ground disc past the far fade', () => {
+    for (let a = 0; a < 360; a += 3) {
+      for (const r of [TERRAIN.farEnd, TERRAIN.farEnd + 20, 400]) {
+        const th = (a / 180) * Math.PI;
+        // Math.abs: the fade multiplies a negative height by zero, which is
+        // -0 — numerically zero, and not what this test is about.
+        expect(Math.abs(terrainHeight(Math.cos(th) * r, Math.sin(th) * r))).toBe(0);
+      }
+    }
+  });
+
+  it('returns a unit up-normal everywhere', () => {
+    let flattest = 1;
+    walk(2, (x, z) => {
+      const n = terrainNormal(x, z);
+      expect(Math.hypot(n.x, n.y, n.z)).toBeCloseTo(1, 12);
+      flattest = Math.min(flattest, n.y);
+    });
+    // Terrace risers tilt harder than the old smooth swell did: measured
+    // 0.8775 at the steepest, which is the 0.55 slope bound above read as a
+    // normal.
+    expect(flattest).toBeGreaterThan(0.8);
+    const flat = terrainNormal(0, 0);
+    expect(flat.y).toBe(1);
+    expect(Math.abs(flat.x)).toBe(0);
+    expect(Math.abs(flat.z)).toBe(0);
   });
 });

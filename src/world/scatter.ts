@@ -89,8 +89,10 @@ export interface Exclusion {
 
 /** Iso-grid step in world units. */
 export const SCATTER_STEP = 6;
-/** Half-extent of the scattered region. */
-export const SCATTER_EXTENT = 120;
+/** Half-extent of the scattered region. 160 (2026-09-03): the map's
+ * environments were spread out and scaled up, and the range now runs along
+ * z ≈ -118. */
+export const SCATTER_EXTENT = 160;
 /** World seed — one world, one growth. The shipped default. */
 export const SCATTER_SEED = 7;
 
@@ -212,7 +214,7 @@ const REED_SALT = 81.3;
 
 /** At most this many mountains in the region, in cell order — a backdrop
  * range, not a mountain world. */
-export const MOUNTAIN_MAX = 16;
+export const MOUNTAIN_MAX = 24;
 /** Fraction of a mountain's footprint swept clear of everything else. A
  * tree poking out of a mountainside is a bug; the 0.85 leaves the skirt
  * plantable, so the range meets the forest instead of ending on bare

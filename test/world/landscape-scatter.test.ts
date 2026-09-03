@@ -11,7 +11,7 @@
 import { describe, expect, it } from 'vitest';
 import { InstancedMesh, type Material, type MeshStandardMaterial } from 'three';
 import { WORLD } from '../../src/taste/tokens';
-import { isWater, sampleLandscape } from '../../src/world/landscape';
+import { isWater, sampleLandscape, WATER_BODIES, WOBBLE_MAX } from '../../src/world/landscape';
 import { MOUNTAIN_FOOTPRINT, PROP_VARIANT_COUNTS } from '../../src/world/props';
 import {
   computePlacements,
@@ -89,16 +89,15 @@ describe('shoreline reeds', () => {
 
   it('reach every water body, not just the lake', () => {
     const reeds = kindsOf(shipped(), 'reed');
-    // The four ponds and the lake (whose island shore gets its own fringe).
-    for (const [x, z] of [
-      [26, 28],
-      [6, -27],
-      [-12, 31],
-      [36, -8],
-      [-40, -14],
-    ] as const) {
-      const near = reeds.filter((r) => Math.hypot(r.x - x, r.z - z) < 24);
-      expect(near.length, `reeds near ${x},${z}`).toBeGreaterThan(2);
+    // Read off WATER_BODIES rather than a copy of their coordinates: the
+    // layout moved once (2026-09-03, the features spread out) and a hard-
+    // coded list is a second place to have to move it. The radius follows
+    // each body's own reach, since the lake's outer shore is 42 units from
+    // its center and a pond's is six.
+    for (const body of WATER_BODIES) {
+      const reach = body.r * WOBBLE_MAX + 4;
+      const near = reeds.filter((r) => Math.hypot(r.x - body.x, r.z - body.z) < reach);
+      expect(near.length, `reeds near the ${body.kind} at ${body.x},${body.z}`).toBeGreaterThan(2);
     }
   });
 
@@ -270,7 +269,14 @@ describe('the island', () => {
 
   it('grows its own flora and nothing built', () => {
     const island = shipped().filter(onIsland);
-    expect(island.filter((p) => p.kind === 'palm').length).toBeGreaterThanOrEqual(3);
+    // Flora from the island's own table, not a palm count: the island is a
+    // 9-unit speck in a 42-unit lake now (2026-09-03) rather than the 8-unit
+    // core of an 18-unit ring, and which of its handful of cells rolls a
+    // palm rather than a tree is not a guarantee this module makes.
+    const flora = island.filter((p) =>
+      (['palm', 'tree', 'rock', 'bush'] as const).some((k) => k === p.kind),
+    );
+    expect(flora.length).toBeGreaterThanOrEqual(2);
     for (const kind of ['building', 'waterTower', 'cactus', 'picnicTable'] as const) {
       expect(island.filter((p) => p.kind === kind), `${kind} on the island`).toHaveLength(0);
     }
@@ -311,8 +317,18 @@ describe('the plain is the world that shipped', () => {
   // Fixture taken from `computePlacements()` on the PRE-map code (the commit
   // before landscape.ts existed), filtered by deepPlain above. If this moves,
   // the map has leaked into ground it was never supposed to touch.
-  const PLAIN_COUNT = 831;
-  const PLAIN_DIGEST = 'a9eac96d';
+  //
+  // Re-taken 2026-09-03 (was 831 / a9eac96d): the environments were spread
+  // across a bigger field (SCATTER_EXTENT 120 → 160), so the SET of
+  // placements deepPlain selects moved with them — ground that used to be
+  // deep plain is now inside the lake's reach, ground that used to be forest
+  // is open again, and there is half as much again of it. The values
+  // themselves are still the pre-map ones; the readable half of this fixture
+  // (the hatch clearing, spelled out below) sits far from every feature in
+  // every layout and has not moved a digit, which is what says the
+  // expression is intact.
+  const PLAIN_COUNT = 1127;
+  const PLAIN_DIGEST = 'ffb4d6bf';
 
   it('places exactly what it placed before the map existed', () => {
     const plain = shipped().filter(deepPlain).map(key);

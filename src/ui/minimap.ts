@@ -50,7 +50,7 @@ import { CHARACTER, SURFACE, WORLD } from '../taste/tokens';
 
 /** Fixed half-extent of the mapped world square — the scattered region plus
  * a little breathing room, so wanderers at the fringe stay on the map. */
-export const WORLD_MAP_EXTENT = 130;
+export const WORLD_MAP_EXTENT = 175;
 
 /** Inverse of worldToMap: canvas px → world x/z under the same uniform,
  * centered mapping. Lets a click land where the map says it will. */

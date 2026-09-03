@@ -24,10 +24,16 @@
  * instead of drifting apart by a fraction of a unit.
  *
  * The origin stays open plain: creatures hatch there and spiral out, so no
- * feature reaches within ~11 units of it (the same clearing scatter keeps).
+ * feature reaches within 40 units of it — comfortably past the ~11-unit
+ * clearing scatter keeps — and the terrain is exactly flat inside 10.
  *
- * All coordinates are world units on the x/z ground plane; the Surface seam
- * owns height, so nothing here knows about y.
+ * Coordinates are world units on the x/z ground plane. HEIGHT lives here too
+ * (`terrainHeight` / `terrainNormal` / `waterLevel`, at the bottom of this
+ * file) because it is geography like everything else above it — the basins
+ * are cut by the same wobbled shores the water is drawn from, and deriving
+ * them anywhere else would be the second shoreline this module exists to
+ * prevent. Consumers do not import them directly: they sample the Surface
+ * seam (src/world/surface.ts), which is what PLAN §7.2 promised.
  */
 
 import type { Collider } from '../physics/colliders';
@@ -124,45 +130,71 @@ export function wobbledRadius(b: Blob, theta: number): number {
 // ── the authored layout ──────────────────────────────────────────────────────
 
 /** Units over which the forest weight fades at its edge. */
-export const FOREST_FALLOFF = 7;
-/** Units over which the mountain weight fades at its edge. */
-export const MOUNTAIN_FALLOFF = 8;
+export const FOREST_FALLOFF = 10;
+/** Units over which the mountain weight fades at its edge — a long foothill
+ * ramp, in proportion to a range whose masses are 20–26 across. */
+export const MOUNTAIN_FALLOFF = 12;
 
-/** [D] One big stand to the west with a smaller spur running south-east off
- * it, so the forest reads as a mass with an arm rather than a disc. */
+/** [D] One big stand to the far west with a smaller spur running south-east
+ * off it, so the forest reads as a mass with an arm rather than a disc.
+ *
+ * SPREAD AND SCALE (2026-09-03, user report — "i still want the distinct
+ * environments to be really far apart in the map and they should also have a
+ * larger footprint per environment"): the features used to crowd the middle
+ * of the field, close enough that a creature could see all four from one
+ * spot, and each was small enough to cross in a few strides. They sit out
+ * near the edges of a bigger scattered region now, one per bearing, with at
+ * least 20 units of open plain between any two of them — and each is roughly
+ * half again as wide as it was. Every feature edge stays 40 units off the
+ * origin, so the hatch clearing keeps a real horizon. */
 export const FOREST_BLOBS: readonly Blob[] = [
-  { x: -34, z: 12, r: 20, seed: 101 },
-  { x: -18, z: 30, r: 11, seed: 102 },
+  { x: -95, z: 20, r: 40, seed: 101 },
+  { x: -60, z: 55, r: 18, seed: 102 },
 ];
 
-/** [D] A backdrop range along the north edge: three overlapping masses whose
- * near edge sits outside the roam radius on purpose — mountains are scenery
- * the creatures walk toward, never terrain they climb. */
+/** [D] A backdrop range along the whole north edge: four overlapping masses
+ * out past z = -90 — mountains are scenery the creatures walk toward, and a
+ * range that reads as a horizon has to be both long and far. */
 export const MOUNTAIN_BLOBS: readonly Blob[] = [
-  { x: -16, z: -54, r: 16, seed: 201 },
-  { x: 8, z: -60, r: 17, seed: 202 },
-  { x: 32, z: -50, r: 15, seed: 203 },
+  { x: -50, z: -105, r: 24, seed: 201 },
+  { x: -5, z: -118, r: 26, seed: 202 },
+  { x: 40, z: -112, r: 24, seed: 203 },
+  { x: 80, z: -90, r: 20, seed: 204 },
 ];
 
-const LAKE_X = 26;
-const LAKE_Z = 28;
+const LAKE_X = 80;
+const LAKE_Z = 70;
 
 /** The lake first, then the ponds. The lake's land bridge points back at the
- * origin so the island is reachable from the hatch clearing on foot. */
+ * origin so the island is reachable from the hatch clearing on foot.
+ *
+ * A BODY OF WATER, not a moat (2026-09-03, user report — "i want the island
+ * to look more like an island with a body of water around it"): the lake used
+ * to be an 18-radius outline around an 8-radius island, which is a 10-unit
+ * channel — read as a moat, not a lake. The outer shore is 42 now and the
+ * island 9, so the island is a speck of land in open water with the great
+ * majority of the disc wet. The land bridge narrowed to match: halfAngle
+ * 0.06 is ~3 units across at the mid ring, a causeway rather than a second
+ * shore. */
 export const WATER_BODIES: readonly WaterBody[] = [
   {
     kind: 'lake',
     x: LAKE_X,
     z: LAKE_Z,
-    r: 18,
+    r: 42,
     seed: 301,
-    island: { r: 8, seed: 302 },
-    isthmus: { angle: Math.atan2(-LAKE_Z, -LAKE_X), halfAngle: 0.2 },
+    island: { r: 9, seed: 302 },
+    isthmus: { angle: Math.atan2(-LAKE_Z, -LAKE_X), halfAngle: 0.06 },
   },
-  { kind: 'pond', x: 6, z: -27, r: 5, seed: 401 },
-  { kind: 'pond', x: -12, z: 31, r: 4.2, seed: 402 },
-  { kind: 'pond', x: 36, z: -8, r: 5.5, seed: 403 },
-  { kind: 'pond', x: -40, z: -14, r: 4.5, seed: 404 },
+  { kind: 'pond', x: 15, z: -55, r: 6, seed: 401 },
+  // (-25, 95), not (-35, 80): at 80 the pond's edge came within 7 units of
+  // the forest's south-east arm, and the layout's rule is 20 units of open
+  // plain between any two environments.
+  { kind: 'pond', x: -25, z: 95, r: 6, seed: 402 },
+  { kind: 'pond', x: 85, z: -35, r: 7, seed: 403 },
+  // …and -58 rather than -55, for the same 20 units against the big western
+  // stand.
+  { kind: 'pond', x: -95, z: -58, r: 6, seed: 404 },
 ];
 
 // ── water ────────────────────────────────────────────────────────────────────
@@ -269,6 +301,270 @@ export function sampleLandscape(x: number, z: number): LandscapeSample {
   return { forest, mountain, water, island, region };
 }
 
+// ── terrain height ───────────────────────────────────────────────────────────
+
+/**
+ * The world used to be dead flat (PLAN §7.2 shipped `FlatSurface` first).
+ * This is the rolling ground under the same authored map — gentle enough
+ * that the isometric read never breaks, and pinned to the geography so a
+ * lake can never sit above the land beside it.
+ *
+ * Four terms, in order:
+ *
+ *   rolling  2-octave value noise, faded in from the hatch clearing so the
+ *            ground the creatures spawn on is exactly flat, and faded back
+ *            out by `farEnd` so the terrain meets the flat outer ground disc
+ *            without a seam.
+ *   shelves  the forest raised onto a shelf and the range onto a high
+ *            shoulder above it, over ramps much wider than the placement
+ *            falloffs — the terrace below turns a long ramp into a flight of
+ *            tiers, which is exactly the read we want.
+ *   terrace  the whole smooth field snapped onto tiers, flat treads with
+ *            rounded risers. This is what makes elevation legible at all in
+ *            an orthographic ink render.
+ *   basins   every water body flattens its whole disc — island and causeway
+ *            included — to one number, `waterLevel(body)`, and the land
+ *            climbs out of it over `shoreRamp`.
+ *
+ * Pure and deterministic like the rest of this file: no clocks, no
+ * Math.random, no Three.js. The Surface seam (src/world/surface.ts) is what
+ * the rest of the world samples; nothing else derives a height.
+ */
+export const TERRAIN = {
+  /** Flat disc at the origin — the hatch clearing is exactly 0. */
+  clearRadius: 10,
+  /** …the field reaches full amplitude here. */
+  clearEdge: 30,
+  /** [D] Two octaves, ±3.2 units in total before terracing. */
+  octaves: [
+    { wavelength: 60, amplitude: 2.4, salt: 0 },
+    { wavelength: 26, amplitude: 0.8, salt: 57.13 },
+  ],
+  /** The forest sits on a raised shelf… */
+  forestShelf: 2.5,
+  /** …and the range on a high shoulder above it. */
+  mountainShelf: 6,
+  /**
+   * [D] Width of the HEIGHT ramp outside each region's blob edge —
+   * deliberately far wider than FOREST_FALLOFF / MOUNTAIN_FALLOFF, which
+   * govern where things are PLANTED and must not move (widening those would
+   * scatter mountains halfway down the apron).
+   *
+   * They have to be this wide because of the terrace below: it multiplies
+   * every gradient by 1.5 / (riser width) = 2.5, so a shoulder that rises 6
+   * units over the placement falloff of 12 would come out at a slope near 1.
+   * Spread over a 70-unit ramp it stays inside the 0.6 bound — and the
+   * terrace turns the long ramp into a flight of tiers, which is the whole
+   * point: a smooth swell reads as nothing at all in an orthographic ink
+   * render, and a staircase reads as elevation. Measured: the range's core
+   * region stands 3.5 units over the open plain, the forest's 1.8.
+   */
+  forestShelfFalloff: 24,
+  mountainShelfFalloff: 70,
+  /**
+   * [D] …and how far INSIDE each edge the shelf reaches full height. Kept
+   * well short of a blob center on purpose: the wobbled radius is a function
+   * of the polar angle, and near a center the angle (and so the edge) swings
+   * arbitrarily fast — a transition band that reached the center would spin
+   * that wobble into a spike in the slope.
+   */
+  shelfInner: 12,
+  /** Tread-to-tread rise of the terrace, world units. */
+  terraceStep: 1.6,
+  /**
+   * The riser occupies the middle 60% of each step, leaving a 40% tread — a
+   * rounded ramp, never a hard edge (TASTE §3), and the ink pass contours
+   * its crease on its own.
+   *
+   * [D] Wider than the 30% first drawn. A riser's slope is the smooth
+   * field's slope times 1.5 / (its width), so a 30% riser multiplied every
+   * gradient on the map by 5 and put the plain's own noise on a 1.2 slope —
+   * twice the bound — before a shelf or a shore was involved at all. 60%
+   * halves that to 2.5, and the treads still read: the walk from the hatch
+   * clearing to the range crosses four distinct plateaus.
+   */
+  terraceRiser: [0.2, 0.8],
+  /** [D] A basin floor sits this far under the terraced land at its center —
+   * a full tier and a half, so a body of water reads as sunk, not as a
+   * puddle painted on the plain. */
+  basinDrop: 1.5,
+  /**
+   * [D] Units of shore over which the land climbs out of a basin. 16, not
+   * the 6 first drawn: the lake floor sits five or six units under the land
+   * around it now, and a 6-unit ramp put that drop on a slope of 1.4.
+   */
+  shoreRamp: 16,
+  /**
+   * [D] The first units of shore hold at the water level even where the
+   * terraced land would fall below it, so water never laps over ground that
+   * is lower than it is. Releases by `shoreRamp`.
+   */
+  basinRim: 2,
+  /** Far field: the terrain starts fading here… */
+  farStart: 150,
+  /** …and is exactly 0 beyond here, matching the flat ground disc. */
+  farEnd: 185,
+  /** Central-difference step for the normal. */
+  normalStep: 0.5,
+} as const;
+
+/** One lattice value in [-1, 1). Same sin-hash as everything else here. */
+function lattice(ix: number, iz: number, salt: number): number {
+  return hash(ix * 7.31 + iz * 13.7 + 91.7 + salt) * 2 - 1;
+}
+
+/** Bilinear value noise on the lattice, smoothstep-interpolated (so the
+ * gradient is continuous across cell edges — a linear interpolation would
+ * put a crease on every lattice line). */
+function valueNoise(x: number, z: number, wavelength: number, salt: number): number {
+  const fx = x / wavelength;
+  const fz = z / wavelength;
+  const ix = Math.floor(fx);
+  const iz = Math.floor(fz);
+  const tx = smoothstep(0, 1, fx - ix);
+  const tz = smoothstep(0, 1, fz - iz);
+  const v00 = lattice(ix, iz, salt);
+  const v10 = lattice(ix + 1, iz, salt);
+  const v01 = lattice(ix, iz + 1, salt);
+  const v11 = lattice(ix + 1, iz + 1, salt);
+  const a = v00 + (v10 - v00) * tx;
+  const b = v01 + (v11 - v01) * tx;
+  return a + (b - a) * tz;
+}
+
+/** The 2-octave field, ±3.2, before any fade. */
+function terrainNoise(x: number, z: number): number {
+  let v = 0;
+  for (const o of TERRAIN.octaves) v += o.amplitude * valueNoise(x, z, o.wavelength, o.salt);
+  return v;
+}
+
+/** The flat-clearing gate: 0 on the hatch disc, 1 out in the field. */
+function clearGate(r0: number): number {
+  return smoothstep(TERRAIN.clearRadius, TERRAIN.clearEdge, r0);
+}
+
+/** The far-field gate: 1 over the world, 0 past `farEnd`, where the terrain
+ * has to meet the flat outer ground disc. */
+function farGate(r0: number): number {
+  return 1 - smoothstep(TERRAIN.farStart, TERRAIN.farEnd, r0);
+}
+
+/**
+ * 0–1 weight of one region's HEIGHT shelf, straight off its blobs and
+ * unclamped by water or island (a basin overrides it afterwards anyway).
+ * Measured from the signed distance to each wobbled edge rather than
+ * `blobWeight`'s symmetric band, so a shelf is flat well before the center —
+ * see TERRAIN.shelfInner.
+ */
+function shelfWeight(blobs: readonly Blob[], falloff: number, x: number, z: number): number {
+  let w = 0;
+  for (const b of blobs) {
+    const dx = x - b.x;
+    const dz = z - b.z;
+    const d = Math.hypot(dx, dz);
+    const out = d - wobbledRadius(b, Math.atan2(dz, dx));
+    const v = 1 - smoothstep(-TERRAIN.shelfInner, falloff, out);
+    if (v > w) w = v;
+  }
+  return w;
+}
+
+/**
+ * The smooth height field, before terracing: rolling noise plus the region
+ * shelves, gated flat on the hatch clearing.
+ */
+function smoothField(x: number, z: number): number {
+  const shelf =
+    TERRAIN.forestShelf * shelfWeight(FOREST_BLOBS, TERRAIN.forestShelfFalloff, x, z) +
+    TERRAIN.mountainShelf * shelfWeight(MOUNTAIN_BLOBS, TERRAIN.mountainShelfFalloff, x, z);
+  return (terrainNoise(x, z) + shelf) * clearGate(Math.hypot(x, z));
+}
+
+/**
+ * Snap a smooth height onto tiers: a flat tread, then a rounded riser over
+ * the middle of each step. Terracing is what makes elevation READ — an
+ * orthographic ink render swallows a smooth swell whole, and shows a
+ * staircase clearly, because each tread holds one value and each riser
+ * gives the hatching a contour to follow. The riser is a smoothstep, never
+ * a cut: no hard-edged geometry anywhere (TASTE §3).
+ */
+function terrace(v: number): number {
+  const step = TERRAIN.terraceStep;
+  const k = Math.floor(v / step);
+  const f = v / step - k;
+  return step * (k + smoothstep(TERRAIN.terraceRiser[0], TERRAIN.terraceRiser[1], f));
+}
+
+/**
+ * The land: the smooth field snapped onto tiers, then faded to the flat
+ * outer ground disc.
+ *
+ * The far fade runs OUTSIDE the terrace, not inside it. Fading the smooth
+ * field first and terracing afterwards made the fade band cross a tier every
+ * few units — the shoulder stands 8 units high where the fade begins — and
+ * turned the world's rim into a flight of steps at three times the slope
+ * bound. Fading the terraced height instead just settles the tiers down onto
+ * the disc.
+ */
+function terracedLand(x: number, z: number): number {
+  return terrace(smoothField(x, z)) * farGate(Math.hypot(x, z));
+}
+
+/**
+ * The flat level a body's water surface sits at — its basin floor: the tier
+ * the land stands on at the body's own center, `basinDrop` below it. One
+ * number per body, so a water surface is a plane and never a warped sheet.
+ */
+export function waterLevel(body: WaterBody): number {
+  return terracedLand(body.x, body.z) - TERRAIN.basinDrop;
+}
+
+/**
+ * Ground height at (x, z), world units. Pure, deterministic.
+ *
+ * Basins are applied SEQUENTIALLY and LAST, each replacing the running
+ * height the same way. Last, so a basin's interior is EXACTLY its
+ * `waterLevel` — no gate multiplies it afterwards, which matters now that
+ * the lake's far shore reaches past the start of the far-field fade.
+ * Sequentially, because no point falls inside two shore ramps: the closest
+ * pair of water bodies clears far more edge to edge than their two ramps add
+ * up to, so the order cannot matter and this is the same thing as "the
+ * nearest body".
+ */
+export function terrainHeight(x: number, z: number): number {
+  let h = terracedLand(x, z);
+  for (const body of WATER_BODIES) {
+    const dx = x - body.x;
+    const dz = z - body.z;
+    const d = Math.hypot(dx, dz);
+    // Signed distance to the OUTER wobbled shore: negative inside it, which
+    // is the island and the causeway too — the whole disc is one basin.
+    const out = d - wobbledRadius(body, Math.atan2(dz, dx));
+    if (out >= TERRAIN.shoreRamp) continue;
+    const level = waterLevel(body);
+    const t = smoothstep(0, TERRAIN.shoreRamp, out);
+    // out <= 0 → t = 0 → exactly `level`: flat basin, flat island, flat
+    // causeway, and no land inside the shore that water could sit above.
+    const blended = level + (h - level) * t;
+    // The rim guard is the continuous form of "never below the water line":
+    // a plain max() would hold every low tier in the world up to the level
+    // of the nearest lake, so the guard releases over the same ramp.
+    const rim = 1 - smoothstep(TERRAIN.basinRim, TERRAIN.shoreRamp, out);
+    h = blended + rim * Math.max(0, level - blended);
+  }
+  return h;
+}
+
+/** Unit surface normal by central differences. */
+export function terrainNormal(x: number, z: number): { x: number; y: number; z: number } {
+  const e = TERRAIN.normalStep;
+  const dhdx = (terrainHeight(x + e, z) - terrainHeight(x - e, z)) / (2 * e);
+  const dhdz = (terrainHeight(x, z + e) - terrainHeight(x, z - e)) / (2 * e);
+  const len = Math.hypot(dhdx, 1, dhdz);
+  return { x: -dhdx / len, y: 1 / len, z: -dhdz / len };
+}
+
 // ── outlines ─────────────────────────────────────────────────────────────────
 
 /** Default vertex count of an outer shoreline. */
@@ -339,38 +635,58 @@ export function waterFillOutline(body: WaterBody, points = OUTLINE_POINTS): [num
 
 // ── physics ──────────────────────────────────────────────────────────────────
 
-/** [D] Ring circles overlap by 8% so a creature cannot squeeze between two of
- * them into the lake. */
-const RING_COLLIDER_OVERLAP = 1.08;
+/** [D] Radius of one water collider. Small enough that the tiling follows a
+ * wobbled shore and a 3-unit causeway; big enough that ~1200 of them cover
+ * every body without turning the collider grid into a particle system. */
+export const WATER_COLLIDER_R = 2.2;
+
+/** [D] How far a collider is allowed to protrude past the shore onto land.
+ * A circle is kept only where its center is water with the body shrunk by
+ * `WATER_COLLIDER_R - WATER_COLLIDER_BITE`, so the worst case is this much
+ * land blocked and at most ~1.6 units of shore water left unblocked. */
+const WATER_COLLIDER_BITE = 0.6;
+
+/** [D] Row pitch of the tiling: a hex offset (rows staggered by half a
+ * spacing, √3/2 apart) packs circles of one radius with no gap a creature
+ * can thread, at the fewest circles. */
+const WATER_COLLIDER_ROW = 0.866;
 
 /**
- * Hard circles approximating every water body. A pond is one circle. A lake
- * is a RING of circles laid along the mid radius — one big disc would seal
- * the island off, and the island is walkable land. The land bridge is left
- * physically open: every circle whose center falls within the bridge's
- * half-angle (plus its own angular radius, so it cannot reach in from the
- * side) is skipped.
+ * Hard circles approximating every water body — a uniform hex-offset TILING
+ * of `WATER_COLLIDER_R` circles over the body's bounding square, keeping
+ * every circle whose center is water once the body is shrunk by
+ * `WATER_COLLIDER_R - WATER_COLLIDER_BITE`.
  *
- * Allocates fresh each call; callers own the result.
+ * This used to be one circle per pond and a ring of big circles along the
+ * lake's mid radius, which only works while the ring is narrow. The lake is
+ * a 33-unit-wide body of water now, and a ring of 16-unit circles would
+ * have left a gap around the causeway ten times the causeway's own width. A
+ * tiling has no such coupling: the shape it blocks is the shape of the
+ * water, causeway included, at any body size.
+ *
+ * The grid is anchored on the body center — so a pond always gets a circle
+ * dead center — and the whole thing is integer-indexed, so it is
+ * deterministic to the bit. Allocates fresh each call; callers own the
+ * result.
  */
 export function waterColliders(): Collider[] {
   const out: Collider[] = [];
+  const step = WATER_COLLIDER_R;
+  const row = WATER_COLLIDER_R * WATER_COLLIDER_ROW;
+  const pad = -(WATER_COLLIDER_R - WATER_COLLIDER_BITE);
   for (const body of WATER_BODIES) {
-    const isl = body.island;
-    if (!isl) {
-      out.push({ x: body.x, z: body.z, r: body.r, hard: true });
-      continue;
-    }
-    const rm = (body.r + isl.r) / 2;
-    const ringHalf = (body.r - isl.r) / 2;
-    const cr = ringHalf * RING_COLLIDER_OVERLAP;
-    const count = Math.ceil((TAU * rm) / (ringHalf * 0.9));
-    const ist = body.isthmus;
-    const gap = ist ? ist.halfAngle + cr / rm : -1;
-    for (let k = 0; k < count; k++) {
-      const a = (k * TAU) / count;
-      if (ist && Math.abs(wrapToPi(a - ist.angle)) < gap) continue;
-      out.push({ x: body.x + Math.cos(a) * rm, z: body.z + Math.sin(a) * rm, r: cr, hard: true });
+    const reach = body.r * WOBBLE_MAX;
+    const jn = Math.ceil(reach / row);
+    const iMax = Math.ceil(reach / step) + 1;
+    for (let j = -jn; j <= jn; j++) {
+      const z = body.z + j * row;
+      // Odd rows shift half a step: the hex offset.
+      const shift = j % 2 === 0 ? 0 : 0.5;
+      for (let i = -iMax; i <= iMax; i++) {
+        const x = body.x + (i + shift) * step;
+        if (!bodyHoldsWater(body, x, z, pad)) continue;
+        out.push({ x, z, r: WATER_COLLIDER_R, hard: true });
+      }
     }
   }
   return out;

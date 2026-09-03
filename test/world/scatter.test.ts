@@ -13,7 +13,7 @@ import {
   type MeshStandardMaterial,
 } from 'three';
 import { WORLD } from '../../src/taste/tokens';
-import { sampleLandscape, waterColliders } from '../../src/world/landscape';
+import { sampleLandscape, WATER_BODIES, waterColliders } from '../../src/world/landscape';
 import { BUILDING_COURTYARD_VARIANT, PROP_VARIANT_COUNTS } from '../../src/world/props';
 import {
   applyInstanceVariation,
@@ -312,7 +312,9 @@ describe('scatter placement', () => {
     // Monoliths: rare, mostly standing in pairs.
     const monoliths = of('monolith');
     expect(monoliths.length).toBeGreaterThan(1);
-    expect(monoliths.length).toBeLessThan(12);
+    // 20, not 12: the scattered region grew from ±120 to ±160 (2026-09-03),
+    // which is 1.8× the ground, and a per-cell rarity scales with it.
+    expect(monoliths.length).toBeLessThan(20);
     const paired = monoliths.filter((p) =>
       monoliths.some((q) => q !== p && Math.hypot(q.x - p.x, q.z - p.z) < near),
     ).length;
@@ -584,7 +586,12 @@ describe('scatter colliders', () => {
       // Props first, in positions() order, then the landscape's static water
       // circles appended (creatures must not walk into a pond).
       const water = waterColliders();
-      expect(water.length).toBe(20);
+      // A budget, not a fixture: the water circles are a uniform tiling now
+      // (2026-09-03) rather than one circle per pond plus a 16-circle ring,
+      // so the count tracks the wetted area. 1176 for the shipped layout; the
+      // exact number is landscape's business and pinned in its own tests.
+      expect(water.length).toBeGreaterThan(WATER_BODIES.length);
+      expect(water.length).toBeLessThanOrEqual(2500);
       expect(colliders.length).toBe(props.length + water.length);
       expect(colliders.slice(props.length)).toEqual(water);
       // Same iteration order as positions(): pair them up.

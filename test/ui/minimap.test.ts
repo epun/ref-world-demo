@@ -26,9 +26,11 @@ import { WATER_BODIES, waterFillOutline } from '../../src/world/landscape';
 const frame: MapFrame = { w: 200, h: 200, inset: 14 };
 
 describe('fixed world extent', () => {
-  it('covers the scattered region (±120) with breathing room', () => {
-    expect(WORLD_MAP_EXTENT).toBeGreaterThanOrEqual(120);
-    expect(WORLD_MAP_EXTENT).toBeLessThanOrEqual(160);
+  it('covers the scattered region (±160) with breathing room', () => {
+    // The field scaled up with the spread-out layout (2026-09-03): scatter
+    // reaches ±160 and the range runs out to z ≈ -147, so the map has to.
+    expect(WORLD_MAP_EXTENT).toBeGreaterThanOrEqual(160);
+    expect(WORLD_MAP_EXTENT).toBeLessThanOrEqual(220);
   });
 });
 

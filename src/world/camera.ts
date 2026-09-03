@@ -40,7 +40,7 @@ const ELEVATION_MAX = 1.45;
 
 /** Pan bounds: the look-target stays inside the populated region, so no
  * combination of pan, orbit, and zoom reaches the world's edge. */
-const PAN_LIMIT = 150;
+const PAN_LIMIT = 200;
 
 export class CameraRig {
   readonly camera: OrthographicCamera;
