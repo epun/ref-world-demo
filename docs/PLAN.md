@@ -78,7 +78,7 @@ replace it.** Nothing generates a new shape.
 | `src/inflate/` | Silhouette → `BufferGeometry`. Teddy-style puff. **Pure + deterministic** |
 | `src/character/` | Archetype, gait, locomotion, emotes, eye SDF |
 | `src/egg/` | Egg mesh, drawing wrap, wobble, crack shader, hatch sequence |
-| `src/world/` | Camera rig, ground, `Surface`, scatter placement, shadow pass |
+| `src/world/` | Camera rig, ground, `Surface`, scatter placement, shadow pass, landscape (authored map), water |
 | `src/motion/` | Drift-settle solver, ambient-drift floor, the ζ≥1 spring |
 | `src/net/` | Room protocol, WebSocket client, state sync |
 | `src/phone/` | The companion app — draw, wait, alive, emote wheel, minimap |

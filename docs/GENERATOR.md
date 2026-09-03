@@ -190,9 +190,49 @@ sleep · play · explore`
 
 ### Terrain
 
-Soft rolling elevation through the existing `Surface` seam (`RollingSurface`: low-frequency
-value-noise heightfield, gentle enough that locomotion needs no gait change). Large open
-fields; organic silhouettes; emptiness as material.
+The heightfield described in the original wave (`RollingSurface`) was never built. What
+shipped instead is an AUTHORED map (`src/world/landscape.ts`, PURE — no Three.js, no DOM, no
+clocks, no `Math.random`): a forest to the west with a smaller spur running south-east off it
+[D], a mountain backdrop of three overlapping masses along the north edge whose near edge
+sits outside the roam radius on purpose — mountains are scenery creatures walk toward, never
+terrain they climb [D] — four small ponds, and one lake with an island in its middle reached
+by a land bridge.
+
+The layout is FIXED and does not ride the scatter seed: re-seeding re-rolls which props grow
+where, never the map itself, so a re-seeded world is the same country with different trees in
+it. Every feature's edge comes out of one wobbled-radius function, never a circle, so
+placement, physics, the water renderer and the minimap outline all agree on exactly the same
+edge instead of drifting apart by a fraction of a unit.
+
+- **Scatter blends per-region seed tables by soft weight** (`src/world/scatter.ts`, the
+  "landscape-aware seeding" section around `FOREST_SEED`): a cell's placement probability
+  blends the plain's table with whichever region weights (`forest`, `mountain`) the landscape
+  sample returns for that cell. In the forest, tree probability runs roughly 12× the plain's
+  [D]; the range seeds scree and stubborn conifers; the island seeds palms and nothing built
+  — no building, tower, picnic table or cactus ever reaches it. A cell with zero forest and
+  zero mountain weight collapses to EXACTLY the pre-map expression, so the open plain still
+  rolls the world that shipped.
+- **Nothing is planted in water.** A shore keep-out plants nothing — not even a tick — near
+  the waterline, and a tighter final keep-out blocks every placement, cluster neighbor and
+  reed from standing in or against the water itself.
+- **Mountains are their own prop kind**, placed from the weight field in a pre-pass before
+  anything else claims the ground, not rolled per-cell like the rest of scatter. They are the
+  one kind exempt from creature exclusion circles — a character never pushes a mountain out
+  of the way — and they sweep their own footprint clear of every other placement, so a range
+  reads as one merged mass rather than a mountain with trees growing through it.
+- **Water is drawn, not just filled** (`src/world/water.ts`): a flat `WORLD.neutralMid` fill
+  one measured step below the paper, a hand-drawn ink shoreline ribbon walked around each
+  body's fill outline (a pen's varying width, the occasional lifted segment), and sparse
+  ripple marks drifting on the ambient floor. The shoreline is its own mesh because a flat
+  polygon a hair above the ground breaks neither the depth nor the normal target the ink pass
+  reads — without it a pond would be a value with no edge.
+- **Reeds fringe the outer shore and the island shore** — `shoreSamples()` walks both rings
+  independently of the ink ribbon's fill outline, so it never sees the land bridge's cut-out
+  wedge. The bridge itself carries no reeds on either bank.
+- **The lake's island is reachable.** A ring of hard colliders runs around the lake, open at
+  the land bridge, so creatures can walk to the island on foot.
+
+Rolling elevation through the `Surface` seam remains open for later.
 
 ### Ink rendering pass *(reference-locked by user)*
 
