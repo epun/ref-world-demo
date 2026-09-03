@@ -302,6 +302,41 @@ export function islandOutline(
   return isl ? ringOutline(isl, points) : null;
 }
 
+/** The polygon the water FILL is built from: for a pond the outer outline; for a lake the ring
+ * with the land bridge cut out — outer outline points outside the isthmus wedge (starting just
+ * past one edge of the bridge), then the island outline points inside the same angular range in
+ * reverse, so one simple polygon (no hole) traces the C-shaped water. Counter-clockwise, closed,
+ * last point not repeated. */
+export function waterFillOutline(body: WaterBody, points = OUTLINE_POINTS): [number, number][] {
+  const isl = islandBlob(body);
+  const ist = body.isthmus;
+  // A pond is a plain disc of water: its outer shore IS its fill.
+  if (!isl || !ist) return ringOutline(body, points);
+  // Sampling starts AT the bridge angle so the wedge is one contiguous run of
+  // dropped samples — the kept outer points then form a single arc from just
+  // past one bridge edge round to just before the other, and the polygon needs
+  // no rotation afterwards to be simple.
+  const outer: [number, number][] = [];
+  const inner: [number, number][] = [];
+  for (let i = 0; i < points; i++) {
+    const theta = ist.angle + (i / points) * TAU;
+    const cos = Math.cos(theta);
+    const sin = Math.sin(theta);
+    // Each ring is tested at ITS OWN radius: the bridge is a wedge whose
+    // angular width narrows with distance, so the outer shore and the island
+    // shore leave it at different angles. Pad 0 — this is the water's true
+    // edge, not a keep-out.
+    const ro = wobbledRadius(body, theta);
+    if (!inIsthmus(body, theta, ro, 0)) outer.push([body.x + cos * ro, body.z + sin * ro]);
+    const ri = wobbledRadius(isl, theta);
+    if (!inIsthmus(body, theta, ri, 0)) inner.push([body.x + cos * ri, body.z + sin * ri]);
+  }
+  // Out along the outer shore, back along the island's — the return leg runs
+  // in reverse so the two arcs join into one C instead of crossing.
+  inner.reverse();
+  return [...outer, ...inner];
+}
+
 // ── physics ──────────────────────────────────────────────────────────────────
 
 /** [D] Ring circles overlap by 8% so a creature cannot squeeze between two of

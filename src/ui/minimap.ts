@@ -8,6 +8,12 @@
  * image, not chrome, and that shipped as on-taste. Everything on it is a
  * hairline mark:
  *
+ * - water: the ponds and the lake, filled WORLD.neutralMid inside a hairline
+ *   WORLD.ink shore. This is the ONE filled shape on the map and it is not
+ *   chrome — the world brief's own reference is "isometric village and
+ *   mountain maps", and a lake drawn on a map is terrain, exactly like the
+ *   prop marks beside it. The mark-set lint (TASTE §4) watches this file:
+ *   nothing here has become a panel, a card, or a shadow;
  * - prop marks: sparse tiny WORLD.neutral dots, subsampled from the scatter
  *   so the map stays quiet (density is the design, TASTE §2.3);
  * - creatures: small CHARACTER.body dots — the world view has no "self",
@@ -29,6 +35,7 @@
 
 import { Vector3 } from 'three';
 import { sampleDrift } from '../motion/ambient';
+import { WATER_BODIES, waterFillOutline } from '../world/landscape';
 import {
   mapBorderInset,
   mapMarkScale,
@@ -222,6 +229,23 @@ export function installWorldMinimap(opts: WorldMinimapOptions): WorldMinimapHand
     return propCache;
   };
 
+  // The geography is authored and global — no option to pass, and no rebuild
+  // path: these polygons are the same on every device forever. Mapping them to
+  // canvas px is the only per-size work, so it is cached against the frame.
+  const waterFills = WATER_BODIES.map((body) => waterFillOutline(body));
+  let waterCache: { px: number; py: number }[][] = [];
+  let waterCacheKey = '';
+  const waterMarks = (frame: MapFrame): { px: number; py: number }[][] => {
+    const key = `${frame.w}|${frame.h}|${frame.inset}`;
+    if (key !== waterCacheKey) {
+      waterCache = waterFills.map((poly) =>
+        poly.map(([x, z]) => worldToMap(x, z, WORLD_MAP_EXTENT, frame)),
+      );
+      waterCacheKey = key;
+    }
+    return waterCache;
+  };
+
   const frameFor = (w: number, h: number, inset: number, scale: number): MapFrame => ({
     w,
     h,
@@ -262,6 +286,21 @@ export function installWorldMinimap(opts: WorldMinimapOptions): WorldMinimapHand
     ctx.save();
     traceLoop(ctx, border);
     ctx.clip();
+
+    // Water: the map's terrain, drawn under everything that stands on it —
+    // the same flat value the world uses, inside the same drawn shore.
+    ctx.fillStyle = WORLD.neutralMid;
+    ctx.strokeStyle = WORLD.ink;
+    ctx.lineWidth = 1;
+    for (const poly of waterMarks(frame)) {
+      if (poly.length < 3) continue;
+      ctx.beginPath();
+      ctx.moveTo(poly[0]!.px, poly[0]!.py);
+      for (let i = 1; i < poly.length; i++) ctx.lineTo(poly[i]!.px, poly[i]!.py);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    }
 
     // Prop marks: sparse neutral dots, the terrain at a glance.
     ctx.fillStyle = WORLD.neutral;

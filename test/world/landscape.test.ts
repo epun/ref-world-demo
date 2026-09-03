@@ -23,6 +23,7 @@ import {
   sampleLandscape,
   shoreSamples,
   waterColliders,
+  waterFillOutline,
   waterOutline,
   WATER_BODIES,
   WOBBLE_MAX,
@@ -327,6 +328,110 @@ describe('landscape — outlines', () => {
       expect(Math.hypot(x - LAKE.x, z - LAKE.z)).toBeLessThan(LAKE.r);
     }
     for (const p of PONDS) expect(islandOutline(p)).toBeNull();
+  });
+});
+
+describe('landscape — water fill outline', () => {
+  const TAU = Math.PI * 2;
+  const wrapToPi = (a: number): number => a - TAU * Math.round(a / TAU);
+  const shoelace = (poly: readonly [number, number][]): number => {
+    let a = 0;
+    for (let i = 0; i < poly.length; i++) {
+      const p = poly[i]!;
+      const q = poly[(i + 1) % poly.length]!;
+      a += p[0] * q[1] - q[0] * p[1];
+    }
+    return a / 2;
+  };
+  /** Proper crossing of two open segments (shared endpoints do not count). */
+  const crosses = (
+    a: readonly number[],
+    b: readonly number[],
+    c: readonly number[],
+    d: readonly number[],
+  ): boolean => {
+    const side = (o: readonly number[], p: readonly number[], q: readonly number[]): number =>
+      (p[0]! - o[0]!) * (q[1]! - o[1]!) - (p[1]! - o[1]!) * (q[0]! - o[0]!);
+    const d1 = side(c, d, a);
+    const d2 = side(c, d, b);
+    const d3 = side(a, b, c);
+    const d4 = side(a, b, d);
+    return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
+  };
+
+  it('is exactly the outer outline for a pond — a pond is a disc of water', () => {
+    for (const pond of PONDS) {
+      expect(waterFillOutline(pond)).toEqual(waterOutline(pond));
+      expect(waterFillOutline(pond, 24)).toEqual(waterOutline(pond, 24));
+    }
+  });
+
+  it('puts every lake point on a wobbled edge — the outer shore or the island', () => {
+    const isl = { x: LAKE.x, z: LAKE.z, r: LAKE.island!.r, seed: LAKE.island!.seed };
+    for (const [x, z] of waterFillOutline(LAKE)) {
+      const theta = Math.atan2(z - LAKE.z, x - LAKE.x);
+      const d = Math.hypot(x - LAKE.x, z - LAKE.z);
+      const onOuter = Math.abs(d - wobbledRadius(LAKE, theta)) < 1e-9;
+      const onIsland = Math.abs(d - wobbledRadius(isl, theta)) < 1e-9;
+      expect(onOuter || onIsland).toBe(true);
+    }
+  });
+
+  it('cuts the land bridge out — no fill point sits in the isthmus wedge', () => {
+    const ist = LAKE.isthmus!;
+    // The bridge's half-width wobbles ±15% around its authored half-angle, so
+    // "outside the wedge at its own radius" implies at least 0.85 of it.
+    const floor = ist.halfAngle * 0.85;
+    for (const [x, z] of waterFillOutline(LAKE)) {
+      const theta = Math.atan2(z - LAKE.z, x - LAKE.x);
+      expect(Math.abs(wrapToPi(theta - ist.angle))).toBeGreaterThanOrEqual(floor);
+    }
+    // And the bridge is genuinely dry land inside the ring: both rings are
+    // sampled at the full budget, and both lose their bridge run.
+    expect(waterFillOutline(LAKE).length).toBeLessThan(2 * OUTLINE_POINTS);
+  });
+
+  it('traces one simple closed polygon — a c, not a ring with a hole', () => {
+    const poly = waterFillOutline(LAKE);
+    const n = poly.length;
+    // Closed by convention: the last point is NOT the first one repeated.
+    expect(poly[0]).not.toEqual(poly[n - 1]);
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        if ((j + 1) % n === i || (i + 1) % n === j) continue;
+        expect(
+          crosses(poly[i]!, poly[(i + 1) % n]!, poly[j]!, poly[(j + 1) % n]!),
+          `segments ${i} and ${j} cross`,
+        ).toBe(false);
+      }
+    }
+  });
+
+  it('winds counter-clockwise and encloses the ring minus the land bridge', () => {
+    const fill = shoelace(waterFillOutline(LAKE));
+    const ring = shoelace(waterOutline(LAKE)) - shoelace(islandOutline(LAKE)!);
+    expect(fill).toBeGreaterThan(0);
+    // Strictly less than the whole ring: the bridge is missing from it.
+    expect(fill).toBeLessThan(ring);
+    // And it matches the water isWater actually reports, sampled on a grid —
+    // the fill agrees with the geography instead of drifting from it.
+    const reach = LAKE.r * WOBBLE_MAX + 1;
+    const step = 0.1;
+    let cells = 0;
+    for (let x = LAKE.x - reach; x <= LAKE.x + reach; x += step) {
+      for (let z = LAKE.z - reach; z <= LAKE.z + reach; z += step) if (isWater(x, z)) cells++;
+    }
+    const measured = cells * step * step;
+    // Chords cut a hair inside every wobble, so the polygon runs slightly small.
+    expect(fill / measured).toBeGreaterThan(0.95);
+    expect(fill / measured).toBeLessThan(1.02);
+  });
+
+  it('is deterministic and honours the requested point budget', () => {
+    expect(waterFillOutline(LAKE)).toEqual(waterFillOutline(LAKE));
+    const coarse = waterFillOutline(LAKE, 32);
+    expect(coarse.length).toBeGreaterThan(3);
+    expect(coarse.length).toBeLessThan(64);
   });
 });
 

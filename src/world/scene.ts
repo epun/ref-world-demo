@@ -16,6 +16,7 @@ import { InkPass } from './ink';
 import { createLighting } from './lighting';
 import { createScatter, type Scatter } from './scatter';
 import { FlatShadows } from './shadows';
+import { createWater, type Water } from './water';
 
 export type FrameCallback = (dt: number, nowMs: number) => void;
 
@@ -36,6 +37,12 @@ export interface WorldHandles {
   shadows: FlatShadows;
   /** Prop scatter: exclusions come from the creature coordinator. */
   scatter: Scatter;
+  /**
+   * Ponds and the lake: flat fills, drawn shorelines, drifting ripple marks.
+   * Built once from the authored geography (src/world/landscape.ts) and never
+   * rebuilt — the seed re-rolls props, never the map.
+   */
+  water: Water;
   /** Ink pass tuning surface for the dev panel. */
   ink: InkPass;
   /** Grain pass amplitude handle (dev panel slider + grain gate). */
@@ -88,7 +95,10 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
   const lighting = createLighting();
 
   const ground = createGround();
-  scene.add(ground, lighting.group, shadows.group, scatter.group);
+  // Water sits directly on the paper, under the ticks, the prop stamps and the
+  // creature shadows — so a creature walking the shore still casts across it.
+  const water = createWater();
+  scene.add(ground, water.group, lighting.group, shadows.group, scatter.group);
 
   // Time-of-day + weather. All its setters glide through ζ≥1 springs; the
   // per-frame update pushes sun direction, light balance, exposure, fog and
@@ -112,6 +122,8 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
   (window as Window & { __refworldScatter?: Scatter }).__refworldScatter = scatter;
   // The live camera, for framing/focus smokes.
   (window as Window & { __refworldCamera?: unknown }).__refworldCamera = cameraRig.camera;
+  // And the water, for the shoreline/ripple smokes and the stillness probe.
+  (window as Window & { __refworldWater?: Water }).__refworldWater = water;
 
   const resize = (): void => {
     const width = window.innerWidth;
@@ -209,6 +221,9 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
 
     cameraRig.update(dt, nowMs);
     environment.update(dt, nowMs);
+    // The ripple drift: one uniform write, a sine of wall-clock time. Nothing
+    // on the water ever fully arrests (TASTE §2.1).
+    water.update(nowMs);
     // Sun-driven shadow stamps: one shared ellipse + one flat value per
     // frame for every stamp (scatter throttles its instanced re-lay).
     const sun = environment.sun;
@@ -231,6 +246,7 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
     renderer,
     shadows,
     scatter,
+    water,
     ink,
     grain,
     environment,

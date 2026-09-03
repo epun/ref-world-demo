@@ -21,6 +21,7 @@ import {
   WORLD_MAP_EXTENT,
   type Inhabitant,
 } from '../../src/ui/minimap';
+import { WATER_BODIES, waterFillOutline } from '../../src/world/landscape';
 
 const frame: MapFrame = { w: 200, h: 200, inset: 14 };
 
@@ -144,5 +145,25 @@ describe('phone helper reuse', () => {
     const at = worldToMap(0, 0, WORLD_MAP_EXTENT, frame);
     expect(at.px).toBeCloseTo(frame.w / 2);
     expect(at.py).toBeCloseTo(frame.h / 2);
+  });
+});
+
+describe('water on the map', () => {
+  it('maps every pond and the lake inside the mapped square', () => {
+    // The map draws the authored geography directly (no option, no rebuild) —
+    // so the fixed extent has to actually contain it.
+    for (const body of WATER_BODIES) {
+      const poly = waterFillOutline(body);
+      expect(poly.length).toBeGreaterThan(3);
+      for (const [x, z] of poly) {
+        expect(Math.abs(x)).toBeLessThan(WORLD_MAP_EXTENT);
+        expect(Math.abs(z)).toBeLessThan(WORLD_MAP_EXTENT);
+        const at = worldToMap(x, z, WORLD_MAP_EXTENT, frame);
+        expect(at.px).toBeGreaterThan(0);
+        expect(at.px).toBeLessThan(frame.w);
+        expect(at.py).toBeGreaterThan(0);
+        expect(at.py).toBeLessThan(frame.h);
+      }
+    }
   });
 });

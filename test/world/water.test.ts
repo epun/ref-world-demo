@@ -1,0 +1,323 @@
+/**
+ * Water tests — the built scene graph, headless. Meshes, geometries and
+ * materials are plain objects in node (no WebGL), so everything the pass
+ * builds can be read straight off the group.
+ *
+ * What these pin is the seam between the pure geography and the drawn result:
+ * that every vertex the pass emits is actually over water, that the land
+ * bridge stays dry, that the marks come from tokens and nothing else, and that
+ * the surface never fully arrests.
+ */
+
+import { describe, expect, it } from 'vitest';
+import { Color, Mesh, MeshBasicMaterial, type BufferAttribute } from 'three';
+import { SURFACE, WORLD } from '../../src/taste/tokens';
+import {
+  RIPPLE_MARGIN,
+  WATER_BODIES,
+  isWater,
+  rippleSpots,
+  wobbledRadius,
+  type WaterBody,
+} from '../../src/world/landscape';
+import {
+  RIPPLE_DRIFT,
+  RIPPLE_LIFT,
+  SHORE_LIFT,
+  WATER_LIFT,
+  createWater,
+} from '../../src/world/water';
+
+/** The scatter's ticks sit here — everything water must stay under it. */
+const TICK_LIFT = 0.015;
+/** The pond margin water.ts uses (ponds are too small for the default). */
+const POND_MARGIN = 1.0;
+
+const LAKE: WaterBody = WATER_BODIES[0]!;
+/** The lake's island as a plain blob, for radius tests. */
+const ISLAND = { x: LAKE.x, z: LAKE.z, r: LAKE.island!.r, seed: LAKE.island!.seed };
+
+const wrapToPi = (a: number): number => a - Math.PI * 2 * Math.round(a / (Math.PI * 2));
+
+const meshes = (): Mesh[] => createWater().group.children as Mesh[];
+
+const named = (name: string): Mesh => {
+  const found = createWater().group.getObjectByName(name);
+  expect(found, name).toBeInstanceOf(Mesh);
+  return found as Mesh;
+};
+
+/** Every position in a geometry, as world x/z (the meshes only lift in y). */
+function points(mesh: Mesh): [number, number][] {
+  const attr = mesh.geometry.getAttribute('position') as BufferAttribute;
+  const out: [number, number][] = [];
+  for (let i = 0; i < attr.count; i++) out.push([attr.getX(i), attr.getZ(i)]);
+  return out;
+}
+
+function totalRippleSpots(): number {
+  let n = 0;
+  for (const body of WATER_BODIES) {
+    n += rippleSpots(body, body.kind === 'pond' ? POND_MARGIN : RIPPLE_MARGIN).length;
+  }
+  return n;
+}
+
+describe('water — what gets built', () => {
+  it('is one named group holding a fill per body, six shores and one mark sheet', () => {
+    const water = createWater();
+    expect(water.group.name).toBe('water');
+    const names = water.group.children.map((child) => child.name);
+    expect(names).toEqual([
+      'water-lake-0',
+      'water-pond-1',
+      'water-pond-2',
+      'water-pond-3',
+      'water-pond-4',
+      'shore-lake-0',
+      'shore-pond-1',
+      'shore-pond-2',
+      'shore-pond-3',
+      'shore-pond-4',
+      'ripples',
+    ]);
+    // One fill and ONE ribbon per body — the lake's ribbon walks its whole
+    // fill outline, so the outer shore, both bridge banks and the island's
+    // shore are a single closed stroke — plus one ripple sheet: eleven draws.
+    expect(names.filter((n) => n.startsWith('water-'))).toHaveLength(WATER_BODIES.length);
+    expect(names.filter((n) => n.startsWith('shore-'))).toHaveLength(WATER_BODIES.length);
+  });
+
+  it('gives every mark two arcs of six quads, in one buffer', () => {
+    const ripples = named('ripples');
+    const attr = ripples.geometry.getAttribute('position');
+    const spots = totalRippleSpots();
+    expect(spots).toBeGreaterThan(0);
+    // 2 arcs × 6 quads × 2 triangles per spot, non-indexed.
+    expect(attr.count / 3).toBe(spots * 2 * 6 * 2);
+    expect(ripples.geometry.getIndex()).toBeNull();
+  });
+
+  it('lifts each layer a hair, in drawing order, under the ticks', () => {
+    expect(WATER_LIFT).toBeLessThan(SHORE_LIFT);
+    expect(SHORE_LIFT).toBeLessThan(RIPPLE_LIFT);
+    expect(RIPPLE_LIFT).toBeLessThan(TICK_LIFT);
+    expect(WATER_LIFT).toBeGreaterThan(0);
+    for (const mesh of meshes()) {
+      const expected = mesh.name.startsWith('water-')
+        ? WATER_LIFT
+        : mesh.name.startsWith('shore-')
+          ? SHORE_LIFT
+          : RIPPLE_LIFT;
+      expect(mesh.position.y, mesh.name).toBe(expected);
+    }
+  });
+
+  it('faces every surface up, exactly like the paper under it', () => {
+    // The ink pass reads a normal target: a facing of its own would ring each
+    // pond in a second contour beside the drawn shoreline.
+    for (const mesh of meshes()) {
+      const normal = mesh.geometry.getAttribute('normal') as BufferAttribute;
+      expect(normal, mesh.name).toBeDefined();
+      for (let i = 0; i < normal.count; i++) {
+        expect(normal.getY(i)).toBeCloseTo(1, 6);
+        expect(Math.abs(normal.getX(i))).toBeLessThan(1e-6);
+        expect(Math.abs(normal.getZ(i))).toBeLessThan(1e-6);
+      }
+    }
+  });
+
+  it('winds every fill triangle up, so no pond is a hole seen from behind', () => {
+    for (const mesh of meshes()) {
+      if (!mesh.name.startsWith('water-')) continue;
+      const attr = mesh.geometry.getAttribute('position') as BufferAttribute;
+      const index = mesh.geometry.getIndex();
+      expect(index, mesh.name).not.toBeNull();
+      for (let i = 0; i < index!.count; i += 3) {
+        const a = index!.getX(i);
+        const b = index!.getX(i + 1);
+        const c = index!.getX(i + 2);
+        const ny =
+          (attr.getZ(b) - attr.getZ(a)) * (attr.getX(c) - attr.getX(a)) -
+          (attr.getX(b) - attr.getX(a)) * (attr.getZ(c) - attr.getZ(a));
+        expect(ny, mesh.name).toBeGreaterThan(0);
+      }
+    }
+  });
+});
+
+describe('water — everything drawn is over water', () => {
+  it('keeps every fill vertex inside the water, grown a little', () => {
+    for (const mesh of meshes()) {
+      if (!mesh.name.startsWith('water-')) continue;
+      for (const [x, z] of points(mesh)) {
+        expect(isWater(x, z, 0.5), `${mesh.name} at ${x},${z}`).toBe(true);
+      }
+    }
+  });
+
+  it('keeps every ripple vertex in open water', () => {
+    for (const [x, z] of points(named('ripples'))) {
+      expect(isWater(x, z), `ripple at ${x},${z}`).toBe(true);
+    }
+  });
+
+  it('draws both banks of the land bridge, and never crosses it', () => {
+    const ist = LAKE.isthmus!;
+    // The wedge wobbles ±15% about its authored half-angle; a stroke laid on
+    // the shore is offset by at most half a pen width, so allow a little more.
+    const floor = ist.halfAngle * 0.8;
+    let onBank = 0;
+    for (const [x, z] of points(named('shore-lake-0'))) {
+      const theta = Math.atan2(z - LAKE.z, x - LAKE.x);
+      const delta = Math.abs(wrapToPi(theta - ist.angle));
+      // The pen never walks over the bridge itself, anywhere on the loop.
+      expect(delta, `shore at ${x},${z}`).toBeGreaterThan(floor);
+      const d = Math.hypot(x - LAKE.x, z - LAKE.z);
+      // Strictly between the two shores: only the bridge banks live in here,
+      // so any vertex found at this radius is bank stroke.
+      if (d <= wobbledRadius(ISLAND, theta) + 1 || d >= wobbledRadius(LAKE, theta) - 1) continue;
+      onBank++;
+      // And it hugs the edge of the wedge, running along the bank.
+      expect(delta).toBeLessThan(ist.halfAngle * 1.5);
+    }
+    // Both banks, sampled at the same density as the arcs beside them — not
+    // one ruled segment that a single pen lift could erase whole.
+    expect(onBank).toBeGreaterThan(40);
+  });
+
+  it('gives a pond one plain ribbon — its fill outline is its shore', () => {
+    for (const name of ['shore-pond-1', 'shore-pond-2', 'shore-pond-3', 'shore-pond-4']) {
+      const body = WATER_BODIES.find((b, i) => `shore-${b.kind}-${i}` === name)!;
+      for (const [x, z] of points(named(name))) {
+        // Every vertex sits within half a mitered pen width of the shore.
+        const theta = Math.atan2(z - body.z, x - body.x);
+        const d = Math.hypot(x - body.x, z - body.z);
+        expect(Math.abs(d - wobbledRadius(body, theta))).toBeLessThan(0.25);
+      }
+    }
+  });
+
+  it('draws a broken contour — the pen lifts, and the shore is not a closed rule', () => {
+    // 384 outer samples, minus the bridge run, minus roughly one segment in
+    // twelve: a complete ribbon would be every segment.
+    const quads = points(named('shore-pond-1')).length / 6;
+    expect(quads).toBeLessThan(96 * 4);
+    expect(quads).toBeGreaterThan(96 * 4 * 0.8);
+  });
+});
+
+describe('water — value', () => {
+  it('fills with the measured mid grey, unlit', () => {
+    const fill = named('water-lake-0').material as MeshBasicMaterial;
+    expect(fill).toBeInstanceOf(MeshBasicMaterial);
+    expect(fill.color.equals(new Color(WORLD.neutralMid))).toBe(true);
+    // One material for every body: the water is one flat value by construction.
+    const water = createWater();
+    const fills = water.group.children.filter((c) => c.name.startsWith('water-')) as Mesh[];
+    for (const mesh of fills) expect(mesh.material).toBe(fills[0]!.material);
+  });
+
+  it('draws every shore and every ripple in the ink token', () => {
+    const water = createWater();
+    for (const child of water.group.children) {
+      const mesh = child as Mesh;
+      if (mesh.name.startsWith('water-')) continue;
+      const material = mesh.material as MeshBasicMaterial;
+      expect(material, mesh.name).toBeInstanceOf(MeshBasicMaterial);
+      expect(material.color.equals(new Color(SURFACE.ink)), mesh.name).toBe(true);
+    }
+  });
+
+  it('never reaches near-black — that value belongs to characters', () => {
+    const ink = new Color(SURFACE.ink);
+    const body = new Color(WORLD.nearBlack);
+    expect(ink.r).toBeGreaterThan(body.r);
+  });
+});
+
+describe('water — the ambient drift', () => {
+  it('slides each mark along its own direction, on a bounded sine', () => {
+    const attr = named('ripples').geometry.getAttribute('aRipple') as BufferAttribute;
+    expect(attr.itemSize).toBe(3);
+    for (let i = 0; i < attr.count; i++) {
+      // dir is a unit vector in x/z, phase is an angle.
+      expect(Math.hypot(attr.getX(i), attr.getY(i))).toBeCloseTo(1, 5);
+      expect(attr.getZ(i)).toBeGreaterThanOrEqual(0);
+      expect(attr.getZ(i)).toBeLessThanOrEqual(Math.PI * 2);
+    }
+    // The whole displacement is |sin| ≤ 1 times this, in world units: small
+    // enough that a mark stays where the geography put it, never zero.
+    expect(RIPPLE_DRIFT).toBe(0.06);
+    expect(RIPPLE_DRIFT).toBeGreaterThan(0);
+  });
+
+  it('advances the time uniform on update, and injects it into the shader', () => {
+    const water = createWater();
+    const material = (water.group.getObjectByName('ripples') as Mesh)
+      .material as MeshBasicMaterial;
+    const uniforms = material.userData.rippleUniforms as { uTime: { value: number } };
+    expect(uniforms.uTime.value).toBe(0);
+    water.update(2500);
+    expect(uniforms.uTime.value).toBeCloseTo(2.5, 9);
+    water.update(9000);
+    expect(uniforms.uTime.value).toBeCloseTo(9, 9);
+
+    // The injection itself: a uTime uniform, the aRipple attribute, and a
+    // smooth sine displacement — no step, no snap.
+    const shader = {
+      uniforms: {} as Record<string, unknown>,
+      vertexShader: '#include <common>\nvoid main() {\n#include <begin_vertex>\n}',
+      fragmentShader: '',
+    };
+    material.onBeforeCompile(
+      shader as unknown as Parameters<typeof material.onBeforeCompile>[0],
+      null as never,
+    );
+    expect(shader.uniforms.uTime).toBe(uniforms.uTime);
+    expect(shader.vertexShader).toContain('attribute vec3 aRipple;');
+    expect(shader.vertexShader).toContain('sin(uTime');
+    expect(shader.vertexShader).toContain(`${RIPPLE_DRIFT}`);
+  });
+});
+
+describe('water — fills()', () => {
+  it('hands back one counter-clockwise polygon per body, for the map', () => {
+    const fills = createWater().fills();
+    expect(fills).toHaveLength(WATER_BODIES.length);
+    fills.forEach((poly, i) => {
+      expect(poly.length).toBeGreaterThan(3);
+      let area = 0;
+      for (let k = 0; k < poly.length; k++) {
+        const p = poly[k]!;
+        const q = poly[(k + 1) % poly.length]!;
+        area += p[0] * q[1] - q[0] * p[1];
+      }
+      expect(area / 2, WATER_BODIES[i]!.kind).toBeGreaterThan(0);
+    });
+  });
+
+  it('is a copy — a caller cannot reach in and move the geography', () => {
+    const water = createWater();
+    const first = water.fills();
+    first[0]![0]![0] = 9999;
+    expect(water.fills()[0]![0]![0]).not.toBe(9999);
+  });
+});
+
+describe('water — dispose', () => {
+  it('empties the group and releases every geometry and material', () => {
+    const water = createWater();
+    const children = water.group.children as Mesh[];
+    let released = 0;
+    const onDispose = (): void => {
+      released++;
+    };
+    const geometries = new Set(children.map((mesh) => mesh.geometry));
+    const materials = new Set(children.map((mesh) => mesh.material as MeshBasicMaterial));
+    for (const item of [...geometries, ...materials]) item.addEventListener('dispose', onDispose);
+    water.dispose();
+    expect(water.group.children).toHaveLength(0);
+    expect(released).toBe(geometries.size + materials.size);
+  });
+});
