@@ -39,6 +39,7 @@ import { MOTION } from '../taste/tokens';
 import { FOLLOW_TAU_MS, followFraction, shortestAngle } from '../net/worldsync';
 import type { WorldHandles } from '../world/scene';
 import type { ShadowHandle } from '../world/shadows';
+import { ROLLING_SURFACE, type Surface } from '../world/surface';
 import { resolveName } from './naming';
 
 /** Shipped wander-speed multiplier (panel export, user ask): a touch
@@ -369,6 +370,15 @@ export interface CreatureManagerOptions {
    * restores the old behaviour exactly, which is what the tests do.
    */
   autoHatch?: boolean;
+  /**
+   * The ground under the population (PLAN §7.2). Defaults to the world's
+   * terrain; a caller that wants a plane — the tests, anything without a
+   * landscape — passes FLAT_SURFACE.
+   *
+   * Read through the seam and NEVER off `world`: a height has exactly one
+   * source, and the manager asking the scene for one would be a second.
+   */
+  surface?: Surface;
 }
 
 export interface CreatureManager {
@@ -448,6 +458,7 @@ export function createCreatureManager(
 ): CreatureManager {
   const observer = options.observer;
   const autoHatch = options.autoHatch ?? AUTO_HATCH;
+  const surface = options.surface ?? ROLLING_SURFACE;
   const slots = new Map<string, Slot>();
   let orderCounter = 0;
   let timersPaused = false;
@@ -614,16 +625,27 @@ export function createCreatureManager(
     const next = slot.pending;
     slot.phase = 'hatching';
     observer?.hatch(slot.id, cause);
-    slot.hatch = startHatch(world.scene, slot.egg, next, {
-      onBurst: (root) => {
-        becomeAlive(slot, root, next);
-        // the egg's disposal belongs to the hatch from here
-        world.cameraRig.frameAt(root.position);
+    // The hatch owns the root's height until it lets go: the rise from
+    // under the ground is a y animation, and the per-frame ground pass
+    // below stands off while it runs (see the pass). Handing it the same
+    // Surface is what keeps the two agreeing at the handover — the rise
+    // ends exactly on the ground the pass will then hold it to.
+    slot.hatch = startHatch(
+      world.scene,
+      slot.egg,
+      next,
+      {
+        onBurst: (root) => {
+          becomeAlive(slot, root, next);
+          // the egg's disposal belongs to the hatch from here
+          world.cameraRig.frameAt(root.position);
+        },
+        onDone: () => {
+          slot.hatch = null;
+        },
       },
-      onDone: () => {
-        slot.hatch = null;
-      },
-    });
+      { surface },
+    );
   }
 
   /**
@@ -655,7 +677,13 @@ export function createCreatureManager(
     // The double-counted shadow (`root.position + character.group.position`
     // in the step loop) is the same mistake seen from the other side.
     const root = new Group();
-    root.position.set(slot.spot.x, 0, slot.spot.z);
+    // Standing ON the ground from its first frame — sampled, never assumed
+    // (PLAN §7.2). The per-frame ground pass keeps it there as it walks.
+    root.position.set(
+      slot.spot.x,
+      surface.sampleHeight(slot.spot.x, slot.spot.z),
+      slot.spot.z,
+    );
     root.add(character.group);
     world.scene.add(root);
     becomeAlive(slot, root, character);
@@ -719,7 +747,15 @@ export function createCreatureManager(
        * `eggShadow` as nullable, because becoming alive clears them both.
        */
       const grown = opts.grown === true;
-      const egg = grown ? null : createEgg(strokes, { x: spot.x, z: spot.z });
+      // The egg does not know about terrain (src/egg/egg.ts): the ground
+      // under its spot is sampled here and handed in beside x and z.
+      const egg = grown
+        ? null
+        : createEgg(strokes, {
+            x: spot.x,
+            z: spot.z,
+            baseY: surface.sampleHeight(spot.x, spot.z),
+          });
       const nowMs = performance.now();
       const slot: Slot = {
         id,
@@ -1092,7 +1128,10 @@ export function createCreatureManager(
           const root: Object3D | null = slot.characterRoot ?? slot.egg?.group ?? null;
           if (root) {
             const ease = 1 - Math.pow(1 - t, 3); // drift-out, no rebound
-            root.position.y = -2.6 * ease;
+            // Under the ground it is standing on, not under y=0 — on a
+            // raised tier the old constant sank it into the air.
+            root.position.y =
+              surface.sampleHeight(root.position.x, root.position.z) - 2.6 * ease;
           }
           if (t >= 1) disposeSlot(slot);
         }
@@ -1136,6 +1175,34 @@ export function createCreatureManager(
             body.z + character.group.position.z,
           );
         }
+      }
+
+      /*
+       * ── the ground: every living root ends the frame ON the terrain ──
+       *
+       * Locomotion never touched world-space Y and still doesn't (PLAN
+       * §7.2): the agent and the resolve pass wrote x/z, and the height is
+       * SAMPLED from it here, once, after every one of them — the follow
+       * path, the substepped resolve, the gizmo — has had its say. A few
+       * noise lookups per creature per frame.
+       *
+       * Two roots are deliberately left alone:
+       *
+       *  - a HATCHING one, whose rise out of the ground is the hatch's y
+       *    animation to run (it samples the same Surface, so the height it
+       *    rises to is the height taken over here — no step at the
+       *    handover);
+       *  - a GIZMO-HELD one, where the drag is the truth on all three axes
+       *    until it is released and `endManualMove` sets it back down.
+       *
+       * A retiring root is not here either: its sink is written above,
+       * measured from this same sampled ground.
+       */
+      for (const slot of slots.values()) {
+        const root = slot.characterRoot;
+        if (!root || slot.phase !== 'alive') continue;
+        if (slot.manualHold || slot.hatch) continue;
+        root.position.y = surface.sampleHeight(root.position.x, root.position.z);
       }
     },
 
@@ -1256,8 +1323,9 @@ export function createCreatureManager(
         if (slot.characterRoot !== root || !slot.manualHold) continue;
         slot.manualHold = false;
         // Re-ground: locomotion never uses world-space Y (Surface seam), so
-        // any vertical the gizmo introduced is dropped on release.
-        root.position.y = 0;
+        // any vertical the gizmo introduced is dropped on release and the
+        // creature is set back down on the terrain under it.
+        root.position.y = surface.sampleHeight(root.position.x, root.position.z);
         slot.spot = { x: root.position.x, z: root.position.z };
       }
     },

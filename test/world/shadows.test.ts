@@ -5,10 +5,11 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { Color } from 'three';
+import { Color, Quaternion, Vector3 } from 'three';
 import { SURFACE } from '../../src/taste/tokens';
 import {
   FlatShadows,
+  SHADOW_LIFT,
   STAMP_MAX_STRETCH,
   STAMP_NOON_ALTITUDE,
   STAMP_OFFSET_FRACTION,
@@ -17,6 +18,7 @@ import {
   stampStretch,
 } from '../../src/world/shadows';
 import { sunArc } from '../../src/world/environment';
+import { FLAT_SURFACE, ROLLING_SURFACE, type Surface } from '../../src/world/surface';
 
 describe('stampStretch', () => {
   it('is exactly 1 (a circle) at the noon reference altitude and above', () => {
@@ -140,5 +142,96 @@ describe('FlatShadows.setSun', () => {
     shadows.addShadow('late', 1);
     const mesh = shadows.group.children[0]!;
     expect(mesh.scale.x).toBeCloseTo(stampEllipse(2.2, 0.12).stretch, 12);
+  });
+});
+
+describe('FlatShadows lies on the ground it is given', () => {
+  /**
+   * A fixed 30° ramp climbing +x. Deliberately not the authored landscape:
+   * this proves the pass USES the seam, not what the world's terrain
+   * happens to be at some coordinate (which is free to change).
+   */
+  const SLOPE = Math.tan(Math.PI / 6);
+  const RAMP_LEN = Math.hypot(SLOPE, 1);
+  const ramp: Surface = {
+    sampleHeight: (x) => x * SLOPE,
+    normalAt: () => ({ x: -SLOPE / RAMP_LEN, y: 1 / RAMP_LEN, z: 0 }),
+  };
+
+  /** The stamp's own up axis in world space — the flat disc's normal. */
+  const upAxis = (mesh: { quaternion: Quaternion }): Vector3 =>
+    new Vector3(0, 1, 0).applyQuaternion(mesh.quaternion);
+
+  it('a flat surface keeps the old behaviour: at the lift, dead level', () => {
+    const shadows = new FlatShadows(FLAT_SURFACE);
+    shadows.addShadow('a', 1.5).setPosition(9, -4);
+    shadows.setSun(0.8, 0.35, 1);
+    const mesh = shadows.group.children[0]!;
+    expect(mesh.position.y).toBeCloseTo(SHADOW_LIFT, 12);
+    const up = upAxis(mesh);
+    expect(Math.abs(up.x)).toBeLessThan(1e-3);
+    expect(Math.abs(up.y - 1)).toBeLessThan(1e-3);
+    expect(Math.abs(up.z)).toBeLessThan(1e-3);
+  });
+
+  it('sits at sampleHeight + lift, and its up axis is the ground normal', () => {
+    const shadows = new FlatShadows(ramp);
+    shadows.addShadow('a', 2).setPosition(6, 3);
+    shadows.setSun(0.8, 0.2, 1);
+    const mesh = shadows.group.children[0]!;
+
+    // Sampled where the stamp ACTUALLY lands: the low sun has pushed it off
+    // the caster, and on a slope that push changes the height.
+    expect(mesh.position.y).toBeCloseTo(
+      ramp.sampleHeight(mesh.position.x, mesh.position.z) + SHADOW_LIFT,
+      12,
+    );
+    expect(mesh.position.y).not.toBeCloseTo(SHADOW_LIFT, 6);
+
+    const n = ramp.normalAt(mesh.position.x, mesh.position.z);
+    const up = upAxis(mesh);
+    expect(Math.abs(up.x - n.x)).toBeLessThan(1e-3);
+    expect(Math.abs(up.y - n.y)).toBeLessThan(1e-3);
+    expect(Math.abs(up.z - n.z)).toBeLessThan(1e-3);
+  });
+
+  it('the sun ellipse still stretches and offsets on a slope', () => {
+    const radius = 2;
+    const shadows = new FlatShadows(ramp);
+    shadows.addShadow('a', radius).setPosition(5, -3);
+    const mesh = shadows.group.children[0]!;
+
+    const az = 0.8;
+    shadows.setSun(az, 0.1, 1);
+    const e = stampEllipse(az, 0.1);
+    expect(mesh.scale.x).toBeCloseTo(e.stretch, 12);
+    expect(mesh.scale.z).toBe(1); // short axis untouched — radius is baked in
+    expect(mesh.position.x).toBeCloseTo(5 + e.dirX * e.offset * radius, 12);
+    expect(mesh.position.z).toBeCloseTo(-3 + e.dirZ * e.offset * radius, 12);
+
+    // ...and the long axis still points away from the sun — now measured in
+    // the tilted disc's own plane, which is where the away direction lands
+    // once it is carried onto the slope.
+    const n = ramp.normalAt(0, 0);
+    const tilt = new Quaternion().setFromUnitVectors(
+      new Vector3(0, 1, 0),
+      new Vector3(n.x, n.y, n.z),
+    );
+    const want = new Vector3(e.dirX, 0, e.dirZ).applyQuaternion(tilt);
+    const got = new Vector3(1, 0, 0).applyQuaternion(mesh.quaternion);
+    expect(got.dot(want)).toBeCloseTo(1, 6);
+  });
+
+  it('follows the world terrain by default — no caster ever says a height', () => {
+    // Default construction is the world's own surface. Compared against the
+    // seam rather than a number: the map is allowed to change.
+    const shadows = new FlatShadows();
+    shadows.addShadow('a', 1).setPosition(18, -9);
+    shadows.setSun(0.5, STAMP_NOON_ALTITUDE, 1);
+    const mesh = shadows.group.children[0]!;
+    expect(mesh.position.y).toBeCloseTo(
+      ROLLING_SURFACE.sampleHeight(mesh.position.x, mesh.position.z) + SHADOW_LIFT,
+      12,
+    );
   });
 });
