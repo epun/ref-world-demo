@@ -16,6 +16,7 @@ import { InkPass } from './ink';
 import { createLighting } from './lighting';
 import { createScatter, type Scatter } from './scatter';
 import { FlatShadows } from './shadows';
+import { setTerrainParams, terrainParams, type TerrainParams } from './landscape';
 import { ROLLING_SURFACE, type Surface } from './surface';
 import { createWater, type Water } from './water';
 
@@ -47,8 +48,9 @@ export interface WorldHandles {
   scatter: Scatter;
   /**
    * Ponds and the lake: flat fills, drawn shorelines, drifting ripple marks.
-   * Built once from the authored geography (src/world/landscape.ts) and never
-   * rebuilt — the seed re-rolls props, never the map.
+   * Built once from the authored geography (src/world/landscape.ts) — the
+   * seed re-rolls props, never the map. Only the live terrain dials move it,
+   * and only in y (setTerrain below).
    */
   water: Water;
   /** Ink pass tuning surface for the dev panel. */
@@ -64,6 +66,24 @@ export interface WorldHandles {
    * ground token restores the shipped achromatic look exactly.
    */
   setBackgroundColor(color: string): void;
+  /**
+   * Move the live terrain dials and rebuild the world under them
+   * (src/world/landscape.ts `TerrainParams`): how much elevation, how far
+   * apart the tiers sit, how wide the relief is spread.
+   *
+   * Three systems have to be told, in this order — the ground re-displaces
+   * its field, the scatter re-seats every instance and stamp on it, and the
+   * water re-seats each body's sheets on its new level.
+   *
+   * Creatures, eggs and their shadow stamps re-sample the Surface every
+   * frame, so they follow on their own. ONE exception, and it is acceptable
+   * for a dev dial: an egg's `baseY` is fixed when it is placed, so an egg
+   * already incubating stays at the height the ground had under it until it
+   * hatches.
+   */
+  setTerrain(next: Partial<TerrainParams>): void;
+  /** The dials the world is currently shaped by. */
+  terrain(): TerrainParams;
   /** Register per-frame work (entity drift, gaits, …). Runs before render. */
   onFrame(callback: FrameCallback): void;
   /**
@@ -273,6 +293,13 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
       // never drift apart under a grade.
       ground.material.color.copy(backgroundBase);
     },
+    setTerrain: (next: Partial<TerrainParams>): void => {
+      setTerrainParams(next);
+      ground.rebuild();
+      scatter.refreshTerrain();
+      water.refreshLevels();
+    },
+    terrain: (): TerrainParams => terrainParams(),
     onFrame: (callback: FrameCallback): void => {
       frameCallbacks.push(callback);
     },

@@ -8,7 +8,7 @@
  * agreeing with `isWater` rather than drifting from it.
  */
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   FOREST_BLOBS,
   FOREST_FALLOFF,
@@ -22,9 +22,13 @@ import {
   rippleSpots,
   sampleLandscape,
   shoreSamples,
+  setTerrainParams,
   TERRAIN,
+  TERRAIN_DEFAULTS,
+  TERRAIN_LIMITS,
   terrainHeight,
   terrainNormal,
+  terrainParams,
   waterColliders,
   WATER_COLLIDER_R,
   waterLevel,
@@ -790,7 +794,8 @@ describe('landscape — terrain height', () => {
     // The terrace multiplies the smooth field's gradient by 1.5 / the riser
     // width, so this is the number the [D] falloffs were tuned against:
     // terraceRiser 0.2–0.8, mountainShelfFalloff 70, shoreRamp 16. Measured
-    // 0.5476 on the shipped layout, at the range's southern apron.
+    // 0.4546 at TERRAIN_DEFAULTS.elevation 0.7 (it was 0.5476 at 1.0, at the
+    // range's southern apron; the default backed off and the bound did not).
     //
     // THE ISLAND IS EXEMPT, and is measured on its own below. It is a bank:
     // 3.2 units of rise on a 14-unit island cannot be spread at 0.55 by any
@@ -807,11 +812,19 @@ describe('landscape — terrain height', () => {
     expect(worst).toBeLessThanOrEqual(0.6);
   });
 
-  it('climbs the island out of the water in two contour tiers', () => {
+  it('climbs the island out of the water onto a contour crown', () => {
     const level = waterLevel(LAKE);
     // A crown, not a sandbar (2026-09-03, user report — "the island sits FLAT
-    // at water level"). Two full terrace tiers: measured level + 3.20.
-    expect(terrainHeight(ISLAND.x, ISLAND.z) - level).toBeGreaterThanOrEqual(3.0);
+    // at water level").
+    //
+    // RE-MEASURED at TERRAIN_DEFAULTS.elevation 0.7 (the dial the same user
+    // asked for, 2026-09-03: "there is a lot of elevation change"). Every
+    // vertical is seven tenths of the authored one, so the crown that stood
+    // level + 3.20 over two full tiers now stands level + 2.35 — one full
+    // tier and most of a second. Push the elevation dial back to 1.0 and the
+    // old 3.20 comes straight back; this is the shipped default, not a
+    // change to the geography.
+    expect(terrainHeight(ISLAND.x, ISLAND.z) - level).toBeGreaterThanOrEqual(2.3);
     // …and the tiers are the world's own tiers, not heights of their own.
     const tiers = new Set<number>();
     for (let i = 0; i < 720; i++) {
@@ -823,7 +836,9 @@ describe('landscape — terrain height', () => {
         if (Math.abs(k - Math.round(k)) < 1e-9) tiers.add(Math.round(k));
       }
     }
-    expect([...tiers].sort((a, b) => a - b)).toEqual([0, 1, 2]);
+    // [0, 1] at the 0.7 default (it was [0, 1, 2] at 1.0): the crown sits
+    // between the second and third contour rather than exactly on the third.
+    expect([...tiers].sort((a, b) => a - b)).toEqual([0, 1]);
   });
 
   it('starts the island bank AT the waterline, so the drawn shore stays on top', () => {
@@ -841,20 +856,30 @@ describe('landscape — terrain height', () => {
         level + 0.011,
       );
     }
-    // …and it really is a bank and not a plateau: three units in, the ground
-    // has left the water behind.
+    // …and it really is a bank and not a plateau: four units in, the ground
+    // has left the water behind on every bearing.
+    //
+    // FOUR, re-measured at TERRAIN_DEFAULTS.elevation 0.7 — it was three at
+    // 1.0, with 0.03 of a unit to spare. The terrace's first tread is flat
+    // until the smooth rise clears 0.32 (terraceRiser 0.2 × tierStep 1.6),
+    // and a rise scaled by 0.7 needs a little more bank to get there: at
+    // three units in, the widest-edge bearing is still exactly at the water
+    // line. Measured at four: 0.09 clear at the worst bearing.
     for (let i = 0; i < 360; i++) {
       const th = (i / 360) * Math.PI * 2;
-      const d = wobbledRadius(ISLAND, th) - 3;
+      const d = wobbledRadius(ISLAND, th) - 4;
       expect(
         terrainHeight(ISLAND.x + Math.cos(th) * d, ISLAND.z + Math.sin(th) * d),
-        `island at 3 units in, bearing ${th.toFixed(2)}`,
+        `island at 4 units in, bearing ${th.toFixed(2)}`,
       ).toBeGreaterThan(level);
     }
   });
 
   it('keeps the island bank inside ITS bound — steep, never a wall', () => {
-    // The island's own number, measured the same way as the field's: 1.15.
+    // The island's own number, measured the same way as the field's: 0.87 at
+    // TERRAIN_DEFAULTS.elevation 0.7 (1.15 at elevation 1.0). The bound stays
+    // at the elevation-1.0 headroom so it keeps pinning the bank's SHAPE
+    // rather than tracking whichever default the dial ships at.
     // A bank, not a cliff — and pinned, so it cannot creep toward vertical.
     let worst = 0;
     for (let x = ISLAND.x - 20; x <= ISLAND.x + 20; x += 0.5) {
@@ -875,7 +900,9 @@ describe('landscape — terrain height', () => {
       lo = Math.min(lo, h);
       hi = Math.max(hi, h);
     });
-    // Measured [-3.10, 8.00] — the bound is the design budget, not the value.
+    // Measured [-2.61, 5.54] at TERRAIN_DEFAULTS.elevation 0.7 ([-3.10, 8.00]
+    // at 1.0, [-6.20, 16.00] at the dial's ceiling of 2.0) — the bound is the
+    // design budget for the shipped world, not the value.
     expect(lo).toBeGreaterThan(-10);
     expect(hi).toBeLessThan(10);
   });
@@ -963,9 +990,12 @@ describe('landscape — terrain height', () => {
           n++;
         }
       }
-      // Measured: the lake stands 2.17 under its own shoulder, the ponds
-      // 1.09–1.85. A body of water reads as sunk, not painted on.
-      expect(sum / n - level, `${body.kind} at ${body.x},${body.z}`).toBeGreaterThanOrEqual(1);
+      // Re-measured at TERRAIN_DEFAULTS.elevation 0.7: the lake stands 1.77
+      // under its own shoulder and the ponds 0.75–1.07 (it was 2.17 and
+      // 1.09–1.85 at elevation 1.0 — the basin drop and the land around it
+      // both scale with the dial). A body of water still reads as sunk, not
+      // painted on.
+      expect(sum / n - level, `${body.kind} at ${body.x},${body.z}`).toBeGreaterThanOrEqual(0.7);
     }
   });
 
@@ -991,8 +1021,10 @@ describe('landscape — terrain height', () => {
     });
     const forest = meanWhere((x, z) => sampleLandscape(x, z).forest >= 0.8);
     const range = meanWhere((x, z) => sampleLandscape(x, z).mountain >= 0.8);
-    // Measured: plain 1.70, forest 3.53, range 5.23.
-    expect(forest - plain).toBeGreaterThanOrEqual(1.5);
+    // Re-measured at TERRAIN_DEFAULTS.elevation 0.7: plain 1.21, forest 2.54,
+    // range 3.65 (it was 1.70 / 3.53 / 5.23 at elevation 1.0). Each
+    // environment still stands a full tier over the one below it.
+    expect(forest - plain).toBeGreaterThanOrEqual(1.3);
     expect(range - forest).toBeGreaterThan(1);
   });
 
@@ -1017,12 +1049,209 @@ describe('landscape — terrain height', () => {
       if (!nearIsland(x, z)) flattest = Math.min(flattest, n.y);
     });
     // Terrace risers tilt harder than the old smooth swell did: measured
-    // 0.8775 at the steepest, which is the 0.55 slope bound above read as a
-    // normal.
+    // 0.9107 at TERRAIN_DEFAULTS.elevation 0.7 (0.8775 at elevation 1.0),
+    // which is the slope bound above read as a normal.
     expect(flattest).toBeGreaterThan(0.8);
     const flat = terrainNormal(0, 0);
     expect(flat.y).toBe(1);
     expect(Math.abs(flat.x)).toBe(0);
     expect(Math.abs(flat.z)).toBe(0);
+  });
+});
+
+describe('landscape — the terrain dials', () => {
+  // Module state, like scatter's active seed: every test here puts it back,
+  // so nothing downstream of this file ever sees a moved dial. (Vitest runs
+  // files in separate workers, so this is tidiness rather than a guard.)
+  afterEach(() => setTerrainParams(TERRAIN_DEFAULTS));
+
+  /** The line from the origin out to the range — the walk the tier tests
+   * read, and the same one the "reads as tiers" test above uses. */
+  const RANGE_TARGET = MOUNTAIN_BLOBS[1]!;
+  const alongRange = (step: number, fn: (x: number, z: number) => void): void => {
+    const len = Math.hypot(RANGE_TARGET.x, RANGE_TARGET.z);
+    for (let d = 0; d <= len; d += step) {
+      fn((RANGE_TARGET.x * d) / len, (RANGE_TARGET.z * d) / len);
+    }
+  };
+
+  /** Mean |∇h| over the field, the island excluded (it is a bank and has its
+   * own gradient — see its bound above). */
+  const meanGradient = (): number => {
+    let sum = 0;
+    let n = 0;
+    for (let x = -155; x <= 155; x += 2) {
+      for (let z = -155; z <= 155; z += 2) {
+        const dx = x - ISLAND.x;
+        const dz = z - ISLAND.z;
+        if (Math.hypot(dx, dz) < wobbledRadius(ISLAND, Math.atan2(dz, dx)) + 1.5) continue;
+        const gx = terrainHeight(x + 0.5, z) - terrainHeight(x - 0.5, z);
+        const gz = terrainHeight(x, z + 0.5) - terrainHeight(x, z - 0.5);
+        sum += Math.hypot(gx, gz);
+        n++;
+      }
+    }
+    return sum / n;
+  };
+
+  it('ships TERRAIN_DEFAULTS, with the terrace step the authored one', () => {
+    expect(terrainParams()).toEqual(TERRAIN_DEFAULTS);
+    // The shipped elevation is a decision, not the authored 1.0: the user
+    // judged the 1.0 world "a lot of elevation change" (2026-09-03).
+    expect(TERRAIN_DEFAULTS.elevation).toBe(0.7);
+    expect(TERRAIN_DEFAULTS.tierStep).toBe(TERRAIN.terraceStep);
+    expect(TERRAIN_DEFAULTS.relief).toBe(1);
+  });
+
+  it('flattens the whole world at elevation 0 — water levels and island too', () => {
+    setTerrainParams({ elevation: 0 });
+    for (let i = 0; i < 500; i++) {
+      const x = -150 + ((i * 137) % 300);
+      const z = -150 + ((i * 61) % 300);
+      expect(terrainHeight(x, z), `${x},${z}`).toBe(0);
+    }
+    for (const body of WATER_BODIES) expect(waterLevel(body), body.kind).toBe(0);
+    // The island is the last term in `terrainHeight` and the one most likely
+    // to survive a zeroed dial, so it gets walked explicitly.
+    for (let i = 0; i < 360; i++) {
+      const th = (i / 360) * Math.PI * 2;
+      for (let f = 0; f <= 1; f += 0.1) {
+        const d = wobbledRadius(ISLAND, th) * f;
+        expect(terrainHeight(ISLAND.x + Math.cos(th) * d, ISLAND.z + Math.sin(th) * d)).toBe(0);
+      }
+    }
+  });
+
+  it('spaces the treads farther apart at a bigger tierStep', () => {
+    // Count the distinct treads the walk to the range crosses. Measured:
+    // 4 at 1.6, 2 at 3.2 — the same climb cut into half as many steps.
+    const treadsAt = (tierStep: number): number => {
+      setTerrainParams({ tierStep });
+      const seen = new Set<number>();
+      alongRange(0.5, (x, z) => seen.add(Math.round(terrainHeight(x, z) / tierStep)));
+      return seen.size;
+    };
+    const fine = treadsAt(1.6);
+    const coarse = treadsAt(3.2);
+    expect(fine).toBe(4);
+    expect(coarse).toBe(2);
+    expect(coarse).toBeLessThan(fine);
+  });
+
+  it('spreads the relief wider — the contours move apart', () => {
+    // `relief` is a horizontal scale, so doubling it halves every gradient:
+    // the same height differences laid out over twice the ground. Measured
+    // mean |∇h| 0.0571 at relief 1 and 0.0453 at relief 2 — the field's own
+    // flat regions (the clearing, the far fade, the basins) are not scaled
+    // and dilute the ratio, so this asserts the direction and a floor, not
+    // an exact half.
+    const tight = meanGradient();
+    setTerrainParams({ relief: 2 });
+    const spread = meanGradient();
+    expect(spread).toBeLessThan(tight);
+    expect(spread).toBeLessThan(tight * 0.85);
+  });
+
+  it('clamps every dial to its limits', () => {
+    setTerrainParams({ elevation: -5, tierStep: 0, relief: 99 });
+    expect(terrainParams()).toEqual({
+      elevation: TERRAIN_LIMITS.elevation[0],
+      tierStep: TERRAIN_LIMITS.tierStep[0],
+      relief: TERRAIN_LIMITS.relief[1],
+    });
+    setTerrainParams({ elevation: 99, tierStep: 99, relief: -1 });
+    expect(terrainParams()).toEqual({
+      elevation: TERRAIN_LIMITS.elevation[1],
+      tierStep: TERRAIN_LIMITS.tierStep[1],
+      relief: TERRAIN_LIMITS.relief[0],
+    });
+    // A non-finite value leaves the dial where it was rather than poisoning
+    // every height on the map with NaN.
+    setTerrainParams({ elevation: Number.NaN, relief: Number.POSITIVE_INFINITY });
+    expect(terrainParams().elevation).toBe(TERRAIN_LIMITS.elevation[1]);
+    expect(terrainParams().relief).toBe(TERRAIN_LIMITS.relief[0]);
+  });
+
+  it('is reversible — set a dial, put it back, get the identical map', () => {
+    const sample = (): number[] => {
+      const out: number[] = [];
+      for (let i = 0; i < 300; i++) {
+        const x = -140 + ((i * 137) % 280);
+        const z = -140 + ((i * 61) % 280);
+        out.push(terrainHeight(x, z));
+      }
+      for (const body of WATER_BODIES) out.push(waterLevel(body));
+      return out;
+    };
+    const before = sample();
+    setTerrainParams({ elevation: 1.45, tierStep: 2.7, relief: 1.8 });
+    expect(sample()).not.toEqual(before);
+    setTerrainParams(TERRAIN_DEFAULTS);
+    expect(sample()).toEqual(before);
+  });
+
+  it('leaves the hatch clearing alone, and the far rim flat, at every setting', () => {
+    // Neither gate is scaled by a dial: the clearing is a fixed place the
+    // creatures hatch in, and the rim has to keep meeting the flat outer
+    // disc. The clearing is EXACT at every setting.
+    //
+    // The rim is exact at the shipped defaults (the "meets the flat ground
+    // disc past the far fade" test above pins that at 0) but not quite at
+    // the top of the relief dial, and that is the geography being honest:
+    // basins are applied AFTER the far fade so a basin's interior is exactly
+    // its water level, and at relief 2.5 the lake's 40-unit shore ramp (16 ×
+    // 2.5) reaches a few units past farEnd. Measured worst case: 0.11 of a
+    // unit, a fourteenth of a tier, on one bearing of the rim.
+    for (const params of [
+      { elevation: 2, tierStep: 4, relief: 2.5 },
+      { elevation: 0.2, tierStep: 0.6, relief: 0.5 },
+    ]) {
+      setTerrainParams(params);
+      expect(terrainHeight(0, 0)).toBe(0);
+      for (let i = 0; i < 120; i++) {
+        const th = (i / 120) * Math.PI * 2;
+        for (const r of [3, 7, TERRAIN.clearRadius]) {
+          expect(terrainHeight(Math.cos(th) * r, Math.sin(th) * r), `clearing ${r}`).toBe(0);
+        }
+        for (const r of [TERRAIN.farEnd, TERRAIN.farEnd + 20, 400]) {
+          expect(
+            Math.abs(terrainHeight(Math.cos(th) * r, Math.sin(th) * r)),
+            `rim ${r}`,
+          ).toBeLessThanOrEqual(0.15);
+        }
+      }
+    }
+    // …and back at the defaults it is exactly the flat sheet again.
+    setTerrainParams(TERRAIN_DEFAULTS);
+    for (let i = 0; i < 120; i++) {
+      const th = (i / 120) * Math.PI * 2;
+      expect(
+        Math.abs(terrainHeight(Math.cos(th) * TERRAIN.farEnd, Math.sin(th) * TERRAIN.farEnd)),
+      ).toBe(0);
+    }
+  });
+
+  it('stays a bank and not a wall at the top of the elevation dial', () => {
+    // A dev dial may be steep — the 0.6 field bound is the SHIPPED world's,
+    // not the dial's. Measured at elevation 2.0: 1.15 over the field (at the
+    // range's southern apron) and 2.05 on the island's bank. Stated, so a
+    // future change that makes the ceiling vertical is caught.
+    setTerrainParams({ elevation: TERRAIN_LIMITS.elevation[1] });
+    let field = 0;
+    let island = 0;
+    for (let x = -155; x <= 155; x += 1) {
+      for (let z = -155; z <= 155; z += 1) {
+        const gx = terrainHeight(x + 0.5, z) - terrainHeight(x - 0.5, z);
+        const gz = terrainHeight(x, z + 0.5) - terrainHeight(x, z - 0.5);
+        const g = Math.hypot(gx, gz);
+        const dx = x - ISLAND.x;
+        const dz = z - ISLAND.z;
+        if (Math.hypot(dx, dz) < wobbledRadius(ISLAND, Math.atan2(dz, dx)) + 1.5) {
+          island = Math.max(island, g);
+        } else field = Math.max(field, g);
+      }
+    }
+    expect(field).toBeLessThanOrEqual(1.25);
+    expect(island).toBeLessThanOrEqual(2.2);
   });
 });

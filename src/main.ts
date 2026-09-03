@@ -454,7 +454,7 @@ function main(): void {
     },
     // World controls an operator moved. Only the handles this page owns —
     // anything it cannot drive is skipped rather than faked.
-    world: (field, value) => {
+    world: (field, value, kind) => {
       const env = (world as unknown as { environment?: Record<string, unknown> })
         .environment;
       const call = (name: string, arg: unknown): void => {
@@ -473,6 +473,13 @@ function main(): void {
         world.scatter.setDensity(value);
       } else if (field === 'wanderSpeed' && typeof value === 'number') {
         creatures.setWanderSpeed(value);
+      } else if (field === 'terrain' && typeof value === 'number') {
+        // One event per dial, the dial's name in `kind` — the same shape as
+        // kindDensity/kindScale (docs/SESSION.md §world). Anything else in
+        // `kind` is skipped rather than faked.
+        if (kind === 'elevation' || kind === 'tierStep' || kind === 'relief') {
+          world.setTerrain({ [kind]: value });
+        }
       }
     },
   };
@@ -1206,6 +1213,10 @@ function main(): void {
         getGrainAmplitude: () => world.grain.getAmplitude(),
         // Paper color grade (shader style section): background + ground.
         setBackgroundColor: (c) => world.setBackgroundColor(c),
+        // The live terrain dials (src/world/landscape.ts): each one rebuilds
+        // the ground field, re-seats the scatter and re-levels the water.
+        setTerrain: (next) => world.setTerrain(next),
+        terrain: () => world.terrain(),
         // Outliner selection focus — the minimap's click-to-pan spring.
         focusAt: (x, z) => world.cameraRig.frameAt(new Vector3(x, 0, z)),
         // Weather handle from a parallel workstream — forwarded as-is and

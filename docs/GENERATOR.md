@@ -205,10 +205,34 @@ nothing in an orthographic ink render, a staircase reads as height. Every water 
 whole disc — the island it holds included — to one level 1.5 below the land it sits in, and
 the island then climbs back out of that basin from the waterline through two contour tiers to
 a crown 3.2 above the water [D]. The hatch clearing stays exactly flat, and the field fades to
-0 by radius 185 so it meets the flat outer ground disc without a seam. Measured: heights run
-−3.1 to +8, max slope 0.55 over the field and 1.15 on the island's bank — the one landform
-measured against a bound of its own, because 3.2 units of rise cannot be spread across a
-14-unit island at the field's gradient.
+0 by radius 185 so it meets the flat outer ground disc without a seam. Measured **at elevation
+1.0** (the authored numbers above, before the elevation dial below): heights run −3.1 to +8,
+max slope 0.55 over the field and 1.15 on the island's bank — the one landform measured
+against a bound of its own, because 3.2 units of rise cannot be spread across a 14-unit island
+at the field's gradient.
+
+**Three live dials** (2026-09-03, user ask — *"there is a lot of elevation change. I want to
+be able to adjust the amount of elevation change there is in the map and their spacing in
+proximity to each other"*) sit over that authored geography as multipliers, in the ghost
+panel's `refworld.environment` folder: **elevation** (0–2) scales every vertical — noise
+amplitudes, region shelves, basin drop, island rise; **tier spacing** (0.6–4) is the
+tread-to-tread rise of the terrace; **relief spread** (0.5–2.5) scales every horizontal —
+noise wavelengths, shelf ramps, shore ramp, island ramp — so a bigger number lays the same
+relief over more ground and moves the contours apart. The hatch clearing and the far fade are
+deliberately not scaled: the clearing is a fixed place creatures hatch in, and the rim has to
+keep meeting the flat outer disc. Moving a dial (`WorldHandles.setTerrain`, debounced 150ms
+behind the sliders) re-displaces the ground field, re-seats every scattered instance and
+shadow stamp, and re-levels every body of water; `TERRAIN` itself never changes.
+
+The shipped values are `TERRAIN_DEFAULTS` — **elevation 0.7**, tier spacing 1.6, relief 1.
+0.7 rather than the authored 1.0 because the same user judged the 1.0 world *"a lot of
+elevation change"*. **A value tuned in the panel becomes the default by changing that
+constant** — the same "picked in the panel, exported as the default" discipline as
+`SURFACE.ground` (TASTE §2.2). Re-measured at 0.7: heights run −2.61 to +5.54, max slope 0.45
+over the field and 0.87 on the island's bank, the island's crown stands 2.35 over the water,
+and the walk from the hatch clearing to the range still crosses four distinct tiers. At the
+dial's ceiling of 2.0 the field reaches slope 1.15 and the bank 2.05 — a dev dial may be
+steep.
 
 The `Surface` seam PLAN §7.2 promised has shipped (`src/world/surface.ts`): `ROLLING_SURFACE`
 wraps this terrain, `FLAT_SURFACE` stays for the phone stage and tests, and every consumer —

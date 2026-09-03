@@ -370,6 +370,19 @@ export interface Water {
    * instead of carrying a thousand points per body for a sub-pixel gain.
    */
   fills(): [number, number][][];
+  /**
+   * Re-seat every sheet on its body's `waterLevel` as it now stands — for
+   * when the live terrain dials have moved (landscape's `setTerrainParams`,
+   * driven by WorldHandles.setTerrain).
+   *
+   * The GEOGRAPHY does not move: a body's outline, its shore ribbon and its
+   * ripple marks are functions of x/z alone and the dials are heights and
+   * horizontal scales of the LAND. So the fills and the shores just take a
+   * new y, and the ripple buffer — which bakes each mark's height into its
+   * vertices, because every body shares one mesh — has its y column
+   * rewritten per body.
+   */
+  refreshLevels(): void;
   dispose(): void;
 }
 
@@ -413,6 +426,9 @@ export function createWater(): Water {
     into.closePath();
     return into;
   };
+  /** Every sheet that rides a body's level, and which body it belongs to —
+   * the list `refreshLevels` walks. */
+  const sheets: { mesh: Mesh; body: WaterBody; lift: number }[] = [];
   WATER_BODIES.forEach((body: WaterBody, index: number) => {
     const shape = trace(new Shape(), outlines[index]!);
     const island = islands[index];
@@ -423,6 +439,7 @@ export function createWater(): Water {
     const mesh = new Mesh(geometry, fillMaterial);
     mesh.name = `water-${body.kind}-${index}`;
     mesh.position.y = waterLevel(body) + WATER_LIFT;
+    sheets.push({ mesh, body, lift: WATER_LIFT });
     group.add(mesh);
   });
 
@@ -438,21 +455,21 @@ export function createWater(): Water {
     poly: readonly Point[],
     seed: number,
     towardWater: -1 | 1,
-    level: number,
+    body: WaterBody,
   ): void => {
     const geometry = ribbonGeometry(poly, seed, towardWater);
     geometries.push(geometry);
     const mesh = new Mesh(geometry, shoreMaterial);
     mesh.name = name;
-    mesh.position.y = level + SHORE_LIFT;
+    mesh.position.y = waterLevel(body) + SHORE_LIFT;
+    sheets.push({ mesh, body, lift: SHORE_LIFT });
     group.add(mesh);
   };
   WATER_BODIES.forEach((body: WaterBody, index: number) => {
-    const level = waterLevel(body);
     // The water is INSIDE the outer ring, and OUTSIDE the island's.
-    addShore(`shore-${body.kind}-${index}`, outlines[index]!, body.seed, -1, level);
+    addShore(`shore-${body.kind}-${index}`, outlines[index]!, body.seed, -1, body);
     const island = islands[index];
-    if (island) addShore(`shore-island-${index}`, island, body.island!.seed, 1, level);
+    if (island) addShore(`shore-island-${index}`, island, body.island!.seed, 1, body);
   });
 
   // ── ripple marks ──────────────────────────────────────────────────────────
@@ -461,9 +478,13 @@ export function createWater(): Water {
   // away, so this is a single draw call for the whole water surface.
   const positions: number[] = [];
   const ripple: number[] = [];
+  /** Which slice of the one shared ripple buffer belongs to which body —
+   * `refreshLevels` rewrites the y column of each slice. */
+  const rippleRanges: { body: WaterBody; start: number; end: number }[] = [];
   for (const body of WATER_BODIES) {
     const margin = body.kind === 'pond' ? POND_RIPPLE_MARGIN : RIPPLE_MARGIN;
     const y = waterLevel(body) + RIPPLE_LIFT;
+    const start = positions.length / 3;
     for (const spot of rippleSpots(body, margin)) {
       const phase = hash(body.seed + spot.x * 3.7 + spot.z * 5.3) * Math.PI * 2;
       emitArc(positions, ripple, spot, spot.len, 0, phase, y);
@@ -477,6 +498,7 @@ export function createWater(): Water {
         y,
       );
     }
+    rippleRanges.push({ body, start, end: positions.length / 3 });
   }
   const rippleGeometry = new BufferGeometry();
   const rippleCount = positions.length / 3;
@@ -526,6 +548,15 @@ export function createWater(): Water {
       rippleUniforms.uTime.value = nowMs / 1000;
     },
     fills: (): [number, number][][] => outlines.map((poly) => poly.map((p) => [p[0], p[1]])),
+    refreshLevels: (): void => {
+      for (const sheet of sheets) sheet.mesh.position.y = waterLevel(sheet.body) + sheet.lift;
+      const attr = rippleGeometry.getAttribute('position') as BufferAttribute;
+      for (const range of rippleRanges) {
+        const y = waterLevel(range.body) + RIPPLE_LIFT;
+        for (let i = range.start; i < range.end; i++) attr.setY(i, y);
+      }
+      attr.needsUpdate = true;
+    },
     dispose: (): void => {
       group.clear();
       for (const geometry of geometries) geometry.dispose();

@@ -10,11 +10,16 @@
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { Color, Mesh, MeshBasicMaterial, type BufferAttribute } from 'three';
 import { SURFACE } from '../../src/taste/tokens';
 import { FIELD_SEGMENTS, FIELD_SIZE, createGround } from '../../src/world/ground';
-import { TERRAIN } from '../../src/world/landscape';
+import {
+  setTerrainParams,
+  TERRAIN,
+  TERRAIN_DEFAULTS,
+  terrainParams,
+} from '../../src/world/landscape';
 import { FLAT_SURFACE, ROLLING_SURFACE } from '../../src/world/surface';
 
 const field = (ground = createGround(ROLLING_SURFACE)): Mesh =>
@@ -165,7 +170,7 @@ describe('ground — the terrain draws its own tiers', () => {
     expect(ground.material.color.equals(new Color(SURFACE.ground))).toBe(true);
 
     // The uniforms are the geography's own numbers, not a second opinion.
-    expect((shader.uniforms.uStep as { value: number }).value).toBe(TERRAIN.terraceStep);
+    expect((shader.uniforms.uStep as { value: number }).value).toBe(terrainParams().tierStep);
     const riser = shader.uniforms.uRiser as { value: { x: number; y: number } };
     expect([riser.value.x, riser.value.y]).toEqual([...TERRAIN.terraceRiser]);
     expect((shader.uniforms.uInk as { value: Color }).value.equals(new Color(SURFACE.ink))).toBe(
@@ -194,5 +199,85 @@ describe('ground — the terrain draws its own tiers', () => {
     // nobody updates is a ground that has fully stopped (TASTE §2.1).
     const scene = readFileSync(join(process.cwd(), 'src/world/scene.ts'), 'utf8');
     expect(scene).toContain('ground.update(nowMs)');
+  });
+
+  it('is rebuilt with the scatter and the water when a terrain dial moves', () => {
+    // Same reason as above (scene.ts needs a gl context): the seam is read in
+    // the source. All THREE have to be told, or the props stand in the air
+    // over a re-cut field and the lakes sit at last dial's level.
+    const scene = readFileSync(join(process.cwd(), 'src/world/scene.ts'), 'utf8');
+    const body = scene.slice(scene.indexOf('setTerrain: ('));
+    expect(body).toContain('setTerrainParams(next)');
+    expect(body).toContain('ground.rebuild()');
+    expect(body).toContain('scatter.refreshTerrain()');
+    expect(body).toContain('water.refreshLevels()');
+  });
+});
+
+describe('ground — it rebuilds under the terrain dials', () => {
+  // Module state in landscape.ts: put it back, whatever the test did.
+  afterEach(() => setTerrainParams(TERRAIN_DEFAULTS));
+
+  /** The same stub-shader compile the tier tests above use. */
+  function uStepOf(material: MeshBasicMaterial): { value: number } {
+    const shader = {
+      uniforms: {} as Record<string, { value: unknown }>,
+      vertexShader: '#include <common>\nvoid main() {\n#include <begin_vertex>\n}',
+      fragmentShader: '#include <common>\nvoid main() {\n#include <color_fragment>\n}',
+    };
+    material.onBeforeCompile(
+      shader as unknown as Parameters<typeof material.onBeforeCompile>[0],
+      null as never,
+    );
+    return shader.uniforms.uStep as { value: number };
+  }
+
+  it('re-displaces every vertex from the surface — elevation 0 is a flat field', () => {
+    const ground = createGround(ROLLING_SURFACE);
+    const mesh = field(ground);
+    const before = positionOf(mesh);
+    let moved = 0;
+    for (const i of seededIndices(50, before.count)) {
+      if (Math.abs(before.getY(i)) > 1e-6) moved++;
+    }
+    expect(moved).toBeGreaterThan(20);
+
+    setTerrainParams({ elevation: 0 });
+    ground.rebuild();
+    // The GEOMETRY is reused — the attribute is rewritten in place, not
+    // re-allocated, so a drag does not rebuild 205k triangles per frame.
+    const after = positionOf(mesh);
+    expect(after).toBe(before);
+    for (let i = 0; i < after.count; i++) expect(after.getY(i)).toBe(0);
+    // …and the normals came with it: a flat field points straight up.
+    const normal = mesh.geometry.getAttribute('normal') as BufferAttribute;
+    for (const i of seededIndices(50, normal.count)) {
+      expect(normal.getY(i), `normal ${i}`).toBeCloseTo(1, 6);
+    }
+
+    // Back to the shipped dials and the terrain is exactly what it was.
+    setTerrainParams(TERRAIN_DEFAULTS);
+    ground.rebuild();
+    for (const i of seededIndices(50, after.count)) {
+      expect(after.getY(i), `vertex ${i}`).toBeCloseTo(
+        ROLLING_SURFACE.sampleHeight(after.getX(i), after.getZ(i)),
+        4,
+      );
+    }
+  });
+
+  it('tracks the tier spacing in uStep — the hatch is cut at the same step', () => {
+    // The drawn lip lines are `fract(h / uStep)`: a hatch drawn at the old
+    // step over geometry cut at the new one would put its contours somewhere
+    // other than the risers.
+    const ground = createGround(ROLLING_SURFACE);
+    const uStep = uStepOf(ground.material);
+    expect(uStep.value).toBe(TERRAIN_DEFAULTS.tierStep);
+    setTerrainParams({ tierStep: 3.2 });
+    ground.rebuild();
+    expect(uStep.value).toBe(3.2);
+    setTerrainParams({ tierStep: TERRAIN.terraceStep });
+    ground.rebuild();
+    expect(uStep.value).toBe(TERRAIN.terraceStep);
   });
 });

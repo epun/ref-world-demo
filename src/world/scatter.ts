@@ -1089,6 +1089,17 @@ export interface Scatter {
   setDensity(mult: number): void;
   /** Re-roll placement from a new seed — a different world, same rules. */
   setSeed(seed: number): void;
+  /**
+   * Re-seat every instance and every shadow stamp on the ground as it now
+   * stands — for when the live terrain dials have moved (landscape's
+   * `setTerrainParams`, driven by WorldHandles.setTerrain).
+   *
+   * Placements are NOT re-rolled: x/z and the per-instance variation are
+   * pure functions of (cell, seed, density) and know nothing about height,
+   * so this is the same world with its trees put back down on the new
+   * hillside — not a different one.
+   */
+  refreshTerrain(): void;
   /** Per-kind density multiplier, layered on the global one. Independent per
    * kind: changing one kind never moves another kind's placements. */
   setKindDensity(kind: ScatterKind, mult: number): void;
@@ -1659,6 +1670,12 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
     setSeed(seed: number): void {
       setScatterSeed(seed);
       replace();
+      rebuild();
+    },
+    refreshTerrain(): void {
+      // No `replace()`: the terrain moved, the placement did not. rebuild()
+      // re-samples surface.sampleHeight for every instance and re-takes each
+      // stamp's height and normal.
       rebuild();
     },
     setKindDensity(kind: ScatterKind, mult: number): void {

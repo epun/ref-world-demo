@@ -423,6 +423,93 @@ export const TERRAIN = {
   normalStep: 0.5,
 } as const;
 
+// ── the live terrain dials ───────────────────────────────────────────────────
+
+/**
+ * Three multipliers over the authored `TERRAIN` above — the ghost panel's
+ * live terrain controls (2026-09-03, user ask: *"there is a lot of elevation
+ * change. I want to be able to adjust the amount of elevation change there is
+ * in the map and their spacing in proximity to each other"*).
+ *
+ * They are MULTIPLIERS, never a second geography: `TERRAIN` stays the single
+ * authored source and every number below is read through these on the way
+ * out, so there is still exactly one shoreline, one shelf and one basin in
+ * this module.
+ */
+export interface TerrainParams {
+  /** Multiplier on every vertical: noise amplitudes, region shelves, basin
+   * drop, island rise. 0 = flat. */
+  elevation: number;
+  /** Tread-to-tread rise of the terrace, world units. */
+  tierStep: number;
+  /** Multiplier on every horizontal scale: noise wavelengths, shelf ramps,
+   * shore ramp, island ramp. >1 = relief spread wider, contours farther
+   * apart. */
+  relief: number;
+}
+
+/**
+ * The shipped defaults.
+ *
+ * [D] `elevation: 0.7`, not 1: the user judged the 1.0 world "a lot of
+ * elevation change", so the world backs off to seven tenths of the authored
+ * verticals and the dial keeps 2 available above it. Same discipline as
+ * `SURFACE.ground` — a value tuned in the panel becomes the default by
+ * changing this constant, and the authored `TERRAIN` numbers stay exactly as
+ * recorded.
+ */
+export const TERRAIN_DEFAULTS: TerrainParams = {
+  elevation: 0.7,
+  tierStep: TERRAIN.terraceStep,
+  relief: 1,
+};
+
+/** Inclusive range each dial is clamped to at the API boundary — a dev dial
+ * can be steep, it can never be nonsense (a tierStep of 0 divides by zero in
+ * `terrace`, a negative elevation turns the map inside out). */
+export const TERRAIN_LIMITS: Readonly<Record<keyof TerrainParams, readonly [number, number]>> = {
+  elevation: [0, 2],
+  tierStep: [0.6, 4],
+  relief: [0.5, 2.5],
+};
+
+const TERRAIN_KEYS = ['elevation', 'tierStep', 'relief'] as const;
+
+/**
+ * The params actually in force.
+ *
+ * Module state rather than an argument, for the same reason as scatter's
+ * `activeSeed`: `terrainHeight` is called from pure helpers all over the
+ * world that take no instance, and threading a params object through every
+ * one of them would put the dial in a hundred signatures.
+ *
+ * Determinism is unaffected — these are explicit state, not a clock or a
+ * random: the same params always give the same map, and a session that never
+ * touches the panel is byte-identical to the defaults.
+ */
+let activeTerrain: TerrainParams = { ...TERRAIN_DEFAULTS };
+
+/** The dials the map is currently shaped by. A copy: nobody mutates ours. */
+export function terrainParams(): TerrainParams {
+  return { ...activeTerrain };
+}
+
+/** Move one or more dials. Values are clamped to TERRAIN_LIMITS; a
+ * non-finite value leaves that dial where it was. Callers must rebuild the
+ * ground / scatter / water to SEE it (WorldHandles.setTerrain does all
+ * three). */
+export function setTerrainParams(next: Partial<TerrainParams>): void {
+  const merged = { ...activeTerrain };
+  for (const key of TERRAIN_KEYS) {
+    const v = next[key];
+    if (v === undefined) continue;
+    if (!Number.isFinite(v)) continue;
+    const [lo, hi] = TERRAIN_LIMITS[key];
+    merged[key] = Math.min(hi, Math.max(lo, v));
+  }
+  activeTerrain = merged;
+}
+
 /** One lattice value in [-1, 1). Same sin-hash as everything else here. */
 function lattice(ix: number, iz: number, salt: number): number {
   return hash(ix * 7.31 + iz * 13.7 + 91.7 + salt) * 2 - 1;
@@ -447,10 +534,14 @@ function valueNoise(x: number, z: number, wavelength: number, salt: number): num
   return a + (b - a) * tz;
 }
 
-/** The 2-octave field, ±3.2, before any fade. */
+/** The 2-octave field, ±3.2 at elevation 1, before any fade. `elevation`
+ * scales the amplitudes, `relief` stretches the wavelengths. */
 function terrainNoise(x: number, z: number): number {
+  const { elevation, relief } = activeTerrain;
   let v = 0;
-  for (const o of TERRAIN.octaves) v += o.amplitude * valueNoise(x, z, o.wavelength, o.salt);
+  for (const o of TERRAIN.octaves) {
+    v += o.amplitude * elevation * valueNoise(x, z, o.wavelength * relief, o.salt);
+  }
   return v;
 }
 
@@ -473,13 +564,17 @@ function farGate(r0: number): number {
  * see TERRAIN.shelfInner.
  */
 function shelfWeight(blobs: readonly Blob[], falloff: number, x: number, z: number): number {
+  // `relief` stretches the WHOLE transition band, inner reach and outer ramp
+  // together, so a spread-out shelf keeps the shape it had and just takes
+  // longer to get there. (The caller has already scaled `falloff`.)
+  const inner = TERRAIN.shelfInner * activeTerrain.relief;
   let w = 0;
   for (const b of blobs) {
     const dx = x - b.x;
     const dz = z - b.z;
     const d = Math.hypot(dx, dz);
     const out = d - wobbledRadius(b, Math.atan2(dz, dx));
-    const v = 1 - smoothstep(-TERRAIN.shelfInner, falloff, out);
+    const v = 1 - smoothstep(-inner, falloff, out);
     if (v > w) w = v;
   }
   return w;
@@ -490,9 +585,17 @@ function shelfWeight(blobs: readonly Blob[], falloff: number, x: number, z: numb
  * shelves, gated flat on the hatch clearing.
  */
 function smoothField(x: number, z: number): number {
+  const { elevation, relief } = activeTerrain;
   const shelf =
-    TERRAIN.forestShelf * shelfWeight(FOREST_BLOBS, TERRAIN.forestShelfFalloff, x, z) +
-    TERRAIN.mountainShelf * shelfWeight(MOUNTAIN_BLOBS, TERRAIN.mountainShelfFalloff, x, z);
+    TERRAIN.forestShelf *
+      elevation *
+      shelfWeight(FOREST_BLOBS, TERRAIN.forestShelfFalloff * relief, x, z) +
+    TERRAIN.mountainShelf *
+      elevation *
+      shelfWeight(MOUNTAIN_BLOBS, TERRAIN.mountainShelfFalloff * relief, x, z);
+  // The clearing gate is NOT scaled by either dial: the hatch clearing is a
+  // fixed place on the map (creatures spawn there and spiral out), not a
+  // feature of the relief.
   return (terrainNoise(x, z) + shelf) * clearGate(Math.hypot(x, z));
 }
 
@@ -505,7 +608,7 @@ function smoothField(x: number, z: number): number {
  * a cut: no hard-edged geometry anywhere (TASTE §3).
  */
 function terrace(v: number): number {
-  const step = TERRAIN.terraceStep;
+  const step = activeTerrain.tierStep;
   const k = Math.floor(v / step);
   const f = v / step - k;
   return step * (k + smoothstep(TERRAIN.terraceRiser[0], TERRAIN.terraceRiser[1], f));
@@ -532,7 +635,7 @@ function terracedLand(x: number, z: number): number {
  * number per body, so a water surface is a plane and never a warped sheet.
  */
 export function waterLevel(body: WaterBody): number {
-  return terracedLand(body.x, body.z) - TERRAIN.basinDrop;
+  return terracedLand(body.x, body.z) - TERRAIN.basinDrop * activeTerrain.elevation;
 }
 
 /**
@@ -548,6 +651,11 @@ export function waterLevel(body: WaterBody): number {
  * nearest body".
  */
 export function terrainHeight(x: number, z: number): number {
+  const { elevation, relief } = activeTerrain;
+  // The shore ramp and the rim guard are horizontal distances, so they ride
+  // `relief` — a wider relief spreads a basin's climb-out over more ground.
+  const shoreRamp = TERRAIN.shoreRamp * relief;
+  const basinRim = TERRAIN.basinRim * relief;
   let h = terracedLand(x, z);
   for (const body of WATER_BODIES) {
     const dx = x - body.x;
@@ -556,16 +664,16 @@ export function terrainHeight(x: number, z: number): number {
     // Signed distance to the OUTER wobbled shore: negative inside it, which
     // is the island and the causeway too — the whole disc is one basin.
     const out = d - wobbledRadius(body, Math.atan2(dz, dx));
-    if (out >= TERRAIN.shoreRamp) continue;
+    if (out >= shoreRamp) continue;
     const level = waterLevel(body);
-    const t = smoothstep(0, TERRAIN.shoreRamp, out);
+    const t = smoothstep(0, shoreRamp, out);
     // out <= 0 → t = 0 → exactly `level`: flat basin, flat island, flat
     // causeway, and no land inside the shore that water could sit above.
     const blended = level + (h - level) * t;
     // The rim guard is the continuous form of "never below the water line":
     // a plain max() would hold every low tier in the world up to the level
     // of the nearest lake, so the guard releases over the same ramp.
-    const rim = 1 - smoothstep(TERRAIN.basinRim, TERRAIN.shoreRamp, out);
+    const rim = 1 - smoothstep(basinRim, shoreRamp, out);
     h = blended + rim * Math.max(0, level - blended);
   }
   // …and then the island climbs back out of the basin that just flattened
@@ -594,7 +702,8 @@ export function terrainHeight(x: number, z: number): number {
     // arm of the island a proportionally narrower bank, which is what a
     // small headland looks like.
     const climb = isl.r * (inIsl / edge);
-    const rise = TERRAIN.islandRise * smoothstep(0, TERRAIN.islandRamp, climb);
+    const rise =
+      TERRAIN.islandRise * elevation * smoothstep(0, TERRAIN.islandRamp * relief, climb);
     h = Math.max(h, waterLevel(body) + terrace(rise));
   }
   return h;

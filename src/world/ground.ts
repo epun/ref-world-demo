@@ -52,7 +52,7 @@ import {
   type WebGLProgramParametersWithUniforms,
 } from 'three';
 import { MOTION, SURFACE } from '../taste/tokens';
-import { TERRAIN } from './landscape';
+import { TERRAIN, terrainParams } from './landscape';
 import type { Surface } from './surface';
 
 /** Outer radius of the flat far field. */
@@ -171,6 +171,17 @@ export interface Ground {
    * `water.update` — one uniform write, a wall-clock value, no integration.
    */
   update(nowMs: number): void;
+  /**
+   * Re-displace the field from the Surface and re-normal it, then re-read the
+   * terrace step into `uStep` — for when the live terrain dials have moved
+   * (landscape's `setTerrainParams`, driven by WorldHandles.setTerrain).
+   *
+   * The GEOMETRY is reused: only the position attribute and the normals are
+   * rewritten, so nothing here re-allocates ~205k triangles per drag. The far
+   * ring never moves — the terrain is 0 past `farEnd` at every dial setting,
+   * because the far gate is not scaled.
+   */
+  rebuild(): void;
 }
 
 export function createGround(surface: Surface): Ground {
@@ -184,9 +195,12 @@ export function createGround(surface: Surface): Ground {
   // The terrace marks. The material stays unlit and its color stays the
   // token: this only mixes ink INTO the shaded result, per fragment, from
   // world height and the surface's own tilt.
+  // uStep is LIVE: the tier spacing is a dial (landscape's TerrainParams), and
+  // a hatch drawn at the old step over geometry cut at the new one would put
+  // the lip lines somewhere other than the risers.
   const markUniforms = {
     uInk: { value: new Color(SURFACE.ink) },
-    uStep: { value: TERRAIN.terraceStep },
+    uStep: { value: terrainParams().tierStep },
     uRiser: { value: new Vector2(TERRAIN.terraceRiser[0], TERRAIN.terraceRiser[1]) },
     uGroundTime: { value: 0 },
   };
@@ -254,13 +268,18 @@ ${groundNoiseGlsl}`,
   // Laid flat first, so the attribute holds world x/z and the height sample
   // reads straight off it — no local-space bookkeeping in between.
   field.rotateX(-Math.PI / 2);
-  const position = field.getAttribute('position');
-  for (let i = 0; i < position.count; i++) {
-    position.setY(i, surface.sampleHeight(position.getX(i), position.getZ(i)));
-  }
-  position.needsUpdate = true;
-  // After the displacement, never before: these normals ARE the terraces.
-  field.computeVertexNormals();
+  const displace = (): void => {
+    const attr = field.getAttribute('position');
+    for (let i = 0; i < attr.count; i++) {
+      attr.setY(i, surface.sampleHeight(attr.getX(i), attr.getZ(i)));
+    }
+    attr.needsUpdate = true;
+    // After the displacement, never before: these normals ARE the terraces.
+    field.computeVertexNormals();
+    field.getAttribute('normal').needsUpdate = true;
+  };
+  displace();
+
   const fieldMesh = new Mesh(field, material);
   fieldMesh.name = 'ground-field';
   group.add(fieldMesh);
@@ -283,6 +302,10 @@ ${groundNoiseGlsl}`,
       // Wall-clock seconds, like the ripples: no integration, so a dropped
       // frame cannot make the wobble jump.
       markUniforms.uGroundTime.value = nowMs / 1000;
+    },
+    rebuild: (): void => {
+      displace();
+      markUniforms.uStep.value = terrainParams().tierStep;
     },
   };
 }

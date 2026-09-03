@@ -9,17 +9,19 @@
  * from tokens and nothing else, and that the surface never fully arrests.
  */
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { Color, DoubleSide, Mesh, MeshBasicMaterial, type BufferAttribute } from 'three';
 import { SURFACE, WORLD } from '../../src/taste/tokens';
 import {
   ISLAND_OUTLINE_POINTS,
   OUTLINE_POINTS,
   RIPPLE_MARGIN,
+  TERRAIN_DEFAULTS,
   WATER_BODIES,
   islandOutline,
   isWater,
   rippleSpots,
+  setTerrainParams,
   terrainHeight,
   waterLevel,
   waterOutline,
@@ -511,5 +513,71 @@ describe('water — dispose', () => {
     water.dispose();
     expect(water.group.children).toHaveLength(0);
     expect(released).toBe(geometries.size + materials.size);
+  });
+});
+
+describe('water — refreshLevels follows the terrain dials', () => {
+  // Module state in landscape.ts: put it back whatever the test moved.
+  afterEach(() => setTerrainParams(TERRAIN_DEFAULTS));
+
+  it('re-seats every fill and shore on its body\'s new level', () => {
+    const water = createWater();
+    try {
+      const sheets = (water.group.children as Mesh[]).filter((m) => m.name !== 'ripples');
+      const before = sheets.map((m) => m.position.y);
+      // The bodies really are at different heights to begin with.
+      expect(new Set(before).size).toBeGreaterThan(1);
+
+      // elevation 0 flattens the whole map, so every basin's level is 0 and
+      // each sheet drops to nothing but its own lift.
+      setTerrainParams({ elevation: 0 });
+      water.refreshLevels();
+      for (const mesh of sheets) {
+        const lift = mesh.name.startsWith('water-') ? WATER_LIFT : SHORE_LIFT;
+        expect(mesh.position.y, mesh.name).toBe(lift);
+      }
+
+      setTerrainParams(TERRAIN_DEFAULTS);
+      water.refreshLevels();
+      expect(sheets.map((m) => m.position.y)).toEqual(before);
+    } finally {
+      water.dispose();
+    }
+  });
+
+  it('re-bakes the ripple marks, which carry their height per vertex', () => {
+    // Every body's marks share one buffer and one mesh at y = 0, so their
+    // levels live in the vertices — refreshLevels has to rewrite the column.
+    const water = createWater();
+    try {
+      const ripples = water.group.getObjectByName('ripples') as Mesh;
+      const attr = ripples.geometry.getAttribute('position') as BufferAttribute;
+      const heights = (): Set<number> => {
+        const seen = new Set<number>();
+        for (let i = 0; i < attr.count; i++) seen.add(attr.getY(i));
+        return seen;
+      };
+      const before = heights();
+      expect(before.size).toBeGreaterThan(1);
+      for (const y of before) {
+        expect(
+          WATER_BODIES.some((body) => Math.abs(waterLevel(body) + RIPPLE_LIFT - y) < 1e-6),
+        ).toBe(true);
+      }
+
+      setTerrainParams({ elevation: 0 });
+      water.refreshLevels();
+      // Float32 attribute, so the exact literal does not round-trip.
+      const flat = [...heights()];
+      expect(flat).toHaveLength(1);
+      expect(flat[0]!).toBeCloseTo(RIPPLE_LIFT, 6);
+      expect(ripples.position.y).toBe(0);
+
+      setTerrainParams(TERRAIN_DEFAULTS);
+      water.refreshLevels();
+      expect(heights()).toEqual(before);
+    } finally {
+      water.dispose();
+    }
   });
 });

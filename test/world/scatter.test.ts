@@ -2,7 +2,7 @@
  * Scatter placement tests — pure functions over placement data. No WebGL.
  */
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   Group,
   InstancedMesh,
@@ -13,7 +13,13 @@ import {
   type MeshStandardMaterial,
 } from 'three';
 import { WORLD } from '../../src/taste/tokens';
-import { sampleLandscape, WATER_BODIES, waterColliders } from '../../src/world/landscape';
+import {
+  sampleLandscape,
+  setTerrainParams,
+  TERRAIN_DEFAULTS,
+  WATER_BODIES,
+  waterColliders,
+} from '../../src/world/landscape';
 import { BUILDING_COURTYARD_VARIANT, PROP_VARIANT_COUNTS } from '../../src/world/props';
 import {
   applyInstanceVariation,
@@ -1106,6 +1112,89 @@ describe('scatter on the terrain', () => {
         up.set(e[4]!, e[5]!, e[6]!).normalize();
         expect(up.y, `stamp ${i}`).toBeCloseTo(1, 6);
       });
+    } finally {
+      scatter.dispose();
+    }
+  });
+});
+
+describe('scatter — refreshTerrain re-seats the world on new ground', () => {
+  // Module state in landscape.ts: whatever a test moves, put it back.
+  afterEach(() => setTerrainParams(TERRAIN_DEFAULTS));
+
+  /** Every named prop/mark mesh's instance positions, flattened. */
+  const seatsOf = (scatter: { group: Group }): { x: number; y: number; z: number }[] => {
+    const out: { x: number; y: number; z: number }[] = [];
+    const matrix = new Matrix4();
+    for (const mesh of namedMeshes(scatter.group)) {
+      for (let i = 0; i < mesh.count; i++) {
+        mesh.getMatrixAt(i, matrix);
+        out.push({ x: matrix.elements[12]!, y: matrix.elements[13]!, z: matrix.elements[14]! });
+      }
+    }
+    return out;
+  };
+
+  it('moves every y to the new ground and leaves x, z and the counts alone', () => {
+    const scatter = createScatter({ surface: ROLLING_SURFACE });
+    try {
+      const before = seatsOf(scatter);
+      expect(before.length).toBeGreaterThan(100);
+      // The world really is on a hillside to begin with.
+      expect(before.some((s) => Math.abs(s.y) > 0.5)).toBe(true);
+
+      setTerrainParams({ elevation: 0 });
+      scatter.refreshTerrain();
+      const after = seatsOf(scatter);
+
+      // The placement did NOT re-roll: same count, same x/z, in the same
+      // order. A `setSeed`-style replace would fail every line of this.
+      expect(after).toHaveLength(before.length);
+      for (let i = 0; i < after.length; i++) {
+        expect(after[i]!.x, `instance ${i} x`).toBe(before[i]!.x);
+        expect(after[i]!.z, `instance ${i} z`).toBe(before[i]!.z);
+      }
+      // …and every y is on the new (flat) ground, at its kind's own lift.
+      for (let i = 0; i < after.length; i++) {
+        expect(Math.abs(after[i]!.y), `instance ${i} y`).toBeLessThanOrEqual(TICK_LIFT + 1e-9);
+      }
+      expect(after.some((s, i) => s.y !== before[i]!.y)).toBe(true);
+
+      // Put the dials back and the world stands exactly where it did.
+      setTerrainParams(TERRAIN_DEFAULTS);
+      scatter.refreshTerrain();
+      expect(seatsOf(scatter)).toEqual(before);
+    } finally {
+      scatter.dispose();
+    }
+  });
+
+  it('re-seats the shadow stamps too', () => {
+    const scatter = createScatter({ surface: ROLLING_SURFACE });
+    try {
+      const stamps = scatter.group.children.filter(
+        (o): o is InstancedMesh => o instanceof InstancedMesh,
+      );
+      expect(stamps).toHaveLength(1);
+      const matrix = new Matrix4();
+      const before: number[] = [];
+      for (let i = 0; i < stamps[0]!.count; i++) {
+        stamps[0]!.getMatrixAt(i, matrix);
+        before.push(matrix.elements[13]!);
+      }
+      expect(before.some((y) => Math.abs(y - PROP_SHADOW_LIFT) > 0.01)).toBe(true);
+
+      setTerrainParams({ elevation: 0 });
+      scatter.refreshTerrain();
+      // rebuild() makes a new sheet — find it again.
+      const after = scatter.group.children.filter(
+        (o): o is InstancedMesh => o instanceof InstancedMesh,
+      )[0]!;
+      expect(after.count).toBe(before.length);
+      for (let i = 0; i < after.count; i++) {
+        after.getMatrixAt(i, matrix);
+        expect(matrix.elements[13]!, `stamp ${i}`).toBeCloseTo(PROP_SHADOW_LIFT, 6);
+      }
     } finally {
       scatter.dispose();
     }
