@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ref world · meridian</title>
+    <!--
+      A PAGE OF ITS OWN, for the world named "meridian".
+
+      Written by scripts/new-world.mjs — do not hand-edit; re-run the script.
+
+      This is index.html with two changes and no others: the world is
+      declared below in a meta tag instead of read from a query string, and
+      the card is this world's rather than the public one's. Everything
+      after that is the same app, loaded from the same absolute paths.
+
+      The world it names is the same world /?world=meridian reaches — same
+      derived room, same store, same drawings. Only the address differs, and
+      the address is the point: a client gets a link that is a place.
+    -->
+    <meta name="refworld:world" content="meridian" />
+    <!--
+      THE CARD a shared link unfurls into.
+
+      The image is the public world's frame, reused deliberately: it is a
+      real render of thirty creatures somebody drew, made by the same
+      pipeline that will render this world's, so it is a true picture of
+      what happens here rather than a mockup. Re-run scripts/og.mjs and it
+      is the world as it is now.
+
+      Lowercase throughout, like every other piece of type here (TASTE §5).
+    -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="ref world" />
+    <meta property="og:title" content="meridian" />
+    <meta
+      property="og:description"
+      content="a world for meridian. draw a creature on your phone and it hatches somewhere everyone can see."
+    />
+    <meta property="og:url" content="https://ref-world-demo.vercel.app/worlds/meridian/" />
+    <meta property="og:image" content="https://ref-world-demo.vercel.app/og.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="a grey field with thirty small black creatures standing on it" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="meridian" />
+    <meta
+      name="twitter:description"
+      content="a world for meridian. draw a creature on your phone and it hatches somewhere everyone can see."
+    />
+    <meta name="twitter:image" content="https://ref-world-demo.vercel.app/og.png" />
+    <!-- inline ink-blob favicon (qa audit p1): a loose hand-drawn dot in the environment ink value, no binary asset -->
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path d='M12.3 4.6c3.9.2 6.9 3.4 7 7.3.1 4.1-3 7.6-7.1 7.7-4 .1-7.4-3-7.5-7.1-.1-4.2 3.4-8.1 7.6-7.9z' fill='%23353534'/></svg>" />
+    <style>
+      /* background matches SURFACE.ground (src/taste/tokens.ts) so there is no flash before first paint */
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #dfdfdf;
+      }
+      #world {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="world"></canvas>
+    <!-- vendored MQTT client for the draw-to-3d feed; sets window.mqtt -->
+    <script src="/vendor/mqtt.min.js"></script>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

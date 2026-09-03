@@ -216,12 +216,27 @@ export function roomForWorld(world: string): string {
  * An UNNAMED world keeps the deep link, because it has no choice: its room
  * was minted at random and cannot be derived from anything in the address,
  * so dropping it would strand the scan in a room of its own.
+ *
+ * `page` is that same rule applied one level up. A world with a page of its
+ * own (worlds/<name>/index.html — see scripts/new-world.mjs) is reached at
+ * `/worlds/<name>/`, and THAT is its address: the one on the card, the one
+ * a client was sent, the one anybody would paste. `/?world=<name>` still
+ * lands in the identical world, but a qr encoding it would be a second
+ * address for a place that is supposed to have one. So when the page
+ * declares the world, pass its path and the qr encodes the page.
+ *
+ * It is ignored without a world, because an unnamed world's room is not in
+ * the path — a page-only url would strand the scan exactly as dropping the
+ * deep link would.
  */
 export function joinUrl(
   origin: string,
-  where: { world: string | null; room: string; epoch: string },
+  where: { world: string | null; room: string; epoch: string; page?: string },
 ): string {
-  if (where.world) return `${origin}/?world=${encodeURIComponent(where.world)}`;
+  if (where.world) {
+    if (where.page) return `${origin}${where.page}`;
+    return `${origin}/?world=${encodeURIComponent(where.world)}`;
+  }
   return `${origin}/draw/?room=${where.room}&w=${where.epoch}`;
 }
 

@@ -211,6 +211,50 @@ function main(): void {
   // the edge, per protocol.ts).
   const params = new URLSearchParams(location.search);
   const fromUrl = (params.get('room') ?? '').toLowerCase();
+  /**
+   * The world's NAME — read ONCE, here, and used for everything downstream:
+   * the room, the store, the epoch, the redirect, the qr.
+   *
+   * Two sources, in this order:
+   *   1. `?world=` — the query form, and still the one that wins;
+   *   2. `<meta name="refworld:world">` — the page declaring its own world.
+   *
+   * The meta tag is what makes `worlds/<name>/index.html` work (written by
+   * scripts/new-world.mjs). A client demo gets an address that is a place —
+   * `/worlds/meridian/`, with its own unfurl card — instead of the one
+   * index.html with a setting stuck on the end of it. Nothing about the
+   * world moves: the name is the same, so the derived room, the store and
+   * the drawings are the same as `/?world=<name>`. Only the address differs.
+   *
+   * Sanitised identically whichever way it arrived (lowercase, [a-z0-9-],
+   * up to 24 — docs/PUBLIC.md §urls), so a page cannot name a world that a
+   * query string could not. index.html carries no meta tag, so it behaves
+   * exactly as it did.
+   *
+   * Read before anything else for one reason: the mobile redirect below has
+   * to carry it. A shared link is opened on a phone far more often than on
+   * a laptop, and a phone that lands on `/draw/?room=…` with no world
+   * publishes over mqtt and stores NOTHING. Their creature would appear on
+   * any projection that happened to be open, then vanish with it, and
+   * nothing anywhere would say a word about it. Dropping the world here was
+   * silent data loss on the most travelled path in the whole thing.
+   */
+  const sanitizeWorld = (raw: string): string =>
+    raw
+      .toLowerCase()
+      .replace(/[^a-z0-9-]/g, '')
+      .slice(0, 24);
+  const queryWorld = sanitizeWorld(params.get('world') ?? '');
+  const pageWorld = queryWorld
+    ? ''
+    : sanitizeWorld(
+        document.querySelector<HTMLMetaElement>('meta[name="refworld:world"]')?.content ?? '',
+      );
+  const worldName = queryWorld || pageWorld;
+  const isPublic = worldName.length > 0;
+  /** true when THIS page is the world's address, so the qr can encode it. */
+  const declaredByPage = pageWorld.length > 0;
+
   /*
    * A named world always meets in the same room; only an unnamed one mints
    * a fresh code. Without this every visitor to the public link got a
@@ -219,33 +263,13 @@ function main(): void {
    * An explicit `?room=` still wins, so a projection can be pinned to a
    * room of its own inside a public world if that is ever wanted.
    */
-  const worldName = (params.get('world') ?? '')
-    .toLowerCase()
-    .replace(/[^a-z0-9-]/g, '')
-    .slice(0, 24);
   const room = isRoomCode(fromUrl)
     ? fromUrl
     : worldName
       ? roomForWorld(worldName)
       : roomCode(Math.random);
 
-  /**
-   * A PUBLIC world: `?world=public`. Read here, before anything else, for
-   * one reason — the mobile redirect two lines down has to carry it.
-   *
-   * A shared link is opened on a phone far more often than on a laptop, and
-   * a phone that lands on `/draw/?room=…` with no world publishes over mqtt
-   * and stores NOTHING. Their creature would appear on any projection that
-   * happened to be open, then vanish with it, and nothing anywhere would
-   * say a word about it. Dropping the world here was silent data loss on
-   * the most travelled path in the whole thing.
-   */
-  const publicWorld = (params.get('world') ?? '')
-    .toLowerCase()
-    .replace(/[^a-z0-9-]/g, '')
-    .slice(0, 24);
-  const isPublic = publicWorld.length > 0;
-  const worldParam = isPublic ? `&world=${encodeURIComponent(publicWorld)}` : '';
+  const worldParam = isPublic ? `&world=${encodeURIComponent(worldName)}` : '';
 
   /**
    * A phone opening the world link goes to the drawing UI for this room —
@@ -296,7 +320,7 @@ function main(): void {
    * across every reload, announces the same thing.
    */
   const epoch = isPublic
-    ? `w-${publicWorld}`
+    ? `w-${worldName}`
     : 'w' + Math.floor(Math.random() * 0xffffffff).toString(36);
 
   // ── session recorder (src/session/, docs/SESSION.md) ──────────────────────
@@ -792,7 +816,7 @@ function main(): void {
    * twenty seconds.
    */
   if (isPublic) {
-    const endpoint = `/api/drawings?world=${encodeURIComponent(publicWorld)}`;
+    const endpoint = `/api/drawings?world=${encodeURIComponent(worldName)}`;
 
     /**
      * Spawn a log's drawings, A FEW PER FRAME.
@@ -928,8 +952,8 @@ function main(): void {
       if (first) {
         say(
           added > 0
-            ? `${added} creature${added === 1 ? '' : 's'} joined ${publicWorld}`
-            : `${publicWorld} — draw the first new one`,
+            ? `${added} creature${added === 1 ? '' : 's'} joined ${worldName}`
+            : `${worldName} — draw the first new one`,
         );
       }
     };
@@ -1090,6 +1114,14 @@ function main(): void {
    * room was minted at random and cannot be derived from anything in the
    * address, so dropping it would strand the scan in a different room.
    *
+   * And when the world has a PAGE of its own — this document declared it in
+   * `<meta name="refworld:world">`, so the address in the bar is already
+   * `/worlds/<name>/` — the qr encodes that path instead. It is the address
+   * on the card and the one the client was sent; a qr pointing at
+   * `/?world=<name>` would be a second address for the same place, which is
+   * the exact thing this rule exists to prevent. `?world=` on its own does
+   * not get that treatment: the query IS the address in that case.
+   *
    * Either way the url must carry the world, or a scan lands on a pad that
    * publishes over mqtt and stores nothing — the creature shows on the
    * projection while that tab is open and is then gone forever, with
@@ -1100,9 +1132,10 @@ function main(): void {
   if (!tray || tray.showsJoinCode) {
     installJoinQr({
       url: joinUrl(location.origin, {
-        world: isPublic ? publicWorld : null,
+        world: isPublic ? worldName : null,
         room,
         epoch,
+        ...(declaredByPage ? { page: location.pathname } : {}),
       }),
       mount: tray ? tray.left : document.body,
     });

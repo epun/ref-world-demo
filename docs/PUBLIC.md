@@ -43,6 +43,45 @@ one may still draw in another.
 Without `?world=` everything behaves exactly as the installation does —
 ephemeral, no server, no persistence.
 
+### a page of its own
+
+A query string is a setting, not a place. A world you are handing to
+somebody — a client, an event — gets an address instead:
+
+```
+https://<host>/worlds/<name>/
+```
+
+That is a real page, `worlds/<name>/index.html`, a sibling of index.html
+that loads the same app from the same absolute paths. It differs in two
+things and nothing else: it names its world in
+
+```html
+<meta name="refworld:world" content="meridian" />
+```
+
+instead of a query string, and it carries its own open-graph tags, so the
+card the link unfurls into says the world's name rather than the public
+one's.
+
+Write one with:
+
+```bash
+node scripts/new-world.mjs meridian
+```
+
+The build picks it up on its own — every `worlds/*/index.html` is a rollup
+input — so a new world is one command and no config edit.
+
+The name is read once, `?world=` first and the meta tag second, and
+sanitised the same way either way. So `/worlds/meridian/` and
+`/?world=meridian` are the same world: same derived room, same store, same
+drawings. Both still work, and the old link keeps working forever.
+
+What does change is the qr on the projection: a page that declares its own
+world encodes **that path**. A place has one address, and the one on the
+card is it.
+
 ## one creature per person
 
 Two halves, and neither is identity:
@@ -149,6 +188,10 @@ It posts through the ordinary submission endpoint: same screen, same
 dispositions, same device claims. No privileged path, because a seed that
 could bypass the gate would be a hole in the gate shaped like a script.
 Idempotent — a second run reports every drawing as already there.
+
+A world with a page of its own is seeded exactly the same way: the page is
+an address, not a second world, so pass its name and nothing else changes.
+`scripts/new-world.mjs` prints the command with the name already in it.
 
 ## setting it up
 

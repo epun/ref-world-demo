@@ -54,6 +54,12 @@ function collectFiles(): string[] {
   for (const name of readdirSync(ROOT)) {
     if (name.endsWith('.html')) files.push(join(ROOT, name));
   }
+  // a world with a page of its own (worlds/<name>/index.html, written by
+  // scripts/new-world.mjs) is an entry point like any other — it carries a
+  // title and an unfurl card, so the scans have to reach it. generated code
+  // is exactly the code nobody rereads.
+  const worldsDir = join(ROOT, 'worlds');
+  if (existsSync(worldsDir)) walk(worldsDir, files);
   return files;
 }
 
