@@ -4,16 +4,16 @@
  * one flat value, a rough drawn shoreline, a few sparse ripple marks, and a
  * great deal of empty surface between them (TASTE §2.3).
  *
- * WHY THE SHORELINE IS ITS OWN MESH. The ground is an unlit disc at y=0 and the
- * ink composite only draws a contour where depth or the normal target breaks.
- * A flat polygon a hair above the ground breaks neither, so left to the pass
- * the water would be a value with no edge — a stain, not a pond. The shore is
- * therefore drawn: an ink ribbon walked around the body's FILL outline, with a
- * pen's varying width and an occasional lifted segment. Walking the fill
- * outline rather than the rings is what gives the lake's land bridge its two
- * banks — that polygon already traces every boundary between water and land,
- * in one direction, so one stroke covers all of it. Same reason the ripples
- * are geometry and not a texture.
+ * WHY THE SHORELINE IS ITS OWN MESH. The ground is unlit and — inside a basin —
+ * dead flat, and the ink composite only draws a contour where depth or the
+ * normal target breaks. A flat polygon a hair above flat ground breaks
+ * neither, so left to the pass the water would be a value with no edge — a
+ * stain, not a pond. The shore is therefore drawn: an ink ribbon walked around
+ * the body's FILL outline, with a pen's varying width and an occasional lifted
+ * segment. Walking the fill outline rather than the rings is what gives the
+ * lake's land bridge its two banks — that polygon already traces every
+ * boundary between water and land, in one direction, so one stroke covers all
+ * of it. Same reason the ripples are geometry and not a texture.
  *
  * Everything here is built ONCE from WATER_BODIES. The geography is authored
  * and fixed (it does not ride the scatter seed), so there is no rebuild path —
@@ -49,6 +49,7 @@ import {
   isWater,
   rippleSpots,
   waterFillOutline,
+  waterLevel,
   type RippleSpot,
   type WaterBody,
 } from './landscape';
@@ -58,6 +59,12 @@ import {
 // scatter's ticks (0.015) and prop stamps (0.018) and under the creature
 // shadows (0.02) — so a creature walking the shore still casts its flat stamp
 // across the water instead of being erased by it.
+//
+// The paper they sit on is the BODY'S OWN water level, not y=0: a basin sinks
+// its whole disc to one number (landscape's `waterLevel`), so each body's
+// sheets ride that number plus its lift. `waterLevel` is the one height this
+// file reads directly — it is not a ground height at all but the flat the
+// geography authored for the body, and the terrain is built to meet it.
 
 /** The flat water value. */
 export const WATER_LIFT = 0.008;
@@ -286,6 +293,7 @@ function emitArc(
   len: number,
   behind: number,
   phase: number,
+  y: number,
 ): void {
   const dx = Math.cos(spot.rot);
   const dz = Math.sin(spot.rot);
@@ -319,7 +327,10 @@ function emitArc(
       [b[0] + nx, b[1] + nz],
     ];
     for (const [x, z] of quad) {
-      positions.push(x, 0, z);
+      // The mark's height is BAKED into the vertex: every body's marks share
+      // one buffer and one mesh, and the bodies sit at different levels, so
+      // the mesh itself cannot carry the lift.
+      positions.push(x, y, z);
       // Every vertex of a mark carries the mark's own direction and phase, so
       // the whole mark slides as one piece and no two marks slide together.
       ripple.push(dx, dz, phase);
@@ -336,6 +347,10 @@ export interface Water {
   /**
    * The polygons the water is actually built from, in world x/z — the fill
    * and the shoreline both ride these exact points. Copies, per call.
+   *
+   * x/z only, and that is not a loss: a body's surface is one flat sheet at
+   * its own `waterLevel`, so the height is a single number per body that
+   * landscape already answers for.
    *
    * NOT what the minimap draws: at map scale a body is a few dozen pixels
    * across, so it re-derives the cheap 96-point outline from the geography
@@ -388,7 +403,7 @@ export function createWater(): Water {
     geometries.push(geometry);
     const mesh = new Mesh(geometry, fillMaterial);
     mesh.name = `water-${body.kind}-${index}`;
-    mesh.position.y = WATER_LIFT;
+    mesh.position.y = waterLevel(body) + WATER_LIFT;
     group.add(mesh);
   });
 
@@ -405,7 +420,7 @@ export function createWater(): Water {
     geometries.push(geometry);
     const mesh = new Mesh(geometry, shoreMaterial);
     mesh.name = `shore-${body.kind}-${index}`;
-    mesh.position.y = SHORE_LIFT;
+    mesh.position.y = waterLevel(body) + SHORE_LIFT;
     group.add(mesh);
   });
 
@@ -417,10 +432,19 @@ export function createWater(): Water {
   const ripple: number[] = [];
   for (const body of WATER_BODIES) {
     const margin = body.kind === 'pond' ? POND_RIPPLE_MARGIN : RIPPLE_MARGIN;
+    const y = waterLevel(body) + RIPPLE_LIFT;
     for (const spot of rippleSpots(body, margin)) {
       const phase = hash(body.seed + spot.x * 3.7 + spot.z * 5.3) * Math.PI * 2;
-      emitArc(positions, ripple, spot, spot.len, 0, phase);
-      emitArc(positions, ripple, spot, spot.len * RIPPLE_SECOND_SCALE, RIPPLE_SECOND_OFFSET, phase);
+      emitArc(positions, ripple, spot, spot.len, 0, phase, y);
+      emitArc(
+        positions,
+        ripple,
+        spot,
+        spot.len * RIPPLE_SECOND_SCALE,
+        RIPPLE_SECOND_OFFSET,
+        phase,
+        y,
+      );
     }
   }
   const rippleGeometry = new BufferGeometry();
@@ -458,7 +482,8 @@ export function createWater(): Water {
   materials.push(rippleMaterial);
   const rippleMesh = new Mesh(rippleGeometry, rippleMaterial);
   rippleMesh.name = 'ripples';
-  rippleMesh.position.y = RIPPLE_LIFT;
+  // Left at 0 on purpose: the lift is already in the vertices, per body.
+  rippleMesh.position.y = 0;
   group.add(rippleMesh);
 
   return {

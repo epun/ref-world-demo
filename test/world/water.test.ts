@@ -17,6 +17,8 @@ import {
   WATER_BODIES,
   isWater,
   rippleSpots,
+  terrainHeight,
+  waterLevel,
   wobbledRadius,
   type WaterBody,
 } from '../../src/world/landscape';
@@ -53,6 +55,27 @@ function points(mesh: Mesh): [number, number][] {
   const out: [number, number][] = [];
   for (let i = 0; i < attr.count; i++) out.push([attr.getX(i), attr.getZ(i)]);
   return out;
+}
+
+/** The body a mesh belongs to, off its `<layer>-<kind>-<index>` name. */
+function bodyOf(mesh: Mesh): WaterBody {
+  const index = Number(mesh.name.split('-')[2]);
+  return WATER_BODIES[index]!;
+}
+
+/** The body a loose point belongs to. The bodies are far apart (their shore
+ * ramps do not even touch), so the nearest center is the one it is in. */
+function bodyNear(x: number, z: number): WaterBody {
+  let best = WATER_BODIES[0]!;
+  let bestD = Infinity;
+  for (const body of WATER_BODIES) {
+    const d = Math.hypot(x - body.x, z - body.z);
+    if (d < bestD) {
+      bestD = d;
+      best = body;
+    }
+  }
+  return best;
 }
 
 function totalRippleSpots(): number {
@@ -104,13 +127,58 @@ describe('water — what gets built', () => {
     expect(RIPPLE_LIFT).toBeLessThan(TICK_LIFT);
     expect(WATER_LIFT).toBeGreaterThan(0);
     for (const mesh of meshes()) {
+      // Each body's sheets ride ITS basin — the lifts are over the water
+      // level, not over y=0. The ripples are the exception: one buffer holds
+      // every body's marks, so their heights are baked per vertex and the
+      // mesh itself stays at the origin.
       const expected = mesh.name.startsWith('water-')
-        ? WATER_LIFT
+        ? waterLevel(bodyOf(mesh)) + WATER_LIFT
         : mesh.name.startsWith('shore-')
-          ? SHORE_LIFT
-          : RIPPLE_LIFT;
+          ? waterLevel(bodyOf(mesh)) + SHORE_LIFT
+          : 0;
       expect(mesh.position.y, mesh.name).toBe(expected);
     }
+  });
+
+  it('sinks each body into its own basin — no sheet is left floating at y=0', () => {
+    const levels = WATER_BODIES.map((body) => waterLevel(body));
+    // The map's basins really are at different heights; a pass that ignored
+    // the terrain would still pass every other test in this file.
+    expect(new Set(levels).size).toBeGreaterThan(1);
+    for (const mesh of meshes()) {
+      if (mesh.name === 'ripples') continue;
+      expect(Math.abs(mesh.position.y), mesh.name).toBeGreaterThan(0.02);
+    }
+  });
+
+  it('bakes each mark at the level of the body it belongs to', () => {
+    const ripples = named('ripples');
+    const attr = ripples.geometry.getAttribute('position') as BufferAttribute;
+    const seen = new Set<number>();
+    for (let i = 0; i < attr.count; i++) {
+      const level = waterLevel(bodyNear(attr.getX(i), attr.getZ(i)));
+      expect(attr.getY(i), `ripple ${i}`).toBeCloseTo(level + RIPPLE_LIFT, 5);
+      seen.add(level);
+    }
+    // …and the buffer really does span more than one level.
+    expect(seen.size).toBeGreaterThan(1);
+  });
+
+  it('never lets a fill poke through the land it sits in', () => {
+    // The basin makes every point inside a shore ramp climb OUT of the water
+    // level, so the sheet can only ever be at or above the ground under it.
+    // If this fails the terrain is wrong, not the water: a pond would show
+    // grass islands through its own surface.
+    createWater()
+      .fills()
+      .forEach((poly, index) => {
+        const level = waterLevel(WATER_BODIES[index]!);
+        for (const [x, z] of poly) {
+          expect(terrainHeight(x, z), `fill ${index} at ${x},${z}`).toBeLessThanOrEqual(
+            level + 1e-6,
+          );
+        }
+      });
   });
 
   it('faces every surface up, exactly like the paper under it', () => {

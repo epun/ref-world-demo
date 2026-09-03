@@ -26,6 +26,8 @@ import {
   filterExcluded,
   instanceVariation,
   KIND_GROUP_LABELS,
+  PROP_SHADOW_LIFT,
+  TICK_LIFT,
   ROCK_SQUASH_Y,
   ROCK_WIDEN_XZ,
   VARIATION_BULGE,
@@ -49,6 +51,9 @@ import {
   colliderFor,
   TRUNK_FOOTPRINT,
 } from '../../src/world/scatter';
+// The ground seam (PLAN §7.2): the scatter samples it and derives no height
+// of its own, so the tests below inject one and read the matrices back.
+import { FLAT_SURFACE, ROLLING_SURFACE } from '../../src/world/surface';
 
 /** Collect the named prop InstancedMeshes wherever they sit — variant meshes
  * now live inside per-kind container groups (KIND_GROUP_LABELS), one level
@@ -964,6 +969,143 @@ describe('kind grouping', () => {
       expect(trees.children.length).toBe(0);
       scatter.setKindDensity('tree', 1);
       expect(trees.children.length).toBeGreaterThan(0);
+    } finally {
+      scatter.dispose();
+    }
+  });
+});
+
+// ── everything stands on the ground (Surface seam) ───────────────────────────
+
+describe('scatter on the terrain', () => {
+  /** The stamp sheet: the one InstancedMesh left unnamed on the root. */
+  const stampsOf = (root: Group): InstancedMesh => {
+    const found = root.children.filter((o): o is InstancedMesh => o instanceof InstancedMesh);
+    expect(found).toHaveLength(1);
+    return found[0]!;
+  };
+
+  /** Bounded walk of an instanced mesh — every instance for a small one, a
+   * spread of ~60 for the grass sheets. */
+  function eachInstance(mesh: InstancedMesh, visit: (matrix: Matrix4, i: number) => void): void {
+    const matrix = new Matrix4();
+    const step = Math.max(1, Math.ceil(mesh.count / 60));
+    for (let i = 0; i < mesh.count; i += step) {
+      mesh.getMatrixAt(i, matrix);
+      visit(matrix, i);
+    }
+  }
+
+  it('seats every prop and every ink mark on the sampled height', () => {
+    const scatter = createScatter({ surface: ROLLING_SURFACE });
+    try {
+      const meshes = namedMeshes(scatter.group);
+      const pos = new Vector3();
+      const quat = new Quaternion();
+      const scl = new Vector3();
+      let offGround = 0;
+      for (const mesh of meshes) {
+        // Ticks and reeds are the flat ink marks; they ride a hair over the
+        // ground, everything else sits ON it.
+        const lift =
+          mesh.name.startsWith('grass') || mesh.name.startsWith('reeds') ? TICK_LIFT : 0;
+        eachInstance(mesh, (matrix, i) => {
+          matrix.decompose(pos, quat, scl);
+          const height = ROLLING_SURFACE.sampleHeight(pos.x, pos.z);
+          // 4 places: the matrix round-trips through float32, and so do the
+          // x/z the height is re-sampled at.
+          expect(pos.y, `${mesh.name}[${i}]`).toBeCloseTo(height + lift, 4);
+          if (Math.abs(height) > 0.01) offGround++;
+        });
+      }
+      // …and the map really is not flat: most instances are off zero.
+      expect(offGround).toBeGreaterThan(50);
+    } finally {
+      scatter.dispose();
+    }
+  });
+
+  it('lays every shadow stamp in the slope it falls on', () => {
+    const scatter = createScatter({ surface: ROLLING_SURFACE });
+    try {
+      const stamps = stampsOf(scatter.group);
+      expect(stamps.count).toBeGreaterThan(10);
+      const pos = new Vector3();
+      const quat = new Quaternion();
+      const scl = new Vector3();
+      const up = new Vector3();
+      let tilted = 0;
+      eachInstance(stamps, (matrix, i) => {
+        matrix.decompose(pos, quat, scl);
+        // No sun yet: the noon circle sits exactly over its prop.
+        const height = ROLLING_SURFACE.sampleHeight(pos.x, pos.z);
+        expect(pos.y, `stamp ${i}`).toBeCloseTo(height + PROP_SHADOW_LIFT, 4);
+        // Column 1 of the matrix is the stamp's own up: turned to the
+        // ground's normal, so a hard-edged disc on a riser lies IN it
+        // instead of sinking into the uphill side.
+        const e = matrix.elements;
+        up.set(e[4]!, e[5]!, e[6]!).normalize();
+        const n = ROLLING_SURFACE.normalAt(pos.x, pos.z);
+        expect(up.x, `stamp ${i} up.x`).toBeCloseTo(n.x, 3);
+        expect(up.y, `stamp ${i} up.y`).toBeCloseTo(n.y, 3);
+        expect(up.z, `stamp ${i} up.z`).toBeCloseTo(n.z, 3);
+        if (n.y < 0.999) tilted++;
+      });
+      expect(tilted).toBeGreaterThan(0);
+    } finally {
+      scatter.dispose();
+    }
+  });
+
+  it('re-samples the ground where a low sun pushes the stamp to', () => {
+    const scatter = createScatter({ surface: ROLLING_SURFACE });
+    try {
+      const stamps = stampsOf(scatter.group);
+      // A low sun: the ellipse stretches and slides the stamp off its prop,
+      // which on a slope is a different height entirely.
+      scatter.setSun(0.7, 0.15, 1);
+      const pos = new Vector3();
+      const quat = new Quaternion();
+      const scl = new Vector3();
+      let moved = 0;
+      eachInstance(stamps, (matrix, i) => {
+        matrix.decompose(pos, quat, scl);
+        const height = ROLLING_SURFACE.sampleHeight(pos.x, pos.z);
+        expect(pos.y, `stamp ${i}`).toBeCloseTo(height + PROP_SHADOW_LIFT, 4);
+        if (scl.x > scl.z) moved++;
+      });
+      // The sun did stretch them — otherwise this proves nothing.
+      expect(moved).toBeGreaterThan(0);
+    } finally {
+      scatter.dispose();
+    }
+  });
+
+  it('injects FLAT_SURFACE and gets the pre-terrain world back exactly', () => {
+    // The flat world is still representable, and it is what every assertion
+    // in this file that predates the terrain was written against: props at
+    // y=0, marks at their lift, stamps level and unrotated in y.
+    const scatter = createScatter({ surface: FLAT_SURFACE });
+    try {
+      const pos = new Vector3();
+      const quat = new Quaternion();
+      const scl = new Vector3();
+      for (const mesh of namedMeshes(scatter.group)) {
+        const lift =
+          mesh.name.startsWith('grass') || mesh.name.startsWith('reeds') ? TICK_LIFT : 0;
+        eachInstance(mesh, (matrix, i) => {
+          matrix.decompose(pos, quat, scl);
+          expect(pos.y, `${mesh.name}[${i}]`).toBeCloseTo(lift, 6);
+        });
+      }
+      const up = new Vector3();
+      eachInstance(stampsOf(scatter.group), (matrix, i) => {
+        matrix.decompose(pos, quat, scl);
+        expect(pos.y, `stamp ${i}`).toBeCloseTo(PROP_SHADOW_LIFT, 6);
+        const e = matrix.elements;
+        up.set(e[4]!, e[5]!, e[6]!).normalize();
+        expect(up.y, `stamp ${i}`).toBeCloseTo(1, 6);
+      });
     } finally {
       scatter.dispose();
     }

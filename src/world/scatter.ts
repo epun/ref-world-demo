@@ -58,6 +58,7 @@ import {
   type PropKind,
 } from './props';
 import { stampEllipse, stampRotationY, type StampEllipse } from './shadows';
+import { ROLLING_SURFACE, type Surface } from './surface';
 
 export type ScatterKind = PropKind | 'tick' | 'reed';
 
@@ -1043,9 +1044,11 @@ function variationBeginGlsl(): string {
 
 // ── instanced assembly ───────────────────────────────────────────────────────
 
-/** Just proud of the ground; under the creature shadows' 0.02 lift. */
-const PROP_SHADOW_LIFT = 0.018;
-const TICK_LIFT = 0.015;
+/** Just proud of the ground; under the creature shadows' 0.02 lift. Both
+ * are lifts ABOVE the sampled terrain height, never absolute heights — the
+ * Surface seam owns y everywhere in this file. */
+export const PROP_SHADOW_LIFT = 0.018;
+export const TICK_LIFT = 0.015;
 /** Shadow stamp sits a touch inside the footprint, like the creatures'. */
 export const SHADOW_FIT = 0.8;
 /** No stamp beyond this radius: the walled courtyard's footprint would
@@ -1057,6 +1060,17 @@ export const SHADOW_MAX_RADIUS = 4;
  * ~1° in azimuth or altitude — it glides slowly, so most frames are just the
  * (cheap) shared material-value update. */
 export const SHADOW_SUN_EPS = Math.PI / 180;
+
+/** A prop's stamp, seated on the ground it stands on. */
+interface ShadowSpot {
+  x: number;
+  z: number;
+  r: number;
+  /** Terrain height at (x, z) plus PROP_SHADOW_LIFT. */
+  y: number;
+  /** Up-normal at (x, z): the stamp lies IN the slope, not across it. */
+  normal: { x: number; y: number; z: number };
+}
 
 export interface Scatter {
   group: Group;
@@ -1153,7 +1167,17 @@ export const KIND_GROUP_LABELS: Record<ScatterKind, string> = {
   reed: 'reeds',
 };
 
-export function createScatter(): Scatter {
+export interface ScatterOptions {
+  /**
+   * Where the ground is. Every instance — prop, mark and shadow stamp — is
+   * seated on this and on nothing else (PLAN §7.2). Defaults to the world's
+   * terrain; tests pass FLAT_SURFACE to get the old flat field back.
+   */
+  surface?: Surface;
+}
+
+export function createScatter(opts: ScatterOptions = {}): Scatter {
+  const surface = opts.surface ?? ROLLING_SURFACE;
   const group = new Group();
   // One named container group per kind, created up front and never removed:
   // the outliner row is stable even at density zero, so the kind stays
@@ -1389,7 +1413,12 @@ export function createScatter(): Scatter {
   let sunAzimuth = Number.NaN;
   let sunAltitude = Number.NaN;
   let shadowMesh: InstancedMesh | null = null;
-  let shadowSpots: { x: number; z: number; r: number }[] = [];
+  /**
+   * One stamp: where it sits, how big it is, and how the ground lies under
+   * it. `y` and `normal` are sampled once per rebuild rather than per lay —
+   * a re-lay runs on every ~1° of sun and the terrain has not moved.
+   */
+  let shadowSpots: ShadowSpot[] = [];
 
   let globalDensity = 1;
   const kindDensity: Partial<Record<ScatterKind, number>> = { ...DEFAULT_KIND_DENSITY };
@@ -1411,7 +1440,10 @@ export function createScatter(): Scatter {
 
   const matrix = new Matrix4();
   const quat = new Quaternion();
+  const tilt = new Quaternion();
+  const spin = new Quaternion();
   const axisY = new Vector3(0, 1, 0);
+  const normal = new Vector3();
   const pos = new Vector3();
   const scl = new Vector3();
 
@@ -1428,20 +1460,29 @@ export function createScatter(): Scatter {
   /** Write every shadow-disc instance matrix from the current sun ellipse:
    * long axis r×stretch along the away-from-sun direction, short axis r,
    * center pushed away from the sun by offset×r. Circle when the sun is at
-   * the noon reference (or before the first setSun). */
+   * the noon reference (or before the first setSun).
+   *
+   * ON A SLOPE the stamp is turned to lie IN the ground: +y to the sampled
+   * normal first, then the ellipse's own spin about that normal. A stamp
+   * left flat sinks into the riser on its uphill side and floats off the
+   * downhill one — a hard-edged mark cannot afford either (TASTE §2.4).
+   * The push moves it downhill or up, so its height is re-sampled at the
+   * pushed point; the normal is not, because a stamp belongs to the ground
+   * its prop stands on. */
   function layShadows(): void {
     if (!shadowMesh) return;
     const e = sunEllipse;
-    if (e) quat.setFromAxisAngle(axisY, stampRotationY(e));
-    else quat.identity();
     for (let i = 0; i < shadowSpots.length; i++) {
       const s = shadowSpots[i]!;
       const push = e ? e.offset * s.r : 0;
-      pos.set(
-        s.x + (e ? e.dirX * push : 0),
-        PROP_SHADOW_LIFT,
-        s.z + (e ? e.dirZ * push : 0),
-      );
+      const x = s.x + (e ? e.dirX * push : 0);
+      const z = s.z + (e ? e.dirZ * push : 0);
+      pos.set(x, push === 0 ? s.y : surface.sampleHeight(x, z) + PROP_SHADOW_LIFT, z);
+      normal.set(s.normal.x, s.normal.y, s.normal.z);
+      tilt.setFromUnitVectors(axisY, normal);
+      if (e) spin.setFromAxisAngle(normal, stampRotationY(e));
+      else spin.identity();
+      quat.copy(spin).multiply(tilt);
       scl.set(s.r * (e ? e.stretch : 1), 1, s.r);
       shadowMesh.setMatrixAt(i, matrix.compose(pos, quat, scl));
     }
@@ -1489,7 +1530,10 @@ export function createScatter(): Scatter {
         const variation = new Float32Array(of.length * 4);
         of.forEach((p, i) => {
           quat.setFromAxisAngle(axisY, p.rotY);
-          pos.set(p.x, 0, p.z);
+          // Seated on the ground, standing straight up: a tree grows toward
+          // the sky on a hillside, it does not lean out normal to the slope.
+          // A mountain's base follows the shoulder it sits on the same way.
+          pos.set(p.x, surface.sampleHeight(p.x, p.z), p.z);
           scl.set(p.scale * kMult * widenXZ, p.scale * kMult * squashY, p.scale * kMult * widenXZ);
           mesh.setMatrixAt(i, matrix.compose(pos, quat, scl));
           variation.set(instanceVariation(p.x, p.z), i * 4);
@@ -1512,7 +1556,7 @@ export function createScatter(): Scatter {
       const variation = new Float32Array(ticks.length * 4);
       ticks.forEach((p, i) => {
         quat.setFromAxisAngle(axisY, p.rotY);
-        pos.set(p.x, TICK_LIFT, p.z);
+        pos.set(p.x, surface.sampleHeight(p.x, p.z) + TICK_LIFT, p.z);
         scl.setScalar(p.scale * tickMult);
         mesh.setMatrixAt(i, matrix.compose(pos, quat, scl));
         variation.set(instanceVariation(p.x, p.z), i * 4);
@@ -1534,7 +1578,7 @@ export function createScatter(): Scatter {
       const variation = new Float32Array(reeds.length * 4);
       reeds.forEach((p, i) => {
         quat.setFromAxisAngle(axisY, p.rotY);
-        pos.set(p.x, TICK_LIFT, p.z);
+        pos.set(p.x, surface.sampleHeight(p.x, p.z) + TICK_LIFT, p.z);
         scl.setScalar(p.scale * reedMult);
         mesh.setMatrixAt(i, matrix.compose(pos, quat, scl));
         variation.set(instanceVariation(p.x, p.z), i * 4);
@@ -1550,7 +1594,10 @@ export function createScatter(): Scatter {
     // filter below drops it too (a mountain is its own ground figure).
     // Matrices are laid by layShadows from the current sun ellipse.
     const shadowed = visible.filter((p) => !isMark(p.kind));
-    const spots = shadowed
+    // The ground under each stamp is sampled HERE, once per rebuild: a
+    // re-lay runs on every ~1° the sun glides through, and the terrain is
+    // the one thing in that loop that never changes.
+    const spots: ShadowSpot[] = shadowed
       .map((p) => ({
         x: p.x,
         z: p.z,
@@ -1560,6 +1607,8 @@ export function createScatter(): Scatter {
           scaleOf(p.kind) *
           (p.kind === 'rock' ? ROCK_WIDEN_XZ : 1) *
           SHADOW_FIT,
+        y: surface.sampleHeight(p.x, p.z) + PROP_SHADOW_LIFT,
+        normal: surface.normalAt(p.x, p.z),
       }))
       .filter((s) => s.r <= SHADOW_MAX_RADIUS);
     if (spots.length > 0) {
