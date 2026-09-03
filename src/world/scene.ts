@@ -236,6 +236,9 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
     // The ripple drift: one uniform write, a sine of wall-clock time. Nothing
     // on the water ever fully arrests (TASTE §2.1).
     water.update(nowMs);
+    // And the ground's own drawn tier lines, whose pen wobble drifts on the
+    // ambient beat — the same deal, one uniform write.
+    ground.update(nowMs);
     // Sun-driven shadow stamps: one shared ellipse + one flat value per
     // frame for every stamp (scatter throttles its instanced re-lay).
     const sun = environment.sun;

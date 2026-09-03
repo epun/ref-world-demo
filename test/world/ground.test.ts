@@ -8,10 +8,13 @@
  * normals the ink pass needs to draw the terraces at all.
  */
 
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { Color, Mesh, MeshBasicMaterial, type BufferAttribute } from 'three';
 import { SURFACE } from '../../src/taste/tokens';
 import { FIELD_SEGMENTS, FIELD_SIZE, createGround } from '../../src/world/ground';
+import { TERRAIN } from '../../src/world/landscape';
 import { FLAT_SURFACE, ROLLING_SURFACE } from '../../src/world/surface';
 
 const field = (ground = createGround(ROLLING_SURFACE)): Mesh =>
@@ -114,5 +117,82 @@ describe('ground — the field is the surface', () => {
     // the plane it used to be, with nothing in this file to change.
     const attr = positionOf(field(createGround(FLAT_SURFACE)));
     for (let i = 0; i < attr.count; i++) expect(attr.getY(i)).toBe(0);
+  });
+});
+
+describe('ground — the terrain draws its own tiers', () => {
+  /** Compile the material against a stub shader, like water.test.ts does. */
+  function compile(material: MeshBasicMaterial): {
+    uniforms: Record<string, { value: unknown }>;
+    vertexShader: string;
+    fragmentShader: string;
+  } {
+    const shader = {
+      uniforms: {} as Record<string, { value: unknown }>,
+      vertexShader: '#include <common>\nvoid main() {\n#include <begin_vertex>\n}',
+      fragmentShader: '#include <common>\nvoid main() {\n#include <color_fragment>\n}',
+    };
+    material.onBeforeCompile(
+      shader as unknown as Parameters<typeof material.onBeforeCompile>[0],
+      null as never,
+    );
+    return shader;
+  }
+
+  it('injects the tier marks into the shared material, unlit and achromatic', () => {
+    // Geometry alone is invisible here: the ground is unlit paper and the ink
+    // pass's hatch/contour thresholds never trip on a riser this gentle. The
+    // ground therefore draws its own lip lines and hatching, in color only.
+    const ground = createGround(ROLLING_SURFACE);
+    const shader = compile(ground.material);
+
+    // World position and world normal reach the fragment stage…
+    expect(shader.vertexShader).toContain('varying vec3 vGroundPos;');
+    expect(shader.vertexShader).toContain('varying vec3 vGroundNormal;');
+    expect(shader.vertexShader).toContain('modelMatrix * vec4(transformed, 1.0)');
+    expect(shader.fragmentShader).toContain('varying vec3 vGroundPos;');
+
+    // …the marks are a function of HEIGHT (so a line is a contour) and of
+    // tilt (so a tread stays clean paper)…
+    expect(shader.fragmentShader).toContain('uInk');
+    expect(shader.fragmentShader).toContain('uStep');
+    expect(shader.fragmentShader).toContain('uRiser');
+    expect(shader.fragmentShader).toContain('float h = vGroundPos.y;');
+    // …and the ONLY thing they do is mix the ink token into the paper: no
+    // second light, no material swap, nothing chromatic.
+    expect(shader.fragmentShader).toContain('diffuseColor.rgb = mix(diffuseColor.rgb, uInk, ink);');
+    expect(ground.material).toBeInstanceOf(MeshBasicMaterial);
+    expect(ground.material.color.equals(new Color(SURFACE.ground))).toBe(true);
+
+    // The uniforms are the geography's own numbers, not a second opinion.
+    expect((shader.uniforms.uStep as { value: number }).value).toBe(TERRAIN.terraceStep);
+    const riser = shader.uniforms.uRiser as { value: { x: number; y: number } };
+    expect([riser.value.x, riser.value.y]).toEqual([...TERRAIN.terraceRiser]);
+    expect((shader.uniforms.uInk as { value: Color }).value.equals(new Color(SURFACE.ink))).toBe(
+      true,
+    );
+    // The injected program must never share a cache slot with a stock one.
+    expect(ground.material.customProgramCacheKey()).toContain('ground');
+  });
+
+  it('drifts the pen wobble on update — the marks never fully arrest', () => {
+    const ground = createGround(ROLLING_SURFACE);
+    const shader = compile(ground.material);
+    const time = shader.uniforms.uGroundTime as { value: number };
+    expect(time.value).toBe(0);
+    ground.update(2500);
+    expect(time.value).toBeCloseTo(2.5, 9);
+    ground.update(9000);
+    expect(time.value).toBeCloseTo(9, 9);
+    // Wall-clock, not integrated: a dropped frame cannot make a line jump.
+    expect(shader.fragmentShader).toContain('uGroundTime');
+  });
+
+  it('is driven every frame from the render loop', () => {
+    // scene.ts needs a gl context, so this reads the seam in the source: the
+    // wobble is a per-frame uniform write like water.update, and a ground
+    // nobody updates is a ground that has fully stopped (TASTE §2.1).
+    const scene = readFileSync(join(process.cwd(), 'src/world/scene.ts'), 'utf8');
+    expect(scene).toContain('ground.update(nowMs)');
   });
 });
