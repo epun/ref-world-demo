@@ -13,6 +13,7 @@ import {
   type MeshStandardMaterial,
 } from 'three';
 import { WORLD } from '../../src/taste/tokens';
+import { sampleLandscape, waterColliders } from '../../src/world/landscape';
 import { BUILDING_COURTYARD_VARIANT, PROP_VARIANT_COUNTS } from '../../src/world/props';
 import {
   applyInstanceVariation,
@@ -92,7 +93,9 @@ describe('scatter placement', () => {
   it('every variant index is in range for its kind', () => {
     for (const p of computePlacements()) {
       expect(p.variant).toBeGreaterThanOrEqual(0);
-      if (p.kind === 'tick') {
+      // The flat ink marks (grass ticks, shoreline reeds) have no variant
+      // library behind them.
+      if (p.kind === 'tick' || p.kind === 'reed') {
         expect(p.variant).toBe(0);
       } else {
         expect(p.variant, p.kind).toBeLessThan(PROP_VARIANT_COUNTS[p.kind]);
@@ -148,7 +151,15 @@ describe('scatter placement', () => {
   it('cluster neighbors bias toward one variant — present but not total', () => {
     const placements = computePlacements({ kindDensity: { tree: 1, conifer: 1 } });
     for (const kind of ['tree', 'conifer'] as const) {
-      const of = placements.filter((p) => p.kind === kind);
+      // Measured on the PLAIN only. Inside the forest the stand is dense
+      // enough that separate clusters overlap, so a "near pair" there is
+      // often two different clusters' trees — which dilutes the bias
+      // without weakening it. The mechanic under test is per-cluster.
+      const of = placements.filter((p) => {
+        if (p.kind !== kind) return false;
+        const l = sampleLandscape(p.x, p.z);
+        return l.forest === 0 && l.mountain === 0 && !l.island;
+      });
       const near = SCATTER_STEP * 2;
       let pairs = 0;
       let same = 0;
@@ -246,8 +257,12 @@ describe('scatter placement', () => {
     for (const kind of ['palm', 'cactus', 'picnicTable', 'waterTower', 'monolith'] as const) {
       expect(SCATTER_KINDS).toContain(kind);
     }
+    // The landscape kinds ride the same generic api: `mountain` comes in
+    // through PROP_KINDS, `reed` is scatter's own ink mark.
+    expect(SCATTER_KINDS).toContain('mountain');
+    expect(SCATTER_KINDS).toContain('reed');
     expect(new Set(SCATTER_KINDS).size).toBe(SCATTER_KINDS.length);
-    expect(SCATTER_KINDS.length).toBe(12);
+    expect(SCATTER_KINDS.length).toBe(14);
   });
 
   it('new kinds land at their authored rarities and cluster shapes', () => {
@@ -307,6 +322,10 @@ describe('scatter placement', () => {
   it('per-kind density is independent: one kind never moves another', () => {
     const key = (p: Placement): string => `${p.kind}:${p.x.toFixed(4)},${p.z.toFixed(4)}`;
     const base = computePlacements();
+    // NOTE the mountain slider is deliberately NOT in this test. A mountain
+    // sweeps the ground it stands on clear of everything else, so moving
+    // that one slider does move other kinds — a landscape feature displacing
+    // dressing is the intended behaviour, not a leak in the roll order.
 
     // Zeroing trees removes every tree and moves nothing else: ticks are
     // byte-identical, and every base conifer/rock/... placement survives
@@ -388,7 +407,17 @@ describe('scatter placement', () => {
       const meshes = namedMeshes(scatter.group);
       const kindOf = (name: string): string => name.split('-')[0]!;
       const swaySet = new Set<string>(WIND_SWAY_KINDS);
-      const rigid = ['building', 'rock', 'stump', 'picnicTable', 'waterTower', 'monolith'];
+      // Mountains are rigid too: rock does not lean with the weather, and a
+      // landmass least of all.
+      const rigid = [
+        'building',
+        'rock',
+        'stump',
+        'picnicTable',
+        'waterTower',
+        'monolith',
+        'mountain',
+      ];
       expect(meshes.some((m) => swaySet.has(kindOf(m.name)))).toBe(true);
       expect(meshes.some((m) => rigid.includes(kindOf(m.name)))).toBe(true);
 
@@ -547,12 +576,17 @@ describe('scatter colliders', () => {
     expect(monolith.r).toBeCloseTo(TRUNK_FOOTPRINT.monolith!, 9);
   });
 
-  it('handle: one collider per visible non-tick prop, hard/soft split by kind', () => {
+  it('handle: one collider per visible prop, plus the water circles', () => {
     const scatter = createScatter();
     try {
       const props = scatter.positions();
       const colliders = scatter.colliders();
-      expect(colliders.length).toBe(props.length);
+      // Props first, in positions() order, then the landscape's static water
+      // circles appended (creatures must not walk into a pond).
+      const water = waterColliders();
+      expect(water.length).toBe(20);
+      expect(colliders.length).toBe(props.length + water.length);
+      expect(colliders.slice(props.length)).toEqual(water);
       // Same iteration order as positions(): pair them up.
       props.forEach((p, i) => {
         const c = colliders[i]!;
@@ -584,8 +618,11 @@ describe('scatter colliders', () => {
 
       scatter.setKindDensity('tree', 1);
       const v1 = scatter.collidersVersion();
-      // Exclusions hide props — and their colliders with them.
-      const victim = scatter.colliders()[0]!;
+      // Exclusions hide props — and their colliders with them. Mountains are
+      // exempt from exclusions (they are landscape), and they are placed
+      // first, so pick a victim that is not one.
+      const victimIndex = scatter.positions().findIndex((p) => p.kind !== 'mountain');
+      const victim = scatter.colliders()[victimIndex]!;
       scatter.setExclusions([{ x: victim.x, z: victim.z, r: 0.5 }]);
       expect(scatter.collidersVersion()).toBeGreaterThan(v1);
       expect(
@@ -871,7 +908,9 @@ describe('zero kind density', () => {
       // same seed position (documented per-kind independence), so the ghost
       // check pairs colliders 1:1 with the visible props instead of
       // asserting the spot is empty.
-      expect(colliders).toHaveLength(positions.length);
+      // …plus the landscape's static water circles, which are appended after
+      // the props and belong to no placement at all.
+      expect(colliders).toHaveLength(positions.length + waterColliders().length);
       positions.forEach((p, i) => {
         expect(colliders[i]!.x).toBe(p.x);
         expect(colliders[i]!.z).toBe(p.z);

@@ -15,8 +15,11 @@ import {
   INFLATED_PROP_KINDS,
   latheWobbled,
   PROP_KINDS,
+  MOUNTAIN_FOOTPRINT,
   PROP_MASK_SIZE,
+  PROP_MASK_SIZE_LARGE,
   PROP_MASK_SIZE_SMALL,
+  propMaskSize,
   PROP_VARIANT_COUNTS,
   PROP_VARIANT_DEFS,
   type ArchPropKind,
@@ -24,15 +27,10 @@ import {
   type PropKind,
 } from '../../src/world/props';
 
-/** Mask size per kind, mirroring buildPropGeometries' small-kind rule. */
+/** Mask size per kind — the module owns the rule; this is the check that
+ * the three tiers exist and that only the mountain rides the large one. */
 function maskSize(kind: InflatedPropKind): number {
-  return kind === 'rock' ||
-    kind === 'bush' ||
-    kind === 'stump' ||
-    kind === 'cactus' ||
-    kind === 'monolith'
-    ? PROP_MASK_SIZE_SMALL
-    : PROP_MASK_SIZE;
+  return propMaskSize(kind);
 }
 
 /** name+height meta for any kind, either construction path. */
@@ -87,6 +85,7 @@ describe('prop motif variants', () => {
     expect(PROP_VARIANT_COUNTS.stump).toBe(2);
     expect(PROP_VARIANT_COUNTS.cactus).toBe(2);
     expect(PROP_VARIANT_COUNTS.monolith).toBe(2);
+    expect(PROP_VARIANT_COUNTS.mountain).toBe(3); // peak, twin, ridge
     expect(PROP_VARIANT_COUNTS.palm).toBe(3);
     expect(PROP_VARIANT_COUNTS.picnicTable).toBe(2);
     expect(PROP_VARIANT_COUNTS.waterTower).toBe(2);
@@ -114,6 +113,9 @@ describe('prop motif variants', () => {
       stump: [0.5, 2.0], // cut stump … roofed well
       cactus: [1.0, 2.8], // lobed columns
       monolith: [1.2, 3.4], // standing stones, taller than wide
+      // Mountains span from a wide low ridge (0.62) to a peak barely taller
+      // than it is broad — a mass, never a spire.
+      mountain: [0.5, 1.4],
     };
     for (const kind of INFLATED_PROP_KINDS) {
       const [lo, hi] = aspects[kind];
@@ -167,8 +169,10 @@ describe('prop motif variants', () => {
         expect(Math.abs(box.min.z + box.max.z), `${tag} centered z`).toBeLessThan(1e-3);
         expect(v.radius, `${tag} radius`).toBeGreaterThan(0);
         // Sane footprint: nothing degenerate, nothing sprawling. (The
-        // walled courtyard is deliberately wide-and-low: bound is absolute.)
-        expect(v.radius, `${tag} radius sane`).toBeLessThan(8);
+        // walled courtyard is deliberately wide-and-low: bound is absolute.
+        // Mountains are LANDSCAPE, not props — a 15-unit mass has a footprint
+        // to match, so they carry their own bound.)
+        expect(v.radius, `${tag} radius sane`).toBeLessThan(kind === 'mountain' ? 14 : 8);
         v.geometry.dispose();
       });
     }
@@ -182,6 +186,95 @@ describe('prop motif variants', () => {
     expect(spread('tree')).toBeGreaterThan(0.5);
     expect(spread('conifer')).toBeGreaterThan(1.5);
     expect(spread('building')).toBeGreaterThan(1.5);
+  });
+});
+
+// ── mountains (the landscape kind) ──────────────────────────────────────────
+
+describe('mountain motifs', () => {
+  /** Widest ink run on each mask row — the authored silhouette, before
+   * inflation rounds it into 3D. */
+  function rowWidths(kind: InflatedPropKind, index: number): { w: number[]; size: number } {
+    const size = maskSize(kind);
+    const a = analyze(PROP_VARIANT_DEFS[kind][index]!.strokes, { size, contourPoints: 96 })!;
+    const w: number[] = [];
+    for (let y = 0; y < size; y++) {
+      let lo = size;
+      let hi = -1;
+      for (let x = 0; x < size; x++) {
+        if (a.mask.data[y * size + x] === 1) {
+          if (x < lo) lo = x;
+          if (x > hi) hi = x;
+        }
+      }
+      w.push(hi < 0 ? 0 : hi - lo + 1);
+    }
+    return { w, size };
+  }
+
+  it('renders at the large mask — it is the one kind that fills the frame', () => {
+    expect(propMaskSize('mountain')).toBe(PROP_MASK_SIZE_LARGE);
+    expect(PROP_MASK_SIZE_LARGE).toBeGreaterThan(PROP_MASK_SIZE);
+    // Every other inflated kind stays on the two small tiers.
+    for (const kind of INFLATED_PROP_KINDS) {
+      if (kind === 'mountain') continue;
+      expect([PROP_MASK_SIZE, PROP_MASK_SIZE_SMALL], kind).toContain(propMaskSize(kind));
+    }
+  });
+
+  it('ships the three authored heights', () => {
+    expect(PROP_VARIANT_DEFS.mountain.map((d) => d.height)).toEqual([15, 17, 12]);
+    expect(PROP_VARIANT_DEFS.mountain.map((d) => d.name)).toEqual(['peak', 'twin', 'ridge']);
+  });
+
+  it('is widest at the base, tallest at one point, and never touches the canvas edge', () => {
+    for (let i = 0; i < PROP_VARIANT_DEFS.mountain.length; i++) {
+      const name = PROP_VARIANT_DEFS.mountain[i]!.name;
+      const { w, size } = rowWidths('mountain', i);
+      const top = w.findIndex((v) => v > 0);
+      let bottom = 0;
+      for (let y = 0; y < size; y++) if (w[y]! > 0) bottom = y;
+      // Never touches the canvas edge (the mask would clip the silhouette).
+      expect(top, `${name} top margin`).toBeGreaterThan(0);
+      expect(bottom, `${name} bottom margin`).toBeLessThan(size - 1);
+      const widest = Math.max(...w);
+      const widestY = w.indexOf(widest);
+      // A foot at least 60% of the canvas across — a landmass, not a spire.
+      expect(widest / size, `${name} base width`).toBeGreaterThan(0.6);
+      // …and that widest row sits in the bottom third of the silhouette.
+      expect((widestY - top) / (bottom - top), `${name} widest row`).toBeGreaterThan(0.66);
+      // One clear summit: the top of the form is a fraction of the foot.
+      let topBand = 0;
+      for (let y = top; y <= top + (bottom - top) * 0.12; y++) topBand = Math.max(topBand, w[y]!);
+      expect(topBand / widest, `${name} summit`).toBeLessThan(0.45);
+    }
+  });
+
+  it('the authored footprint matches the built one within 30%', () => {
+    const geometries = buildPropGeometries();
+    const built = geometries.get('mountain')!;
+    expect(MOUNTAIN_FOOTPRINT.length).toBe(built.length);
+    built.forEach((v, i) => {
+      const tag = `mountain/${PROP_VARIANT_DEFS.mountain[i]!.name}`;
+      const authored = MOUNTAIN_FOOTPRINT[i]!;
+      expect(v.radius / authored, `${tag} footprint`).toBeGreaterThan(0.7);
+      expect(v.radius / authored, `${tag} footprint`).toBeLessThan(1.3);
+      // Bigger than every shadow stamp the scatter is willing to draw —
+      // asserted against SHADOW_MAX_RADIUS over in the scatter tests.
+      expect(v.radius, `${tag} is landscape-scale`).toBeGreaterThan(4);
+    });
+    for (const vs of geometries.values()) for (const v of vs) v.geometry.dispose();
+  });
+
+  it('is a pillowy mass, not an engineered cone: no planar faces (TASTE §2.5)', () => {
+    const geometries = buildPropGeometries();
+    for (const v of geometries.get('mountain')!) {
+      const axes: [number, number, number][] = [[0, 0, 1], [1, 0, 0], [0, 1, 0]];
+      for (const dir of axes) {
+        expect(planarFraction(v.geometry, dir, 10)).toBeLessThan(0.1);
+      }
+    }
+    for (const vs of geometries.values()) for (const v of vs) v.geometry.dispose();
   });
 });
 
