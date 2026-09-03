@@ -62,7 +62,9 @@ The traps, in order of how easily they get violated:
 - **Everything in `src/dev/` is gated on `isDev`** and must tree-shake out of the demo build.
 - **The geography is authored in `src/world/landscape.ts`** and is the single source every
   system samples — placement, colliders, water, minimap. Never re-derive a shoreline
-  elsewhere, and the map does not ride the scatter seed.
+  elsewhere, and the map does not ride the scatter seed. The ground has height: sample it
+  through `src/world/surface.ts` only, never derive a height elsewhere. Locomotion never
+  writes Y.
 
 ## Running the room
 

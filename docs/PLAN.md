@@ -349,6 +349,11 @@ interface Surface {
 never touches world-space Y** — that discipline is the entire cost of keeping the planet
 available, and it's cheap if held from the start and expensive to retrofit.
 
+`RollingSurface` has since shipped as `ROLLING_SURFACE` in `src/world/surface.ts`, wrapping
+the terraced terrain authored in `src/world/landscape.ts`. `FlatSurface` shipped alongside it
+as `FLAT_SURFACE` and remains in use for the phone's character stage and for tests that want
+a plane. `SphereSurface` is still open behind the same seam.
+
 A curved horizon suits the world brief's pixel-planet reference well, and it interacts
 nicely with §7.1: on a sphere, the camera tour becomes an orbit and dispersal is bounded by
 the planet's surface area. P5, not P0.

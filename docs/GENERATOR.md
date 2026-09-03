@@ -190,49 +190,29 @@ sleep · play · explore`
 
 ### Terrain
 
-The heightfield described in the original wave (`RollingSurface`) was never built. What
-shipped instead is an AUTHORED map (`src/world/landscape.ts`, PURE — no Three.js, no DOM, no
-clocks, no `Math.random`): a forest to the west with a smaller spur running south-east off it
-[D], a mountain backdrop of three overlapping masses along the north edge whose near edge
-sits outside the roam radius on purpose — mountains are scenery creatures walk toward, never
-terrain they climb [D] — four small ponds, and one lake with an island in its middle reached
-by a land bridge.
+The map (`src/world/landscape.ts`, PURE — no Three.js, no DOM, no clocks, no `Math.random`)
+has grown since the layout above was first drawn, and it now has height. Scatter covers
+±160, creatures roam within 100, the camera pans to ±200, and the minimap reads ±175 [D] — far
+enough apart that a 40-radius forest to the west (plus a spur), a four-mass range along the
+far north, a 42-radius lake with a 9-radius island and a causeway (never narrower than 4
+units), and four corner ponds each keep ≥20 units of open field from their nearest neighbor
+and ≥40 from the hatch clearing [D].
 
-The layout is FIXED and does not ride the scatter seed: re-seeding re-rolls which props grow
-where, never the map itself, so a re-seeded world is the same country with different trees in
-it. Every feature's edge comes out of one wobbled-radius function, never a circle, so
-placement, physics, the water renderer and the minimap outline all agree on exactly the same
-edge instead of drifting apart by a fraction of a unit.
+`terrainHeight` (`TERRAIN =`) is a two-octave value-noise field plus region shelves (forest
++2.5, range +6), snapped onto 1.6-unit tiers with rounded risers [D] — a smooth swell reads as
+nothing in an orthographic ink render, a staircase reads as height. Every water body sinks its
+whole disc — island and causeway included — to one level 1.5 below the land it sits in, the
+hatch clearing stays exactly flat, and the field fades to 0 by radius 185 so it meets the flat
+outer ground disc without a seam. Measured: heights run −3.1 to +8, max slope 0.55.
 
-- **Scatter blends per-region seed tables by soft weight** (`src/world/scatter.ts`, the
-  "landscape-aware seeding" section around `FOREST_SEED`): a cell's placement probability
-  blends the plain's table with whichever region weights (`forest`, `mountain`) the landscape
-  sample returns for that cell. In the forest, tree probability runs roughly 12× the plain's
-  [D]; the range seeds scree and stubborn conifers; the island seeds palms and nothing built
-  — no building, tower, picnic table or cactus ever reaches it. A cell with zero forest and
-  zero mountain weight collapses to EXACTLY the pre-map expression, so the open plain still
-  rolls the world that shipped.
-- **Nothing is planted in water.** A shore keep-out plants nothing — not even a tick — near
-  the waterline, and a tighter final keep-out blocks every placement, cluster neighbor and
-  reed from standing in or against the water itself.
-- **Mountains are their own prop kind**, placed from the weight field in a pre-pass before
-  anything else claims the ground, not rolled per-cell like the rest of scatter. They are the
-  one kind exempt from creature exclusion circles — a character never pushes a mountain out
-  of the way — and they sweep their own footprint clear of every other placement, so a range
-  reads as one merged mass rather than a mountain with trees growing through it.
-- **Water is drawn, not just filled** (`src/world/water.ts`): a flat `WORLD.neutralMid` fill
-  one measured step below the paper, a hand-drawn ink shoreline ribbon walked around each
-  body's fill outline (a pen's varying width, the occasional lifted segment), and sparse
-  ripple marks drifting on the ambient floor. The shoreline is its own mesh because a flat
-  polygon a hair above the ground breaks neither the depth nor the normal target the ink pass
-  reads — without it a pond would be a value with no edge.
-- **Reeds fringe the outer shore and the island shore** — `shoreSamples()` walks both rings
-  independently of the ink ribbon's fill outline, so it never sees the land bridge's cut-out
-  wedge. The bridge itself carries no reeds on either bank.
-- **The lake's island is reachable.** A ring of hard colliders runs around the lake, open at
-  the land bridge, so creatures can walk to the island on foot.
+The `Surface` seam PLAN §7.2 promised has shipped (`src/world/surface.ts`): `ROLLING_SURFACE`
+wraps this terrain, `FLAT_SURFACE` stays for the phone stage and tests, and every consumer —
+ground mesh, scatter, shadow stamps, water, creatures, eggs, the hatch — samples one or the
+other rather than deriving a height of its own. Locomotion still never touches world-space Y.
+A `SphereSurface` behind the same seam remains open for later.
 
-Rolling elevation through the `Surface` seam remains open for later.
+Water colliders are now a hex tiling of small hard circles approximating each body, not a
+ring [D].
 
 ### Ink rendering pass *(reference-locked by user)*
 
