@@ -333,7 +333,14 @@ export interface Water {
   group: Group;
   /** Advance the ambient ripple drift. Call once per frame. */
   update(nowMs: number): void;
-  /** For the minimap and tests: the fill polygons in world x/z. */
+  /**
+   * The polygons the water is actually built from, in world x/z — the fill
+   * and the shoreline both ride these exact points. Copies, per call.
+   *
+   * NOT what the minimap draws: at map scale a body is a few dozen pixels
+   * across, so it re-derives the cheap 96-point outline from the geography
+   * instead of carrying a thousand points per body for a sub-pixel gain.
+   */
   fills(): [number, number][][];
   dispose(): void;
 }
@@ -344,16 +351,31 @@ export function createWater(): Water {
 
   const geometries: BufferGeometry[] = [];
   const materials: MeshBasicMaterial[] = [];
-  const fillPolys: Point[][] = [];
+
+  // ── the one outline ───────────────────────────────────────────────────────
+  // ONE polygon per body, shared by the fill and the shoreline that draws its
+  // edge. This has to be the same array for both: the wedge that cuts the land
+  // bridge out is decided per sampled angle, so a fill sampled coarsely and a
+  // ribbon sampled finely put their bank legs at measurably different angles —
+  // up to ~3° at the lake, which is a ~0.9-unit strip of bare paper showing
+  // between the grey and the ink. Built at the ribbon's density and densified
+  // once, here, so the fill edge and the pen line coincide by construction.
+  const outlines = WATER_BODIES.map((body) =>
+    densify(waterFillOutline(body, OUTLINE_POINTS * SHORE_SUBDIVISION)),
+  );
 
   // ── the flat value ────────────────────────────────────────────────────────
   // One unlit polygon per body. The lake's is a C — the land bridge is cut out
   // of it so the water reads as a ring you can walk into the middle of.
-  const fillMaterial = new MeshBasicMaterial({ color: WORLD.neutralMid });
+  // DoubleSide: the shared outline is densified, so its bank legs carry runs
+  // of exactly collinear points and earcut answers with a handful of zero-area
+  // slivers whose winding is float noise. They rasterize nothing either way —
+  // this just means a sliver can never become a culled hole in the sheet if
+  // the geography is ever re-authored. A flat sheet has no back to save.
+  const fillMaterial = new MeshBasicMaterial({ color: WORLD.neutralMid, side: DoubleSide });
   materials.push(fillMaterial);
   WATER_BODIES.forEach((body: WaterBody, index: number) => {
-    const poly = waterFillOutline(body);
-    fillPolys.push(poly);
+    const poly = outlines[index]!;
     const shape = new Shape();
     // Built in (x, −z) and laid flat by a −90° turn about x, which maps
     // (x, y, 0) → (x, 0, −y): the shape's y comes back as world z, and the
@@ -378,10 +400,8 @@ export function createWater(): Water {
   const shoreMaterial = new MeshBasicMaterial({ color: SURFACE.ink, side: DoubleSide });
   materials.push(shoreMaterial);
   WATER_BODIES.forEach((body: WaterBody, index: number) => {
-    const geometry = ribbonGeometry(
-      densify(waterFillOutline(body, OUTLINE_POINTS * SHORE_SUBDIVISION)),
-      body.seed,
-    );
+    // The same array the fill was built from — the pen rides its own edge.
+    const geometry = ribbonGeometry(outlines[index]!, body.seed);
     geometries.push(geometry);
     const mesh = new Mesh(geometry, shoreMaterial);
     mesh.name = `shore-${body.kind}-${index}`;
@@ -449,7 +469,7 @@ export function createWater(): Water {
       // surface jump.
       rippleUniforms.uTime.value = nowMs / 1000;
     },
-    fills: (): [number, number][][] => fillPolys.map((poly) => poly.map((p) => [p[0], p[1]])),
+    fills: (): [number, number][][] => outlines.map((poly) => poly.map((p) => [p[0], p[1]])),
     dispose: (): void => {
       group.clear();
       for (const geometry of geometries) geometry.dispose();

@@ -10,7 +10,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { Color, Mesh, MeshBasicMaterial, type BufferAttribute } from 'three';
+import { Color, DoubleSide, Mesh, MeshBasicMaterial, type BufferAttribute } from 'three';
 import { SURFACE, WORLD } from '../../src/taste/tokens';
 import {
   RIPPLE_MARGIN,
@@ -127,12 +127,13 @@ describe('water — what gets built', () => {
     }
   });
 
-  it('winds every fill triangle up, so no pond is a hole seen from behind', () => {
+  it('winds every fill triangle that has any area at all up', () => {
     for (const mesh of meshes()) {
       if (!mesh.name.startsWith('water-')) continue;
       const attr = mesh.geometry.getAttribute('position') as BufferAttribute;
       const index = mesh.geometry.getIndex();
       expect(index, mesh.name).not.toBeNull();
+      let net = 0;
       for (let i = 0; i < index!.count; i += 3) {
         const a = index!.getX(i);
         const b = index!.getX(i + 1);
@@ -140,9 +141,21 @@ describe('water — what gets built', () => {
         const ny =
           (attr.getZ(b) - attr.getZ(a)) * (attr.getX(c) - attr.getX(a)) -
           (attr.getX(b) - attr.getX(a)) * (attr.getZ(c) - attr.getZ(a));
-        expect(ny, mesh.name).toBeGreaterThan(0);
+        net += ny;
+        // The densified bank legs are runs of exactly collinear points, so
+        // earcut returns a few slivers whose winding is float noise (largest
+        // measured: 8e-7 square units, under a sixth of a pixel even at
+        // maximum zoom). Anything that could cover a pixel must face up.
+        if (Math.abs(ny) > 1e-4) expect(ny, mesh.name).toBeGreaterThan(0);
       }
+      // And the sheet as a whole faces up, not just most of it.
+      expect(net, mesh.name).toBeGreaterThan(0);
     }
+  });
+
+  it('double-sides the fill, so a sliver can never become a hole', () => {
+    const fill = named('water-lake-0').material as MeshBasicMaterial;
+    expect(fill.side).toBe(DoubleSide);
   });
 });
 
@@ -204,6 +217,67 @@ describe('water — everything drawn is over water', () => {
     const quads = points(named('shore-pond-1')).length / 6;
     expect(quads).toBeLessThan(96 * 4);
     expect(quads).toBeGreaterThan(96 * 4 * 0.8);
+  });
+});
+
+describe('water — the fill edge and the pen line are one line', () => {
+  it('builds both from a single polygon, so no paper shows between them', () => {
+    // The wedge that cuts the land bridge out is decided per sampled angle, so
+    // a coarsely sampled fill and a finely sampled ribbon put their bank legs
+    // at different angles and leave a strip of bare paper between the grey and
+    // the ink. One shared polygon makes that unrepresentable.
+    const water = createWater();
+    const fills = water.fills();
+    const bodies = water.group.children.filter((c) => c.name.startsWith('water-')) as Mesh[];
+    const shores = water.group.children.filter((c) => c.name.startsWith('shore-')) as Mesh[];
+    expect(fills).toHaveLength(WATER_BODIES.length);
+    expect(shores).toHaveLength(WATER_BODIES.length);
+
+    fills.forEach((poly, i) => {
+      // Earcut triangulates the polygon's own points and invents none, so the
+      // fill's vertices ARE the outline's.
+      const fillAttr = bodies[i]!.geometry.getAttribute('position') as BufferAttribute;
+      expect(fillAttr.count, bodies[i]!.name).toBe(poly.length);
+
+      // And the ribbon's centerline is that same outline: the two paired
+      // vertices of every quad edge straddle one polygon point exactly.
+      const attr = shores[i]!.geometry.getAttribute('position') as BufferAttribute;
+      let worst = 0;
+      let checked = 0;
+      for (let q = 0; q < attr.count; q += 6) {
+        for (const [a, b] of [
+          [0, 1],
+          [2, 4],
+        ] as const) {
+          const mx = (attr.getX(q + a) + attr.getX(q + b)) / 2;
+          const mz = (attr.getZ(q + a) + attr.getZ(q + b)) / 2;
+          let nearest = Infinity;
+          for (const [x, z] of poly) {
+            const d = Math.hypot(x - mx, z - mz);
+            if (d < nearest) nearest = d;
+          }
+          if (nearest > worst) worst = nearest;
+          checked++;
+        }
+      }
+      expect(checked, shores[i]!.name).toBeGreaterThan(100);
+      // Coincident to float32 rounding — not "close", the same point.
+      expect(worst, shores[i]!.name).toBeLessThan(1e-4);
+    });
+  });
+
+  it('samples the shared outline finely enough that no segment can gape', () => {
+    // Half a segment is the worst a fill vertex and a pen vertex could ever be
+    // apart if they drifted; the stroke is wider than that everywhere.
+    for (const poly of createWater().fills()) {
+      let longest = 0;
+      for (let i = 0; i < poly.length; i++) {
+        const a = poly[i]!;
+        const b = poly[(i + 1) % poly.length]!;
+        longest = Math.max(longest, Math.hypot(b[0] - a[0], b[1] - a[1]));
+      }
+      expect(longest).toBeLessThan(1);
+    }
   });
 });
 
