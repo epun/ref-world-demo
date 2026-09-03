@@ -217,13 +217,15 @@ export function roomForWorld(world: string): string {
  * was minted at random and cannot be derived from anything in the address,
  * so dropping it would strand the scan in a room of its own.
  *
- * `page` is that same rule applied one level up. A world with a page of its
- * own (worlds/<name>/index.html — see scripts/new-world.mjs) is reached at
- * `/worlds/<name>/`, and THAT is its address: the one on the card, the one
- * a client was sent, the one anybody would paste. `/?world=<name>` still
- * lands in the identical world, but a qr encoding it would be a second
- * address for a place that is supposed to have one. So when the page
- * declares the world, pass its path and the qr encodes the page.
+ * `page` is that same rule applied one level up. A client's world is its
+ * own deployment of this repo at its own hostname (worlds.json,
+ * scripts/world-build.mjs), and the page declares which world it is in
+ * rather than reading it from a query. On such a deployment
+ * `location.pathname` is simply `/`, so `page` is `/` and the qr encodes
+ * `https://ref-world-meridian.vercel.app/` — the address on the card, the
+ * one the client was sent, the one anybody would paste. `/?world=<name>`
+ * on the public site still lands in the identical world, but a qr encoding
+ * it would be a second address for a place that is supposed to have one.
  *
  * It is ignored without a world, because an unnamed world's room is not in
  * the path — a page-only url would strand the scan exactly as dropping the

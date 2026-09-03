@@ -43,44 +43,88 @@ one may still draw in another.
 Without `?world=` everything behaves exactly as the installation does —
 ephemeral, no server, no persistence.
 
-### a page of its own
+### a deployment of its own
 
-A query string is a setting, not a place. A world you are handing to
-somebody — a client, an event — gets an address instead:
+A query string is a setting, not a place. A world you are handing to a
+client is not `/?world=meridian` on the public site — it is **its own
+deployment of this same repo**, at its own hostname:
 
 ```
-https://<host>/worlds/<name>/
+https://ref-world-meridian.vercel.app/     a custom domain later
 ```
 
-That is a real page, `worlds/<name>/index.html`, a sibling of index.html
-that loads the same app from the same absolute paths. It differs in two
-things and nothing else: it names its world in
+One codebase, one store, many deployments. The client's link is an address,
+the card it unfurls into carries their name rather than the public world's,
+and the public site never lists them: two clients cannot find each other by
+reading a url, and nothing about adding one changes what everyone else
+sees.
 
-```html
-<meta name="refworld:world" content="meridian" />
+**The map** is `worlds.json` at the repo root — one entry per deployment:
+
+```json
+{
+  "worlds": {
+    "meridian": { "host": "ref-world-meridian.vercel.app", "residents": "none" }
+  }
+}
 ```
 
-instead of a query string, and it carries its own open-graph tags, so the
-card the link unfurls into says the world's name rather than the public
-one's.
+A deployment knows its own production hostname — Vercel sets
+`VERCEL_PROJECT_PRODUCTION_URL` in every build, preview and production
+alike — so the build looks itself up there and injects the world, its card
+and how it starts into index.html. That has to happen at build time rather
+than on load, because the card is read by crawlers that never run the app.
 
-Write one with:
+`residents` is the one setting so far:
+
+| value | what it means |
+|---|---|
+| `shipped` (default) | the twenty-three recovered creatures are standing in the field on arrival |
+| `none` | the world opens **empty** and fills only with what its own people draw |
+
+The public world is `shipped` — those creatures are its exhibit, and an
+empty field is a bad landing for a link anyone can open. A client's world is
+`none`: somebody else's creatures there are not a welcome, they are clutter
+with no story attached, and the client watching their own first drawing
+arrive into an empty field is the whole proposition. Anything but the exact
+word `none` means `shipped`, on both sides of the build, so a typo can never
+empty a world.
+
+The public deployment is simply **absent from the map**. It resolves to
+nothing, and its html comes out byte-identical to the file on disk; a test
+pins exactly that.
+
+Look at one locally before there is anything to deploy:
 
 ```bash
-node scripts/new-world.mjs meridian
+VITE_WORLD=meridian npm run dev
 ```
 
-The build picks it up on its own — every `worlds/*/index.html` is a rollup
-input — so a new world is one command and no config edit.
+**Adding a client:**
 
-The name is read once, `?world=` first and the meta tag second, and
-sanitised the same way either way. So `/worlds/meridian/` and
-`/?world=meridian` are the same world: same derived room, same store, same
-drawings. Both still work, and the old link keeps working forever.
+```bash
+node scripts/new-world.mjs meridian --clean    # writes the worlds.json entry
+```
 
-What does change is the qr on the projection: a page that declares its own
-world encodes **that path**. A place has one address, and the one on the
-card is it.
+then the parts that are a dashboard rather than a file — the script prints
+them too:
+
+1. make a Vercel project named `ref-world-meridian`, linked to the same
+   repo (`epun/ref-world-demo`) — the dashboard, or `vercel link`. Its
+   production url has to be the hostname in the map.
+2. connect the **same** KV store integration to it and set
+   `MODERATOR_SECRET` in its environment. One store, many deployments;
+   worlds partition it, so one client cannot see another's drawings.
+3. deploy.
+4. seed it (below) — unless it is `--clean`, which is the point of `--clean`.
+
+`/?world=meridian` on the public site still reaches the identical world —
+same derived room, same store partition, same drawings — if anyone types
+it. It is not advertised anywhere and nothing links to it, but it was never
+broken and breaking it would strand any link already sent. One difference,
+and it is cosmetic: the public page carries no `residents` tag, so that
+route lays the public exhibit on top of the client's world for that viewer
+only. Nothing is written; the deployment's own link is still empty.
 
 ## one creature per person
 
@@ -189,9 +233,15 @@ dispositions, same device claims. No privileged path, because a seed that
 could bypass the gate would be a hole in the gate shaped like a script.
 Idempotent — a second run reports every drawing as already there.
 
-A world with a page of its own is seeded exactly the same way: the page is
-an address, not a second world, so pass its name and nothing else changes.
-`scripts/new-world.mjs` prints the command with the name already in it.
+A world on a deployment of its own is seeded exactly the same way — the
+deployment is an address, not a second store — but point it at that
+deployment's host so the write and the read are the same place:
+
+```bash
+node scripts/seed-world.mjs https://ref-world-meridian.vercel.app meridian
+```
+
+`scripts/new-world.mjs` prints that line with the name already in it.
 
 ## setting it up
 

@@ -51,35 +51,40 @@ describe('joinUrl — what the qr on the wall encodes', () => {
   });
 
   /**
-   * A world with a page of its own (worlds/<name>/index.html) is reached at
-   * `/worlds/<name>/`. That path is the address on its card and the one a
-   * client was sent, so the qr has to be that and not a second address for
-   * the same place.
+   * A client's world is its own deployment of this repo at its own
+   * hostname (worlds.json), and its page declares the world rather than
+   * reading it from a query. `location.pathname` there is `/`, so that is
+   * what the qr encodes: the address on the card, and the one the client
+   * was sent.
    */
-  it('a world with a page of its own gets the page, not the query form', () => {
-    const url = joinUrl('https://ref-world-demo.vercel.app', {
+  it('a world with a deployment of its own gets its own host and nothing else', () => {
+    const url = joinUrl('https://ref-world-meridian.vercel.app', {
       world: 'meridian',
       room: roomForWorld('meridian'),
       epoch: 'w-meridian',
-      page: '/worlds/meridian/',
+      page: '/',
     });
-    expect(url).toBe('https://ref-world-demo.vercel.app/worlds/meridian/');
+    expect(url).toBe('https://ref-world-meridian.vercel.app/');
     expect(url).not.toContain('?');
     expect(url).not.toContain('/draw/');
   });
 
-  it('the page url still lands in the same room as the query form', () => {
-    // Same reason as above: the room is derived from the NAME, and both
-    // addresses carry the same name, so neither loses anything by omitting
-    // the room. If this diverged, a scan and a share would split the topic.
-    const page = joinUrl('https://x.test', {
+  it('the deployment url still lands in the same room as the query form', () => {
+    // The room is derived from the NAME, and both addresses are the same
+    // world, so neither loses anything by omitting the room. If these
+    // diverged, a scan and a share would split the mqtt topic.
+    const own = joinUrl('https://ref-world-meridian.vercel.app', {
       world: 'meridian',
       room: 'zzzz',
       epoch: 'e',
-      page: '/worlds/meridian/',
+      page: '/',
     });
-    const query = joinUrl('https://x.test', { world: 'meridian', room: 'zzzz', epoch: 'e' });
-    expect(new URL(page).pathname).toBe('/worlds/meridian/');
+    const query = joinUrl('https://ref-world-demo.vercel.app', {
+      world: 'meridian',
+      room: 'zzzz',
+      epoch: 'e',
+    });
+    expect(new URL(own).pathname).toBe('/');
     expect(roomForWorld('meridian')).toBe(
       roomForWorld(new URL(query).searchParams.get('world')!),
     );
@@ -96,7 +101,7 @@ describe('joinUrl — what the qr on the wall encodes', () => {
       world: null,
       room: 'qtse',
       epoch: 'w-7',
-      page: '/worlds/meridian/',
+      page: '/',
     });
     expect(url).toBe('https://x.test/draw/?room=qtse&w=w-7');
   });

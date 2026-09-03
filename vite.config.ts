@@ -1,31 +1,46 @@
 /// <reference types="vitest/config" />
-import { defineConfig } from 'vite';
-import { existsSync, readdirSync, statSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { defineConfig, type Plugin } from 'vite';
+import { basename, resolve } from 'node:path';
+import { applyWorldToHtml, readWorlds, resolveWorld } from './scripts/world-build.mjs';
 
 /**
- * Every world with a page of its own is a build input.
+ * A client's world is a deployment of its own.
  *
- * `worlds/<name>/index.html` (written by scripts/new-world.mjs) is the same
- * app declaring its world in a meta tag, so a client demo has an address
- * that is a place rather than a query string. Discovered rather than listed
- * so adding one is one command and no config edit — the build output lands
- * at dist/worlds/<name>/index.html, which is what /worlds/<name>/ serves.
+ * Not a path on the public site: its own vercel project, its own hostname,
+ * the same repo. So what varies between deployments — which world the page
+ * shows, what its link unfurls into, whether it opens with a population —
+ * is decided here, at build time, because the card is read by crawlers
+ * that never run the app.
+ *
+ * worlds.json gives each world its hostname and its settings; the rules
+ * live in scripts/world-build.mjs so they can be tested without a build.
+ * The public deployment is not in the map, resolves to null, and its
+ * index.html comes out byte-identical — test/worlds/build.test.ts pins that.
+ *
+ * index.html only. phone.html is the companion handset's page; it belongs
+ * to whatever world its projection is in and has no card of its own.
  */
-function worldPages(root: string): Record<string, string> {
-  const dir = resolve(root, 'worlds');
-  if (!existsSync(dir)) return {};
-  const inputs: Record<string, string> = {};
-  for (const name of readdirSync(dir)) {
-    const page = resolve(dir, name, 'index.html');
-    if (!statSync(resolve(dir, name)).isDirectory()) continue;
-    if (!existsSync(page)) continue;
-    inputs[`world-${name}`] = page;
+function worldIdentity(root: string): Plugin {
+  const world = resolveWorld(process.env, readWorlds(resolve(root, 'worlds.json')));
+  if (world) {
+    console.log(
+      `ref-world: building "${world.name}" at ${world.host}, residents ${world.residents}`,
+    );
   }
-  return inputs;
+  return {
+    name: 'ref-world-identity',
+    transformIndexHtml: {
+      order: 'pre',
+      handler(html, ctx) {
+        if (!world || basename(ctx.filename) !== 'index.html') return html;
+        return applyWorldToHtml(html, world);
+      },
+    },
+  };
 }
 
 export default defineConfig({
+  plugins: [worldIdentity(__dirname)],
   build: {
     rollupOptions: {
       input: {
@@ -35,7 +50,6 @@ export default defineConfig({
         // html in public/ and cannot import from src/). Fixed filename so
         // that page can script-tag it: src/moderation/standalone.ts.
         screen: resolve(__dirname, 'src/moderation/standalone.ts'),
-        ...worldPages(__dirname),
       },
       output: {
         entryFileNames: (chunk) =>

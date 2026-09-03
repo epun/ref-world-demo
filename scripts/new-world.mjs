@@ -1,148 +1,61 @@
 #!/usr/bin/env node
 /**
- * Give a world an address of its own.
+ * Give a world a deployment of its own.
  *
  * A named world has always existed — `/?world=meridian` reaches it, and has
- * since the store went in. What it did not have was a PLACE: the link you
- * send a client is the one index.html with a setting stuck on the end of
- * it, and the card it unfurls into says "ref world", because that card is
- * hardcoded into the only page there is.
+ * since the store went in. What it did not have was a PLACE. The link you
+ * hand a client should be an address, not the public site with a setting
+ * stuck on the end of it, and it should unfurl into a card with their name
+ * on it rather than the public world's. Two clients should also not be able
+ * to find each other by reading a url.
  *
- * So a world gets a page. `worlds/<name>/index.html` is a sibling of
- * index.html that loads the same app from the same absolute paths and
- * differs in exactly two ways: it declares its world in a meta tag instead
- * of a query string, and it carries its own open-graph tags. Nothing about
- * the world moves — same derived room, same store, same drawings as
- * `/?world=<name>` — only the address does.
+ * So a client world is its own vercel deployment of this same repo, at its
+ * own hostname (ref-world-meridian.vercel.app, a custom domain later). One
+ * codebase, one store, many deployments; worlds.json gives each world its
+ * hostname and its settings, and the build reads it
+ * (scripts/world-build.mjs) to inject the world, its card and how it starts
+ * into index.html. The public deployment is absent from the file and is not
+ * touched by any of this.
  *
- * That is why this is a script and not a folder somebody copies. The page
- * is a template with one hole in it; the next client should be one command,
- * not a copy-paste that quietly keeps the previous client's og:url. The
- * committed worlds/meridian/index.html is this script's own output, run
- * once and left alone.
- *
- * vite picks the page up on its own (every worlds/<name>/index.html is a
- * rollup input — see vite.config.ts), so nothing else needs editing.
+ * This script owns the part of that which is data: the worlds.json entry.
+ * The rest is a vercel project, which is a thing you click, so it prints
+ * the recipe instead of pretending to do it.
  *
  * Usage:
- *   node scripts/new-world.mjs <name> [--force] [--out <dir>]
+ *   node scripts/new-world.mjs <name> [--clean] [--host <hostname>] [--file <path>]
  *
- *   node scripts/new-world.mjs meridian
+ *   node scripts/new-world.mjs meridian --clean
  *
- *   --force   overwrite a page that already exists
- *   --out     write under <dir> instead of the repo's worlds/ (tests use it)
+ *   --clean  open with no population at all. the public world's twenty-three
+ *            residents are ITS exhibit; a client's world starts empty and
+ *            fills only with what its own people draw.
+ *   --host   the deployment's production hostname
+ *            (default ref-world-<name>.vercel.app)
+ *   --file   write a different worlds.json (tests use it)
+ *
+ * Idempotent: the same world twice changes nothing and says so.
  */
 
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-
-/** where the deployment lives; the card's urls have to be absolute. */
-const SITE = 'https://ref-world-demo.vercel.app';
+import { normalizeHost, sanitizeResidents, sanitizeWorldName } from './world-build.mjs';
 
 /**
  * The same rule the app and the api sanitise with (docs/PUBLIC.md §urls):
  * lowercase letters, digits and hyphens, up to 24 characters. A name that
  * would be altered on the way in is refused here rather than silently
- * turned into a different world than the one that was asked for.
+ * becoming a different world than the one that was asked for.
  */
 const NAME_RULE = /^[a-z0-9-]{1,24}$/;
 
-/**
- * The page, with one hole in it.
- *
- * Absolute script paths (`/vendor/…`, `/src/main.ts`) because this file
- * lives one folder down: relative ones would resolve to
- * /worlds/<name>/src/main.ts in dev and break the build's rewrite too.
- */
-export function worldPage(name) {
-  return `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>ref world · ${name}</title>
-    <!--
-      A PAGE OF ITS OWN, for the world named "${name}".
-
-      Written by scripts/new-world.mjs — do not hand-edit; re-run the script.
-
-      This is index.html with two changes and no others: the world is
-      declared below in a meta tag instead of read from a query string, and
-      the card is this world's rather than the public one's. Everything
-      after that is the same app, loaded from the same absolute paths.
-
-      The world it names is the same world /?world=${name} reaches — same
-      derived room, same store, same drawings. Only the address differs, and
-      the address is the point: a client gets a link that is a place.
-    -->
-    <meta name="refworld:world" content="${name}" />
-    <!--
-      THE CARD a shared link unfurls into.
-
-      The image is the public world's frame, reused deliberately: it is a
-      real render of thirty creatures somebody drew, made by the same
-      pipeline that will render this world's, so it is a true picture of
-      what happens here rather than a mockup. Re-run scripts/og.mjs and it
-      is the world as it is now.
-
-      Lowercase throughout, like every other piece of type here (TASTE §5).
-    -->
-    <meta property="og:type" content="website" />
-    <meta property="og:site_name" content="ref world" />
-    <meta property="og:title" content="${name}" />
-    <meta
-      property="og:description"
-      content="a world for ${name}. draw a creature on your phone and it hatches somewhere everyone can see."
-    />
-    <meta property="og:url" content="${SITE}/worlds/${name}/" />
-    <meta property="og:image" content="${SITE}/og.png" />
-    <meta property="og:image:width" content="1200" />
-    <meta property="og:image:height" content="630" />
-    <meta property="og:image:alt" content="a grey field with thirty small black creatures standing on it" />
-    <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="${name}" />
-    <meta
-      name="twitter:description"
-      content="a world for ${name}. draw a creature on your phone and it hatches somewhere everyone can see."
-    />
-    <meta name="twitter:image" content="${SITE}/og.png" />
-    <!-- inline ink-blob favicon (qa audit p1): a loose hand-drawn dot in the environment ink value, no binary asset -->
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path d='M12.3 4.6c3.9.2 6.9 3.4 7 7.3.1 4.1-3 7.6-7.1 7.7-4 .1-7.4-3-7.5-7.1-.1-4.2 3.4-8.1 7.6-7.9z' fill='%23353534'/></svg>" />
-    <style>
-      /* background matches SURFACE.ground (src/taste/tokens.ts) so there is no flash before first paint */
-      html,
-      body {
-        margin: 0;
-        height: 100%;
-        overflow: hidden;
-        background: #dfdfdf;
-      }
-      #world {
-        display: block;
-        width: 100vw;
-        height: 100vh;
-      }
-    </style>
-  </head>
-  <body>
-    <canvas id="world"></canvas>
-    <!-- vendored MQTT client for the draw-to-3d feed; sets window.mqtt -->
-    <script src="/vendor/mqtt.min.js"></script>
-    <script type="module" src="/src/main.ts"></script>
-  </body>
-</html>
-`;
-}
-
-// ── cli ──────────────────────────────────────────────────────────────────────
-
 function parseArgs(argv) {
-  const args = { name: '', force: false, out: '' };
+  const args = { name: '', host: '', file: '', clean: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '--force') args.force = true;
-    else if (a === '--out') args.out = argv[++i] ?? '';
+    if (a === '--clean') args.clean = true;
+    else if (a === '--host') args.host = argv[++i] ?? '';
+    else if (a === '--file') args.file = argv[++i] ?? '';
     else if (a.startsWith('--')) throw new Error(`unknown option ${a}`);
     else if (!args.name) args.name = a;
     else throw new Error(`unexpected argument ${a}`);
@@ -150,12 +63,44 @@ function parseArgs(argv) {
   return args;
 }
 
-const USAGE = `usage: node scripts/new-world.mjs <name> [--force] [--out <dir>]
+const USAGE = `usage: node scripts/new-world.mjs <name> [--clean] [--host <hostname>] [--file <path>]
 
-  node scripts/new-world.mjs meridian
+  node scripts/new-world.mjs meridian --clean
 
 a name is lowercase letters, digits and hyphens, up to 24 characters.
 `;
+
+function recipe(name, host, residents) {
+  return `next, the parts that are a dashboard rather than a file:
+
+  1. make a vercel project named ref-world-${name}, linked to the same
+     repo (epun/ref-world-demo) — in the dashboard, or \`vercel link\`
+     in a checkout of this repo. its production url has to be ${host},
+     or worlds.json will not recognise its builds.
+  2. connect the SAME kv store integration to it, and set
+     MODERATOR_SECRET in its environment (an env var name, so it keeps
+     its shouting). one store, many deployments — worlds partition it,
+     so ${name} cannot see another world's drawings.
+  3. deploy it. the build reads worlds.json, sees ${host}, and bakes the
+     world, its card and how it starts into index.html.
+${
+  residents === 'none'
+    ? `  4. nothing to seed. this world opens empty on purpose and fills with
+     what its own people draw. if that is ever wrong:
+
+     node scripts/seed-world.mjs https://${host} ${name}
+`
+    : `  4. put a population in, so the first person to arrive has something
+     to join:
+
+     node scripts/seed-world.mjs https://${host} ${name}
+`
+}
+look at it locally before any of that:
+
+  VITE_WORLD=${name} npm run dev
+`;
+}
 
 function run(argv) {
   let args;
@@ -176,30 +121,44 @@ function run(argv) {
     );
     return 1;
   }
-
-  const here = dirname(fileURLToPath(import.meta.url));
-  const worldsDir = args.out ? resolve(args.out) : resolve(here, '..', 'worlds');
-  const dir = join(worldsDir, args.name);
-  const page = join(dir, 'index.html');
-
-  if (existsSync(page) && !args.force) {
-    console.error(`${page} already exists — pass --force to overwrite it.`);
+  const name = sanitizeWorldName(args.name);
+  const host = normalizeHost(args.host || `ref-world-${name}.vercel.app`);
+  if (!host.includes('.')) {
+    console.error(`"${args.host}" is not a hostname.`);
     return 1;
   }
 
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(page, worldPage(args.name), 'utf8');
+  const residents = sanitizeResidents(args.clean ? 'none' : 'shipped');
 
-  const url = `${SITE}/worlds/${args.name}/`;
-  console.log(`wrote ${page}
+  const here = dirname(fileURLToPath(import.meta.url));
+  const file = args.file ? resolve(args.file) : resolve(here, '..', 'worlds.json');
+  const doc = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : {};
+  const worlds = doc.worlds ?? {};
 
-  page    ${url}
-  phone   ${url}   (the page sends a handset to the pad on its own)
+  // a hostname belongs to exactly one world. pointing an existing
+  // deployment at a different world renames somebody's live link, and this
+  // script is not where that happens silently.
+  const owner = Object.keys(worlds).find((w) => normalizeHost(worlds[w]?.host) === host);
+  if (owner !== undefined && owner !== name) {
+    console.error(`${host} is already the address of "${owner}" — pick another host.`);
+    return 1;
+  }
 
-seed it with an existing population:
+  const before = JSON.stringify(worlds[name] ?? null);
+  worlds[name] = { host, residents };
+  const known = before === JSON.stringify(worlds[name]);
+  if (!known) {
+    doc.worlds = Object.fromEntries(Object.entries(worlds).sort(([a], [b]) => (a < b ? -1 : 1)));
+    writeFileSync(file, `${JSON.stringify(doc, null, 2)}\n`, 'utf8');
+  }
 
-  node scripts/seed-world.mjs ${SITE} ${args.name}
-`);
+  console.log(`${known ? `${name} is already in ${file}` : `wrote ${name} to ${file}`}
+
+  world       ${name}
+  link        https://${host}/
+  residents   ${residents === 'none' ? 'none — it opens empty' : 'shipped — the recovered room stands in it'}
+
+${recipe(name, host, residents)}`);
   return 0;
 }
 
@@ -207,3 +166,5 @@ seed it with an existing population:
 if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
   process.exit(run(process.argv.slice(2)));
 }
+
+export { run };
