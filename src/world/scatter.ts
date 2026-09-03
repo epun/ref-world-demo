@@ -185,12 +185,18 @@ const MOUNTAIN_SEED: RegionSeed = {
 };
 
 /** The island grows its own thing. Nothing BUILT is in this table, so no
- * building, tower, picnic table or cactus ever reaches it. */
+ * building, tower, picnic table or cactus ever reaches it — which is now
+ * doubly true: nothing WALKS there either (2026-09-03, the causeway went and
+ * the water runs the whole way round).
+ *
+ * Rock and bush at 0.05 rather than 0.04: the island is a 14-unit hill with a
+ * crown on it now instead of a 9-unit speck, and a crown wants a little more
+ * standing on it than a couple of palms. */
 const ISLAND_SEED: RegionSeed = {
   palm: 0.12,
   tree: 0.06,
-  rock: 0.04,
-  bush: 0.04,
+  rock: 0.05,
+  bush: 0.05,
   tick: 0.16,
 };
 
@@ -222,11 +228,11 @@ export const MOUNTAIN_MAX = 24;
  * paper. [D] */
 export const MOUNTAIN_CLEAR_FIT = 0.85;
 
-/** [D] The island is barely wider than one cluster's normal reach and
- * offers a handful of grid cells to seed from at all, so a cluster that
- * lands there is drawn in tight and carries a couple of extra neighbours:
- * one grove, rather than two lone palms with the rest of the stand drowned
- * in the lake. */
+/** [D] A cluster that lands on the island is drawn in tight and carries a
+ * couple of extra neighbours: one grove, rather than two lone palms with the
+ * rest of the stand drowned in the lake. Written when the island was barely
+ * wider than one cluster's reach; kept at 14 units because a grove reads as
+ * an island's own planting and a scatter reads as more of the plain. */
 const ISLAND_CLUSTER_SPREAD = 0.4;
 const ISLAND_CLUSTER_EXTRAS = 2;
 
@@ -1707,10 +1713,11 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
           if (c) colliderCache.push(c);
         }
         // Water blocks creatures. The landscape's circles are static (the
-        // lake's is a RING, left open at the land bridge so the island stays
-        // walkable), but they ride the same cache so consumers keep ONE
-        // spatial index keyed on collidersVersion(). Appended LAST, so the
-        // prop colliders still pair 1:1 with positions() by index.
+        // lake's tile the whole ring round its island — nothing reaches it on
+        // foot, which is what an island is), but they ride the same cache so
+        // consumers keep ONE spatial index keyed on collidersVersion().
+        // Appended LAST, so the prop colliders still pair 1:1 with
+        // positions() by index.
         for (const c of waterColliders()) colliderCache.push(c);
       }
       return colliderCache;

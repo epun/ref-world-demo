@@ -4,7 +4,7 @@
  *
  * The world used to be one uniform field of scattered props. This module is
  * the map underneath it: a forest, a mountain backdrop, a handful of small
- * ponds, and one lake with an island in its middle reached by a land bridge.
+ * ponds, and one lake with an island standing in open water off its middle.
  * Every other system reads its geography from here — scatter (which kinds
  * grow where, and nothing at all in water), physics (water blocks
  * creatures), the water renderer (fills, shorelines, ripples, reeds), and
@@ -55,10 +55,13 @@ export interface WaterBody {
   /** Mean outer radius. */
   r: number;
   seed: number;
-  /** Lake only: the island in its middle. */
-  island?: { r: number; seed: number };
-  /** Lake only: a land bridge from shore to island — the water ring is open here. */
-  isthmus?: { angle: number; halfAngle: number };
+  /**
+   * Lake only: an island standing in it, with its OWN centre in world
+   * coordinates — not a concentric core. Water runs all the way round it,
+   * and nothing joins it to the shore: an island is a place you look at,
+   * not a place the creatures walk to.
+   */
+  island?: Blob;
 }
 
 export interface LandscapeSample {
@@ -67,7 +70,7 @@ export interface LandscapeSample {
   /** 0–1 soft weight. */
   mountain: number;
   water: boolean;
-  /** Land inside the lake, including the land bridge. */
+  /** Land inside the lake's outer shore — the island, and only the island. */
   island: boolean;
   /** Dominant label: water > island > forest > mountain > plain. */
   region: Region;
@@ -82,11 +85,6 @@ const TAU = Math.PI * 2;
 function hash(n: number): number {
   const x = Math.sin(n * 127.1 + 311.7) * 43758.5453123;
   return x - Math.floor(x);
-}
-
-/** Angle folded into (-π, π]. */
-function wrapToPi(a: number): number {
-  return a - TAU * Math.round(a / TAU);
 }
 
 /** Smooth 0→1 ramp between two edges — used for the soft blob falloffs only
@@ -165,17 +163,28 @@ export const MOUNTAIN_BLOBS: readonly Blob[] = [
 const LAKE_X = 80;
 const LAKE_Z = 70;
 
-/** The lake first, then the ponds. The lake's land bridge points back at the
- * origin so the island is reachable from the hatch clearing on foot.
+/** The lake first, then the ponds.
  *
- * A BODY OF WATER, not a moat (2026-09-03, user report — "i want the island
- * to look more like an island with a body of water around it"): the lake used
- * to be an 18-radius outline around an 8-radius island, which is a 10-unit
- * channel — read as a moat, not a lake. The outer shore is 42 now and the
- * island 9, so the island is a speck of land in open water with the great
- * majority of the disc wet. The land bridge narrowed to match: halfAngle
- * 0.06 is ~3 units across at the mid ring, a causeway rather than a second
- * shore. */
+ * AN ISLAND, NOT A PENINSULA (2026-09-03, user report — "the island does not
+ * look like an island at all"). Three things were wrong and all three are
+ * authored here:
+ *
+ *   - a causeway tied it to the mainland, so it read as a headland. There is
+ *     no land bridge any more, and no isthmus concept in this module at all:
+ *     water runs the whole way round. Creatures cannot reach the island.
+ *     That is the point of one.
+ *   - it sat dead centre, which draws a donut rather than an island. Its
+ *     centre is its own now, offset ~11 units back toward the origin — about
+ *     a quarter of the lake's radius — so the viewer looking east from the
+ *     hatch clearing sees open water in FRONT of the island as well as
+ *     behind it.
+ *   - it was a 9-unit speck in a 42-unit lake. 14 reads as a place, and the
+ *     water still runs 7.9 units wide at the tightest point of the ring
+ *     (8.5 measured along a bearing out of the island, 44.7 at the widest) —
+ *     comfortably past the 6 the layout asks for, so no arm of it can ever
+ *     pinch the ring shut.
+ *
+ * (Its HEIGHT is the fourth thing — see TERRAIN.islandRise.) */
 export const WATER_BODIES: readonly WaterBody[] = [
   {
     kind: 'lake',
@@ -183,8 +192,7 @@ export const WATER_BODIES: readonly WaterBody[] = [
     z: LAKE_Z,
     r: 42,
     seed: 301,
-    island: { r: 9, seed: 302 },
-    isthmus: { angle: Math.atan2(-LAKE_Z, -LAKE_X), halfAngle: 0.06 },
+    island: { x: 72, z: 62, r: 14, seed: 302 },
   },
   { kind: 'pond', x: 15, z: -55, r: 6, seed: 401 },
   // (-25, 95), not (-35, 80): at 80 the pond's edge came within 7 units of
@@ -199,71 +207,25 @@ export const WATER_BODIES: readonly WaterBody[] = [
 
 // ── water ────────────────────────────────────────────────────────────────────
 
-/** Phase salt for the isthmus width wobble — the land bridge has drawn edges
- * too, so it never reads as a clean wedge cut out of the ring. */
-const ISTHMUS_PHASE_SALT = 91.3;
-
 function islandBlob(body: WaterBody): Blob | null {
-  const isl = body.island;
-  return isl ? { x: body.x, z: body.z, r: isl.r, seed: isl.seed } : null;
-}
-
-/** [D] Minimum half-width of a land bridge, world units — so the causeway is
- * never narrower than 4 units end to end.
- *
- * An isthmus is an angular wedge, so its width tapers to nothing at the
- * island: `halfAngle` 0.06 is ~3 units across at the lake's mid ring but only
- * 1.3 where it meets a 9-unit island, and after the water colliders take
- * their 0.6-unit bite off each side the gap there was 0.02 units — a bridge
- * a creature could see and never cross. The floor keeps 2 units of bridge
- * either side of the centerline at every radius, which reads as a causeway of
- * one width rather than a triangle, and still crosses a 42-radius lake as a
- * thread. */
-const ISTHMUS_MIN_HALF_WIDTH = 2;
-
-/**
- * Angular half-width of the land bridge at distance `d` from the lake center,
- * already adjusted for `pad`. `pad` is extra water in every direction, so it
- * eats into the bridge: at distance `d`, `pad` units of arc is `pad / d`
- * radians. A negative pad (water shrunk, e.g. a ripple margin) widens it by
- * the same rule, which keeps every consumer on one definition.
- *
- * The authored wedge and the minimum width are combined BEFORE the pad, so
- * every consumer — the fill polygon, the shore walk, the ripple margin, the
- * colliders — sees the same bridge and then applies its own clearance to it.
- */
-function isthmusHalf(body: WaterBody, d: number, pad: number): number {
-  const ist = body.isthmus;
-  if (!ist) return -1;
-  const phase = hash(body.seed + ISTHMUS_PHASE_SALT) * TAU;
-  const wedge = ist.halfAngle * (1 + 0.15 * Math.sin(d * 0.9 + phase));
-  if (d <= 1e-6) return wedge;
-  // Capped at a half turn: below the island's own radius the floor would ask
-  // for more angle than a circle has, and nothing there is water anyway.
-  const w = Math.min(Math.PI, Math.max(wedge, ISTHMUS_MIN_HALF_WIDTH / d));
-  return w - pad / d;
-}
-
-function inIsthmus(body: WaterBody, theta: number, d: number, pad: number): boolean {
-  const ist = body.isthmus;
-  if (!ist) return false;
-  const half = isthmusHalf(body, d, pad);
-  return half > 0 && Math.abs(wrapToPi(theta - ist.angle)) < half;
+  return body.island ?? null;
 }
 
 /** True where this one body holds water. `pad` grows it outward (a shore
- * keep-out); a negative pad shrinks it from every shore at once — the outer
- * edge, the island edge and the land bridge. */
+ * keep-out); a negative pad shrinks it from both of its shores at once — the
+ * outer edge and the island's.
+ *
+ * Each ring is measured from ITS OWN centre: the island is not concentric
+ * with the lake, so one polar angle cannot serve both. */
 function bodyHoldsWater(body: WaterBody, x: number, z: number, pad: number): boolean {
   const dx = x - body.x;
   const dz = z - body.z;
-  const d = Math.hypot(dx, dz);
-  const theta = Math.atan2(dz, dx);
-  if (d >= wobbledRadius(body, theta) + pad) return false;
+  if (Math.hypot(dx, dz) >= wobbledRadius(body, Math.atan2(dz, dx)) + pad) return false;
   const isl = islandBlob(body);
   if (!isl) return true;
-  if (d <= wobbledRadius(isl, theta) - pad) return false;
-  return !inIsthmus(body, theta, d, pad);
+  const ix = x - isl.x;
+  const iz = z - isl.z;
+  return Math.hypot(ix, iz) > wobbledRadius(isl, Math.atan2(iz, ix)) - pad;
 }
 
 /** True inside any water body. `pad > 0` grows every water body outward by
@@ -273,8 +235,8 @@ export function isWater(x: number, z: number, pad = 0): boolean {
   return false;
 }
 
-/** True on land that sits inside a lake's outer shore — the island proper and
- * the land bridge that reaches it. */
+/** True on land that sits inside a lake's outer shore — which, with the
+ * causeway gone, is the island and nothing else. */
 function isIslandLand(x: number, z: number): boolean {
   for (const body of WATER_BODIES) {
     if (!body.island) continue;
@@ -343,9 +305,11 @@ export function sampleLandscape(x: number, z: number): LandscapeSample {
  *   terrace  the whole smooth field snapped onto tiers, flat treads with
  *            rounded risers. This is what makes elevation legible at all in
  *            an orthographic ink render.
- *   basins   every water body flattens its whole disc — island and causeway
+ *   basins   every water body flattens its whole disc — the island it holds
  *            included — to one number, `waterLevel(body)`, and the land
  *            climbs out of it over `shoreRamp`.
+ *   island   …and then the island climbs back out of that basin, from the
+ *            waterline up through two contour tiers to a crown.
  *
  * Pure and deterministic like the rest of this file: no clocks, no
  * Math.random, no Three.js. The Surface seam (src/world/surface.ts) is what
@@ -421,6 +385,36 @@ export const TERRAIN = {
    * is lower than it is. Releases by `shoreRamp`.
    */
   basinRim: 2,
+  /**
+   * [D] How high an island stands over the water it sits in, before the
+   * terrace. 3.4 clears two tiers, so the island's crown reads as a
+   * two-contour hill and not a sandbar (2026-09-03, user report — "the
+   * island sits FLAT at water level").
+   *
+   * The rise is measured from the island's own wobbled edge INWARD and
+   * starts at exactly zero there, so the shore keeps the water's level, the
+   * drawn shoreline ribbon at level + 0.011 stays on top of it, and the
+   * first stride of beach is flat (the terrace's own tread holds the first
+   * ~1.6 units of ramp at 0).
+   */
+  islandRise: 3.4,
+  /**
+   * [D] Units of island the rise runs over, measured as a FRACTION of the
+   * island's own wobbled radius rather than in flat world units (see
+   * `terrainHeight`). 12 of the island's 14: the bank climbs over six sevenths
+   * of the way in and the crown is the last seventh, a plateau about 8 units
+   * across.
+   *
+   * This is the steepest ground in the world and deliberately so — a bank is
+   * the one landform whose job is to be steep, and 3.2 units of rise cannot
+   * be spread over a 14-unit island at the plain's gradient however it is
+   * shaped (the terrace multiplies every gradient by 2.5, so the plain's
+   * 0.55 bound buys 0.22 units of climb per unit of ground: 3.2 would need
+   * a 15-unit bank on a 14-unit island). Measured 1.15 at its worst, and the
+   * terrain test carries that as an explicit ISLAND exception rather than a
+   * raised bound for the whole field.
+   */
+  islandRamp: 12,
   /** Far field: the terrain starts fading here… */
   farStart: 150,
   /** …and is exactly 0 beyond here, matching the flat ground disc. */
@@ -574,6 +568,35 @@ export function terrainHeight(x: number, z: number): number {
     const rim = 1 - smoothstep(TERRAIN.basinRim, TERRAIN.shoreRamp, out);
     h = blended + rim * Math.max(0, level - blended);
   }
+  // …and then the island climbs back out of the basin that just flattened
+  // it. AFTER the basin pass, never inside it: the basin's job is to put one
+  // flat number under a sheet of water, and an island is land that stands on
+  // top of that number rather than a hole in it. `max` for the same reason —
+  // nothing here may ever pull the ground BELOW the water it is surrounded
+  // by, at any distance from the shore.
+  for (const body of WATER_BODIES) {
+    const isl = body.island;
+    if (!isl) continue;
+    const dx = x - isl.x;
+    const dz = z - isl.z;
+    const d = Math.hypot(dx, dz);
+    // Signed distance INTO the island from its own wobbled edge: 0 at the
+    // waterline, positive inland.
+    const edge = wobbledRadius(isl, Math.atan2(dz, dx));
+    const inIsl = edge - d;
+    if (inIsl <= 0) continue;
+    // Measured as a FRACTION of the island's own radius here, scaled back
+    // into units by its mean one. The wobbled radius swings by a sixth
+    // around the ring, and a rise read in flat units off it carries that
+    // swing straight into the gradient — the sideways term alone doubled the
+    // steepest bank (measured 1.75 against 1.15). Proportion also puts the
+    // crown over the middle whatever the edge is doing, and gives a pinched
+    // arm of the island a proportionally narrower bank, which is what a
+    // small headland looks like.
+    const climb = isl.r * (inIsl / edge);
+    const rise = TERRAIN.islandRise * smoothstep(0, TERRAIN.islandRamp, climb);
+    h = Math.max(h, waterLevel(body) + terrace(rise));
+  }
   return h;
 }
 
@@ -604,13 +627,17 @@ function ringOutline(b: Blob, points: number): [number, number][] {
 }
 
 /** Closed polygon (last point NOT repeated) of the outer shoreline, wobbled,
- * counter-clockwise in x/z. The land bridge is NOT cut out of it — this is
- * the water's outer edge, and the bridge crosses the ring, not the shore. */
+ * counter-clockwise in x/z. This is the whole of the water's outer edge:
+ * nothing interrupts it, so it is also the polygon the fill is built from.
+ * A lake's island is a HOLE in that fill, not a bite out of this loop —
+ * `islandOutline` below. */
 export function waterOutline(body: WaterBody, points = OUTLINE_POINTS): [number, number][] {
   return ringOutline(body, points);
 }
 
-/** The island's shoreline, or null for a pond. */
+/** The island's shoreline — walked around the island's OWN centre, and wound
+ * counter-clockwise like the outer one, so `(dz, −dx)` points off the island
+ * and into the water at every vertex. Null for a pond. */
 export function islandOutline(
   body: WaterBody,
   points = ISLAND_OUTLINE_POINTS,
@@ -619,46 +646,11 @@ export function islandOutline(
   return isl ? ringOutline(isl, points) : null;
 }
 
-/** The polygon the water FILL is built from: for a pond the outer outline; for a lake the ring
- * with the land bridge cut out — outer outline points outside the isthmus wedge (starting just
- * past one edge of the bridge), then the island outline points inside the same angular range in
- * reverse, so one simple polygon (no hole) traces the C-shaped water. Counter-clockwise, closed,
- * last point not repeated. */
-export function waterFillOutline(body: WaterBody, points = OUTLINE_POINTS): [number, number][] {
-  const isl = islandBlob(body);
-  const ist = body.isthmus;
-  // A pond is a plain disc of water: its outer shore IS its fill.
-  if (!isl || !ist) return ringOutline(body, points);
-  // Sampling starts AT the bridge angle so the wedge is one contiguous run of
-  // dropped samples — the kept outer points then form a single arc from just
-  // past one bridge edge round to just before the other, and the polygon needs
-  // no rotation afterwards to be simple.
-  const outer: [number, number][] = [];
-  const inner: [number, number][] = [];
-  for (let i = 0; i < points; i++) {
-    const theta = ist.angle + (i / points) * TAU;
-    const cos = Math.cos(theta);
-    const sin = Math.sin(theta);
-    // Each ring is tested at ITS OWN radius: the bridge is a wedge whose
-    // angular width narrows with distance, so the outer shore and the island
-    // shore leave it at different angles. Pad 0 — this is the water's true
-    // edge, not a keep-out.
-    const ro = wobbledRadius(body, theta);
-    if (!inIsthmus(body, theta, ro, 0)) outer.push([body.x + cos * ro, body.z + sin * ro]);
-    const ri = wobbledRadius(isl, theta);
-    if (!inIsthmus(body, theta, ri, 0)) inner.push([body.x + cos * ri, body.z + sin * ri]);
-  }
-  // Out along the outer shore, back along the island's — the return leg runs
-  // in reverse so the two arcs join into one C instead of crossing.
-  inner.reverse();
-  return [...outer, ...inner];
-}
-
 // ── physics ──────────────────────────────────────────────────────────────────
 
 /** [D] Radius of one water collider. Small enough that the tiling follows a
- * wobbled shore and a 3-unit causeway; big enough that ~1200 of them cover
- * every body without turning the collider grid into a particle system. */
+ * wobbled shore closely; big enough that ~1200 of them cover every body
+ * without turning the collider grid into a particle system. */
 export const WATER_COLLIDER_R = 2.2;
 
 /** [D] How far a collider is allowed to protrude past the shore onto land.
@@ -679,11 +671,11 @@ const WATER_COLLIDER_ROW = 0.866;
  * `WATER_COLLIDER_R - WATER_COLLIDER_BITE`.
  *
  * This used to be one circle per pond and a ring of big circles along the
- * lake's mid radius, which only works while the ring is narrow. The lake is
- * a 33-unit-wide body of water now, and a ring of 16-unit circles would
- * have left a gap around the causeway ten times the causeway's own width. A
- * tiling has no such coupling: the shape it blocks is the shape of the
- * water, causeway included, at any body size.
+ * lake's mid radius, which only works while the ring is narrow and centred.
+ * The lake is a wide body of water with an off-centre island standing in it
+ * now, and no ring of circles describes that. A tiling has no such coupling:
+ * the shape it blocks is the shape of the water, at any body size, whatever
+ * is standing in the middle of it.
  *
  * The grid is anchored on the body center — so a pond always gets a circle
  * dead center — and the whole thing is integer-indexed, so it is
@@ -732,7 +724,6 @@ export interface ShoreSample {
 }
 
 function walkShore(
-  body: WaterBody,
   poly: readonly [number, number][],
   inward: boolean,
   spacing: number,
@@ -760,12 +751,6 @@ function walkShore(
       const px = a[0] + dx * t + nx * SHORE_PUSH;
       const pz = a[1] + dz * t + nz * SHORE_PUSH;
       next += spacing;
-      // The land bridge has no shoreline: both rings run straight through it.
-      if (body.isthmus) {
-        const ox = px - body.x;
-        const oz = pz - body.z;
-        if (inIsthmus(body, Math.atan2(oz, ox), Math.hypot(ox, oz), 0)) continue;
-      }
       if (isWater(px, pz)) continue;
       out.push({ x: px, z: pz, nx, nz });
     }
@@ -776,14 +761,15 @@ function walkShore(
 /**
  * Points along a shoreline at ~`spacing` units, each with the unit normal
  * pointing away from the water — where reeds get planted. Covers the outer
- * shore, and the island shore too for a lake. Samples inside the land bridge
- * gap are skipped: there is no water there to line.
+ * shore, and for a lake the island's shore too: BOTH are lined, with no gap
+ * anywhere on either, because there is no longer any stretch of either ring
+ * that is not a boundary between water and land.
  */
 export function shoreSamples(body: WaterBody, spacing = SHORE_SPACING): ShoreSample[] {
   const out: ShoreSample[] = [];
-  walkShore(body, waterOutline(body, OUTLINE_POINTS * SHORE_WALK_SUBDIVISION), false, spacing, out);
+  walkShore(waterOutline(body, OUTLINE_POINTS * SHORE_WALK_SUBDIVISION), false, spacing, out);
   const isl = islandOutline(body, ISLAND_OUTLINE_POINTS * SHORE_WALK_SUBDIVISION);
-  if (isl) walkShore(body, isl, true, spacing, out);
+  if (isl) walkShore(isl, true, spacing, out);
   return out;
 }
 
@@ -809,9 +795,9 @@ export interface RippleSpot {
 
 /**
  * Deterministic ripple marks inside the water, each at least `margin` from
- * every shore (including the island's and the land bridge's). A jittered grid
- * rather than a hash cloud: even coverage, no clumps, and the jitter keeps it
- * off the grid it was placed on (TASTE §2.5).
+ * every shore, the island's included. A jittered grid rather than a hash
+ * cloud: even coverage, no clumps, and the jitter keeps it off the grid it
+ * was placed on (TASTE §2.5).
  */
 export function rippleSpots(body: WaterBody, margin = RIPPLE_MARGIN): RippleSpot[] {
   const out: RippleSpot[] = [];

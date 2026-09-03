@@ -194,16 +194,21 @@ The map (`src/world/landscape.ts`, PURE — no Three.js, no DOM, no clocks, no `
 has grown since the layout above was first drawn, and it now has height. Scatter covers
 ±160, creatures roam within 100, the camera pans to ±200, and the minimap reads ±175 [D] — far
 enough apart that a 40-radius forest to the west (plus a spur), a four-mass range along the
-far north, a 42-radius lake with a 9-radius island and a causeway (never narrower than 4
-units), and four corner ponds each keep ≥20 units of open field from their nearest neighbor
-and ≥40 from the hatch clearing [D].
+far north, a 42-radius lake holding a 14-radius island — offset back toward the origin, with
+water all the way round it and no causeway: nothing walks there [D] — and four corner ponds
+each keep ≥20 units of open field from their nearest neighbor and ≥40 from the hatch
+clearing [D].
 
 `terrainHeight` (`TERRAIN =`) is a two-octave value-noise field plus region shelves (forest
 +2.5, range +6), snapped onto 1.6-unit tiers with rounded risers [D] — a smooth swell reads as
 nothing in an orthographic ink render, a staircase reads as height. Every water body sinks its
-whole disc — island and causeway included — to one level 1.5 below the land it sits in, the
-hatch clearing stays exactly flat, and the field fades to 0 by radius 185 so it meets the flat
-outer ground disc without a seam. Measured: heights run −3.1 to +8, max slope 0.55.
+whole disc — the island it holds included — to one level 1.5 below the land it sits in, and
+the island then climbs back out of that basin from the waterline through two contour tiers to
+a crown 3.2 above the water [D]. The hatch clearing stays exactly flat, and the field fades to
+0 by radius 185 so it meets the flat outer ground disc without a seam. Measured: heights run
+−3.1 to +8, max slope 0.55 over the field and 1.15 on the island's bank — the one landform
+measured against a bound of its own, because 3.2 units of rise cannot be spread across a
+14-unit island at the field's gradient.
 
 The `Surface` seam PLAN §7.2 promised has shipped (`src/world/surface.ts`): `ROLLING_SURFACE`
 wraps this terrain, `FLAT_SURFACE` stays for the phone stage and tests, and every consumer —

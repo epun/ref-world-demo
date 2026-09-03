@@ -27,7 +27,6 @@ import {
   terrainNormal,
   waterColliders,
   WATER_COLLIDER_R,
-  waterFillOutline,
   waterLevel,
   waterOutline,
   WATER_BODIES,
@@ -57,6 +56,26 @@ const ENVIRONMENT_GAP = 20;
 
 const LAKE: WaterBody = WATER_BODIES[0]!;
 const PONDS: readonly WaterBody[] = WATER_BODIES.slice(1);
+/** The island as the blob it is — its own centre, not the lake's. */
+const ISLAND: Blob = LAKE.island!;
+
+/** Units of open water crossed walking out from the island's shore on one
+ * bearing, until the far shore. */
+function crossing(theta: number): number {
+  const cos = Math.cos(theta);
+  const sin = Math.sin(theta);
+  const from = wobbledRadius(ISLAND, theta);
+  let to = from;
+  for (let d = from + 0.05; d < from + 80; d += 0.05) {
+    if (!isWater(ISLAND.x + cos * d, ISLAND.z + sin * d)) break;
+    to = d;
+  }
+  return to - from;
+}
+/** The water the layout keeps between the island's edge and the lake's, at
+ * every angle: an island whose arm reached the far shore would be a headland
+ * again. */
+const ISLAND_CLEARANCE = 6;
 
 /** Every authored feature as a plain blob (water bodies use their outer r). */
 const ALL_BLOBS: Blob[] = [
@@ -222,7 +241,6 @@ describe('landscape — water bodies', () => {
   it('puts the lake first, then the ponds', () => {
     expect(LAKE.kind).toBe('lake');
     expect(LAKE.island).toBeDefined();
-    expect(LAKE.isthmus).toBeDefined();
     for (const p of PONDS) {
       expect(p.kind).toBe('pond');
       expect(p.island).toBeUndefined();
@@ -238,31 +256,52 @@ describe('landscape — water bodies', () => {
     }
   });
 
-  it('makes the lake center island, not water', () => {
-    const s = sampleLandscape(LAKE.x, LAKE.z);
-    expect(s.water).toBe(false);
-    expect(s.island).toBe(true);
-    expect(s.region).toBe('island');
+  it('makes the island center island', () => {
+    const on = sampleLandscape(ISLAND.x, ISLAND.z);
+    expect(on.water).toBe(false);
+    expect(on.island).toBe(true);
+    expect(on.region).toBe('island');
   });
 
-  it('leaves the land bridge walkable and the far side of the ring wet', () => {
-    const isl = LAKE.island!;
-    const ist = LAKE.isthmus!;
-    const rm = (LAKE.r + isl.r) / 2;
-    const ringHalf = (LAKE.r - isl.r) / 2;
-    for (const d of [rm - ringHalf * 0.5, rm, rm + ringHalf * 0.5]) {
-      const bx = LAKE.x + Math.cos(ist.angle) * d;
-      const bz = LAKE.z + Math.sin(ist.angle) * d;
-      expect(sampleLandscape(bx, bz).region).toBe('island');
-      const ox = LAKE.x + Math.cos(ist.angle + Math.PI) * d;
-      const oz = LAKE.z + Math.sin(ist.angle + Math.PI) * d;
-      expect(sampleLandscape(ox, oz).region).toBe('water');
+  it('sits the island off-centre, back toward the origin', () => {
+    const off = Math.hypot(ISLAND.x - LAKE.x, ISLAND.z - LAKE.z);
+    // Far enough off-centre to read as placed, not enough to touch a shore:
+    // roughly a quarter of the lake's radius.
+    expect(off).toBeGreaterThan(LAKE.r * 0.15);
+    expect(off).toBeLessThan(LAKE.r * 0.45);
+    // …and toward the origin, so the viewer coming from the hatch clearing
+    // sees water IN FRONT of the island as well as behind it — a centred
+    // island draws a donut, not a lake. Measured: 15.9 units of water on the
+    // near crossing against 41.3 on the far one.
+    expect(Math.hypot(ISLAND.x, ISLAND.z)).toBeLessThan(Math.hypot(LAKE.x, LAKE.z));
+    const near = crossing(Math.atan2(-ISLAND.z, -ISLAND.x));
+    const far = crossing(Math.atan2(-ISLAND.z, -ISLAND.x) + Math.PI);
+    expect(near).toBeGreaterThan(ISLAND_CLEARANCE);
+    expect(far).toBeGreaterThan(near * 1.5);
+  });
+
+  it('keeps water all the way round the island — no causeway, at any angle', () => {
+    // Measured minimum: 7.9 units of water from the island's wobbled edge to
+    // the lake's, over 720 angles. Nothing joins the island to the shore.
+    let worst = Infinity;
+    const outer = edgePoints(LAKE, 2048);
+    for (const [px, pz] of edgePoints(ISLAND, 720)) {
+      let near = Infinity;
+      for (const [x, z] of outer) near = Math.min(near, Math.hypot(px - x, pz - z));
+      worst = Math.min(worst, near);
     }
+    expect(worst).toBeGreaterThanOrEqual(ISLAND_CLEARANCE);
   });
 
-  it('points the land bridge back at the origin', () => {
-    const ist = LAKE.isthmus!;
-    expect(ist.angle).toBeCloseTo(Math.atan2(-LAKE.z, -LAKE.x), 12);
+  it('holds water on every bearing out of the island', () => {
+    // Walk out from the island's shore along 36 bearings: every one of them
+    // crosses water before it leaves the lake. A causeway would be a bearing
+    // that never got wet. Measured: 8.5 units at the narrowest, 44.7 at the
+    // widest.
+    for (let k = 0; k < 36; k++) {
+      const th = (k / 36) * Math.PI * 2;
+      expect(crossing(th), `bearing ${th.toFixed(2)}`).toBeGreaterThan(ISLAND_CLEARANCE);
+    }
   });
 
   it('grows every body with a positive pad and shrinks it with a negative one', () => {
@@ -277,8 +316,9 @@ describe('landscape — water bodies', () => {
           body.z + (dz / d) * rr,
         ];
         const [ix, iz] = at(d - 0.3);
-        // Only where this really is a shoreline — the land bridge gap has dry
-        // ground on both sides of the outline and is not one.
+        // Every point of an outer outline is a shoreline now (nothing
+        // interrupts the ring), but the probe is kept: it is what makes the
+        // assertions below meaningful rather than vacuous.
         if (!isWater(ix, iz)) continue;
         checked++;
         const [ox, oz] = at(d + 0.5);
@@ -339,19 +379,29 @@ describe('landscape — outlines', () => {
     expect(isl).not.toBeNull();
     expect(isl).toHaveLength(ISLAND_OUTLINE_POINTS);
     expect(islandOutline(LAKE, 12)).toHaveLength(12);
-    for (const [x, z] of isl!) {
+    let area = 0;
+    for (let i = 0; i < isl!.length; i++) {
+      const [x, z] = isl![i]!;
+      const [qx, qz] = isl![(i + 1) % isl!.length]!;
+      area += x * qz - qx * z;
       expect(Number.isFinite(x)).toBe(true);
       expect(Number.isFinite(z)).toBe(true);
-      // The island shore sits inside the lake's outer shore.
+      // Walked around the ISLAND's own centre, not the lake's.
+      const onEdge =
+        Math.hypot(x - ISLAND.x, z - ISLAND.z) -
+        wobbledRadius(ISLAND, Math.atan2(z - ISLAND.z, x - ISLAND.x));
+      expect(Math.abs(onEdge)).toBeLessThan(1e-9);
+      // …and well inside the lake's outer shore.
       expect(Math.hypot(x - LAKE.x, z - LAKE.z)).toBeLessThan(LAKE.r);
     }
+    // Counter-clockwise, like the outer one: the water renderer flips the
+    // pen's water side per ring and relies on both winding the same way.
+    expect(area).toBeGreaterThan(0);
     for (const p of PONDS) expect(islandOutline(p)).toBeNull();
   });
 });
 
-describe('landscape — water fill outline', () => {
-  const TAU = Math.PI * 2;
-  const wrapToPi = (a: number): number => a - TAU * Math.round(a / TAU);
+describe('landscape — the polygons the water is drawn from', () => {
   const shoelace = (poly: readonly [number, number][]): number => {
     let a = 0;
     for (let i = 0; i < poly.length; i++) {
@@ -376,43 +426,8 @@ describe('landscape — water fill outline', () => {
     const d4 = side(a, b, d);
     return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
   };
-
-  it('is exactly the outer outline for a pond — a pond is a disc of water', () => {
-    for (const pond of PONDS) {
-      expect(waterFillOutline(pond)).toEqual(waterOutline(pond));
-      expect(waterFillOutline(pond, 24)).toEqual(waterOutline(pond, 24));
-    }
-  });
-
-  it('puts every lake point on a wobbled edge — the outer shore or the island', () => {
-    const isl = { x: LAKE.x, z: LAKE.z, r: LAKE.island!.r, seed: LAKE.island!.seed };
-    for (const [x, z] of waterFillOutline(LAKE)) {
-      const theta = Math.atan2(z - LAKE.z, x - LAKE.x);
-      const d = Math.hypot(x - LAKE.x, z - LAKE.z);
-      const onOuter = Math.abs(d - wobbledRadius(LAKE, theta)) < 1e-9;
-      const onIsland = Math.abs(d - wobbledRadius(isl, theta)) < 1e-9;
-      expect(onOuter || onIsland).toBe(true);
-    }
-  });
-
-  it('cuts the land bridge out — no fill point sits in the isthmus wedge', () => {
-    const ist = LAKE.isthmus!;
-    // The bridge's half-width wobbles ±15% around its authored half-angle, so
-    // "outside the wedge at its own radius" implies at least 0.85 of it.
-    const floor = ist.halfAngle * 0.85;
-    for (const [x, z] of waterFillOutline(LAKE)) {
-      const theta = Math.atan2(z - LAKE.z, x - LAKE.x);
-      expect(Math.abs(wrapToPi(theta - ist.angle))).toBeGreaterThanOrEqual(floor);
-    }
-    // And the bridge is genuinely dry land inside the ring: both rings are
-    // sampled at the full budget, and both lose their bridge run.
-    expect(waterFillOutline(LAKE).length).toBeLessThan(2 * OUTLINE_POINTS);
-  });
-
-  it('traces one simple closed polygon — a c, not a ring with a hole', () => {
-    const poly = waterFillOutline(LAKE);
+  const simple = (poly: readonly [number, number][]): void => {
     const n = poly.length;
-    // Closed by convention: the last point is NOT the first one repeated.
     expect(poly[0]).not.toEqual(poly[n - 1]);
     for (let i = 0; i < n; i++) {
       for (let j = i + 1; j < n; j++) {
@@ -423,16 +438,32 @@ describe('landscape — water fill outline', () => {
         ).toBe(false);
       }
     }
+  };
+
+  it('traces two simple closed rings for the lake, one for a pond', () => {
+    simple(waterOutline(LAKE));
+    simple(islandOutline(LAKE)!);
+    for (const pond of PONDS) simple(waterOutline(pond));
   });
 
-  it('winds counter-clockwise and encloses the ring minus the land bridge', () => {
-    const fill = shoelace(waterFillOutline(LAKE));
+  it('never lets the two rings touch — the water is a ring of open water', () => {
+    // The fill is the outer polygon with the island punched out as a HOLE,
+    // and a hole that grazed the contour would triangulate into a fan of
+    // slivers (and read as a causeway on screen).
+    const outer = waterOutline(LAKE, 512);
+    const isl = islandOutline(LAKE, 512)!;
+    let worst = Infinity;
+    for (const [x, z] of isl) {
+      for (const [px, pz] of outer) worst = Math.min(worst, Math.hypot(x - px, z - pz));
+    }
+    expect(worst).toBeGreaterThan(ISLAND_CLEARANCE);
+  });
+
+  it('encloses exactly the water the geography reports', () => {
+    // Outer area minus the island's: the water is everything between the two
+    // rings, with nothing taken out of it anywhere.
     const ring = shoelace(waterOutline(LAKE)) - shoelace(islandOutline(LAKE)!);
-    expect(fill).toBeGreaterThan(0);
-    // Strictly less than the whole ring: the bridge is missing from it.
-    expect(fill).toBeLessThan(ring);
-    // And it matches the water isWater actually reports, sampled on a grid —
-    // the fill agrees with the geography instead of drifting from it.
+    expect(ring).toBeGreaterThan(0);
     const reach = LAKE.r * WOBBLE_MAX + 1;
     const step = 0.1;
     let cells = 0;
@@ -440,16 +471,17 @@ describe('landscape — water fill outline', () => {
       for (let z = LAKE.z - reach; z <= LAKE.z + reach; z += step) if (isWater(x, z)) cells++;
     }
     const measured = cells * step * step;
-    // Chords cut a hair inside every wobble, so the polygon runs slightly small.
-    expect(fill / measured).toBeGreaterThan(0.95);
-    expect(fill / measured).toBeLessThan(1.02);
+    // Chords cut a hair inside every wobble, so the polygons run slightly
+    // small on the outside and slightly large on the hole.
+    expect(ring / measured).toBeGreaterThan(0.95);
+    expect(ring / measured).toBeLessThan(1.02);
   });
 
   it('is deterministic and honours the requested point budget', () => {
-    expect(waterFillOutline(LAKE)).toEqual(waterFillOutline(LAKE));
-    const coarse = waterFillOutline(LAKE, 32);
-    expect(coarse.length).toBeGreaterThan(3);
-    expect(coarse.length).toBeLessThan(64);
+    expect(waterOutline(LAKE)).toEqual(waterOutline(LAKE));
+    expect(islandOutline(LAKE)).toEqual(islandOutline(LAKE));
+    expect(waterOutline(LAKE, 32)).toHaveLength(32);
+    expect(islandOutline(LAKE, 32)).toHaveLength(32);
   });
 });
 
@@ -459,7 +491,7 @@ describe('landscape — colliders', () => {
   it('tiles every body with same-size hard circles, and not too many', () => {
     expect(cols.length).toBeGreaterThan(WATER_BODIES.length * 4);
     // A budget, not a fixture: the tiling is what the collider grid indexes
-    // every frame. Measured 1171 for the shipped layout, ~1100 of them the
+    // every frame. Measured 1118 for the shipped layout, ~1050 of them the
     // lake.
     expect(cols.length).toBeLessThanOrEqual(2500);
     for (const c of cols) {
@@ -481,121 +513,41 @@ describe('landscape — colliders', () => {
     }
   });
 
-  it('leaves the land bridge physically open', () => {
-    const isl = LAKE.island!;
-    const ist = LAKE.isthmus!;
-    const rm = (LAKE.r + isl.r) / 2;
-    const ringHalf = (LAKE.r - isl.r) / 2;
-    for (const d of [rm - ringHalf * 0.5, rm, rm + ringHalf * 0.5]) {
-      const x = LAKE.x + Math.cos(ist.angle) * d;
-      const z = LAKE.z + Math.sin(ist.angle) * d;
-      for (const c of cols) {
-        expect(Math.hypot(x - c.x, z - c.z), `collider on the causeway at d=${d}`).toBeGreaterThan(
-          c.r,
-        );
+  it('blocks the water on every bearing round the island', () => {
+    // The other half of "no causeway": the ring is not merely wet, it is
+    // impassable all the way round. Sampled at the midpoint of the crossing
+    // from the island's shore to the far shore, on 36 bearings — a creature
+    // aimed at the island is inside a hard circle whichever way it comes.
+    for (let k = 0; k < 36; k++) {
+      const th = (k / 36) * Math.PI * 2;
+      const cos = Math.cos(th);
+      const sin = Math.sin(th);
+      const from = wobbledRadius(ISLAND, th);
+      let to = from;
+      for (let d = from + 0.05; d < from + 60; d += 0.1) {
+        if (!isWater(ISLAND.x + cos * d, ISLAND.z + sin * d)) break;
+        to = d;
       }
-    }
-  });
-
-  it('leaves the whole causeway walkable, end to end', () => {
-    // Not three probe radii: the WHOLE centerline, island edge to outer
-    // shore, with a creature's body radius of clearance. The bridge is an
-    // angular wedge, so before ISTHMUS_MIN_HALF_WIDTH existed it pinched to
-    // 0.02 units of gap where it met the island — passable on paper, sealed
-    // in practice. Measured minimum now: 1.35 at d ≈ 10.5.
-    const ist = LAKE.isthmus!;
-    const island: Blob = { x: LAKE.x, z: LAKE.z, r: LAKE.island!.r, seed: LAKE.island!.seed };
-    const from = wobbledRadius(island, ist.angle);
-    const to = wobbledRadius(LAKE, ist.angle);
-    const cos = Math.cos(ist.angle);
-    const sin = Math.sin(ist.angle);
-    for (let d = from; d <= to; d += 0.25) {
-      const x = LAKE.x + cos * d;
-      const z = LAKE.z + sin * d;
-      for (const c of cols) {
-        expect(
-          Math.hypot(x - c.x, z - c.z) - c.r,
-          `causeway pinched at d=${d.toFixed(2)}`,
-        ).toBeGreaterThanOrEqual(1);
-      }
-    }
-  });
-
-  it('keeps the causeway a footpath, not a road', () => {
-    // …and the other half of the bargain: a bridge wide enough to walk is
-    // still a thread across a 42-radius lake. Measured 4.0 units at the mid
-    // ring, and 4.0–4.7 over the whole crossing.
-    const ist = LAKE.isthmus!;
-    const island: Blob = { x: LAKE.x, z: LAKE.z, r: LAKE.island!.r, seed: LAKE.island!.seed };
-    const mid = (wobbledRadius(island, ist.angle) + wobbledRadius(LAKE, ist.angle)) / 2;
-    const dryArc = (side: number): number => {
-      for (let a = 0; a < 1.2; a += 0.0005) {
-        const th = ist.angle + side * a;
-        if (isWater(LAKE.x + Math.cos(th) * mid, LAKE.z + Math.sin(th) * mid)) return a;
-      }
-      return 1.2;
-    };
-    const width = (dryArc(1) + dryArc(-1)) * mid;
-    expect(width).toBeGreaterThan(3);
-    expect(width).toBeLessThan(6);
-  });
-
-  it('blocks the water beside the causeway', () => {
-    // Step off the bridge sideways and you are inside a hard circle within a
-    // stride. Measured worst case over the six probes: 1.6 units of open
-    // water, which is the design bound — a circle center has to sit
-    // WATER_COLLIDER_R - 0.6 inside every shore, the causeway's edges
-    // included.
-    const isl = LAKE.island!;
-    const ist = LAKE.isthmus!;
-    const rm = (LAKE.r + isl.r) / 2;
-    const ringHalf = (LAKE.r - isl.r) / 2;
-    for (const d of [rm - ringHalf * 0.5, rm, rm + ringHalf * 0.5]) {
-      for (const side of [1, -1]) {
-        // Find the bridge edge at this radius, then walk out into the water.
-        let edge = -1;
-        for (let a = 0; a < 0.6; a += 0.0005) {
-          const th = ist.angle + side * a;
-          if (isWater(LAKE.x + Math.cos(th) * d, LAKE.z + Math.sin(th) * d)) {
-            edge = a;
-            break;
-          }
-        }
-        expect(edge, `water beside the causeway at d=${d}`).toBeGreaterThan(0);
-        let blocked = Infinity;
-        for (let into = 0.05; into <= 4; into += 0.05) {
-          const th = ist.angle + side * (edge + into / d);
-          const x = LAKE.x + Math.cos(th) * d;
-          const z = LAKE.z + Math.sin(th) * d;
-          if (cols.some((c) => Math.hypot(x - c.x, z - c.z) < c.r)) {
-            blocked = into;
-            break;
-          }
-        }
-        expect(
-          blocked,
-          `open water beside the causeway at d=${d.toFixed(1)}, side ${side}`,
-        ).toBeLessThanOrEqual(1.8);
-      }
+      const mid = (from + to) / 2;
+      const x = ISLAND.x + cos * mid;
+      const z = ISLAND.z + sin * mid;
+      expect(isWater(x, z), `bearing ${th.toFixed(2)}`).toBe(true);
+      expect(
+        cols.some((c) => Math.hypot(x - c.x, z - c.z) < c.r),
+        `unblocked water on bearing ${th.toFixed(2)}`,
+      ).toBe(true);
     }
   });
 
   it('leaves no wadeable pocket of open water', () => {
-    // The design bound: a creature gets at most ~1.6 units past a shore
-    // before a circle stops it. The causeway is the deliberate exception —
-    // the tiling is held off it so the bridge stays walkable, which leaves a
-    // wider shelf of shallow water either side of it (measured 4.0 at its
-    // widest, against 1.2 everywhere else).
-    const ist = LAKE.isthmus!;
+    // The design bound, with no exception left in it now the causeway is
+    // gone: a creature gets at most ~1.6 units past any shore — the outer
+    // one or the island's — before a circle stops it.
     for (const body of WATER_BODIES) {
       const reach = body.r * WOBBLE_MAX;
       for (let x = body.x - reach; x <= body.x + reach; x += 0.4) {
         for (let z = body.z - reach; z <= body.z + reach; z += 0.4) {
           if (!isWater(x, z)) continue;
-          if (body === LAKE) {
-            const theta = Math.atan2(z - LAKE.z, x - LAKE.x) - ist.angle;
-            if (Math.abs(Math.atan2(Math.sin(theta), Math.cos(theta))) < 0.35) continue;
-          }
           let clear = Infinity;
           for (const c of cols) clear = Math.min(clear, Math.hypot(x - c.x, z - c.z) - c.r);
           expect(clear, `open water at ${x.toFixed(1)},${z.toFixed(1)}`).toBeLessThan(1.8);
@@ -635,25 +587,28 @@ describe('landscape — shore samples', () => {
 
   it('covers the island shore too, with normals pointing at the island', () => {
     const samples = shoreSamples(LAKE);
-    const isl = LAKE.island!;
     const inner = samples.filter(
-      (s) => Math.hypot(s.x - LAKE.x, s.z - LAKE.z) < isl.r * WOBBLE_MAX + 0.5,
+      (s) => Math.hypot(s.x - ISLAND.x, s.z - ISLAND.z) < ISLAND.r * WOBBLE_MAX + 0.5,
     );
     expect(inner.length).toBeGreaterThan(8);
     for (const s of inner) {
-      const dot = (s.x - LAKE.x) * s.nx + (s.z - LAKE.z) * s.nz;
+      const dot = (s.x - ISLAND.x) * s.nx + (s.z - ISLAND.z) * s.nz;
       expect(dot).toBeLessThan(0);
     }
   });
 
-  it('skips the land bridge gap on both rings', () => {
-    const ist = LAKE.isthmus!;
-    for (const s of shoreSamples(LAKE)) {
-      const a = Math.atan2(s.z - LAKE.z, s.x - LAKE.x);
-      const delta = Math.abs(Math.atan2(Math.sin(a - ist.angle), Math.cos(a - ist.angle)));
-      // Nothing on the bridge centerline; the pushed samples sit at its edges.
-      expect(delta).toBeGreaterThan(ist.halfAngle * 0.5);
+  it('lines the island the whole way round — every bearing gets reeds', () => {
+    // No gap anywhere on either ring now the causeway is gone. Sampled as
+    // twelve 30° sectors of the island's shore: each holds samples.
+    const inner = shoreSamples(LAKE).filter(
+      (s) => Math.hypot(s.x - ISLAND.x, s.z - ISLAND.z) < ISLAND.r * WOBBLE_MAX + 0.5,
+    );
+    const sectors = new Set<number>();
+    for (const s of inner) {
+      const a = Math.atan2(s.z - ISLAND.z, s.x - ISLAND.x);
+      sectors.add(Math.floor(((a + Math.PI * 2) % (Math.PI * 2)) / (Math.PI / 6)));
     }
+    expect(sectors.size).toBe(12);
   });
 });
 
@@ -693,9 +648,10 @@ describe('landscape — ripple spots', () => {
     for (const body of WATER_BODIES) {
       expect(rippleSpots(body, 6).length).toBeLessThanOrEqual(rippleSpots(body).length);
     }
-    // A margin wider than the lake's own water empties it. 20, not 12: the
-    // body is a 33-unit-wide sheet of water now, not the old 10-unit ring.
-    expect(rippleSpots(LAKE, 20)).toHaveLength(0);
+    // A margin wider than the lake's own water empties it. 24, not 20: the
+    // island moved off-centre, which opens a 41-unit crossing on the far
+    // side of it — the widest open water the map holds.
+    expect(rippleSpots(LAKE, 24)).toHaveLength(0);
   });
 });
 
@@ -774,10 +730,10 @@ describe('landscape — the environments are spread out', () => {
   });
 
   it('keeps the lake reading as a body of water, not a moat', () => {
-    // Four fifths of the lake disc is wet: an island in open water, not a
-    // ring of water around a landmass.
+    // Most of the lake disc is wet: an island standing in open water, not a
+    // ring of water around a landmass. Measured 0.889 of the disc.
     const isl = LAKE.island!;
-    expect(LAKE.r / isl.r).toBeGreaterThan(3.5);
+    expect(LAKE.r / isl.r).toBeGreaterThan(2.5);
     const reach = LAKE.r * WOBBLE_MAX;
     let wet = 0;
     let dry = 0;
@@ -795,6 +751,14 @@ describe('landscape — the environments are spread out', () => {
 
 describe('landscape — terrain height', () => {
   const FIELD = 155;
+  /** Inside (or within a sample of) the island — the one landform measured
+   * against its own slope bound rather than the field's. */
+  const nearIsland = (x: number, z: number): boolean => {
+    const dx = x - ISLAND.x;
+    const dz = z - ISLAND.z;
+    const d = Math.hypot(dx, dz);
+    return d < wobbledRadius(ISLAND, Math.atan2(dz, dx)) + 1.5;
+  };
   /** Every sample is a `terrainHeight` call, so the field walks are coarse on
    * purpose. */
   const walk = (step: number, fn: (x: number, z: number) => void): void => {
@@ -827,13 +791,80 @@ describe('landscape — terrain height', () => {
     // width, so this is the number the [D] falloffs were tuned against:
     // terraceRiser 0.2–0.8, mountainShelfFalloff 70, shoreRamp 16. Measured
     // 0.5476 on the shipped layout, at the range's southern apron.
+    //
+    // THE ISLAND IS EXEMPT, and is measured on its own below. It is a bank:
+    // 3.2 units of rise on a 14-unit island cannot be spread at 0.55 by any
+    // shaping (0.55 through the terrace buys 0.22 units of climb per unit of
+    // ground, so it would want a 15-unit run), and a bank is the one landform
+    // whose job is to be steeper than the field around it.
     let worst = 0;
     walk(0.5, (x, z) => {
+      if (nearIsland(x, z)) return;
       const gx = terrainHeight(x + 0.5, z) - terrainHeight(x - 0.5, z);
       const gz = terrainHeight(x, z + 0.5) - terrainHeight(x, z - 0.5);
       worst = Math.max(worst, Math.hypot(gx, gz));
     });
     expect(worst).toBeLessThanOrEqual(0.6);
+  });
+
+  it('climbs the island out of the water in two contour tiers', () => {
+    const level = waterLevel(LAKE);
+    // A crown, not a sandbar (2026-09-03, user report — "the island sits FLAT
+    // at water level"). Two full terrace tiers: measured level + 3.20.
+    expect(terrainHeight(ISLAND.x, ISLAND.z) - level).toBeGreaterThanOrEqual(3.0);
+    // …and the tiers are the world's own tiers, not heights of their own.
+    const tiers = new Set<number>();
+    for (let i = 0; i < 720; i++) {
+      const th = (i / 720) * Math.PI * 2;
+      const edge = wobbledRadius(ISLAND, th);
+      for (let d = 0; d < edge; d += 0.25) {
+        const h = terrainHeight(ISLAND.x + Math.cos(th) * d, ISLAND.z + Math.sin(th) * d) - level;
+        const k = h / TERRAIN.terraceStep;
+        if (Math.abs(k - Math.round(k)) < 1e-9) tiers.add(Math.round(k));
+      }
+    }
+    expect([...tiers].sort((a, b) => a - b)).toEqual([0, 1, 2]);
+  });
+
+  it('starts the island bank AT the waterline, so the drawn shore stays on top', () => {
+    // The shore ribbon rides `waterLevel + 0.011`. Every island shore sample
+    // — already pushed 0.15 onto land — has to still be under it, or the pen
+    // line is buried in the bank it draws. Measured: exactly the water level
+    // at all of them (the terrace's first tread is flat).
+    const level = waterLevel(LAKE);
+    const inner = shoreSamples(LAKE).filter(
+      (s) => Math.hypot(s.x - ISLAND.x, s.z - ISLAND.z) < ISLAND.r * WOBBLE_MAX + 0.5,
+    );
+    expect(inner.length).toBeGreaterThan(20);
+    for (const s of inner) {
+      expect(terrainHeight(s.x, s.z), `island shore at ${s.x},${s.z}`).toBeLessThanOrEqual(
+        level + 0.011,
+      );
+    }
+    // …and it really is a bank and not a plateau: three units in, the ground
+    // has left the water behind.
+    for (let i = 0; i < 360; i++) {
+      const th = (i / 360) * Math.PI * 2;
+      const d = wobbledRadius(ISLAND, th) - 3;
+      expect(
+        terrainHeight(ISLAND.x + Math.cos(th) * d, ISLAND.z + Math.sin(th) * d),
+        `island at 3 units in, bearing ${th.toFixed(2)}`,
+      ).toBeGreaterThan(level);
+    }
+  });
+
+  it('keeps the island bank inside ITS bound — steep, never a wall', () => {
+    // The island's own number, measured the same way as the field's: 1.15.
+    // A bank, not a cliff — and pinned, so it cannot creep toward vertical.
+    let worst = 0;
+    for (let x = ISLAND.x - 20; x <= ISLAND.x + 20; x += 0.5) {
+      for (let z = ISLAND.z - 20; z <= ISLAND.z + 20; z += 0.5) {
+        const gx = terrainHeight(x + 0.5, z) - terrainHeight(x - 0.5, z);
+        const gz = terrainHeight(x, z + 0.5) - terrainHeight(x, z - 0.5);
+        worst = Math.max(worst, Math.hypot(gx, gz));
+      }
+    }
+    expect(worst).toBeLessThanOrEqual(1.25);
   });
 
   it('keeps the whole field inside ±10 units of height', () => {
@@ -889,8 +920,14 @@ describe('landscape — terrain height', () => {
           const r = wobbledRadius(body, theta) * f;
           const x = body.x + Math.cos(theta) * r;
           const z = body.z + Math.sin(theta) * r;
-          // The island and the causeway are inside the outer shore too: the
-          // whole disc is one flat basin, so water can never sit above land.
+          // The basin is the whole disc, island included — the island then
+          // climbs back out of it, and only there is the ground above the
+          // water. Everywhere else inside the shore is exactly the level, so
+          // water can never sit above land.
+          if (sampleLandscape(x, z).island) {
+            expect(terrainHeight(x, z)).toBeGreaterThanOrEqual(level);
+            continue;
+          }
           expect(terrainHeight(x, z), `${body.kind} at ${x.toFixed(1)},${z.toFixed(1)}`).toBe(level);
         }
       }
@@ -975,7 +1012,9 @@ describe('landscape — terrain height', () => {
     walk(2, (x, z) => {
       const n = terrainNormal(x, z);
       expect(Math.hypot(n.x, n.y, n.z)).toBeCloseTo(1, 12);
-      flattest = Math.min(flattest, n.y);
+      // The island bank tilts harder than the field (see its own bound
+      // above); this is the field's number.
+      if (!nearIsland(x, z)) flattest = Math.min(flattest, n.y);
     });
     // Terrace risers tilt harder than the old smooth swell did: measured
     // 0.8775 at the steepest, which is the 0.55 slope bound above read as a

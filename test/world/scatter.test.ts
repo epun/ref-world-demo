@@ -593,7 +593,7 @@ describe('scatter colliders', () => {
       const water = waterColliders();
       // A budget, not a fixture: the water circles are a uniform tiling now
       // (2026-09-03) rather than one circle per pond plus a 16-circle ring,
-      // so the count tracks the wetted area. 1176 for the shipped layout; the
+      // so the count tracks the wetted area. 1118 for the shipped layout; the
       // exact number is landscape's business and pinned in its own tests.
       expect(water.length).toBeGreaterThan(WATER_BODIES.length);
       expect(water.length).toBeLessThanOrEqual(2500);

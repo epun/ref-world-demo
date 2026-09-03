@@ -9,11 +9,17 @@
  * normal target breaks. A flat polygon a hair above flat ground breaks
  * neither, so left to the pass the water would be a value with no edge — a
  * stain, not a pond. The shore is therefore drawn: an ink ribbon walked around
- * the body's FILL outline, with a pen's varying width and an occasional lifted
- * segment. Walking the fill outline rather than the rings is what gives the
- * lake's land bridge its two banks — that polygon already traces every
- * boundary between water and land, in one direction, so one stroke covers all
- * of it. Same reason the ripples are geometry and not a texture.
+ * each of the body's shorelines, with a pen's varying width and an occasional
+ * lifted segment. Same reason the ripples are geometry and not a texture.
+ *
+ * A LAKE HAS TWO SHORES. Its fill is the outer outline with the island
+ * punched out of it as a HOLE, and it carries two ribbons: one round the
+ * outer shore, one round the island. Both rings wind the same way, so the
+ * pen's offset flips sign between them — the outer ribbon's water side is
+ * inward, the island ribbon's is outward — and each ring is the one polygon
+ * its own fill edge is built from, so the grey and the ink coincide by
+ * construction rather than by matching sample counts (the lesson of the
+ * causeway strip that used to run between them).
  *
  * Everything here is built ONCE from WATER_BODIES. The geography is authored
  * and fixed (it does not ride the scatter seed), so there is no rebuild path —
@@ -37,19 +43,22 @@ import {
   Group,
   Mesh,
   MeshBasicMaterial,
+  Path,
   Shape,
   ShapeGeometry,
   type WebGLProgramParametersWithUniforms,
 } from 'three';
 import { MOTION, SURFACE, WORLD } from '../taste/tokens';
 import {
+  ISLAND_OUTLINE_POINTS,
   OUTLINE_POINTS,
   RIPPLE_MARGIN,
   WATER_BODIES,
+  islandOutline,
   isWater,
   rippleSpots,
-  waterFillOutline,
   waterLevel,
+  waterOutline,
   type RippleSpot,
   type WaterBody,
 } from './landscape';
@@ -148,15 +157,15 @@ type Point = [number, number];
 
 /**
  * Split any segment much longer than the polygon's own typical one, so the
- * whole loop is sampled at one density.
+ * whole loop is sampled at one density — and so the fill edge and the pen
+ * line can share ONE array of points whatever shape the geography hands over.
  *
- * The fill outline is evenly sampled along its arcs but joins them with two
- * LONG straight legs across the land bridge banks. Left alone each bank would
- * be a single quad: a ruled line with no width variation, and — worse — one
- * roll of the pen-lift hash away from vanishing whole. Cut to the same spacing
- * as the arcs beside them, the banks get the same hand as the rest of the
- * shore. The threshold is the polygon's own median segment, so it self-tunes
- * per body and is a no-op for a pond (whose outline is already uniform).
+ * A no-op for every ring the map currently authors (they are all evenly
+ * sampled), and kept for the guarantee rather than the cuts: a polygon with
+ * one long leg in it would otherwise draw that leg as a single quad — a
+ * ruled line with no width variation, one roll of the pen-lift hash away
+ * from vanishing whole. The threshold is the polygon's own median segment,
+ * so it self-tunes per body.
  */
 function densify(poly: readonly Point[]): Point[] {
   const n = poly.length;
@@ -200,16 +209,17 @@ function penWidth(seed: number, i: number, count: number): number {
  * The ink ribbon for one closed shoreline: a triangle strip offset ± half the
  * pen width along each vertex's mitered outward normal.
  *
- * The polygon is the body's FILL outline, which is counter-clockwise and
- * encloses exactly the water — so `(dz, −dx)` points away from the water at
- * every single vertex, whichever edge it belongs to: outward on the outer
- * shore, back toward the middle along the island's, and sideways into the land
- * bridge along the two bank legs. One walk draws all of it, banks included.
- * The isWater probe below is therefore a guard rather than a filter now.
+ * Every ring the geography hands over is counter-clockwise, so `(dz, −dx)` is
+ * its outward normal — which points AWAY from the water on an outer shore and
+ * INTO it on an island's. `towardWater` is that one bit: −1 for a ring the
+ * water is inside of, +1 for a ring the water is outside of. It only steers
+ * the probe below; the stroke itself straddles the line either way.
  */
-function ribbonGeometry(poly: readonly Point[], seed: number): BufferGeometry {
-  /** Into the water: the inward side of a counter-clockwise fill outline. */
-  const towardWater = -1;
+function ribbonGeometry(
+  poly: readonly Point[],
+  seed: number,
+  towardWater: -1 | 1,
+): BufferGeometry {
   const n = poly.length;
   const segNx = new Float64Array(n);
   const segNz = new Float64Array(n);
@@ -345,8 +355,11 @@ export interface Water {
   /** Advance the ambient ripple drift. Call once per frame. */
   update(nowMs: number): void;
   /**
-   * The polygons the water is actually built from, in world x/z — the fill
-   * and the shoreline both ride these exact points. Copies, per call.
+   * The OUTER polygon each body's water is built from, in world x/z — the
+   * fill edge and the shoreline both ride these exact points. Copies, per
+   * call. A lake's fill also has a hole in it, which is not returned here:
+   * it is `islandOutline(body)` from the geography, densified the same way,
+   * and it carries its own ribbon.
    *
    * x/z only, and that is not a loss: a body's surface is one flat sheet at
    * its own `waterLevel`, so the height is a single number per body that
@@ -367,37 +380,43 @@ export function createWater(): Water {
   const geometries: BufferGeometry[] = [];
   const materials: MeshBasicMaterial[] = [];
 
-  // ── the one outline ───────────────────────────────────────────────────────
-  // ONE polygon per body, shared by the fill and the shoreline that draws its
-  // edge. This has to be the same array for both: the wedge that cuts the land
-  // bridge out is decided per sampled angle, so a fill sampled coarsely and a
-  // ribbon sampled finely put their bank legs at measurably different angles —
-  // up to ~3° at the lake, which is a ~0.9-unit strip of bare paper showing
-  // between the grey and the ink. Built at the ribbon's density and densified
-  // once, here, so the fill edge and the pen line coincide by construction.
+  // ── the outlines ──────────────────────────────────────────────────────────
+  // ONE polygon per shoreline, shared by the fill edge it cuts and the pen
+  // line that draws it. It has to be the same array for both, sampled once at
+  // the ribbon's density: a fill sampled coarsely and a ribbon sampled finely
+  // sit a chord's sagitta apart on every wobble, which shows as a hair of bare
+  // paper between the grey and the ink.
   const outlines = WATER_BODIES.map((body) =>
-    densify(waterFillOutline(body, OUTLINE_POINTS * SHORE_SUBDIVISION)),
+    densify(waterOutline(body, OUTLINE_POINTS * SHORE_SUBDIVISION)),
   );
+  // …and the island's, for the lake: the hole in its fill and a second shore.
+  const islands = WATER_BODIES.map((body) => {
+    const poly = islandOutline(body, ISLAND_OUTLINE_POINTS * SHORE_SUBDIVISION);
+    return poly ? densify(poly) : null;
+  });
 
   // ── the flat value ────────────────────────────────────────────────────────
-  // One unlit polygon per body. The lake's is a C — the land bridge is cut out
-  // of it so the water reads as a ring you can walk into the middle of.
-  // DoubleSide: the shared outline is densified, so its bank legs carry runs
-  // of exactly collinear points and earcut answers with a handful of zero-area
-  // slivers whose winding is float noise. They rasterize nothing either way —
-  // this just means a sliver can never become a culled hole in the sheet if
-  // the geography is ever re-authored. A flat sheet has no back to save.
+  // One unlit polygon per body, with a hole in it where the lake's island
+  // stands: earcut triangulates around the hole and invents no points, so the
+  // sheet's vertices are exactly the two rings'.
+  // DoubleSide: a flat sheet has no back to save, and this means a zero-area
+  // sliver — whose winding is float noise — can never become a culled hole in
+  // the water if the geography is ever re-authored.
   const fillMaterial = new MeshBasicMaterial({ color: WORLD.neutralMid, side: DoubleSide });
   materials.push(fillMaterial);
+  /** A ring in shape space: built in (x, −z) and laid flat by a −90° turn
+   * about x, which maps (x, y, 0) → (x, 0, −y) — the shape's y comes back as
+   * world z, and its +z normal comes back pointing up. */
+  const trace = <T extends Shape | Path>(into: T, poly: readonly Point[]): T => {
+    into.moveTo(poly[0]![0], -poly[0]![1]);
+    for (let i = 1; i < poly.length; i++) into.lineTo(poly[i]![0], -poly[i]![1]);
+    into.closePath();
+    return into;
+  };
   WATER_BODIES.forEach((body: WaterBody, index: number) => {
-    const poly = outlines[index]!;
-    const shape = new Shape();
-    // Built in (x, −z) and laid flat by a −90° turn about x, which maps
-    // (x, y, 0) → (x, 0, −y): the shape's y comes back as world z, and the
-    // shape's +z normal comes back pointing up.
-    shape.moveTo(poly[0]![0], -poly[0]![1]);
-    for (let i = 1; i < poly.length; i++) shape.lineTo(poly[i]![0], -poly[i]![1]);
-    shape.closePath();
+    const shape = trace(new Shape(), outlines[index]!);
+    const island = islands[index];
+    if (island) shape.holes.push(trace(new Path(), island));
     const geometry = new ShapeGeometry(shape);
     geometry.rotateX(-Math.PI / 2);
     geometries.push(geometry);
@@ -407,21 +426,33 @@ export function createWater(): Water {
     group.add(mesh);
   });
 
-  // ── the drawn shore ───────────────────────────────────────────────────────
-  // ONE ribbon per body, walked around its fill outline. For a pond that is
-  // just its shore; for the lake it is the outer shore, the bank of the land
-  // bridge, the island's shore and the far bank, in a single closed stroke —
-  // the whole edge between water and land, drawn as the pen would draw it.
+  // ── the drawn shores ──────────────────────────────────────────────────────
+  // One ribbon per shoreline, each walked around the very array its fill edge
+  // was cut from — a pond has one, the lake has its outer shore and its
+  // island's. The island's is seeded off the island so its pen lifts in
+  // different places than the shore across the water from it.
   const shoreMaterial = new MeshBasicMaterial({ color: SURFACE.ink, side: DoubleSide });
   materials.push(shoreMaterial);
-  WATER_BODIES.forEach((body: WaterBody, index: number) => {
-    // The same array the fill was built from — the pen rides its own edge.
-    const geometry = ribbonGeometry(outlines[index]!, body.seed);
+  const addShore = (
+    name: string,
+    poly: readonly Point[],
+    seed: number,
+    towardWater: -1 | 1,
+    level: number,
+  ): void => {
+    const geometry = ribbonGeometry(poly, seed, towardWater);
     geometries.push(geometry);
     const mesh = new Mesh(geometry, shoreMaterial);
-    mesh.name = `shore-${body.kind}-${index}`;
-    mesh.position.y = waterLevel(body) + SHORE_LIFT;
+    mesh.name = name;
+    mesh.position.y = level + SHORE_LIFT;
     group.add(mesh);
+  };
+  WATER_BODIES.forEach((body: WaterBody, index: number) => {
+    const level = waterLevel(body);
+    // The water is INSIDE the outer ring, and OUTSIDE the island's.
+    addShore(`shore-${body.kind}-${index}`, outlines[index]!, body.seed, -1, level);
+    const island = islands[index];
+    if (island) addShore(`shore-island-${index}`, island, body.island!.seed, 1, level);
   });
 
   // ── ripple marks ──────────────────────────────────────────────────────────

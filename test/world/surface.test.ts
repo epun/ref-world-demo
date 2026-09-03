@@ -9,7 +9,13 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { terrainHeight, terrainNormal, WATER_BODIES, waterLevel } from '../../src/world/landscape';
+import {
+  isWater,
+  terrainHeight,
+  terrainNormal,
+  WATER_BODIES,
+  waterLevel,
+} from '../../src/world/landscape';
 import { FLAT_SURFACE, ROLLING_SURFACE, type Surface } from '../../src/world/surface';
 
 const PROBES: [number, number][] = [];
@@ -27,7 +33,19 @@ describe('surface — the rolling world', () => {
 
   it('puts every water body on its own flat level', () => {
     for (const body of WATER_BODIES) {
-      expect(ROLLING_SURFACE.sampleHeight(body.x, body.z)).toBe(waterLevel(body));
+      // Sampled on the WATER, not at the body's centre: the lake's centre is
+      // inside the island standing off the middle of it (2026-09-03), and the
+      // island is the one thing inside a shore that stands above the level.
+      let found = 0;
+      for (let i = 0; i < 16 && found < 4; i++) {
+        const th = (i / 16) * Math.PI * 2;
+        const x = body.x + Math.cos(th) * body.r * 0.8;
+        const z = body.z + Math.sin(th) * body.r * 0.8;
+        if (!isWater(x, z)) continue;
+        found++;
+        expect(ROLLING_SURFACE.sampleHeight(x, z)).toBe(waterLevel(body));
+      }
+      expect(found, `${body.kind} at ${body.x},${body.z}`).toBe(4);
     }
   });
 

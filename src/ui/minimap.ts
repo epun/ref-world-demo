@@ -9,8 +9,10 @@
  * hairline mark:
  *
  * - water: the ponds and the lake, filled WORLD.neutralMid inside a hairline
- *   WORLD.ink shore. This is the ONE filled shape on the map and it is not
- *   chrome — the world brief's own reference is "isometric village and
+ *   WORLD.ink shore, and then the lake's island drawn back over it in the
+ *   ground value inside a hairline of its own — an island in a lake, which is
+ *   what the world holds. This is the ONE filled shape on the map and it is
+ *   not chrome — the world brief's own reference is "isometric village and
  *   mountain maps", and a lake drawn on a map is terrain, exactly like the
  *   prop marks beside it. The mark-set lint (TASTE §4) watches this file:
  *   nothing here has become a panel, a card, or a shadow;
@@ -35,7 +37,7 @@
 
 import { Vector3 } from 'three';
 import { sampleDrift } from '../motion/ambient';
-import { WATER_BODIES, waterFillOutline } from '../world/landscape';
+import { WATER_BODIES, islandOutline, waterOutline } from '../world/landscape';
 import {
   mapBorderInset,
   mapMarkScale,
@@ -232,18 +234,25 @@ export function installWorldMinimap(opts: WorldMinimapOptions): WorldMinimapHand
   // The geography is authored and global — no option to pass, and no rebuild
   // path: these polygons are the same on every device forever. Mapping them to
   // canvas px is the only per-size work, so it is cached against the frame.
-  const waterFills = WATER_BODIES.map((body) => waterFillOutline(body));
+  const waterFills: [number, number][][] = WATER_BODIES.map((body) => waterOutline(body));
+  const islandFills: [number, number][][] = WATER_BODIES.map((body) =>
+    islandOutline(body),
+  ).filter((poly): poly is [number, number][] => poly !== null);
   let waterCache: { px: number; py: number }[][] = [];
+  let islandCache: { px: number; py: number }[][] = [];
   let waterCacheKey = '';
-  const waterMarks = (frame: MapFrame): { px: number; py: number }[][] => {
+  const project = (
+    polys: readonly [number, number][][],
+    frame: MapFrame,
+  ): { px: number; py: number }[][] =>
+    polys.map((poly) => poly.map(([x, z]) => worldToMap(x, z, WORLD_MAP_EXTENT, frame)));
+  const waterMarks = (frame: MapFrame): void => {
     const key = `${frame.w}|${frame.h}|${frame.inset}`;
     if (key !== waterCacheKey) {
-      waterCache = waterFills.map((poly) =>
-        poly.map(([x, z]) => worldToMap(x, z, WORLD_MAP_EXTENT, frame)),
-      );
+      waterCache = project(waterFills, frame);
+      islandCache = project(islandFills, frame);
       waterCacheKey = key;
     }
-    return waterCache;
   };
 
   const frameFor = (w: number, h: number, inset: number, scale: number): MapFrame => ({
@@ -288,19 +297,25 @@ export function installWorldMinimap(opts: WorldMinimapOptions): WorldMinimapHand
     ctx.clip();
 
     // Water: the map's terrain, drawn under everything that stands on it —
-    // the same flat value the world uses, inside the same drawn shore.
-    ctx.fillStyle = WORLD.neutralMid;
-    ctx.strokeStyle = WORLD.ink;
+    // the same flat value the world uses, inside the same drawn shore. Then
+    // the island back over the lake in the ground value: at map scale a hole
+    // in the fill and a shape painted over it are the same picture, and this
+    // one is a shape with its own drawn shore.
+    waterMarks(frame);
     ctx.lineWidth = 1;
-    for (const poly of waterMarks(frame)) {
-      if (poly.length < 3) continue;
+    ctx.strokeStyle = WORLD.ink;
+    const ring = (poly: { px: number; py: number }[], fill: string): void => {
+      if (poly.length < 3) return;
+      ctx.fillStyle = fill;
       ctx.beginPath();
       ctx.moveTo(poly[0]!.px, poly[0]!.py);
       for (let i = 1; i < poly.length; i++) ctx.lineTo(poly[i]!.px, poly[i]!.py);
       ctx.closePath();
       ctx.fill();
       ctx.stroke();
-    }
+    };
+    for (const poly of waterCache) ring(poly, WORLD.neutralMid);
+    for (const poly of islandCache) ring(poly, SURFACE.ground);
 
     // Prop marks: sparse neutral dots, the terrain at a glance.
     ctx.fillStyle = WORLD.neutral;

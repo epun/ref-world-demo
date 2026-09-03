@@ -269,10 +269,11 @@ describe('the island', () => {
 
   it('grows its own flora and nothing built', () => {
     const island = shipped().filter(onIsland);
-    // Flora from the island's own table, not a palm count: the island is a
-    // 9-unit speck in a 42-unit lake now (2026-09-03) rather than the 8-unit
-    // core of an 18-unit ring, and which of its handful of cells rolls a
-    // palm rather than a tree is not a guarantee this module makes.
+    // Flora from the island's own table, not a palm count: which of the
+    // island's cells rolls a palm rather than a tree is not a guarantee this
+    // module makes. It is a 14-unit hill off the middle of a 42-unit lake now
+    // (2026-09-03) — no causeway, so nothing walks there and nothing built
+    // stands there either.
     const flora = island.filter((p) =>
       (['palm', 'tree', 'rock', 'bush'] as const).some((k) => k === p.kind),
     );
