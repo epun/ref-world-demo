@@ -1,7 +1,7 @@
 {
   "worlds": {
     "meridian": {
-      "host": "ref-world-meridian.vercel.app",
+      "host": "ref-world-meridian-evanmpuns-projects.vercel.app",
       "residents": "none"
     }
   }

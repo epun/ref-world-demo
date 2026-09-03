@@ -55,7 +55,7 @@ describe('worlds.json — one entry per deployment', () => {
 
   it('knows meridian, empty on purpose, and does not know the public site', () => {
     expect(WORLDS['meridian']).toEqual({
-      host: 'ref-world-meridian.vercel.app',
+      host: 'ref-world-meridian-evanmpuns-projects.vercel.app',
       residents: 'none',
     });
     // the public site is absent on purpose: it is the world without an
@@ -79,10 +79,13 @@ describe('resolveWorld — what world is this build for', () => {
 
   it('reads the deployment its own production hostname, settings and all', () => {
     expect(
-      resolveWorld({ VERCEL_PROJECT_PRODUCTION_URL: 'ref-world-meridian.vercel.app' }, WORLDS),
+      resolveWorld(
+        { VERCEL_PROJECT_PRODUCTION_URL: 'ref-world-meridian-evanmpuns-projects.vercel.app' },
+        WORLDS,
+      ),
     ).toEqual({
       name: 'meridian',
-      host: 'ref-world-meridian.vercel.app',
+      host: 'ref-world-meridian-evanmpuns-projects.vercel.app',
       residents: 'none',
     });
   });
@@ -93,7 +96,7 @@ describe('resolveWorld — what world is this build for', () => {
     // so what renders locally is what the deployment will render.
     expect(resolveWorld({ VITE_WORLD: 'meridian' }, WORLDS)).toEqual({
       name: 'meridian',
-      host: 'ref-world-meridian.vercel.app',
+      host: 'ref-world-meridian-evanmpuns-projects.vercel.app',
       residents: 'none',
     });
   });
@@ -129,7 +132,10 @@ describe('resolveWorld — what world is this build for', () => {
     );
     expect(
       resolveWorld(
-        { VERCEL_PROJECT_PRODUCTION_URL: 'https://ref-world-meridian.vercel.app/' },
+        {
+          VERCEL_PROJECT_PRODUCTION_URL:
+            'https://ref-world-meridian-evanmpuns-projects.vercel.app/',
+        },
         WORLDS,
       )?.name,
     ).toBe('meridian');
