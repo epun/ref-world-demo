@@ -459,7 +459,7 @@ describe('landscape — colliders', () => {
   it('tiles every body with same-size hard circles, and not too many', () => {
     expect(cols.length).toBeGreaterThan(WATER_BODIES.length * 4);
     // A budget, not a fixture: the tiling is what the collider grid indexes
-    // every frame. Measured 1176 for the shipped layout, ~1100 of them the
+    // every frame. Measured 1171 for the shipped layout, ~1100 of them the
     // lake.
     expect(cols.length).toBeLessThanOrEqual(2500);
     for (const c of cols) {
@@ -495,6 +495,49 @@ describe('landscape — colliders', () => {
         );
       }
     }
+  });
+
+  it('leaves the whole causeway walkable, end to end', () => {
+    // Not three probe radii: the WHOLE centerline, island edge to outer
+    // shore, with a creature's body radius of clearance. The bridge is an
+    // angular wedge, so before ISTHMUS_MIN_HALF_WIDTH existed it pinched to
+    // 0.02 units of gap where it met the island — passable on paper, sealed
+    // in practice. Measured minimum now: 1.35 at d ≈ 10.5.
+    const ist = LAKE.isthmus!;
+    const island: Blob = { x: LAKE.x, z: LAKE.z, r: LAKE.island!.r, seed: LAKE.island!.seed };
+    const from = wobbledRadius(island, ist.angle);
+    const to = wobbledRadius(LAKE, ist.angle);
+    const cos = Math.cos(ist.angle);
+    const sin = Math.sin(ist.angle);
+    for (let d = from; d <= to; d += 0.25) {
+      const x = LAKE.x + cos * d;
+      const z = LAKE.z + sin * d;
+      for (const c of cols) {
+        expect(
+          Math.hypot(x - c.x, z - c.z) - c.r,
+          `causeway pinched at d=${d.toFixed(2)}`,
+        ).toBeGreaterThanOrEqual(1);
+      }
+    }
+  });
+
+  it('keeps the causeway a footpath, not a road', () => {
+    // …and the other half of the bargain: a bridge wide enough to walk is
+    // still a thread across a 42-radius lake. Measured 4.0 units at the mid
+    // ring, and 4.0–4.7 over the whole crossing.
+    const ist = LAKE.isthmus!;
+    const island: Blob = { x: LAKE.x, z: LAKE.z, r: LAKE.island!.r, seed: LAKE.island!.seed };
+    const mid = (wobbledRadius(island, ist.angle) + wobbledRadius(LAKE, ist.angle)) / 2;
+    const dryArc = (side: number): number => {
+      for (let a = 0; a < 1.2; a += 0.0005) {
+        const th = ist.angle + side * a;
+        if (isWater(LAKE.x + Math.cos(th) * mid, LAKE.z + Math.sin(th) * mid)) return a;
+      }
+      return 1.2;
+    };
+    const width = (dryArc(1) + dryArc(-1)) * mid;
+    expect(width).toBeGreaterThan(3);
+    expect(width).toBeLessThan(6);
   });
 
   it('blocks the water beside the causeway', () => {

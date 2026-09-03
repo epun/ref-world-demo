@@ -191,10 +191,13 @@ describe('water — everything drawn is over water', () => {
       // so any vertex found at this radius is bank stroke.
       if (d <= wobbledRadius(ISLAND, theta) + 1 || d >= wobbledRadius(LAKE, theta) - 1) continue;
       onBank++;
-      // And it hugs the edge of the wedge, running along the bank. 1.7, not
-      // 1.5: the causeway narrowed to halfAngle 0.06 (2026-09-03), so the
-      // shore walk's fixed 0.15-unit push onto land is a bigger share of it.
-      expect(delta).toBeLessThan(ist.halfAngle * 1.7);
+      // And it hugs the edge of the wedge, running along the bank. Measured
+      // against the bridge's half-angle AT THIS RADIUS, not a flat multiple
+      // of halfAngle: the causeway holds a 2-unit minimum half-width now
+      // (2026-09-03) so it stops being a wedge below d ≈ 33, and the shore
+      // walk's fixed 0.15-unit push onto land is a bigger share of a narrow
+      // bridge than a wide one.
+      expect(delta).toBeLessThan(Math.max(ist.halfAngle, 2 / d) * 1.7);
     }
     // Both banks, sampled at the same density as the arcs beside them — not
     // one ruled segment that a single pen lift could erase whole.

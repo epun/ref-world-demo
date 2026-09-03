@@ -208,19 +208,40 @@ function islandBlob(body: WaterBody): Blob | null {
   return isl ? { x: body.x, z: body.z, r: isl.r, seed: isl.seed } : null;
 }
 
+/** [D] Minimum half-width of a land bridge, world units — so the causeway is
+ * never narrower than 4 units end to end.
+ *
+ * An isthmus is an angular wedge, so its width tapers to nothing at the
+ * island: `halfAngle` 0.06 is ~3 units across at the lake's mid ring but only
+ * 1.3 where it meets a 9-unit island, and after the water colliders take
+ * their 0.6-unit bite off each side the gap there was 0.02 units — a bridge
+ * a creature could see and never cross. The floor keeps 2 units of bridge
+ * either side of the centerline at every radius, which reads as a causeway of
+ * one width rather than a triangle, and still crosses a 42-radius lake as a
+ * thread. */
+const ISTHMUS_MIN_HALF_WIDTH = 2;
+
 /**
  * Angular half-width of the land bridge at distance `d` from the lake center,
  * already adjusted for `pad`. `pad` is extra water in every direction, so it
  * eats into the bridge: at distance `d`, `pad` units of arc is `pad / d`
  * radians. A negative pad (water shrunk, e.g. a ripple margin) widens it by
  * the same rule, which keeps every consumer on one definition.
+ *
+ * The authored wedge and the minimum width are combined BEFORE the pad, so
+ * every consumer — the fill polygon, the shore walk, the ripple margin, the
+ * colliders — sees the same bridge and then applies its own clearance to it.
  */
 function isthmusHalf(body: WaterBody, d: number, pad: number): number {
   const ist = body.isthmus;
   if (!ist) return -1;
   const phase = hash(body.seed + ISTHMUS_PHASE_SALT) * TAU;
-  const w = ist.halfAngle * (1 + 0.15 * Math.sin(d * 0.9 + phase));
-  return d > 1e-6 ? w - pad / d : w;
+  const wedge = ist.halfAngle * (1 + 0.15 * Math.sin(d * 0.9 + phase));
+  if (d <= 1e-6) return wedge;
+  // Capped at a half turn: below the island's own radius the floor would ask
+  // for more angle than a circle has, and nothing there is water anyway.
+  const w = Math.min(Math.PI, Math.max(wedge, ISTHMUS_MIN_HALF_WIDTH / d));
+  return w - pad / d;
 }
 
 function inIsthmus(body: WaterBody, theta: number, d: number, pad: number): boolean {
