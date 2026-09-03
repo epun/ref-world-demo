@@ -70,6 +70,7 @@ import { feedDrawingToStrokes } from './net/drawFeed';
 import type { StrokeList } from './shape/types';
 import { installJoinQr, QR_SIZE_CSS } from './ui/joinqr';
 import { installWorldMinimap } from './ui/minimap';
+import { residentsFrom } from './world/residents';
 import { start } from './world/scene';
 import { createTour } from './world/tour';
 
@@ -211,6 +212,62 @@ function main(): void {
   // the edge, per protocol.ts).
   const params = new URLSearchParams(location.search);
   const fromUrl = (params.get('room') ?? '').toLowerCase();
+  /**
+   * The world's NAME — read ONCE, here, and used for everything downstream:
+   * the room, the store, the epoch, the redirect, the qr.
+   *
+   * Two sources, in this order:
+   *   1. `?world=` — the query form, and still the one that wins;
+   *   2. `<meta name="refworld:world">` — the page declaring its own world.
+   *
+   * The meta tag is how a client's own DEPLOYMENT names itself. A client
+   * world is not a path on the public site — it is this same repo built and
+   * deployed under its own hostname, and the build injects the tag (and the
+   * matching unfurl card) into index.html from worlds.json. See
+   * scripts/world-build.mjs. So the link a client is handed is an address,
+   * not the public site with a setting stuck on the end of it.
+   *
+   * Nothing about the world itself moves: the name is the same, so the
+   * derived room, the store partition and the drawings are the same ones
+   * `/?world=<name>` reaches on the public site. Only the address differs.
+   *
+   * Sanitised identically whichever way it arrived (lowercase, [a-z0-9-],
+   * up to 24 — docs/PUBLIC.md §urls), so an injected tag cannot name a
+   * world a query string could not. The public build injects nothing, so it
+   * behaves exactly as it did.
+   *
+   * Read before anything else for one reason: the mobile redirect below has
+   * to carry it. A shared link is opened on a phone far more often than on
+   * a laptop, and a phone that lands on `/draw/?room=…` with no world
+   * publishes over mqtt and stores NOTHING. Their creature would appear on
+   * any projection that happened to be open, then vanish with it, and
+   * nothing anywhere would say a word about it. Dropping the world here was
+   * silent data loss on the most travelled path in the whole thing.
+   */
+  const sanitizeWorld = (raw: string): string =>
+    raw
+      .toLowerCase()
+      .replace(/[^a-z0-9-]/g, '')
+      .slice(0, 24);
+  const queryWorld = sanitizeWorld(params.get('world') ?? '');
+  const pageWorld = queryWorld
+    ? ''
+    : sanitizeWorld(
+        document.querySelector<HTMLMetaElement>('meta[name="refworld:world"]')?.content ?? '',
+      );
+  const worldName = queryWorld || pageWorld;
+  const isPublic = worldName.length > 0;
+  /** true when THIS page is the world's address, so the qr can encode it. */
+  const declaredByPage = pageWorld.length > 0;
+  /**
+   * And whether this world opens with a population — the same build-time
+   * injection, the same read-it-once. An absent tag is `shipped`, which is
+   * what keeps the public page's html untouched. See src/world/residents.ts.
+   */
+  const residents = residentsFrom(
+    document.querySelector<HTMLMetaElement>('meta[name="refworld:residents"]')?.content ?? null,
+  );
+
   /*
    * A named world always meets in the same room; only an unnamed one mints
    * a fresh code. Without this every visitor to the public link got a
@@ -219,33 +276,13 @@ function main(): void {
    * An explicit `?room=` still wins, so a projection can be pinned to a
    * room of its own inside a public world if that is ever wanted.
    */
-  const worldName = (params.get('world') ?? '')
-    .toLowerCase()
-    .replace(/[^a-z0-9-]/g, '')
-    .slice(0, 24);
   const room = isRoomCode(fromUrl)
     ? fromUrl
     : worldName
       ? roomForWorld(worldName)
       : roomCode(Math.random);
 
-  /**
-   * A PUBLIC world: `?world=public`. Read here, before anything else, for
-   * one reason — the mobile redirect two lines down has to carry it.
-   *
-   * A shared link is opened on a phone far more often than on a laptop, and
-   * a phone that lands on `/draw/?room=…` with no world publishes over mqtt
-   * and stores NOTHING. Their creature would appear on any projection that
-   * happened to be open, then vanish with it, and nothing anywhere would
-   * say a word about it. Dropping the world here was silent data loss on
-   * the most travelled path in the whole thing.
-   */
-  const publicWorld = (params.get('world') ?? '')
-    .toLowerCase()
-    .replace(/[^a-z0-9-]/g, '')
-    .slice(0, 24);
-  const isPublic = publicWorld.length > 0;
-  const worldParam = isPublic ? `&world=${encodeURIComponent(publicWorld)}` : '';
+  const worldParam = isPublic ? `&world=${encodeURIComponent(worldName)}` : '';
 
   /**
    * A phone opening the world link goes to the drawing UI for this room —
@@ -296,7 +333,7 @@ function main(): void {
    * across every reload, announces the same thing.
    */
   const epoch = isPublic
-    ? `w-${publicWorld}`
+    ? `w-${worldName}`
     : 'w' + Math.floor(Math.random() * 0xffffffff).toString(36);
 
   // ── session recorder (src/session/, docs/SESSION.md) ──────────────────────
@@ -417,7 +454,7 @@ function main(): void {
     },
     // World controls an operator moved. Only the handles this page owns —
     // anything it cannot drive is skipped rather than faked.
-    world: (field, value) => {
+    world: (field, value, kind) => {
       const env = (world as unknown as { environment?: Record<string, unknown> })
         .environment;
       const call = (name: string, arg: unknown): void => {
@@ -436,6 +473,13 @@ function main(): void {
         world.scatter.setDensity(value);
       } else if (field === 'wanderSpeed' && typeof value === 'number') {
         creatures.setWanderSpeed(value);
+      } else if (field === 'terrain' && typeof value === 'number') {
+        // One event per dial, the dial's name in `kind` — the same shape as
+        // kindDensity/kindScale (docs/SESSION.md §world). Anything else in
+        // `kind` is skipped rather than faked.
+        if (kind === 'elevation' || kind === 'tierStep' || kind === 'relief') {
+          world.setTerrain({ [kind]: value });
+        }
       }
     },
   };
@@ -792,7 +836,7 @@ function main(): void {
    * twenty seconds.
    */
   if (isPublic) {
-    const endpoint = `/api/drawings?world=${encodeURIComponent(publicWorld)}`;
+    const endpoint = `/api/drawings?world=${encodeURIComponent(worldName)}`;
 
     /**
      * Spawn a log's drawings, A FEW PER FRAME.
@@ -843,7 +887,7 @@ function main(): void {
     };
 
     /**
-     * The world's EXISTING POPULATION, shipped with the world.
+     * The PUBLIC world's existing population, shipped with the world.
      *
      * The creatures recovered from the designers-and-machines room are not
      * submissions — nobody is offering them and nobody is deciding on them.
@@ -855,6 +899,13 @@ function main(): void {
      * It also means they cannot be moderated away or rate-limited, which is
      * right for an exhibit and would be wrong for a submission. Live
      * drawings layer on top and are governed normally.
+     *
+     * They belong to the public world and to nothing else. A client's world
+     * is `residents: none` (worlds.json) and never runs this: it opens
+     * clean and fills only with what its own people draw. Twenty-three
+     * strangers standing in a client's field are not a welcome, they are
+     * clutter with no story attached — and the first drawing arriving into
+     * an empty field is the entire proposition being demonstrated.
      */
     /*
      * A VERSIONED url, because `public/` is served verbatim.
@@ -928,8 +979,8 @@ function main(): void {
       if (first) {
         say(
           added > 0
-            ? `${added} creature${added === 1 ? '' : 's'} joined ${publicWorld}`
-            : `${publicWorld} — draw the first new one`,
+            ? `${added} creature${added === 1 ? '' : 's'} joined ${worldName}`
+            : `${worldName} — draw the first new one`,
         );
       }
     };
@@ -938,7 +989,12 @@ function main(): void {
     // purpose: the seed is local and instant, the live pull is a network
     // round trip, and a person arriving should never see an empty field
     // while a request is in flight.
-    void loadSeed().then(() => pull(true));
+    //
+    // A world with no residents skips it outright rather than loading and
+    // discarding: an empty field is what that world is FOR, so there is
+    // nothing to cover up and no reason to spend the request.
+    if (residents === 'none') void pull(true);
+    else void loadSeed().then(() => pull(true));
     window.setInterval(() => void pull(false), PUBLIC_POLL_MS);
   }
 
@@ -1090,6 +1146,15 @@ function main(): void {
    * room was minted at random and cannot be derived from anything in the
    * address, so dropping it would strand the scan in a different room.
    *
+   * And when the world has a DEPLOYMENT of its own — this document declared
+   * it in `<meta name="refworld:world">`, so the address in the bar is
+   * already the world's own hostname — the qr encodes this page's path
+   * instead, which on such a deployment is simply `/`. That is the address
+   * on the card and the one the client was sent; a qr pointing at
+   * `/?world=<name>` would send them to a different host for the same
+   * place, which is the exact thing this rule exists to prevent. `?world=`
+   * on its own does not get that treatment: the query IS the address there.
+   *
    * Either way the url must carry the world, or a scan lands on a pad that
    * publishes over mqtt and stores nothing — the creature shows on the
    * projection while that tab is open and is then gone forever, with
@@ -1100,9 +1165,10 @@ function main(): void {
   if (!tray || tray.showsJoinCode) {
     installJoinQr({
       url: joinUrl(location.origin, {
-        world: isPublic ? publicWorld : null,
+        world: isPublic ? worldName : null,
         room,
         epoch,
+        ...(declaredByPage ? { page: location.pathname } : {}),
       }),
       mount: tray ? tray.left : document.body,
     });
@@ -1147,6 +1213,10 @@ function main(): void {
         getGrainAmplitude: () => world.grain.getAmplitude(),
         // Paper color grade (shader style section): background + ground.
         setBackgroundColor: (c) => world.setBackgroundColor(c),
+        // The live terrain dials (src/world/landscape.ts): each one rebuilds
+        // the ground field, re-seats the scatter and re-levels the water.
+        setTerrain: (next) => world.setTerrain(next),
+        terrain: () => world.terrain(),
         // Outliner selection focus — the minimap's click-to-pan spring.
         focusAt: (x, z) => world.cameraRig.frameAt(new Vector3(x, 0, z)),
         // Weather handle from a parallel workstream — forwarded as-is and

@@ -49,4 +49,60 @@ describe('joinUrl — what the qr on the wall encodes', () => {
     const url = joinUrl('https://x.test', { world: 'a b&c', room: 'qtse', epoch: 'e' });
     expect(new URL(url).searchParams.get('world')).toBe('a b&c');
   });
+
+  /**
+   * A client's world is its own deployment of this repo at its own
+   * hostname (worlds.json), and its page declares the world rather than
+   * reading it from a query. `location.pathname` there is `/`, so that is
+   * what the qr encodes: the address on the card, and the one the client
+   * was sent.
+   */
+  it('a world with a deployment of its own gets its own host and nothing else', () => {
+    const url = joinUrl('https://ref-world-meridian.vercel.app', {
+      world: 'meridian',
+      room: roomForWorld('meridian'),
+      epoch: 'w-meridian',
+      page: '/',
+    });
+    expect(url).toBe('https://ref-world-meridian.vercel.app/');
+    expect(url).not.toContain('?');
+    expect(url).not.toContain('/draw/');
+  });
+
+  it('the deployment url still lands in the same room as the query form', () => {
+    // The room is derived from the NAME, and both addresses are the same
+    // world, so neither loses anything by omitting the room. If these
+    // diverged, a scan and a share would split the mqtt topic.
+    const own = joinUrl('https://ref-world-meridian.vercel.app', {
+      world: 'meridian',
+      room: 'zzzz',
+      epoch: 'e',
+      page: '/',
+    });
+    const query = joinUrl('https://ref-world-demo.vercel.app', {
+      world: 'meridian',
+      room: 'zzzz',
+      epoch: 'e',
+    });
+    expect(new URL(own).pathname).toBe('/');
+    expect(roomForWorld('meridian')).toBe(
+      roomForWorld(new URL(query).searchParams.get('world')!),
+    );
+  });
+
+  /**
+   * An unnamed world's room was minted at random and appears nowhere in a
+   * path, so a page-only url would strand the scan exactly as dropping the
+   * deep link would. `page` is a refinement of the named case, not an
+   * override of the unnamed one.
+   */
+  it('ignores the page in an unnamed world — the deep link is still the only option', () => {
+    const url = joinUrl('https://x.test', {
+      world: null,
+      room: 'qtse',
+      epoch: 'w-7',
+      page: '/',
+    });
+    expect(url).toBe('https://x.test/draw/?room=qtse&w=w-7');
+  });
 });

@@ -94,7 +94,7 @@ describe('the world hands off to the pad', () => {
     // the pad; `worldParam` is empty for an installation room.
     const src = read('src/main.ts');
     expect(src).toMatch(/location\.replace\(`\/draw\/\?room=\$\{room\}\$\{worldParam\}`\)/);
-    expect(src).toMatch(/worldParam = isPublic \? `&world=\$\{encodeURIComponent\(publicWorld\)\}` : ''/);
+    expect(src).toMatch(/worldParam = isPublic \? `&world=\$\{encodeURIComponent\(worldName\)\}` : ''/);
   });
 });
 

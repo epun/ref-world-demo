@@ -44,7 +44,9 @@ import { inflate } from '../inflate/inflate';
 import { analyze } from '../shape/analyze';
 import type { Stroke, StrokeList } from '../shape/types';
 
-/** Prop kinds that go through the inflate pipeline. */
+/** Prop kinds that go through the inflate pipeline. New kinds APPEND, so the
+ * pre-existing ones keep their index (scatter's roll order and its hash salts
+ * are keyed off names, but the pack order is what the outliner reads). */
 export const INFLATED_PROP_KINDS = [
   'tree',
   'conifer',
@@ -53,6 +55,7 @@ export const INFLATED_PROP_KINDS = [
   'stump',
   'cactus',
   'monolith',
+  'mountain',
 ] as const;
 export type InflatedPropKind = (typeof INFLATED_PROP_KINDS)[number];
 
@@ -66,9 +69,13 @@ export type PropKind = (typeof PROP_KINDS)[number];
 
 /** Mask resolution for inflated props — smaller than the character's 512.
  * Small, ground-hugging kinds drop to 128: at ~60px on screen the
- * difference is invisible and it keeps the build inside the init budget. */
+ * difference is invisible and it keeps the build inside the init budget.
+ * Mountains step UP to 224: they are the only kind that fills a large part
+ * of the frame, so their contour is the one the ink pass actually draws at
+ * size. [D] */
 export const PROP_MASK_SIZE = 160;
 export const PROP_MASK_SIZE_SMALL = 128;
+export const PROP_MASK_SIZE_LARGE = 224;
 
 const SMALL_KINDS: ReadonlySet<InflatedPropKind> = new Set([
   'rock',
@@ -77,6 +84,15 @@ const SMALL_KINDS: ReadonlySet<InflatedPropKind> = new Set([
   'cactus',
   'monolith',
 ]);
+
+const LARGE_KINDS: ReadonlySet<InflatedPropKind> = new Set(['mountain']);
+
+/** Mask resolution for one inflated kind — the single rule both
+ * buildPropGeometries and the tests read. */
+export function propMaskSize(kind: InflatedPropKind): number {
+  if (LARGE_KINDS.has(kind)) return PROP_MASK_SIZE_LARGE;
+  return SMALL_KINDS.has(kind) ? PROP_MASK_SIZE_SMALL : PROP_MASK_SIZE;
+}
 
 // ── seeded hand-wobble ───────────────────────────────────────────────────────
 
@@ -1262,7 +1278,67 @@ export const PROP_VARIANT_DEFS: Record<InflatedPropKind, PropVariantDef[]> = {
       ],
     },
   ],
+  // ── mountains ─────────────────────────────────────────────────────────
+  // The landscape's one large kind: a stack of wobbly blobs, widest at the
+  // base, narrowing to a small summit. Inflation ROUNDS them and that is
+  // the point — a mountain here is a big pillowy mass, not a cone (TASTE
+  // §2.5 forbids engineered form outright, and §3's shared law forbids
+  // hard-edged geometry at confidence 1.00). Its steep faces are what the
+  // ink pass hatches (GENERATOR §ink pass), so the silhouette carries the
+  // whole read: wide foot, one clear summit, craggy edge (lump ~0.2–0.26).
+  // [D] Heights are authored per variant so a range has a skyline.
+  mountain: [
+    {
+      // One tall tapered mass with a shoulder running off to the east.
+      name: 'peak',
+      height: 15,
+      strokes: [
+        ...wobblyBlob(0.5, 0.83, 0.485, 851.1, { ry: 0.1, lump: 0.2, points: 20 }),
+        ...wobblyBlob(0.47, 0.69, 0.37, 852.2, { ry: 0.1, lump: 0.22, points: 18 }),
+        ...wobblyBlob(0.66, 0.71, 0.17, 853.3, { ry: 0.08, lump: 0.24 }),
+        ...wobblyBlob(0.46, 0.54, 0.26, 854.4, { ry: 0.1, lump: 0.24, points: 16 }),
+        ...wobblyBlob(0.45, 0.38, 0.16, 855.5, { ry: 0.09, lump: 0.24 }),
+        ...wobblyBlob(0.44, 0.24, 0.085, 856.6, { ry: 0.07, lump: 0.26 }),
+      ],
+    },
+    {
+      // Two summits over one foot, the western one clearly lower.
+      name: 'twin',
+      height: 17,
+      strokes: [
+        ...wobblyBlob(0.5, 0.84, 0.46, 861.1, { ry: 0.1, lump: 0.2, points: 20 }),
+        ...wobblyBlob(0.5, 0.7, 0.38, 862.2, { ry: 0.1, lump: 0.22, points: 18 }),
+        ...wobblyBlob(0.34, 0.58, 0.2, 863.3, { ry: 0.09, lump: 0.24 }),
+        ...wobblyBlob(0.33, 0.46, 0.115, 864.4, { ry: 0.075, lump: 0.26 }),
+        ...wobblyBlob(0.61, 0.55, 0.22, 865.5, { ry: 0.1, lump: 0.24 }),
+        ...wobblyBlob(0.62, 0.38, 0.15, 866.6, { ry: 0.09, lump: 0.24 }),
+        ...wobblyBlob(0.63, 0.24, 0.08, 867.7, { ry: 0.07, lump: 0.26 }),
+      ],
+    },
+    {
+      // A long low saddle — the range's connecting ridge, wide and squat.
+      name: 'ridge',
+      height: 12,
+      strokes: [
+        ...wobblyBlob(0.5, 0.83, 0.47, 871.1, { ry: 0.09, lump: 0.2, points: 20 }),
+        ...wobblyBlob(0.36, 0.7, 0.27, 872.2, { ry: 0.095, lump: 0.22, points: 16 }),
+        ...wobblyBlob(0.66, 0.73, 0.24, 873.3, { ry: 0.085, lump: 0.22, points: 16 }),
+        ...wobblyBlob(0.34, 0.53, 0.145, 874.4, { ry: 0.075, lump: 0.24 }),
+        ...wobblyBlob(0.5, 0.69, 0.13, 875.5, { ry: 0.065, lump: 0.24 }),
+        ...wobblyBlob(0.65, 0.64, 0.115, 876.6, { ry: 0.065, lump: 0.24 }),
+      ],
+    },
+  ],
 };
+
+/**
+ * Authored footprint radius per mountain variant at instance scale 1, in
+ * world units — PURE placement code needs a mountain's reach (to clear the
+ * ground under it) without building geometry, and geometry only exists
+ * once a renderer asks for it. Kept honest by a test: each built variant's
+ * measured `radius` must land within 30% of the value here.
+ */
+export const MOUNTAIN_FOOTPRINT: readonly number[] = [7, 8.2, 9.6];
 
 export const ARCH_VARIANT_DEFS: Record<ArchPropKind, ArchVariantDef[]> = {
   building: [
@@ -1351,7 +1427,7 @@ function normalizeVariant(
 export function buildPropGeometries(): Map<PropKind, PropVariant[]> {
   const out = new Map<PropKind, PropVariant[]>();
   for (const kind of INFLATED_PROP_KINDS) {
-    const size = SMALL_KINDS.has(kind) ? PROP_MASK_SIZE_SMALL : PROP_MASK_SIZE;
+    const size = propMaskSize(kind);
     const variants: PropVariant[] = [];
     for (const def of PROP_VARIANT_DEFS[kind]) {
       const analysis = analyze(def.strokes, { size, contourPoints: 96 });

@@ -23,6 +23,7 @@ import type { Scene } from 'three';
 import type { Character } from '../character/character';
 import { Spring } from '../motion/spring';
 import { MOTION, WORLD } from '../taste/tokens';
+import type { Surface } from '../world/surface';
 import { applyCrackShader } from './crack';
 import { buildShellGeometry, EGG_HEIGHT, type Egg, type ShellSlice } from './egg';
 
@@ -85,6 +86,24 @@ export interface HatchCallbacks {
   onDone(): void;
 }
 
+export interface HatchOptions {
+  /**
+   * The ground the creature rises onto (PLAN §7.2).
+   *
+   * Omitted, the shell's OWN resting height is the ground — which is what a
+   * caller placing an egg on a flat stage means (the phone, docs/PHONE-
+   * STAGE.md), and what this module did before terrain existed.
+   *
+   * Passed, the rise re-samples the ground under the character every frame.
+   * It has to: the burst hands the root straight to the behavior agent, so
+   * the creature is already WALKING while it rises, and a rise pinned to the
+   * height it started at would land it above or inside a terrace it has
+   * walked onto — then correct in one frame when the sequence ends, which is
+   * the hard cut the motion law forbids outright (TASTE §2.1).
+   */
+  surface?: Surface;
+}
+
 export interface HatchHandle {
   /** Advance the sequence. Call once per frame while the handle lives. */
   update(dt: number, nowMs: number): void;
@@ -107,8 +126,10 @@ export function startHatch(
   egg: Egg,
   character: Character,
   callbacks: HatchCallbacks,
+  options: HatchOptions = {},
 ): HatchHandle {
   let phase: 'crack' | 'exit' | 'done' = 'crack';
+  const surface = options.surface ?? null;
 
   // Phase 1 springs: pick up the crack and wobble wherever they are —
   // manual and timed hatches run the identical, continuous sequence.
@@ -128,15 +149,30 @@ export function startHatch(
   let ring: Mesh | null = null;
   let ringMaterial: MeshBasicMaterial | null = null;
   let ringBaseY = 0;
+  let ringTopY = 0;
   let ringX = 0;
   let ringZ = 0;
   let charRoot: Group | null = null;
+  /** The ground the shell was resting on — the fallback when no Surface is
+   * given, and the datum the ring's slide is measured from. */
+  let baseY = 0;
+
+  /** Ground height under a point: the Surface when there is one, otherwise
+   * the shell's own resting height (a flat stage). */
+  function groundAt(x: number, z: number): number {
+    return surface ? surface.sampleHeight(x, z) : baseY;
+  }
 
   const allSprings = [crackSpring, wobbleSpring, pieceSpring, ringSpring, charSpring];
 
   function burst(): void {
     phase = 'exit';
     const pose = egg.group;
+    // The egg group carries its ground in its own y (createEgg's baseY plus
+    // whatever is left of the entrance slide), so the shell, the ring and
+    // the character all start from the same height without anyone being
+    // told what it is.
+    baseY = pose.position.y;
 
     // Shell pieces inherit the egg's exact mid-wobble pose — the swap is
     // invisible, then the pieces drift from there.
@@ -168,10 +204,14 @@ export function startHatch(
     // A thin ink ring sliding up from the hatch point. (Formerly the one
     // CHARACTER.accent element — the accent is retired while the experience
     // is fully black and white; see TASTE §6.)
+    // hatchPoint is world space: the shell's ground plus the height up the
+    // shell the creature breaks out at. The ring's travel is measured from
+    // that ground, so it clears the same shell on a terrace as on the flat.
     const point = egg.hatchPoint();
     ringX = point.x;
     ringZ = point.z;
     ringBaseY = point.y;
+    ringTopY = baseY + EGG_HEIGHT + 1.6;
     const ringGeometry = new TorusGeometry(1.15, 0.03, 10, 72);
     ringGeometry.rotateX(Math.PI / 2);
     ringMaterial = new MeshBasicMaterial({
@@ -187,7 +227,11 @@ export function startHatch(
     // The character rises from the egg position. The wrapper owns the
     // entrance so character.update() keeps owning its own group transform.
     charRoot = new Group();
-    charRoot.position.set(pose.position.x, RISE_FROM, pose.position.z);
+    charRoot.position.set(
+      pose.position.x,
+      groundAt(pose.position.x, pose.position.z) + RISE_FROM,
+      pose.position.z,
+    );
     charRoot.scale.setScalar(SCALE_FROM);
     charRoot.add(character.group);
     scene.add(charRoot);
@@ -247,7 +291,7 @@ export function startHatch(
 
       const r = ringSpring.update(dt);
       if (ring && ringMaterial) {
-        ring.position.set(ringX, ringBaseY + r * (EGG_HEIGHT + 1.6 - ringBaseY), ringZ);
+        ring.position.set(ringX, ringBaseY + r * (ringTopY - ringBaseY), ringZ);
         const scale = 1 + 0.55 * r;
         ring.scale.set(scale, 1, scale);
         ringMaterial.opacity = 1 - r;
@@ -255,7 +299,11 @@ export function startHatch(
 
       const c = charSpring.update(dt);
       if (charRoot) {
-        charRoot.position.y = RISE_FROM * (1 - c);
+        // Sampled at the root's LIVE x/z: the creature is already walking
+        // (the burst handed it to its agent), so the ground under it is not
+        // the ground it broke out of.
+        charRoot.position.y =
+          groundAt(charRoot.position.x, charRoot.position.z) + RISE_FROM * (1 - c);
         charRoot.scale.setScalar(SCALE_FROM + (1 - SCALE_FROM) * c);
       }
 
