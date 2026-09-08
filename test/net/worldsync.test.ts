@@ -208,3 +208,63 @@ describe('a named world meets in one room', () => {
     expect(src).toMatch(/roomCode\(Math\.random\)/);
   });
 });
+
+describe('the drive message — a viewer asking, not telling', () => {
+  /**
+   * The one message that travels UP this topic. It arrives from another
+   * device over a public broker, so the parser is where it gets bounded —
+   * not the simulation, and not "later".
+   */
+
+  const drive = (extra: Record<string, unknown>) =>
+    readWorldSyncMessage({ t: 'drive', id: 'page1', who: 'creature1', ...extra });
+
+  it('reads a well-formed drive', () => {
+    expect(drive({ x: 0.5, z: -0.5, mag: 0.7 })).toEqual({
+      t: 'drive',
+      id: 'page1',
+      who: 'creature1',
+      x: 0.5,
+      z: -0.5,
+      mag: 0.7,
+    });
+  });
+
+  it('keeps the page and the creature apart', () => {
+    // `id` is the sender, `who` is what it wants moved. Conflating them
+    // would make a second stick unrepresentable and, worse, would let a
+    // page steer a creature by claiming its id.
+    const msg = drive({ x: 0, z: 1, mag: 1 });
+    expect(msg).not.toBeNull();
+    if (msg?.t !== 'drive') throw new Error('expected a drive');
+    expect(msg.id).toBe('page1');
+    expect(msg.who).toBe('creature1');
+  });
+
+  it('clamps at the door, so the simulation cannot be handed a thousand', () => {
+    const wild = drive({ x: 900, z: -900, mag: 1e6 });
+    if (wild?.t !== 'drive') throw new Error('expected a drive');
+    expect(wild.x).toBe(1);
+    expect(wild.z).toBe(-1);
+    expect(wild.mag).toBe(1);
+    const negative = drive({ x: 0, z: 0, mag: -4 });
+    if (negative?.t !== 'drive') throw new Error('expected a drive');
+    expect(negative.mag).toBe(0);
+  });
+
+  it('refuses a drive carrying anything that is not a finite number', () => {
+    // A NaN here reaches a creature's velocity, and a creature with a NaN
+    // position is gone from the world with no error anywhere.
+    expect(drive({ x: Number.NaN, z: 0, mag: 1 })).toBeNull();
+    expect(drive({ x: 0, z: Number.POSITIVE_INFINITY, mag: 1 })).toBeNull();
+    expect(drive({ x: 0, z: 0, mag: Number.NaN })).toBeNull();
+    expect(drive({ x: '1', z: 0, mag: 1 })).toBeNull();
+  });
+
+  it('refuses a drive that names no creature', () => {
+    expect(readWorldSyncMessage({ t: 'drive', id: 'page1', x: 0, z: 1, mag: 1 })).toBeNull();
+    expect(
+      readWorldSyncMessage({ t: 'drive', id: 'page1', who: '', x: 0, z: 1, mag: 1 }),
+    ).toBeNull();
+  });
+});

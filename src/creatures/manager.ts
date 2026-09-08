@@ -45,6 +45,26 @@ import { resolveName } from './naming';
  * brisker than spec pace. The panel slider starts here. */
 export const WANDER_SPEED_DEFAULT = 1.4;
 
+/**
+ * Top speed under a person's thumb, before the wander multiplier.
+ *
+ * The creature's own maximum, not a driving speed of its own: a steered
+ * creature should be the fastest version of itself and not a different
+ * thing that happens to wear its shape. It is scaled by the stick's
+ * strength, so most of the range is slower than this.
+ */
+export const DRIVE_SPEED = MAX_SPEED;
+
+/**
+ * Turn responsiveness under the stick, as an exponential time constant.
+ *
+ * Short enough that the creature answers the thumb, long enough that a
+ * flick across the well is a turn rather than a snap. Shorter than the
+ * pose follow constant because this one is answering a hand in the room,
+ * not a network.
+ */
+export const DRIVE_TURN_TAU_MS = 90;
+
 /** Practical demo guard, not a design cap (see header). */
 export const MAX_POPULATION = 96;
 
@@ -300,6 +320,14 @@ interface Slot {
   order: number;
   /** Part of the world rather than a submission — see SpawnOptions. */
   resident: boolean;
+  /**
+   * Somebody is steering this one right now (src/world/joystick.ts).
+   *
+   * A direction on the ground and a strength, not a destination and not a
+   * velocity — the creature's own speed still applies, so a driven
+   * creature moves like itself rather than like a cursor.
+   */
+  drive: { x: number; z: number; mag: number } | null;
 }
 
 export interface SpawnOptions {
@@ -422,6 +450,13 @@ export interface CreatureManager {
   followPoses(poses: readonly { id: string; x: number; z: number; heading: number }[]): number;
   /** Drop every held host pose — call on any change of role. */
   clearFollow(): void;
+  /**
+   * Steer one creature, or let go with `null`. Returns false when that id
+   * holds no living creature. See src/world/joystick.ts.
+   */
+  drive(id: string, vec: { x: number; z: number; mag: number } | null): boolean;
+  /** Ids currently being steered. */
+  driven(): string[];
   /** Live slots as the population guard sees them (see chooseEviction). */
   evictable(): { id: string; order: number; resident: boolean; phase: string }[];
   /** Live creature ids, in a stable order — the roster a host publishes. */
@@ -748,6 +783,7 @@ export function createCreatureManager(
         retireStartMs: 0,
         order: orderCounter++,
         resident: opts.resident === true,
+        drive: null,
       };
       slots.set(id, slot);
 
@@ -1027,8 +1063,24 @@ export function createCreatureManager(
               props,
               colliderGrid,
             );
-            let vx = out.vx;
-            let vz = out.vz;
+            /*
+             * A PERSON IS STEERING THIS ONE (src/world/joystick.ts).
+             *
+             * Their intent replaces the agent's chosen velocity and nothing
+             * else: soft bodies still slow it through a bush, the
+             * substepped resolve still stops it at a trunk, the gait still
+             * reads the speed it is actually travelling at. A driven
+             * creature moves like itself, not like a cursor — which is why
+             * this is a velocity substitution and not a position write.
+             *
+             * The agent still RUNS. Its timers, its wander target and its
+             * pose keep advancing under the person's hand, so letting go
+             * hands back to a creature that has been living the whole time
+             * rather than one resuming a thought from a minute ago.
+             */
+            const driven = slot.drive && slot.drive.mag > 0 ? slot.drive : null;
+            let vx = driven ? driven.x * DRIVE_SPEED * wanderSpeedMult : out.vx;
+            let vz = driven ? driven.z * DRIVE_SPEED * wanderSpeedMult : out.vz;
             const bodyR = slot.bodyR > 0 ? slot.bodyR : slot.character.radius;
             const near = gatherNear(root.position.x, root.position.z, bodyR);
 
@@ -1062,11 +1114,36 @@ export function createCreatureManager(
             body.vx = vx;
             body.vz = vz;
             body.r = bodyR;
-            aliveScratch.push({ slot, root, body, heading: out.heading });
+            /*
+             * Turning is EASED even when it is asked for directly.
+             *
+             * A thumb can reverse the stick between one frame and the next,
+             * and writing that heading straight onto the root spins the
+             * creature 180° in 16ms — a hard cut in orientation, which the
+             * motion law forbids at confidence 1.00 whether a person asked
+             * for it or not. So the intent is a target and the creature
+             * turns toward it. Exponential, so it is monotone and cannot
+             * overshoot however hard the stick is thrown.
+             */
+            let heading = out.heading;
+            if (driven) {
+              const want = Math.atan2(vx, vz);
+              heading =
+                root.rotation.y +
+                shortestAngle(root.rotation.y, want) * followFraction(dt, DRIVE_TURN_TAU_MS);
+            }
 
-            root.rotation.y = out.heading;
+            aliveScratch.push({ slot, root, body, heading });
+
+            root.rotation.y = heading;
             if (out.emote) slot.character.emote(out.emote);
-            if (out.pose !== slot.pose) {
+            if (driven && slot.pose === 'sleep') {
+              // Being walked wakes you. Leaving a driven creature asleep
+              // meant closed eyes on a creature crossing the field, which
+              // reads as a bug in the expression rather than a pose.
+              slot.character.setExpression('neutral');
+              slot.pose = null;
+            } else if (!driven && out.pose !== slot.pose) {
               // Posture → expression through the character's public surface:
               // sleep closes the eyes; leaving it drifts them back open.
               if (out.pose === 'sleep') slot.character.setExpression('sleepy');
@@ -1205,6 +1282,36 @@ export function createCreatureManager(
       for (const slot of slots.values()) {
         out.push({ id: slot.id, order: slot.order, resident: slot.resident, phase: slot.phase });
       }
+      return out;
+    },
+
+    /**
+     * Somebody is steering one creature — or has let go (`null`).
+     *
+     * A direction on the GROUND plus a strength, already mapped out of
+     * screen space by the caller (src/world/joystick.ts), because the
+     * caller is the one that knows where the camera is pointing.
+     *
+     * Returns false when that id holds no living creature, so a stick
+     * whose creature has not hatched yet, or has been retired under it,
+     * can say so rather than steering nothing in silence.
+     *
+     * Only the page that is SIMULATING acts on this. On a viewer the
+     * creature is placed by the host's poses and a local drive would be
+     * overwritten within a frame or two — which is why the intent is
+     * published rather than applied (src/net/worldsync.ts).
+     */
+    drive(id: string, vec: { x: number; z: number; mag: number } | null): boolean {
+      const slot = slots.get(id);
+      if (!slot || slot.phase !== 'alive') return false;
+      slot.drive = vec && vec.mag > 0 ? { x: vec.x, z: vec.z, mag: vec.mag } : null;
+      return true;
+    },
+
+    /** Every creature currently under somebody's thumb. */
+    driven(): string[] {
+      const out: string[] = [];
+      for (const slot of slots.values()) if (slot.drive) out.push(slot.id);
       return out;
     },
 
