@@ -33,8 +33,15 @@ export const SESSION_SCHEMA = 'refworld.session';
 /**
  * Schema version. Bump on any change that an older reader could not honour;
  * `parseSessionLog` refuses versions it does not know.
+ *
+ * 2 — `drive`, `paint` and `keep` (2026-09-09). Additive kinds, but the bump
+ * is NOT optional: `isEvent` below refuses an unrecognised `k`, and one bad
+ * event fails the WHOLE file, so a v1 reader handed a log with a drive in it
+ * would refuse it as junk rather than as a newer format. The version says
+ * which of those two it is. Reading DOWN still works — a v1 log parses here
+ * exactly as it always did.
  */
-export const SESSION_SCHEMA_VERSION = 1;
+export const SESSION_SCHEMA_VERSION = 2;
 
 // ── event kinds ─────────────────────────────────────────────────────────────
 
@@ -49,6 +56,14 @@ export type DrawingSource =
 
 /** What made a creature emote. */
 export type EmoteSource = 'phone' | 'key' | 'panel';
+
+/** What a person chose to keep, in the words the handset shows them
+ * (src/phone/keepui.ts labels them `photo`, `3d model`, `link`). */
+export type KeepAction = 'photo' | 'model' | 'link';
+
+/** Where a keep came from. Only a handset can save today; the field exists
+ * so a later one (an operator export, say) does not need a new kind. */
+export type KeepSource = 'phone';
 
 /** Why an egg opened: its own timer, or a person/preset forcing it. */
 export type HatchCause = 'timer' | 'forced';
@@ -142,6 +157,74 @@ export interface OperatorEvent extends EventBase {
   on?: boolean;
 }
 
+/**
+ * Somebody steered a creature: a thumb on the stick, or a handset's intent
+ * applied by the page that simulates (src/main.ts, src/net/worldsync.ts).
+ *
+ * NOT per-frame state, and this is the one kind where that has to be argued
+ * rather than assumed. A stick pushes at the display's rate; what is
+ * RECORDED is the intent when it changes — the recorder quantises the vector
+ * and rate-caps it per creature (src/session/recorder.ts) — so a minute of
+ * steering is a handful of events and not 3600. The creature's path is not
+ * in the log at all: it is re-derived by re-driving the same intents at the
+ * same offsets, exactly as every other kind is.
+ */
+export interface DriveEvent extends EventBase {
+  k: 'drive';
+  /** The creature being steered — the id it was spawned under. */
+  id: string;
+  /** Ground-space direction, x. Absent at rest. */
+  ax?: number;
+  /** Ground-space direction, z. Absent at rest. */
+  az?: number;
+  /** 0 is the release — the hand came off the stick. */
+  mag: number;
+}
+
+/**
+ * One dab of the terrain brush, or the tap that cleared the map
+ * (src/dev/paint.ts, envpaint's port plan §5 step 6).
+ *
+ * One event per STAMP, not per stroke: a stroke replays because every dab
+ * carries its own place, size and seed. `tool: 'clear'` carries no geometry.
+ */
+export interface PaintEvent extends EventBase {
+  k: 'paint';
+  /** `raise` | `lower` | `flatten` | `smooth`, or `clear` for the whole map. */
+  tool: string;
+  /** Ground-space centre of the dab — world units, the same space `egg`
+   * records, converted from the brush's uv at the seam. Absent on `clear`. */
+  x?: number;
+  z?: number;
+  /** Radius in world units. Absent on `clear`. */
+  r?: number;
+  /** Per-dab amount, already scaled by the brush. */
+  strength?: number;
+  hardness?: number;
+  /** The stamp mode actually used — a tool erases and alt-smooths, so the
+   * tool id alone does not say what the dab did. */
+  mode?: string;
+  /** The dab's own rim seed, so a replayed stroke has the same edge. */
+  seed?: number;
+  /** `flatten` only: the height the stroke levelled toward. */
+  flattenTo?: number;
+}
+
+/**
+ * Somebody kept their creature — a photo, a 3d model, or a link
+ * (src/phone/keepui.ts). Informational: it changes nothing in the world, and
+ * replay ignores it exactly as it ignores `egg`. It is in the log because
+ * "somebody wanted to take this home" is the thing a session is judged on
+ * afterwards, and nothing else in the record says it happened.
+ */
+export interface KeepEvent extends EventBase {
+  k: 'keep';
+  /** The drawer id — whose creature was saved. */
+  id: string;
+  action: KeepAction;
+  source: KeepSource;
+}
+
 /** A world-level control an operator changed — weather, time of day, density,
  * grain, paper colour. Discrete samples only: nothing here is read per frame. */
 export interface WorldEvent extends EventBase {
@@ -158,6 +241,9 @@ export type SessionEvent =
   | HatchEvent
   | RetireEvent
   | EmoteEvent
+  | DriveEvent
+  | PaintEvent
+  | KeepEvent
   | OperatorEvent
   | WorldEvent;
 
@@ -202,6 +288,9 @@ const EVENT_KINDS = new Set<string>([
   'hatch',
   'retire',
   'emote',
+  'drive',
+  'paint',
+  'keep',
   'operator',
   'world',
 ]);
@@ -233,6 +322,15 @@ function isEvent(value: unknown): value is SessionEvent {
   if (kind === 'drawing') return typeof rec['id'] === 'string' && isStrokeList(rec['strokes']);
   if (kind === 'world') return typeof rec['field'] === 'string';
   if (kind === 'operator') return typeof rec['action'] === 'string';
+  // A dab is addressed by its tool, not by a creature id — the map is what
+  // it acts on. `clear` is the one that carries no geometry at all.
+  if (kind === 'paint') return typeof rec['tool'] === 'string';
+  if (kind === 'drive') {
+    return typeof rec['id'] === 'string' && typeof rec['mag'] === 'number';
+  }
+  if (kind === 'keep') {
+    return typeof rec['id'] === 'string' && typeof rec['action'] === 'string';
+  }
   return typeof rec['id'] === 'string';
 }
 

@@ -200,8 +200,11 @@ describe('the paint skill is wired the way the port plan asks', () => {
   });
 
   it('registers raise, lower, flatten and smooth on the height layer, hotkeys 1-4', () => {
+    // Each one is built through `recorded(id, …)` now — the helper that
+    // records the dab and then stamps it — so the id is its first argument
+    // rather than a literal field.
     for (const id of ['raise', 'lower', 'flatten', 'smooth']) {
-      expect(source, id).toContain(`id: '${id}'`);
+      expect(source, id).toContain(`recorded('${id}'`);
     }
     expect(source).toContain("const TOOL_KEYS = ['1', '2', '3', '4'] as const;");
     expect(source).toContain('layer: HEIGHT_LAYER');
@@ -217,8 +220,17 @@ describe('the paint skill is wired the way the port plan asks', () => {
     expect(end.slice(0, 400)).toContain('rebuildNow()');
   });
 
-  it('leaves a marked hook where the session paint event goes (plan step 6)', () => {
+  it('records one session event per dab, on the stamp and not on the stroke', () => {
+    // Plan step 6, wired (docs/SESSION.md §paint). It has to hang off the
+    // per-dab `onStamp`: the Brush emits `stroke` once per BATCH of dabs and
+    // hands it no op, so a stroke-level hook could not say where anything
+    // landed.
     expect(source).toContain('session hook');
-    expect(source).toContain("k: 'paint'");
+    expect(source).toContain('const recordStamp = (');
+    expect(source).toContain('handles.session?.paint(');
+    expect(source).toContain('onStamp: (_ctx: unknown, op: StampOp): void => {');
+    // The clear, and the replay seam the world's driver reaches for.
+    expect(source).toContain("tool: 'clear'");
+    expect(source).toContain('applyPaint');
   });
 });

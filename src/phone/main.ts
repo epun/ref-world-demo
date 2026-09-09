@@ -433,6 +433,12 @@ async function boot(): Promise<void> {
           session.sendEmote(emote);
           uplink?.send(emote);
         },
+        // A save, told to the world so the session log records it
+        // (docs/SESSION.md §keep). One-way and unawaited: the file is
+        // already on the handset by now, and with no uplink — an
+        // installation phone, a page with no mqtt — the optional chain
+        // drops it. A save is never made to wait on the wire.
+        onKeep: (action) => uplink?.keep(action),
       });
       if (lastPose) handle.setPose(lastPose);
       if (lastRoster) handle.setRoster(lastRoster);

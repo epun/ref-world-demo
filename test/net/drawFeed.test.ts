@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
   feedDrawingToStrokes,
   feedStrokeToStroke,
+  isKeepAction,
   normalizeDrawing,
 } from '../../src/net/drawFeed';
+import { readKeepMessage } from '../../src/net/phoneLink';
 
 describe('feedStrokeToStroke', () => {
   it('converts bare [x, y] points to widthScale-1 triples', () => {
@@ -97,5 +99,35 @@ describe('normalizeDrawing', () => {
 describe('feedDrawingToStrokes', () => {
   it('handles a missing strokes array', () => {
     expect(feedDrawingToStrokes({ strokes: undefined as never })).toEqual([]);
+  });
+});
+
+/**
+ * One topic carries drawings, emotes, hellos and now keeps, told apart by
+ * `type`. The routing has to be exact in both directions: a keep must not be
+ * read as a drawing (it has no strokes and would be dropped as junk anyway),
+ * and nothing else may be read as a keep.
+ */
+describe('readKeepMessage', () => {
+  it('reads a keep off the room topic', () => {
+    expect(readKeepMessage({ type: 'keep', from: 'd1', action: 'photo' }, isKeepAction)).toEqual({
+      from: 'd1',
+      action: 'photo',
+    });
+  });
+
+  it('refuses an action the protocol does not name', () => {
+    // `picture` is keepui's own older key for the photo row; the wire
+    // carries the label the person reads, and this is the guard that says so.
+    expect(readKeepMessage({ type: 'keep', from: 'd1', action: 'picture' }, isKeepAction)).toBeNull();
+    expect(isKeepAction('picture')).toBe(false);
+    expect(isKeepAction('photo')).toBe(true);
+  });
+
+  it('refuses a keep with nobody attached, and every other message shape', () => {
+    expect(readKeepMessage({ type: 'keep', action: 'link' }, isKeepAction)).toBeNull();
+    expect(readKeepMessage({ type: 'emote', from: 'd1', emote: 'wave' }, isKeepAction)).toBeNull();
+    expect(readKeepMessage({ id: 'x', strokes: [] }, isKeepAction)).toBeNull();
+    expect(readKeepMessage(null, isKeepAction)).toBeNull();
   });
 });

@@ -38,6 +38,19 @@ export const EMOTE_NAMES: readonly EmoteName[] = [
   'wave',
 ] as const;
 
+/**
+ * What a person chose to keep, in the words the handset shows them
+ * (src/phone/keepui.ts labels the rows `photo`, `3d model`, `link`).
+ *
+ * The keepui's own internal key for the first one is `picture`, which is
+ * older than the label; the wire and the session log carry what the person
+ * read, and the one seam that knows both maps between them
+ * (src/phone/screens/alive.ts).
+ */
+export type KeepAction = 'photo' | 'model' | 'link';
+
+export const KEEP_ACTIONS: readonly KeepAction[] = ['photo', 'model', 'link'] as const;
+
 /** Lifecycle of one player's character, as the phone sees it. */
 export type PlayerPhase = 'draw' | 'egg' | 'hatching' | 'alive';
 
@@ -64,7 +77,24 @@ export interface HatchMsg {
   t: 'hatch';
 }
 
-export type PhoneToWorld = DrawingMsg | EmoteMsg | HatchMsg;
+/**
+ * Somebody saved their creature — a photo, a model, or a link.
+ *
+ * It asks the world for NOTHING: the save already happened on the handset,
+ * and this is the world being told so the session log has it (docs/SESSION.md
+ * §keep). Same shape family as an emote, and it travels the same way — on the
+ * relay when one is deployed, and today on the room's mqtt topic
+ * (src/net/phoneLink.ts).
+ */
+export interface KeepMsg {
+  t: 'keep';
+  /** The drawer id. Carried explicitly because the mqtt path has no relay
+   * envelope to put a `from` in; on the relay it is redundant and omitted. */
+  id?: string;
+  action: KeepAction;
+}
+
+export type PhoneToWorld = DrawingMsg | EmoteMsg | HatchMsg | KeepMsg;
 
 // ── Messages: world → relay → phone ─────────────────────────────────────────
 

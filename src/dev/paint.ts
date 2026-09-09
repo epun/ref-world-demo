@@ -24,15 +24,17 @@
  * exactly `WorldHandles.setTerrain({})`.
  *
  * WHAT IS NOT HERE YET (envpaint docs/port-meridian.md §5): water levels and
- * basins (step 4), forest / mountain / clearing weights (step 5), and the
- * `paint` session event, "save map" and the build-time bake (step 6). One
- * marked hook comment below says where the session event goes.
+ * basins (step 4), forest / mountain / clearing weights (step 5), and — of
+ * step 6 — "save map" and the build-time bake. The `paint` SESSION EVENT of
+ * that step is now wired: one event per dab, through each tool's `onStamp`
+ * (docs/SESSION.md §paint), plus one for the tap that clears the map. There
+ * is no "save map" action to record; when there is one, it records here.
  */
 
 import type { Camera, Object3D, Scene, WebGLRenderer } from 'three';
 import { Raycaster, Vector2, Vector3 } from 'three';
 import type { GhostFolder, GhostPanelUi } from 'ghost-panel';
-import type { BrushHit, StampOp, Tool } from 'envpaint/core';
+import type { BrushHit, StampMode, StampOp, Tool } from 'envpaint/core';
 import { Brush, History, PaintLayer, PaintLayers } from 'envpaint/core';
 import { createToolStrip, type ToolStrip } from 'envpaint/ui';
 import { SURFACE } from '../taste/tokens';
@@ -46,6 +48,7 @@ import {
   PAINTED_RES,
   PAINTED_SIZE,
 } from '../world/painted';
+import type { PaintEvent, SessionRecorder } from '../session';
 import type { DevSkillMeta } from './skills-meta';
 
 /** The one layer this step paints: a terrain offset in world units. */
@@ -107,6 +110,13 @@ export interface PaintHandles {
   /** The presentation tour. Painting takes the camera off it — a stroke
    * cannot land where the ground is sliding out from under it. */
   tour?: { setMode(mode: 'manual' | 'tour'): void; mode(): 'manual' | 'tour' };
+  /**
+   * The world's session recorder, narrowed to the one method this skill
+   * uses (src/session/, docs/SESSION.md). Absent in a build with no
+   * recorder wired, and then the brush simply paints unrecorded — a dev
+   * tool must never fail because the log is missing.
+   */
+  session?: Pick<SessionRecorder, 'paint'>;
 }
 
 /** Live handles the headless paint smoke drives (scratch/paint-smoke.mjs),
@@ -122,6 +132,13 @@ export interface PaintProbe {
   range(): { min: number; max: number };
   /** Force the world to re-cut itself now. */
   rebuild(): void;
+  /**
+   * Re-apply one recorded `paint` event — the replay seam
+   * (src/main.ts `replayDriver.paint`, docs/SESSION.md §4). Dabs land
+   * through the same layer stamp a live one does and rebuild on the same
+   * throttle, so a replayed stroke grows the hill the way the stroke did.
+   */
+  applyPaint(event: PaintEvent): void;
 }
 
 /**
@@ -283,21 +300,65 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
   // target is instead the painted height under the first hit of the stroke,
   // which is what the label promises: level this ground to where I started.
   let flattenTo = 0;
+
+  /**
+   * ── session hook (envpaint docs/port-meridian.md §5 step 6) ──────────────
+   *
+   * ONE `paint` event per STAMP, which is why every tool carries an
+   * `onStamp` now: the Brush emits `stroke` once per batch of dabs, so the
+   * stroke event never knew where the dabs were — the per-dab op does, and
+   * `onStamp` is the only place it is handed out.
+   *
+   * The dab is recorded in WORLD units (x, z, r), the space `egg` already
+   * records in, converted from the brush's uv here at the seam rather than
+   * leaving a second coordinate system in the log. `mode` rather than the
+   * tool alone, because a tool erases with ctrl and smooths with alt and
+   * the label would not say what the dab did. `seed` because every dab
+   * randomises its own rim, and a replayed stroke with a different rim is a
+   * different stroke.
+   *
+   * NOT recorded: the four rim-shape settings (edgeNoise, edgeScale,
+   * spatter, aspect). They are brush state, identical across every dab of a
+   * stroke, and a replay reads them off the brush it is stamping through
+   * (`applyPaint` below) — four numbers a dab, thousands of dabs, to say
+   * the same thing the panel already says.
+   */
+  const recordStamp = (tool: string, op: StampOp): void => {
+    handles.session?.paint({
+      tool,
+      x: (op.u - 0.5) * PAINTED_SIZE,
+      z: (op.v - 0.5) * PAINTED_SIZE,
+      r: op.radius * PAINTED_SIZE,
+      ...(op.strength === undefined ? {} : { strength: op.strength }),
+      ...(op.hardness === undefined ? {} : { hardness: op.hardness }),
+      ...(op.mode === undefined ? {} : { mode: op.mode }),
+      ...(op.seed === undefined ? {} : { seed: op.seed }),
+      ...(op.mode === 'flatten' ? { flattenTo } : {}),
+    });
+  };
+
+  /** A tool that records its dab and then stamps it. `flatten` also carries
+   * the target the stroke is levelling toward — see the note below. */
+  const recorded = (id: string, rest: Omit<Tool, 'id' | 'label' | 'onStamp'>): Tool => ({
+    ...rest,
+    id,
+    label: id,
+    onStamp: (_ctx: unknown, op: StampOp): void => {
+      recordStamp(id, op);
+      layer.stamp(op.mode === 'flatten' ? { ...op, flattenTo } : op);
+    },
+  });
+
   const tools: Tool[] = [
-    { id: 'raise', label: 'raise', key: TOOL_KEYS[0], mode: 'raise', eraseMode: 'lower' },
-    { id: 'lower', label: 'lower', key: TOOL_KEYS[1], mode: 'lower', eraseMode: 'raise' },
-    {
-      id: 'flatten',
-      label: 'flatten',
+    recorded('raise', { key: TOOL_KEYS[0], mode: 'raise', eraseMode: 'lower' }),
+    recorded('lower', { key: TOOL_KEYS[1], mode: 'lower', eraseMode: 'raise' }),
+    recorded('flatten', {
       key: TOOL_KEYS[2],
       mode: 'flatten',
       altMode: 'smooth',
       eraseMode: 'smooth',
-      onStamp: (_ctx: unknown, op: StampOp): void => {
-        layer.stamp(op.mode === 'flatten' ? { ...op, flattenTo } : op);
-      },
-    },
-    { id: 'smooth', label: 'smooth', key: TOOL_KEYS[3], mode: 'smooth', eraseMode: 'smooth' },
+    }),
+    recorded('smooth', { key: TOOL_KEYS[3], mode: 'smooth', eraseMode: 'smooth' }),
   ];
   for (const tool of tools) {
     brush.registerTool({ ...tool, layer: HEIGHT_LAYER, color: SURFACE.ink });
@@ -340,14 +401,9 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
     rebuildSoon();
   });
   brush.on('stroke', () => {
-    // ── session hook (envpaint docs/port-meridian.md §5 step 6) ─────────────
-    // ONE `paint` event per stamp goes here, not per batch: a stroke replays
-    // exactly because every dab carries its own seed
-    // ({ k: 'paint', tool, u, v, radius, strength, hardness, mode, dir,
-    //   edgeNoise, edgeScale, spatter, aspect, seed }). It needs the per-dab
-    // op, which `stroke` does not carry — the Brush emits once per batch of
-    // dabs — so landing it means an `onStamp` on every tool, or an upstream
-    // event. Deliberately not wired in this PR (docs/PLAN.md §7).
+    // The session event is NOT here: `stroke` fires once per batch of dabs
+    // and carries no op, so it cannot say where anything landed. It is on
+    // each tool's `onStamp` instead — see `recordStamp` above.
     rebuildSoon();
   });
   brush.on('strokeend', () => {
@@ -493,18 +549,63 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
     id: 'paint-spatter',
     onChange: (v) => brush.setShape({ spatter: v }),
   });
-  folder.addButton('clear map', () => {
+  const clearMap = (): void => {
     clearPaintedMap(map);
     layer.markDirtyRect(0, 0, PAINTED_RES - 1, PAINTED_RES - 1);
     history.clear();
     rebuildNow();
+  };
+  folder.addButton('clear map', () => {
+    // An action, so it is in the record: without it a replay would keep
+    // every dab of a map somebody threw away.
+    handles.session?.paint({ tool: 'clear' });
+    clearMap();
   });
   folder.addInfo('', 'paint-range');
   refreshReadout();
 
   // ── the smoke handle ──────────────────────────────────────────────────────
+  /**
+   * Replay one recorded dab (docs/SESSION.md §4).
+   *
+   * Straight to the layer, like a live stamp, and through the SAME rebuild
+   * throttle — a replayed stroke has to grow the hill in increments the way
+   * the stroke did, and a rebuild per dab would be ~300ms of re-cutting per
+   * event. The rim settings come off the brush as it stands (see
+   * `recordStamp`); the recorded seed makes the rim itself the same.
+   *
+   * Unrecorded on purpose: a replayed stamp does not push onto the undo
+   * stack. Ctrl+z is for the hand that is painting, and a log playing back
+   * is not one.
+   */
+  const applyPaint = (event: PaintEvent): void => {
+    if (event.tool === 'clear') {
+      clearMap();
+      return;
+    }
+    if (event.x === undefined || event.z === undefined || event.r === undefined) return;
+    const { u, v } = uvOf(event.x, event.z);
+    if (event.mode === 'flatten' && event.flattenTo !== undefined) flattenTo = event.flattenTo;
+    layer.stamp({
+      u,
+      v,
+      radius: event.r / PAINTED_SIZE,
+      ...(event.strength === undefined ? {} : { strength: event.strength }),
+      ...(event.hardness === undefined ? {} : { hardness: event.hardness }),
+      ...(event.mode === undefined ? {} : { mode: event.mode as StampMode }),
+      ...(event.seed === undefined ? {} : { seed: event.seed }),
+      ...(event.mode === 'flatten' ? { flattenTo } : {}),
+      edgeNoise: brush.settings.edgeNoise,
+      edgeScale: brush.settings.edgeScale,
+      spatter: brush.settings.spatter,
+      aspect: brush.settings.aspect,
+    });
+    rebuildSoon();
+  };
+
   const probe: PaintProbe = {
     brush,
+    applyPaint,
     setPainting: (on: boolean): void => {
       folder.get('paint-on')?.setValue?.(on);
       setPainting(on);

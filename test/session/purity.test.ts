@@ -42,9 +42,14 @@ describe('src/session purity', () => {
       const body = readFileSync(join(DIR, file), 'utf8');
       const imports = [...body.matchAll(/from '([^']+)'/g)].map((m) => m[1]!);
       for (const spec of imports) {
-        // Only pure siblings: shape types and this directory's own modules.
+        // Only pure siblings: shape types, the taste tokens, and this
+        // directory's own modules. `src/taste/tokens.ts` is a file of
+        // constants with no imports of its own — no dom, no three.js, no
+        // clock — and it is where every duration in this project has to come
+        // from (CLAUDE.md: "durations come from motion tokens, never
+        // literals"), which the drive rate cap needs.
         expect(
-          spec.startsWith('./') || spec === '../shape/types',
+          spec.startsWith('./') || spec === '../shape/types' || spec === '../taste/tokens',
           `${file} imports ${spec}`,
         ).toBe(true);
       }
