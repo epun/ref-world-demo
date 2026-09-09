@@ -19,12 +19,14 @@
  * a `position: fixed` child of a transformed box is not fixed to the
  * viewport at all.
  *
- * Marks: a wavered floppy — outer body, label window, shutter — and a
- * wavered hairline border round the popover with a rule under the title
- * and between the rows. Icon, ruleLine, border, and nothing else
- * (TASTE §4). The popover's ground is `SURFACE.ground`, which is the paper
- * the whole flow is painted on and not a fill: no shadow, no tint, no
- * card. Same hand as the minimap's border, the world link's button and the
+ * Marks: a wavered diskette — cut-cornered body, shutter and its window,
+ * label strip — and a wavered hairline border round the popover with a
+ * rule under the title and between the rows. Icon, ruleLine, border, and
+ * nothing else (TASTE §4). The popover's ground is `SURFACE.ground`, which
+ * is the paper the whole flow is painted on and not a fill, and it is the
+ * BORDER PATH'S OWN FILL so that it cannot reach past the line that bounds
+ * it: no shadow, no tint, no card, and no straight edge outside the wobble.
+ * Same hand as the minimap's border, the world link's button and the
  * stick's rings, so this reads as part of the same object.
  *
  * ── the tap has to reach the phone ──────────────────────────────────────
@@ -48,7 +50,8 @@
  */
 
 import { MOTION, SURFACE, WORLD } from '../taste/tokens';
-import { wavyBorderPath, wavyBorderPoints, type BorderPoint } from './minimap';
+import { BORDER_WAVER, wavyBorderPath, wavyBorderPoints, type BorderPoint } from './minimap';
+import { hash01 } from './seed';
 import { keepUrl, keepsakeFilename } from './keeplink';
 import { deliver, exportGlb, renderKeepsake } from './keepsake';
 import type { StrokeList } from '../shape/types';
@@ -202,8 +205,16 @@ function ensureStyle(): void {
 
 /*
  * The popover. Paper inside a wavering hairline, right-aligned under the
- * mark. NOT a panel: the background is the ground this whole flow is
- * painted on, and there is no shadow and no tint anywhere in it (TASTE §4).
+ * mark. NOT a panel: the ground is the paper this whole flow is painted on,
+ * and there is no shadow and no tint anywhere in it (TASTE §4).
+ *
+ * THE ELEMENT PAINTS NO BACKGROUND. The paper is the wavered path's own
+ * fill — one shape, filled and stroked in the same pass — because a
+ * rectangular element background behind a wobbly outline shows its four
+ * straight edges outside the wobble, which is exactly what it looked like
+ * on a handset (user report, 2026-09-09: *"the fill … should not have any
+ * parts that extend beyond the border … so that we just have fill within
+ * the border"*). Matte, one flat value, nothing outside the outline.
  */
 .keep-menu {
   position: fixed;
@@ -213,7 +224,8 @@ function ensureStyle(): void {
   width: min(52vw, 216px);
   box-sizing: border-box;
   padding: 3vw 4vw;
-  background: ${SURFACE.ground};
+  /* No background here — see the note above. The paper is the path's fill. */
+  background: transparent;
   color: ${WORLD.ink};
   font-family: "helvetica neue", helvetica, arial, sans-serif;
   font-weight: 400;
@@ -241,7 +253,9 @@ function ensureStyle(): void {
   pointer-events: none;
 }
 .keep-menu-border path {
-  fill: none;
+  /* Fill AND stroke, on one path: the paper can then not reach past the
+     line that bounds it, at any size, on any handset. */
+  fill: ${SURFACE.ground};
   stroke: ${WORLD.ink};
   stroke-width: 1.25;
   stroke-linejoin: round;
@@ -290,7 +304,11 @@ function ensureStyle(): void {
 const BODY_SEED = 12;
 const LABEL_SEED = 63;
 const SHUTTER_SEED = 27;
+const SLOT_SEED = 45;
 const MENU_SEED = 84;
+
+/** The shutter's window is ten units wide; the full waver would close it. */
+const SLOT_WAVER = 0.5;
 
 function svg(width: number, height: number, stretch: boolean): SVGSVGElement {
   const el = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -307,42 +325,113 @@ function path(d: string): SVGPathElement {
 }
 
 /**
- * A wavering rectangle anywhere in a box.
+ * A wavering closed loop through any corners at all.
  *
  * `wavyBorderPoints` only ever draws its rectangle at the origin, and a
- * floppy is three rectangles inside one another. Same generator, same
- * seeded hash, same midpoint smoothing on the way out — translated.
+ * diskette is a rectangle with a corner cut off plus three smaller ones
+ * inside it. Same generator, same seeded hash, same midpoint smoothing on
+ * the way out — sampled along an arbitrary polygon instead of four fixed
+ * edges, so the cut corner is part of the loop rather than a second path
+ * laid over it.
+ *
+ * The corners are skipped by `CORNER_MARGIN` exactly as the rectangle's
+ * are: the gap is what rounds them off when the loop is smoothed, which is
+ * where the drawn-by-hand corner comes from.
  */
-function wavyRect(
+function wavyLoop(
+  corners: readonly (readonly [number, number])[],
+  seed: number,
+  perEdge: number,
+  waver: number = BORDER_WAVER,
+): BorderPoint[] {
+  const points: BorderPoint[] = [];
+  let k = 0;
+  for (let i = 0; i < corners.length; i++) {
+    const [x0, y0] = corners[i]!;
+    const [x1, y1] = corners[(i + 1) % corners.length]!;
+    const dx = x1 - x0;
+    const dy = y1 - y0;
+    const len = Math.hypot(dx, dy) || 1;
+    // The edge normal, so the waver is a wobble of the LINE rather than a
+    // wander of its endpoints — the same offset direction the rectangle
+    // generator uses on each of its four sides.
+    const nx = -dy / len;
+    const ny = dx / len;
+    for (let j = 0; j < perEdge; j++) {
+      const t = CORNER_MARGIN + (j / Math.max(1, perEdge - 1)) * (1 - 2 * CORNER_MARGIN);
+      const off = (hash01(k * 12.9898 + seed * 78.233) - 0.5) * 2 * waver;
+      points.push({ x: x0 + dx * t + nx * off, y: y0 + dy * t + ny * off });
+      k++;
+    }
+  }
+  return points;
+}
+
+/** Fraction of each edge left clear at the corners — mirrors the rectangle
+ * generator's own, so the two hands match. */
+const CORNER_MARGIN = 0.07;
+
+/** The four corners of a box, for `wavyLoop`. */
+function boxCorners(
   x0: number,
   y0: number,
   x1: number,
   y1: number,
-  seed: number,
-  perEdge: number,
-): BorderPoint[] {
-  return wavyBorderPoints(x1 - x0, y1 - y0, 0, seed, perEdge).map((p) => ({
-    x: p.x + x0,
-    y: p.y + y0,
-  }));
+): readonly (readonly [number, number])[] {
+  return [
+    [x0, y0],
+    [x1, y0],
+    [x1, y1],
+    [x0, y1],
+  ];
 }
 
 /**
  * The floppy, as strokes.
  *
  * Everybody's save glyph, drawn by this project's hand instead of taken
- * from an icon set: an outer body, the shutter at the top, and the label
- * window at the bottom — the one filled shape, in the shell's own
- * paper-light. Nothing rectilinear survives the waver and the smoothing
- * (TASTE §2.5); it is a drawn floppy, not an engineered one.
+ * from an icon set. Four marks, and each one is a thing a diskette
+ * actually has (user ask, 2026-09-09: *"the icon for the floppy save
+ * should look more like a floppy disk"* — the first pass was a square with
+ * two rectangles in it, which is a diskette only if you already know):
+ *
+ *   body      square with the TOP-RIGHT CORNER CUT OFF. The one asymmetry
+ *             on the object, and the whole reason you can tell at a glance
+ *             which way up it goes — it is what a person recognises before
+ *             they have read any of the rest;
+ *   shutter   the metal slide across the top…
+ *   slot      …with its window in it, offset to one side as the real one is;
+ *   label     the paper strip on the lower half — the one paper-light
+ *             shape on the mark, in the same value the device shell's own
+ *             body is filled with.
+ *
+ * Nothing rectilinear survives the waver and the smoothing (TASTE §2.5);
+ * it is a drawn diskette, not an engineered one. The slot wavers less than
+ * everything else for the plain reason that it is ten units wide and a
+ * full-amplitude wobble would close it.
  */
 function floppy(): SVGSVGElement {
   const el = svg(100, 100, false);
-  const body = path(wavyBorderPath(wavyRect(12, 14, 88, 86, BODY_SEED, 6)));
-  const label = path(wavyBorderPath(wavyRect(24, 54, 76, 80, LABEL_SEED, 5)));
+  const body = path(
+    wavyBorderPath(
+      wavyLoop(
+        [
+          [12, 14],
+          [70, 14],
+          [88, 32],
+          [88, 86],
+          [12, 86],
+        ],
+        BODY_SEED,
+        5,
+      ),
+    ),
+  );
+  const shutter = path(wavyBorderPath(wavyLoop(boxCorners(30, 20, 68, 43), SHUTTER_SEED, 4)));
+  const slot = path(wavyBorderPath(wavyLoop(boxCorners(55, 25, 64, 38), SLOT_SEED, 3, SLOT_WAVER)));
+  const label = path(wavyBorderPath(wavyLoop(boxCorners(24, 54, 76, 80), LABEL_SEED, 5)));
   label.setAttribute('data-fill', 'paper');
-  const shutter = path(wavyBorderPath(wavyRect(36, 20, 64, 44, SHUTTER_SEED, 4)));
-  el.append(body, label, shutter);
+  el.append(body, shutter, slot, label);
   return el;
 }
 

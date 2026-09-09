@@ -118,7 +118,7 @@ describe('the popover is paper inside a hairline, and slides', () => {
   it('is paper and a border and nothing else — no card, no shadow, no tint', () => {
     // TASTE §4: icon + ruleLine + border. The ground is the paper the whole
     // flow is painted on; the rules and the wavered outline are the marks.
-    expect(src()).toMatch(/\.keep-menu \{[\s\S]{0,900}?background: \$\{SURFACE\.ground\}/);
+    expect(src()).toMatch(/\.keep-menu \{[\s\S]{0,900}?background: transparent/);
     expect(src()).not.toMatch(/box-shadow|filter: drop-shadow|backdrop-filter/);
     expect(src()).not.toMatch(/border-radius/);
     expect(src()).toMatch(/border-bottom: 1px solid \$\{WORLD\.ink\}/);
@@ -128,15 +128,38 @@ describe('the popover is paper inside a hairline, and slides', () => {
     expect(src()).toMatch(/wavyBorderPath\(wavyBorderPoints\(100, 100, 2, MENU_SEED, 10\)\)/);
   });
 
-  it('draws the floppy as strokes, with one paper-light label window', () => {
+  it('fills the WAVERED SHAPE, never a rectangle behind it', () => {
+    // User report, 2026-09-09: *"the fill for the sub menu … should not have
+    // any parts that extend beyond the border"*. A `background` on the
+    // element is a rectangle, and a rectangle behind a wobbly outline shows
+    // its four straight edges outside the wobble. One path, filled and
+    // stroked, cannot: the paper ends exactly where the line is.
+    expect(src()).toMatch(
+      /\.keep-menu-border path \{[\s\S]{0,260}?fill: \$\{SURFACE\.ground\}[\s\S]{0,80}?stroke: \$\{WORLD\.ink\}/,
+    );
+    // …and nothing rounds a rectangle off as a stand-in for the shape.
+    expect(src()).not.toMatch(/border-radius/);
+  });
+
+  it('draws a DISKETTE — cut corner, shutter, window, label', () => {
+    // User ask, 2026-09-09: *"the icon for the floppy save should look more
+    // like a floppy disk"*. The first pass was a square with two rectangles
+    // in it, which is a diskette only if you already know.
     expect(src()).toMatch(/function floppy\(\)/);
-    // body, label, shutter — three wavered rectangles, no icon font and no
-    // borrowed glyph.
-    expect(src()).toMatch(/const body = path\(wavyBorderPath\(wavyRect\(/);
-    expect(src()).toMatch(/const label = path\(wavyBorderPath\(wavyRect\(/);
-    expect(src()).toMatch(/const shutter = path\(wavyBorderPath\(wavyRect\(/);
+    expect(src()).toMatch(/const body = path\(/);
+    expect(src()).toMatch(/const shutter = path\(wavyBorderPath\(wavyLoop\(boxCorners\(/);
+    expect(src()).toMatch(/const slot = path\(wavyBorderPath\(wavyLoop\(boxCorners\(/);
+    expect(src()).toMatch(/const label = path\(wavyBorderPath\(wavyLoop\(boxCorners\(/);
+    // The body is a FIVE-cornered loop: the cut corner is part of the
+    // outline, not a second stroke laid over a square.
+    const corners = /wavyLoop\(\s*\[([\s\S]*?)\],\s*BODY_SEED/.exec(src());
+    expect(corners, 'the body is no longer an explicit corner list').toBeTruthy();
+    expect(corners![1]!.match(/\[\s*\d+,\s*\d+\s*\]/g)).toHaveLength(5);
+    // Strokes only, with the one paper-light label strip.
     expect(src()).toMatch(/\.keep-mark path \{[\s\S]{0,900}?fill: none/);
     expect(src()).toMatch(/\.keep-mark path\[data-fill='paper'\] \{ fill: \$\{WORLD\.light\}/);
+    // The window would close on itself at the full amplitude.
+    expect(src()).toMatch(/SLOT_WAVER = 0\.5/);
   });
 });
 
