@@ -173,6 +173,17 @@ export interface TrayHandle {
   /** Right cell — the minimap mounts here. */
   right: HTMLElement;
   /**
+   * Middle cell — the stick mounts here, when there is a creature to move.
+   *
+   * The middle was empty on purpose ("the middle is the world"), and it
+   * mostly still is: the stick is the one thing that has earned it, because
+   * a control for a thumb belongs under the thumb and both corners are
+   * already spoken for. Null when this person has no creature — there is
+   * nothing to steer and an inert stick over the world is worse than
+   * nothing at all.
+   */
+  middle: HTMLElement | null;
+  /**
    * Stop drawing the creature in the mini screen — for when the companion
    * panel is covering the whole tray. A no-op when there is no creature.
    */
@@ -209,6 +220,14 @@ function ensureStyle(): void {
 .world-tray > * { pointer-events: auto; }
 .tray-left { justify-self: start; }
 .tray-right { justify-self: end; }
+/* The middle cell centres whatever is in it and takes no pointer of its
+   own, so the empty case is genuinely a hole through to the world. */
+.tray-middle {
+  justify-self: center;
+  align-self: end;
+  pointer-events: none;
+}
+.tray-middle > * { pointer-events: auto; }
 
 /* The device, small. Same artwork, further away. */
 .tray-device {
@@ -337,6 +356,10 @@ export function mountWorldTray(root: HTMLElement, options: TrayOptions): TrayHan
   left.className = 'tray-left';
   const right = document.createElement('div');
   right.className = 'tray-right';
+  // The middle cell. Built either way so the grid keeps its three columns
+  // and the corners stay put whether or not anything is steering.
+  const middle = document.createElement('div');
+  middle.className = 'tray-middle';
 
   // Only one of these two is ever built.
   const device = document.createElement('button');
@@ -462,7 +485,7 @@ export function mountWorldTray(root: HTMLElement, options: TrayOptions): TrayHan
         miniRef = mini;
       }
     }
-    tray.append(device, document.createElement('div'), right);
+    tray.append(device, middle, right);
     root.append(tray, ring);
 
     // Only for somebody who has a creature to emote WITH, and only once.
@@ -483,7 +506,7 @@ export function mountWorldTray(root: HTMLElement, options: TrayOptions): TrayHan
   } else {
     // No creature yet: the join code stands where the device would, so the
     // corner means one thing — "yours" — whether or not you have one.
-    tray.append(left, document.createElement('div'), right);
+    tray.append(left, middle, right);
     root.append(tray);
   }
 
@@ -492,6 +515,7 @@ export function mountWorldTray(root: HTMLElement, options: TrayOptions): TrayHan
     showsJoinCode: !options.hasCreature,
     left,
     right,
+    middle: options.hasCreature ? middle : null,
     setPortraitPaused: (next: boolean): void => mini?.setPaused(next),
     setEmotesOpen: setOpen,
     emotesOpen: () => open,

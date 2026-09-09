@@ -10,7 +10,7 @@
  */
 
 import type { PoseMsg, RosterMsg } from '../net/protocol';
-import { feedStrokeToStroke } from '../net/drawFeed';
+import { feedDrawingToStrokes, feedStrokeToStroke } from '../net/drawFeed';
 import { createPhoneLink } from '../net/phoneLink';
 import type { StrokeList } from '../shape/types';
 import { MOTION, SURFACE, WORLD } from '../taste/tokens';
@@ -28,6 +28,8 @@ import {
 } from './identity';
 import { createSession } from './session';
 import { mountWorldLink } from './worldlink';
+import { readKeepId } from './keeplink';
+import { readSessionLog } from '../session/events';
 import { SPIN_REST, type SpinState } from './spin';
 import {
   createMachine,
@@ -174,6 +176,42 @@ function readHandoff(): Handoff | null {
   }
 }
 
+/**
+ * Fetch one creature out of a world's store, by the id a keep link names.
+ *
+ * The link carries an id and a world and nothing else, which is what keeps
+ * it short enough to text to somebody. Everything needed to rebuild the
+ * creature is already on the server under that id, and the pipeline is
+ * pure, so this is a complete restore rather than an approximation of one.
+ *
+ * Fails to NULL, never throws: a link whose world has been cleared, or
+ * whose id was never in it, has to land on the ordinary pad — somebody
+ * following a dead link should be able to draw, not read an error.
+ */
+async function loadKept(
+  world: string,
+  id: string | null,
+): Promise<{ strokes: StrokeList; id: string; name: string | null } | null> {
+  if (!id || world.length === 0) return null;
+  try {
+    const res = await fetch(`/api/drawings?world=${encodeURIComponent(world)}`, {
+      cache: 'no-store',
+    });
+    if (!res.ok) return null;
+    const log = readSessionLog(await res.json());
+    if (!log) return null;
+    for (const event of log.events) {
+      if (event.k !== 'drawing' || event.id !== id) continue;
+      const strokes = feedDrawingToStrokes({ strokes: event.strokes as never });
+      if (strokes.length === 0) return null;
+      return { strokes, id: event.id, name: event.name ?? null };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 async function boot(): Promise<void> {
   const session = await createSession();
 
@@ -190,11 +228,36 @@ async function boot(): Promise<void> {
   // handoff / stored submission wins when present. Addressing the wrong id
   // is indistinguishable from a dead uplink: the tap simply does nothing.
   const stored = room.length > 0 ? readSubmission(room) : null;
+  /**
+   * A keep link's target, if this is one (src/phone/keepsake.ts).
+   *
+   * Read before anything else that resolves a creature, because it OUTRANKS
+   * every other source: somebody who followed a link to a particular
+   * creature is asking for that one, not for whatever this handset happens
+   * to have drawn before.
+   */
+  const keepParams = new URLSearchParams(location.search);
+  const keepId = readKeepId(keepParams);
+  const keepWorld = (keepParams.get('world') ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, '')
+    .slice(0, 24);
   const me = stored?.id ?? drawerId();
   // The link carries a tap to the world and brings back what the world says
   // about this handset; null with no mqtt on the page (or no room), and
   // every call site tolerates that.
   const uplink = room.length > 0 ? createPhoneLink(room, me) : null;
+
+  /**
+   * A creature asked for by link, fetched from the world that holds it.
+   *
+   * Awaited before the first screen mounts. That costs a keep link one
+   * round trip on a cold open and costs every other visit nothing — and
+   * the alternative, booting to the pad and swapping later, would show
+   * somebody a blank drawing surface for a moment when they had asked to
+   * see something they already made.
+   */
+  const kept = await loadKept(keepWorld, keepId);
 
   let strokes: StrokeList = [];
   /** Publish id from the draw-page handoff — the creature's identity. */
@@ -261,6 +324,26 @@ async function boot(): Promise<void> {
     // into that same box (PHONE-STAGE §4). The stash is one-shot, so a
     // later reload cannot replay this.
     entrance = acrossSeam ? 'seam' : 'settled';
+  } else if (kept) {
+    /*
+     * A KEPT LINK — somebody opening their creature on a device that has
+     * never seen it (src/phone/keepsake.ts).
+     *
+     * This is the whole point of the link: the strokes are in the world's
+     * store under this id, and the pipeline is pure, so fetching them
+     * rebuilds the identical creature anywhere. Nothing about it comes
+     * from this handset — no localStorage, no drawer id, no room history.
+     *
+     * It reads as a restore rather than an arrival, because that is what
+     * it is: this creature hatched a long time ago somewhere else. No
+     * egg, no wait, no entrance.
+     */
+    strokes = kept.strokes;
+    identity = kept.id;
+    signedName = kept.name;
+    hatchInMs = 0;
+    initialState = 'alive';
+    entrance = 'settled';
   } else if (room.length > 0 && stored) {
     // No fresh handoff, but this handset already drew in this room: restore
     // ITS creature rather than offering a second pad (user ruling — one
@@ -317,6 +400,9 @@ async function boot(): Promise<void> {
         strokes,
         // Same identity the world spawned under → the identical creature.
         ...(identity !== null ? { identity } : {}),
+        // Decides whether a keep LINK is offered — a link resolves an id
+        // against a world's store, so an installation handset has none.
+        world: publicWorld.length > 0 ? publicWorld : null,
         initialSpin: spin,
         onEmote: (emote) => {
           // Two paths, deliberately: the session keeps the local echo (and

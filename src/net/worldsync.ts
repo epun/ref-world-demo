@@ -95,7 +95,60 @@ export interface PoseMessage {
   p: number[];
 }
 
-export type WorldSyncMessage = HostClaim | RosterMessage | PoseMessage;
+/**
+ * Somebody is steering their own creature (src/world/joystick.ts).
+ *
+ * The one message that travels UP this topic rather than down it. Poses and
+ * rosters are the host describing the world; this is a viewer asking for
+ * one thing in it, and only the host acts on it.
+ *
+ * An INTENT, not a position. Sending "put my creature here" from a handset
+ * would hand a phone authority over the simulation and let a laggy one
+ * teleport a creature across the field; sending "I am pushing this way"
+ * leaves the host's collision, its soft bodies and its speed limits in
+ * charge of what actually happens. The worst a bad drive frame can do is
+ * walk one creature in a silly direction for 200ms.
+ *
+ * `who` is the creature — the drawer id it was spawned under — and is
+ * deliberately separate from `id`, which is the PAGE. One page steers one
+ * creature today, but they are not the same thing and conflating them
+ * would make a second stick unrepresentable.
+ */
+export interface DriveMessage {
+  t: 'drive';
+  /** The page that sent it. */
+  id: string;
+  /** The creature being steered. */
+  who: string;
+  x: number;
+  z: number;
+  mag: number;
+}
+
+export type WorldSyncMessage = HostClaim | RosterMessage | PoseMessage | DriveMessage;
+
+/**
+ * How often a held stick repeats its intent.
+ *
+ * Faster than poses, because this is the leg of the round trip a person
+ * feels: their thumb moves, the host hears, the host simulates, a pose
+ * comes back. Two of those four are already paced by POSE_HZ and there is
+ * no reason to pay that tax twice on the way up.
+ */
+export const DRIVE_HZ = 12;
+export const DRIVE_INTERVAL_MS = 1000 / DRIVE_HZ;
+
+/**
+ * A drive this old is from a hand that has gone away.
+ *
+ * The release message is a single qos-0 packet and the whole point of qos 0
+ * is that it may not arrive. Without an expiry, one dropped release leaves
+ * a creature walking in a straight line forever, and the person who was
+ * steering it has already put their phone in their pocket. Generous enough
+ * to ride out a few dropped frames, short enough that nobody watches a
+ * creature march off the map.
+ */
+export const DRIVE_STALE_MS = 600;
 
 /** A creature's place in the world, unpacked. */
 export interface Pose {
@@ -207,6 +260,24 @@ export function readWorldSyncMessage(value: unknown): WorldSyncMessage | null {
     const ids = rec['ids'].filter((v): v is string => typeof v === 'string');
     if (ids.length !== rec['ids'].length) return null;
     return { t: 'roster', id, rev: rec['rev'], ids };
+  }
+  if (rec['t'] === 'drive' && typeof rec['who'] === 'string' && rec['who']) {
+    const x = rec['x'];
+    const z = rec['z'];
+    const mag = rec['mag'];
+    if (typeof x !== 'number' || typeof z !== 'number' || typeof mag !== 'number') return null;
+    if (!Number.isFinite(x) || !Number.isFinite(z) || !Number.isFinite(mag)) return null;
+    // Clamped at the door, not trusted and checked later. This arrives from
+    // another device over a public broker: the simulation should be unable
+    // to be handed a strength of a thousand, whatever sent it.
+    return {
+      t: 'drive',
+      id,
+      who: rec['who'],
+      x: Math.max(-1, Math.min(1, x)),
+      z: Math.max(-1, Math.min(1, z)),
+      mag: Math.max(0, Math.min(1, mag)),
+    };
   }
   if (rec['t'] === 'poses' && typeof rec['rev'] === 'number' && Array.isArray(rec['p'])) {
     const p = rec['p'].filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
