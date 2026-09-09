@@ -57,6 +57,7 @@ describe('worlds.json — one entry per deployment', () => {
     expect(WORLDS['meridian']).toEqual({
       host: 'ref-world-meridian-evanmpuns-projects.vercel.app',
       residents: 'none',
+      dev: true,
     });
     // the public site is absent on purpose: it is the world without an
     // entry, and nothing a client adds may change what it builds.
@@ -87,6 +88,7 @@ describe('resolveWorld — what world is this build for', () => {
       name: 'meridian',
       host: 'ref-world-meridian-evanmpuns-projects.vercel.app',
       residents: 'none',
+      dev: true,
     });
   });
 
@@ -98,6 +100,7 @@ describe('resolveWorld — what world is this build for', () => {
       name: 'meridian',
       host: 'ref-world-meridian-evanmpuns-projects.vercel.app',
       residents: 'none',
+      dev: true,
     });
   });
 
@@ -107,6 +110,7 @@ describe('resolveWorld — what world is this build for', () => {
       name: 'harbour',
       host: 'ref-world-harbour.vercel.app',
       residents: 'shipped',
+      dev: false,
     });
   });
 
@@ -209,6 +213,7 @@ describe('the html transform', () => {
       name: 'harbour',
       host: 'ref-world-harbour.vercel.app',
       residents: 'shipped',
+      dev: false,
     });
     expect(shipped).not.toContain('refworld:residents');
     expect(shipped).toContain('<meta name="refworld:world" content="harbour" />');
@@ -281,7 +286,7 @@ describe('scripts/new-world.mjs — the worlds.json entry is the only file it wr
       const first = run(['harbour', '--file', file]);
       expect(first.status).toBe(0);
       expect(readWorlds(file)).toEqual({
-        harbour: { host: 'ref-world-harbour.vercel.app', residents: 'shipped' },
+        harbour: { host: 'ref-world-harbour.vercel.app', residents: 'shipped', dev: false },
       });
       // the parts that are a dashboard rather than a file.
       expect(first.out).toContain('https://ref-world-harbour.vercel.app/');
@@ -293,7 +298,7 @@ describe('scripts/new-world.mjs — the worlds.json entry is the only file it wr
       // twice is once.
       expect(run(['harbour', '--file', file]).status).toBe(0);
       expect(readWorlds(file)).toEqual({
-        harbour: { host: 'ref-world-harbour.vercel.app', residents: 'shipped' },
+        harbour: { host: 'ref-world-harbour.vercel.app', residents: 'shipped', dev: false },
       });
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -308,7 +313,7 @@ describe('scripts/new-world.mjs — the worlds.json entry is the only file it wr
       const { status, out } = run(['meridian', '--clean', '--host', 'meridian.example', '--file', file]);
       expect(status).toBe(0);
       expect(readWorlds(file)).toEqual({
-        meridian: { host: 'meridian.example', residents: 'none' },
+        meridian: { host: 'meridian.example', residents: 'none', dev: false },
       });
       expect(out).toContain('none');
       expect(out).toContain('nothing to seed');

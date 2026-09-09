@@ -12,3 +12,7 @@ coverage/
 # python bytecode, from the recovery tooling in scripts/recover-from-video/
 __pycache__/
 *.pyc
+
+# screenshots written by the scratch smokes (scratch/*.mjs); the scripts are
+# committed, their output is evidence for one run and not a repo artefact.
+scratch/*.png

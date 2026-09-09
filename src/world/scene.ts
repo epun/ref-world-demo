@@ -104,7 +104,11 @@ export interface WorldHandles {
    * field, the scatter RE-ROLLS its placement (unlike a terrain dial: the map
    * decides which kinds grow where, so the world under the new mode is a
    * different placement from the same seed), the water re-seats its sheets on
-   * their new levels, and then it shows or hides them.
+   * their new levels, and then it shows or hides them. That is a superset of
+   * what `setTerrain` does, so a PAINTED map (src/world/painted.ts) comes
+   * through the switch intact: the sampler stays installed, every one of
+   * these three re-reads `terrainHeight`, and the painted hills stand in
+   * either mode — which is the point of opening flat and sculpting live.
    *
    * Creatures, eggs and their shadow stamps re-sample the Surface every frame,
    * so they settle onto the new ground on their own — with the same one
@@ -115,6 +119,21 @@ export interface WorldHandles {
   setLandscape(on: boolean): void;
   /** True when the authored map is the world on screen. */
   landscape(): boolean;
+  /**
+   * Hand the ONE-pointer drag to something else, or take it back.
+   *
+   * The view controls below own a plain drag: it orbits, and shift+drag
+   * pans. A dev tool that draws on the ground (src/dev/paint.ts) needs the
+   * same gesture, and both listeners sit on the same canvas — neither can
+   * out-order the other, so the world has to let go rather than the tool
+   * shout louder. False parks the orbit; the pointer is still tracked, so
+   * handing it back mid-drag resumes from where the pointer is instead of
+   * lurching (TASTE §2.1: no cuts).
+   *
+   * Two-finger pinch/twist and the wheel keep working either way — a tool
+   * that owns one pointer has no claim on the operator's zoom.
+   */
+  setSoloDrag(enabled: boolean): void;
   /** Register per-frame work (entity drift, gaits, …). Runs before render. */
   onFrame(callback: FrameCallback): void;
   /**
@@ -209,6 +228,12 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
   canvas.style.touchAction = 'none';
   canvas.addEventListener('contextmenu', (event) => event.preventDefault());
   let panning = false;
+  /**
+   * Whether a ONE-pointer drag still turns the camera — see setSoloDrag.
+   * Two-finger pinch/twist and the wheel are untouched by it, so a tool that
+   * owns the single pointer never costs the operator their zoom.
+   */
+  let soloDrag = true;
   canvas.addEventListener('pointerdown', (event) => {
     pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
     // Shift+drag pans; plain drag orbits (user scheme, cellshader feel).
@@ -221,9 +246,14 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
     if (pointers.size === 1) {
       const dx = event.clientX - prev.x;
       const dy = event.clientY - prev.y;
-      if (panning) cameraRig.panBy(dx, dy, window.innerHeight);
-      else cameraRig.rotateBy(dx, dy, window.innerHeight);
+      // The pointer's position is remembered whether or not the camera acts
+      // on it: a drag handed back mid-stroke must not arrive as one huge
+      // delta, which is a cut, and there are none of those (TASTE §2.1).
       pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      if (soloDrag) {
+        if (panning) cameraRig.panBy(dx, dy, window.innerHeight);
+        else cameraRig.rotateBy(dx, dy, window.innerHeight);
+      }
     } else if (pointers.size === 2) {
       // Pinch: zoom by distance ratio; twist: rotate by angle delta.
       const entries = [...pointers.entries()];
@@ -341,6 +371,9 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
       water.setVisible(on);
     },
     landscape: (): boolean => landscapeMode() === 'landscape',
+    setSoloDrag: (enabled: boolean): void => {
+      soloDrag = enabled;
+    },
     onFrame: (callback: FrameCallback): void => {
       frameCallbacks.push(callback);
     },

@@ -811,7 +811,11 @@ describe('landscape — terrain height', () => {
     }
   });
 
-  it('holds every slope inside the bound, risers included', () => {
+  // A 0.5-unit sweep of the whole field is ~1.5M `terrainHeight` calls, and
+  // since the painted hook landed each one carries an offset lookup too — it
+  // measures ~5s, which is over vitest's 5s default. It is a measurement, not
+  // a flake, so it gets the time rather than a coarser grid.
+  it('holds every slope inside the bound, risers included', { timeout: 30_000 }, () => {
     // The terrace multiplies the smooth field's gradient by 1.5 / the riser
     // width, so this is the number the [D] falloffs were tuned against:
     // terraceRiser 0.2–0.8, mountainShelfFalloff 70, shoreRamp 16. Measured
@@ -824,12 +828,24 @@ describe('landscape — terrain height', () => {
     // ground, so it would want a 15-unit run), and a bank is the one landform
     // whose job is to be steeper than the field around it.
     let worst = 0;
+    let sampled = 0;
     walk(0.5, (x, z) => {
       if (nearIsland(x, z)) return;
+      // Past the far fade the terrain is 0 BY CONSTRUCTION, so a cell out
+      // there contributes a gradient of exactly 0 and cannot be the worst.
+      // The margin is the sample step: a cell kept at farEnd + 1 still has
+      // both of its ±0.5 neighbours measured, so the fade band itself — the
+      // steepest part of the rim — is walked in full. The ±155 square's
+      // corners reach 219, so this drops a real slice of the sweep.
+      if (Math.hypot(x, z) > TERRAIN.farEnd + 1) return;
       const gx = terrainHeight(x + 0.5, z) - terrainHeight(x - 0.5, z);
       const gz = terrainHeight(x, z + 0.5) - terrainHeight(x, z - 0.5);
       worst = Math.max(worst, Math.hypot(gx, gz));
+      sampled++;
     });
+    // The skip is a saving, never a hole: the sweep still walks essentially
+    // the whole square (the corners past farEnd are all it drops).
+    expect(sampled).toBeGreaterThan(330_000);
     expect(worst).toBeLessThanOrEqual(0.6);
   });
 

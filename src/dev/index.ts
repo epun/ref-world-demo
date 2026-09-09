@@ -13,9 +13,18 @@
  * `ui.bindToggleKey('D', { shift: true })`. The world's plain-`d` draw
  * overlay key ignores shifted presses (src/main.ts) so the two never fight.
  *
+ * The skills, one folder each: `demo` (presentation controls), `moderation`
+ * (the operator layer), `session` (the recorded log), `environment` (scatter,
+ * grain, ink and the terrain dials), `weather`, `paint` (sculpt the terrain
+ * by hand — PLAN §7), `character` (emotes) and `taste` (the §7 gates). The
+ * descriptors are in src/dev/skills-meta.ts; `paint` is the one whose body
+ * lives in a module of its own (src/dev/paint.ts), because it carries
+ * envpaint's brush engine and that belongs in a chunk of its own.
+ *
  * This module must stay importable from node (vitest): every ghost-panel
  * import is lazy inside initDevPanel, and initDevPanel bails to null when
- * there is no DOM.
+ * there is no DOM. src/dev/paint.ts is imported the same way and for the
+ * same reason — `envpaint/ui` wants a browser at import time.
  */
 
 import type { Camera, Object3D, Scene, WebGLRenderer } from 'three';
@@ -37,6 +46,7 @@ import { WIND_OVERRIDE_MAX } from '../world/environment';
 import { WANDER_SPEED_DEFAULT } from '../creatures/manager';
 import { DEFAULT_KIND_DENSITY, SCATTER_SEED, SCATTER_STEP } from '../world/scatter';
 import { TERRAIN_LIMITS, terrainHeight } from '../world/landscape';
+import { ROLLING_SURFACE } from '../world/surface';
 import { GRAIN, MOTION, SURFACE } from '../taste/tokens';
 import { countByKind } from '../session';
 import type { SessionRecorder } from '../session';
@@ -147,6 +157,13 @@ export interface DevHandles {
   setLandscape?(on: boolean): void;
   /** …and reads it back, so the checkbox starts where the world is. */
   landscape?(): boolean;
+  /**
+   * Park the world's own one-pointer drag (`WorldHandles.setSoloDrag`), so a
+   * dev tool that draws on the ground can own the same gesture instead of
+   * orbiting the camera underneath itself. Only the paint skill uses it, and
+   * it degrades to "painting orbits too" when a build does not provide it.
+   */
+  setSoloDrag?(enabled: boolean): void;
   /** Slide the camera's look-target to a ground point (the minimap's
    * click-to-pan spring) — selection focus rides the same rail. */
   focusAt?(x: number, z: number): void;
@@ -1515,6 +1532,29 @@ export async function initDevPanel(
     },
     teardown: (panelUi) => panelUi.panel.removeFolder('taste'),
   });
+
+  // ── refworld.paint — sculpt the terrain by hand (PLAN §7) ────────────────
+  // Its body is src/dev/paint.ts and it arrives by dynamic import, past the
+  // no-DOM bail above: it carries envpaint's brush engine, and `envpaint/ui`
+  // wants a browser at import time. A world build with no renderer handle has
+  // no canvas for a brush to bind to, so the skill is simply absent there —
+  // `skills.apply` on an unregistered id is a no-op.
+  if (handles.renderer) {
+    const { registerPaintSkill } = await import('./paint');
+    registerPaintSkill(ui, metaOf('refworld.paint'), {
+      scene: handles.scene,
+      camera: handles.camera,
+      renderer: handles.renderer,
+      // Through the seam, like everything else: nothing derives a height.
+      sampleHeight: (x, z) => ROLLING_SURFACE.sampleHeight(x, z),
+      // An empty partial moves no dial and rebuilds all three systems in
+      // order — ground, then scatter, then water (src/world/scene.ts).
+      rebuildTerrain: () => handles.setTerrain?.({}),
+      onFrame: handles.onFrame,
+      ...(handles.setSoloDrag ? { setSoloDrag: handles.setSoloDrag } : {}),
+      ...(handles.tour ? { tour: handles.tour } : {}),
+    });
+  }
 
   // Mount every refworld skill now — registration alone only catalogs them.
   for (const m of DEV_SKILLS_META) {

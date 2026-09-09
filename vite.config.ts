@@ -20,8 +20,11 @@ import { applyWorldToHtml, readWorlds, resolveWorld } from './scripts/world-buil
  * index.html only. phone.html is the companion handset's page; it belongs
  * to whatever world its projection is in and has no card of its own.
  */
-function worldIdentity(root: string): Plugin {
-  const world = resolveWorld(process.env, readWorlds(resolve(root, 'worlds.json')));
+/** The world this build is for, or null for the public deployment — read
+ * once, because the html transform and the `__IS_DEV__` define both need it. */
+const WORLD = resolveWorld(process.env, readWorlds(resolve(__dirname, 'worlds.json')));
+
+function worldIdentity(world: ReturnType<typeof resolveWorld>): Plugin {
   if (world) {
     console.log(
       `ref-world: building "${world.name}" at ${world.host}, residents ${world.residents}`,
@@ -40,7 +43,7 @@ function worldIdentity(root: string): Plugin {
 }
 
 export default defineConfig({
-  plugins: [worldIdentity(__dirname)],
+  plugins: [worldIdentity(WORLD)],
   build: {
     rollupOptions: {
       input: {
@@ -60,8 +63,18 @@ export default defineConfig({
   },
   define: {
     // isDev gates src/dev/ (Ghost Panel skills). Must be a static boolean so the
-    // demo build tree-shakes the entire dev surface out.
-    __IS_DEV__: JSON.stringify(process.env.NODE_ENV !== 'production'),
+    // demo build tree-shakes the entire dev surface out. Two builds keep it:
+    // a world whose worlds.json entry says `dev: true` (meridian is its
+    // author's workbench as well as a demo, and the painted terrain lives in
+    // the panel with no other way to be reached), and any vercel PREVIEW — a
+    // branch alias is a thing a reviewer opens to look at, never the url a
+    // client is handed. Every production build without the flag, the public
+    // world first among them, stays stripped exactly as before.
+    __IS_DEV__: JSON.stringify(
+      process.env.NODE_ENV !== 'production' ||
+        WORLD?.dev === true ||
+        process.env.VERCEL_ENV === 'preview',
+    ),
   },
   test: {
     include: ['test/**/*.test.ts'],
