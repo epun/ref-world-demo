@@ -52,7 +52,7 @@ export const DEV_SKILLS_META: readonly DevSkillMeta[] = [
     name: 'landscape',
     category: 'refworld',
     description:
-      'the authored map behind a switch — the world opens as a flat plain and this reveals the forest, the range, the lake and its island, plus the three terrain dials (elevation, tier spacing, relief spread) for sculpting it live.',
+      'the authored map behind a switch — the world opens as a flat plain and this reveals the forest, the range, the lake and its island, plus the three terrain dials (elevation, tier spacing, relief spread) for sculpting it live. carries the `scene` readout under it: what a public world is sharing and storing of that sculpting (docs/session.md §6).',
   },
   {
     id: 'refworld.paint',

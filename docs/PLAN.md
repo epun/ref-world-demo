@@ -408,6 +408,16 @@ After every batch of stamps the world re-cuts itself with `setTerrain({})` (grou
 water), throttled to ~8 rebuilds a second because one rebuild measures ~250-330ms, with one
 guaranteed rebuild on `strokeend`.
 
+**Shared and stored.** A dab is not a private edit: the operator sculpts in front of the room
+and every phone is running its own copy of this same page. So each stamp, the landscape switch
+and the three terrain dials travel as ordinary session events — over the world sync topic to
+every open page, and into `refworld:<world>:scene` so a redeploy does not throw the evening
+away. Every page applies a foreign one through the replay driver it already had; there is no
+second apply path, and nothing on the wire can move the ground in a way a recorded log could
+not. `src/session/scene.ts` is the pure half (which kinds, what a batch may say, how a long
+session compacts), `src/net/sceneoutbox.ts` batches the outgoing side, `api/scene.ts` keeps it.
+See **docs/SESSION.md §6** and **docs/PUBLIC.md §the scene**.
+
 **Deferred**, in the order the port plan takes them: painted **water** — level tools, connected
 components, outlines feeding `water.ts` (the one genuinely new piece: a painted lake has no
 blob to walk a shoreline round); painted **forest / mountain / clearing weights** for scatter;

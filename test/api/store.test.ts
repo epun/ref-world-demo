@@ -13,10 +13,13 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  appendScene,
+  clearScene,
   deviceDrawing,
   hasStore,
   isModerator,
   readDrawings,
+  readScene,
   worldKey,
 } from '../../api/_store';
 
@@ -98,5 +101,16 @@ describe('with no store configured', () => {
   it('reads empty and claims nothing', async () => {
     await expect(readDrawings('public')).resolves.toEqual([]);
     await expect(deviceDrawing('public', 'phone-a')).resolves.toBeNull();
+  });
+
+  it('the scene is a quiet no-op too (docs/SESSION.md §6)', async () => {
+    // A deployment with no store still runs the demo — the sculpting simply
+    // does not outlive the page. It must not throw, and it must not claim to
+    // have kept anything.
+    await expect(readScene('public')).resolves.toEqual([]);
+    await expect(clearScene('public')).resolves.toBe(false);
+    await expect(
+      appendScene('public', [{ k: 'paint', t: 0, tool: 'raise', x: 0, z: 0, r: 4 }]),
+    ).resolves.toEqual({ ok: false, count: 0, reason: 'no store configured' });
   });
 });
