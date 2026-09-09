@@ -7,7 +7,15 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { joinUrl, roomForWorld } from '../../src/net/protocol';
+import {
+  KEEP_ACTIONS,
+  decode,
+  encode,
+  joinUrl,
+  roomForWorld,
+  type EmoteMsg,
+  type KeepMsg,
+} from '../../src/net/protocol';
 
 describe('joinUrl — what the qr on the wall encodes', () => {
   /**
@@ -104,5 +112,34 @@ describe('joinUrl — what the qr on the wall encodes', () => {
       page: '/',
     });
     expect(url).toBe('https://x.test/draw/?room=qtse&w=w-7');
+  });
+});
+
+/**
+ * `keep` — the message that says somebody took their creature home
+ * (docs/SESSION.md §keep). It asks the world for nothing; it exists so the
+ * session log has the save in it. Same family as an emote, so it is pinned
+ * against one: whatever an emote survives on the wire, a keep survives too.
+ */
+describe('the keep message', () => {
+  it('round-trips through the codec exactly as an emote does', () => {
+    const emote: EmoteMsg = { t: 'emote', emote: 'wave' };
+    const keep: KeepMsg = { t: 'keep', id: 'drawer-1', action: 'photo' };
+    expect(decode(encode(emote))).toMatchObject(emote);
+    expect(decode(encode(keep))).toMatchObject(keep);
+  });
+
+  it('carries the version tag its siblings carry', () => {
+    const raw = JSON.parse(encode({ t: 'keep', action: 'link' })) as Record<string, unknown>;
+    expect(raw['v']).toBe(JSON.parse(encode({ t: 'emote', emote: 'wave' }))['v']);
+  });
+
+  it('all three savable things travel', () => {
+    for (const action of KEEP_ACTIONS) {
+      expect(decode(encode({ t: 'keep', action }))).toMatchObject({ t: 'keep', action });
+    }
+    // The words the person reads on the handset, not keepui's older
+    // internal key for the first row.
+    expect([...KEEP_ACTIONS]).toEqual(['photo', 'model', 'link']);
   });
 });

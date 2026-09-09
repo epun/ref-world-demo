@@ -14,6 +14,15 @@
  *   hatch                   → force that egg open at the recorded offset
  *   emote                   → play the recorded emote on that creature
  *   world                   → hand the recorded control change to the driver
+ *   drive                   → steer that creature again, and let go again
+ *   paint                   → re-stamp that dab of terrain
+ *   keep                    → nothing. Informational, like `egg`
+ *
+ * TWO of those only mean anything IN TIME. A drive is "push, hold, let go"
+ * and a paint stroke is a hand moving; applied all at once (a restore, §4a)
+ * the holds collapse to nothing and the last push would never be released,
+ * leaving a creature walking for good. So `replayNow` — the restore path —
+ * applies them not at all, and a paced `replaySession` applies them in full.
  *
  * Because generation is deterministic in the strokes and the id, and the
  * behaviour agent is seeded from the id, the same ids and the same strokes at
@@ -25,7 +34,7 @@
  */
 
 import type { StrokeList } from '../shape/types';
-import type { OperatorAction, SessionEvent, SessionLog } from './events';
+import type { OperatorAction, PaintEvent, SessionEvent, SessionLog } from './events';
 
 /** One creature to bring back, exactly as the session first saw it. */
 export interface ReplaySpawn {
@@ -52,6 +61,30 @@ export interface ReplayDriver {
   /** A moderation tap, for a driver that wants to mirror the operator state
    * (hold mode, the block list). Optional — replay drives removals itself. */
   operator?(action: OperatorAction, id: string | null, on?: boolean): void;
+  /**
+   * Steer this creature the way somebody steered it, or let go (`null`).
+   * `CreatureManager.drive`'s own shape, so the world side is one call.
+   * Optional: a world with no manager to steer simply does not offer it.
+   */
+  drive?(id: string, vec: { x: number; z: number; mag: number } | null): void;
+  /**
+   * Re-apply one dab of terrain, or clear the map (`tool: 'clear'`).
+   * Optional, and normally absent: the brush is a dev skill, so a demo build
+   * has no apply path and the events pass through unread rather than faked.
+   */
+  paint?(event: PaintEvent): void;
+}
+
+/** How a log is being applied. The kinds that only mean something in time
+ * read this; every other kind ignores it. */
+export interface ApplyOptions {
+  /**
+   * The whole log at once, with no waiting — a restore (docs/SESSION.md
+   * §4a). Drives and paint dabs are SKIPPED under it: a hold has no
+   * duration when every offset is now, and an unreleased push would strand
+   * a creature walking forever.
+   */
+  instant?: boolean;
 }
 
 export interface ReplayState {
@@ -80,6 +113,7 @@ export function applyEvent(
   event: SessionEvent,
   driver: ReplayDriver,
   state: ReplayState,
+  options: ApplyOptions = {},
 ): void {
   switch (event.k) {
     case 'drawing': {
@@ -127,6 +161,27 @@ export function applyEvent(
       if (state.live.has(event.id)) driver.emote(event.id, event.emote);
       return;
     }
+    case 'drive': {
+      // Paced only (see ApplyOptions), and only onto a creature that is
+      // standing — the same rule an emote follows.
+      if (options.instant) return;
+      if (!state.live.has(event.id)) return;
+      driver.drive?.(
+        event.id,
+        event.mag > 0 ? { x: event.ax ?? 0, z: event.az ?? 0, mag: event.mag } : null,
+      );
+      return;
+    }
+    case 'paint': {
+      if (options.instant) return;
+      driver.paint?.(event);
+      return;
+    }
+    case 'keep': {
+      // Informational, like `egg`: somebody saved their creature, which
+      // changed nothing in the world and is not a thing to do again.
+      return;
+    }
     case 'world': {
       driver.world?.(event.field, event.value, event.kind);
       return;
@@ -145,7 +200,9 @@ export function applyEvent(
  */
 export function replayNow(log: SessionLog, driver: ReplayDriver): void {
   const state = createReplayState();
-  for (const event of log.events) applyEvent(event, driver, state);
+  // `instant`: no pacing exists here, so the kinds that are made of pacing
+  // are left out rather than collapsed into one frame (see ApplyOptions).
+  for (const event of log.events) applyEvent(event, driver, state, { instant: true });
 }
 
 export interface ReplayOptions {

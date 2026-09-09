@@ -48,7 +48,7 @@
 import { Box3, Color, OrthographicCamera, Scene, Vector3, WebGLRenderer } from 'three';
 import { BUBBLE_EMOJI } from '../../character/bubble';
 import { CHARACTER_HEIGHT, createCharacter, type Character } from '../../character/character';
-import type { EmoteName, PoseMsg, RosterMsg } from '../../net/protocol';
+import type { EmoteName, KeepAction, PoseMsg, RosterMsg } from '../../net/protocol';
 import type { StrokeList } from '../../shape/types';
 import { SURFACE, WORLD } from '../../taste/tokens';
 import { GrainPass } from '../../world/grain';
@@ -113,6 +113,14 @@ export interface AliveScreenOptions {
    */
   initialSpin?: SpinState;
   onEmote(emote: EmoteName): void;
+  /**
+   * Somebody kept their creature, and it worked — a photo, a 3d model, or a
+   * link (src/phone/keepui.ts). Told to the world so the session log has it
+   * (docs/SESSION.md §keep); the save itself is finished by the time this
+   * fires and nothing here can fail it. A save that FAILED is not a save and
+   * is not reported.
+   */
+  onKeep?(action: KeepAction): void;
   /**
    * The world this creature lives in, when there is a shared one.
    *
@@ -351,6 +359,13 @@ export function mountAliveScreen(
       name: () => currentName,
       world: options.world ?? null,
       mount: document.body,
+      // keepui's own key for the first row is `picture`, older than the
+      // label the person reads; the wire and the log carry the label
+      // (src/net/protocol.ts KeepAction), so the map happens here — the one
+      // seam that knows both vocabularies.
+      onResult: (action, ok) => {
+        if (ok) options.onKeep?.(action === 'picture' ? 'photo' : action);
+      },
     });
   }
 
