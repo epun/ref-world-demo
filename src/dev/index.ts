@@ -13,9 +13,18 @@
  * `ui.bindToggleKey('D', { shift: true })`. The world's plain-`d` draw
  * overlay key ignores shifted presses (src/main.ts) so the two never fight.
  *
+ * The skills, one folder each: `demo` (presentation controls), `moderation`
+ * (the operator layer), `session` (the recorded log), `environment` (scatter,
+ * grain, ink and the terrain dials), `weather`, `paint` (sculpt the terrain
+ * by hand — PLAN §7), `character` (emotes) and `taste` (the §7 gates). The
+ * descriptors are in src/dev/skills-meta.ts; `paint` is the one whose body
+ * lives in a module of its own (src/dev/paint.ts), because it carries
+ * envpaint's brush engine and that belongs in a chunk of its own.
+ *
  * This module must stay importable from node (vitest): every ghost-panel
  * import is lazy inside initDevPanel, and initDevPanel bails to null when
- * there is no DOM.
+ * there is no DOM. src/dev/paint.ts is imported the same way and for the
+ * same reason — `envpaint/ui` wants a browser at import time.
  */
 
 import type { Camera, Object3D, Scene, WebGLRenderer } from 'three';
@@ -36,6 +45,8 @@ import {
 import { WIND_OVERRIDE_MAX } from '../world/environment';
 import { WANDER_SPEED_DEFAULT } from '../creatures/manager';
 import { DEFAULT_KIND_DENSITY, SCATTER_SEED, SCATTER_STEP } from '../world/scatter';
+import { TERRAIN_LIMITS, terrainHeight } from '../world/landscape';
+import { ROLLING_SURFACE } from '../world/surface';
 import { GRAIN, MOTION, SURFACE } from '../taste/tokens';
 import { countByKind } from '../session';
 import type { SessionRecorder } from '../session';
@@ -129,6 +140,22 @@ export interface DevHandles {
   /** Color grade for the paper field (scene background + ground disc):
    * a css color string from the panel's picker. */
   setBackgroundColor?(color: string): void;
+  /**
+   * Live terrain dials (src/world/landscape.ts `TerrainParams`, applied
+   * through WorldHandles.setTerrain, which rebuilds the ground field, the
+   * scatter and the water levels under them). Structural, like the other
+   * handles here, so this module keeps importing from node.
+   */
+  setTerrain?(next: { elevation?: number; tierStep?: number; relief?: number }): void;
+  /** …and reads them back, so the sliders start where the world is. */
+  terrain?(): { elevation: number; tierStep: number; relief: number };
+  /**
+   * Park the world's own one-pointer drag (`WorldHandles.setSoloDrag`), so a
+   * dev tool that draws on the ground can own the same gesture instead of
+   * orbiting the camera underneath itself. Only the paint skill uses it, and
+   * it degrades to "painting orbits too" when a build does not provide it.
+   */
+  setSoloDrag?(enabled: boolean): void;
   /** Slide the camera's look-target to a ground point (the minimap's
    * click-to-pan spring) — selection focus rides the same rail. */
   focusAt?(x: number, z: number): void;
@@ -161,6 +188,17 @@ export interface DevHandles {
 
 /** Offscreen readback resolution for the pixel gates. */
 const READBACK_SIZE = 256;
+
+/**
+ * [D] Trailing debounce on the terrain dials, ms — see the sliders.
+ *
+ * NOT a motion token, deliberately: nothing animates over this window and
+ * nothing is on screen for it. It is an input-coalescing window in front of a
+ * ~300ms rebuild, sized so a slider drag lands one rebuild per pause instead
+ * of one per pointermove. The motion tokens govern what moves; this governs
+ * how often the world is re-cut.
+ */
+const TERRAIN_DEBOUNCE_MS = 150;
 
 /**
  * [D] Density-probe sampling unit: a two-iso-step neighborhood. Scatter
@@ -1056,6 +1094,93 @@ export async function initDevPanel(
         });
       }
 
+      // ── the terrain dials ───────────────────────────────────────────────
+      // 2026-09-03, user ask: "there is a lot of elevation change. I want to
+      // be able to adjust the amount of elevation change there is in the map
+      // and their spacing in proximity to each other." Three multipliers over
+      // the authored geography (src/world/landscape.ts `TerrainParams`) —
+      // how much height, how far apart the tiers, how wide the relief is
+      // spread — each rebuilding the ground, the scatter and the water.
+      const setTerrain = handles.setTerrain?.bind(handles);
+      const readTerrain = handles.terrain?.bind(handles);
+      if (setTerrain && readTerrain) {
+        const live = readTerrain();
+        // TRAILING DEBOUNCE. One rebuild is ~300ms of ground displacement +
+        // scatter re-lay, and a slider drag emits a change per pointermove:
+        // undebounced, a single sweep queues thirty of them and the frame
+        // loop stops for ten seconds. Trailing rather than leading, so the
+        // value you let go on is the one the world ends up standing at.
+        let pending: { elevation?: number; tierStep?: number; relief?: number } = {};
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        const readout = (): void => {
+          const now = readTerrain();
+          // Coarse walk of the scattered region — this runs once per settled
+          // drag, never per frame, so a 5-unit grid is plenty to report the
+          // range the dials just produced.
+          let lo = Infinity;
+          let hi = -Infinity;
+          for (let x = -155; x <= 155; x += 5) {
+            for (let z = -155; z <= 155; z += 5) {
+              const h = terrainHeight(x, z);
+              if (h < lo) lo = h;
+              if (h > hi) hi = h;
+            }
+          }
+          folder
+            .get('terrain-readout')
+            ?.setText?.(
+              `elevation ${now.elevation.toFixed(2)} · tiers ${now.tierStep.toFixed(1)} · ` +
+                `relief ${now.relief.toFixed(2)} · height ${lo.toFixed(1)} to ${hi.toFixed(1)}`,
+            );
+        };
+        const queue = (next: { elevation?: number; tierStep?: number; relief?: number }): void => {
+          pending = { ...pending, ...next };
+          if (timer !== null) clearTimeout(timer);
+          timer = setTimeout(() => {
+            timer = null;
+            const apply = pending;
+            pending = {};
+            setTerrain(apply);
+            readout();
+          }, TERRAIN_DEBOUNCE_MS);
+        };
+        folder.addSlider('elevation', {
+          min: TERRAIN_LIMITS.elevation[0],
+          max: TERRAIN_LIMITS.elevation[1],
+          step: 0.05,
+          value: live.elevation,
+          id: 'terrain-elevation',
+          onChange: (v) => {
+            queue({ elevation: v });
+            session?.world('terrain', v, 'elevation');
+          },
+        });
+        folder.addSlider('tier spacing', {
+          min: TERRAIN_LIMITS.tierStep[0],
+          max: TERRAIN_LIMITS.tierStep[1],
+          step: 0.1,
+          value: live.tierStep,
+          id: 'terrain-tier-step',
+          onChange: (v) => {
+            queue({ tierStep: v });
+            session?.world('terrain', v, 'tierStep');
+          },
+        });
+        folder.addSlider('relief spread', {
+          min: TERRAIN_LIMITS.relief[0],
+          max: TERRAIN_LIMITS.relief[1],
+          step: 0.05,
+          value: live.relief,
+          id: 'terrain-relief',
+          onChange: (v) => {
+            queue({ relief: v });
+            session?.world('terrain', v, 'relief');
+          },
+        });
+        folder.addInfo('', 'terrain-readout');
+        readout();
+      }
+
       // Shader style properties in their own section (user ask): the render
       // look — grain, the ink pass, and the color grade — separated from the
       // environment's density and scale variables.
@@ -1354,6 +1479,29 @@ export async function initDevPanel(
     },
     teardown: (panelUi) => panelUi.panel.removeFolder('taste'),
   });
+
+  // ── refworld.paint — sculpt the terrain by hand (PLAN §7) ────────────────
+  // Its body is src/dev/paint.ts and it arrives by dynamic import, past the
+  // no-DOM bail above: it carries envpaint's brush engine, and `envpaint/ui`
+  // wants a browser at import time. A world build with no renderer handle has
+  // no canvas for a brush to bind to, so the skill is simply absent there —
+  // `skills.apply` on an unregistered id is a no-op.
+  if (handles.renderer) {
+    const { registerPaintSkill } = await import('./paint');
+    registerPaintSkill(ui, metaOf('refworld.paint'), {
+      scene: handles.scene,
+      camera: handles.camera,
+      renderer: handles.renderer,
+      // Through the seam, like everything else: nothing derives a height.
+      sampleHeight: (x, z) => ROLLING_SURFACE.sampleHeight(x, z),
+      // An empty partial moves no dial and rebuilds all three systems in
+      // order — ground, then scatter, then water (src/world/scene.ts).
+      rebuildTerrain: () => handles.setTerrain?.({}),
+      onFrame: handles.onFrame,
+      ...(handles.setSoloDrag ? { setSoloDrag: handles.setSoloDrag } : {}),
+      ...(handles.tour ? { tour: handles.tour } : {}),
+    });
+  }
 
   // Mount every refworld skill now — registration alone only catalogs them.
   for (const m of DEV_SKILLS_META) {

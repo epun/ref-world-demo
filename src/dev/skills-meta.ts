@@ -55,6 +55,13 @@ export const DEV_SKILLS_META: readonly DevSkillMeta[] = [
       'weather controls — clear/overcast/fog/rain/snow, time of day, intensity, wind override. no-ops gracefully when the world exposes no environment handle.',
   },
   {
+    id: 'refworld.paint',
+    name: 'paint',
+    category: 'refworld',
+    description:
+      'sculpt the terrain by hand (plan §7) — raise, lower, flatten and smooth over a painted height map, added to the authored land before it is terraced so a painted hill gets the same risers. envpaint\'s brush engine; dev only, and the demo build never paints.',
+  },
+  {
     id: 'refworld.character',
     name: 'character',
     category: 'refworld',

@@ -33,6 +33,7 @@ import { MOTION } from '../../src/taste/tokens';
 import { EGG_RADIUS } from '../../src/egg/egg';
 import type { Collider } from '../../src/physics/colliders';
 import type { WorldHandles } from '../../src/world/scene';
+import { FLAT_SURFACE, ROLLING_SURFACE, type Surface } from '../../src/world/surface';
 import { bird, quadruped, snowman, circleBlob } from '../fixtures/strokes';
 
 // createEgg paints its shell texture through a 2d canvas; off-DOM the
@@ -119,7 +120,7 @@ describe('spawn placement', () => {
     const spot = spawnSpot(0);
     const rock: Collider = { x: spot.x, z: spot.z, r: 1.5, hard: true };
     const world = stubWorld([rock]);
-    const manager = createCreatureManager(world, { autoHatch: true });
+    const manager = createCreatureManager(world, { autoHatch: true, surface: FLAT_SURFACE });
     expect(manager.spawn('egg-on-rock', snowman, { hatchMs: 60_000 })).toBe(true);
     const [egg] = manager.positions();
     expect(egg).toBeDefined();
@@ -131,7 +132,7 @@ describe('spawn placement', () => {
 
   it('keeps a second egg clear of the first when spots collide', () => {
     const world = stubWorld([]);
-    const manager = createCreatureManager(world, { autoHatch: true });
+    const manager = createCreatureManager(world, { autoHatch: true, surface: FLAT_SURFACE });
     manager.spawn('first', snowman, { hatchMs: 60_000 });
     manager.spawn('second', circleBlob, { hatchMs: 60_000 });
     const [a, b] = manager.positions();
@@ -152,7 +153,7 @@ describe('live population — nothing ever interpenetrates', () => {
       { x: -4, z: 7, r: 1.0, hard: false }, // a bush — soft, never blocks
     ];
     const world = stubWorld(props);
-    const manager = createCreatureManager(world, { autoHatch: true });
+    const manager = createCreatureManager(world, { autoHatch: true, surface: FLAT_SURFACE });
 
     let now = performance.now();
     manager.spawn('a', snowman, { name: 'a', hatchMs: 0, personality: 'friends' });
@@ -221,7 +222,10 @@ describe('manual move — the gizmo owns a held creature', () => {
     manager: ReturnType<typeof createCreatureManager>;
     root: Group;
   } {
-    const manager = createCreatureManager(stubWorld([ROCK]), { autoHatch: true });
+    const manager = createCreatureManager(stubWorld([ROCK]), {
+      autoHatch: true,
+      surface: FLAT_SURFACE,
+    });
     let now = performance.now();
     manager.spawn('held', snowman, { name: 'held', hatchMs: 0 });
     for (let i = 0; i < 200 && manager.hoverTargets().length < 1; i++) {
@@ -266,7 +270,10 @@ describe('manual move — the gizmo owns a held creature', () => {
   });
 
   it('a held creature is still an obstacle: neighbors part around it', () => {
-    const manager = createCreatureManager(stubWorld([]), { autoHatch: true });
+    const manager = createCreatureManager(stubWorld([]), {
+      autoHatch: true,
+      surface: FLAT_SURFACE,
+    });
     let now = performance.now();
     manager.spawn('held', snowman, { name: 'held', hatchMs: 0 });
     manager.spawn('free', circleBlob, { name: 'free', hatchMs: 0 });
@@ -318,7 +325,7 @@ describe('the outliner can see both phases', () => {
   // is used for, which is checking that geometry actually built.
   it('names the egg group, and the creature keeps the same name', () => {
     const world = stubWorld([]);
-    const manager = createCreatureManager(world, { autoHatch: false });
+    const manager = createCreatureManager(world, { autoHatch: false, surface: FLAT_SURFACE });
     expect(manager.spawn('drawer-1', snowman, { name: 'ada', hatchMs: 60_000 })).toBe(true);
 
     const names: string[] = [];
@@ -332,7 +339,7 @@ describe('the outliner can see both phases', () => {
 
   it('names an unsigned egg with the generated name', () => {
     const world = stubWorld([]);
-    const manager = createCreatureManager(world, { autoHatch: false });
+    const manager = createCreatureManager(world, { autoHatch: false, surface: FLAT_SURFACE });
     manager.spawn('drawer-2', snowman, { hatchMs: 60_000 });
     const names: string[] = [];
     world.scene.traverse((node) => {
@@ -362,7 +369,7 @@ describe('grown arrivals — a creature that is already here', () => {
 
   function grownWorld(count: number) {
     const world = stubWorld([]);
-    const manager = createCreatureManager(world, { autoHatch: false });
+    const manager = createCreatureManager(world, { autoHatch: false, surface: FLAT_SURFACE });
     const kinds = [snowman, circleBlob, quadruped, bird];
     for (let i = 0; i < count; i++) {
       manager.spawn(`grown-${i}`, kinds[i % kinds.length]!, { hatchMs: 60_000, grown: true });
@@ -473,7 +480,7 @@ describe('following a host — arriving at a world already in motion', () => {
 
   function viewing(count: number) {
     const world = stubWorld([]);
-    const manager = createCreatureManager(world, { autoHatch: false });
+    const manager = createCreatureManager(world, { autoHatch: false, surface: FLAT_SURFACE });
     for (let i = 0; i < count; i++) {
       manager.spawn(`v-${i}`, circleBlob, { hatchMs: 60_000, grown: true });
     }
@@ -611,7 +618,10 @@ describe('resident spawns survive the cap end to end', () => {
     // The thread that matters: SpawnOptions.resident has to reach the slot,
     // or chooseEviction is correct about data nothing ever sets. Kept to
     // two creatures — the choosing is proved above, this is the wiring.
-    const manager = createCreatureManager(stubWorld([]), { autoHatch: false });
+    const manager = createCreatureManager(stubWorld([]), {
+      autoHatch: false,
+      surface: FLAT_SURFACE,
+    });
     manager.spawn('res', circleBlob, { hatchMs: 60_000, grown: true, resident: true });
     manager.spawn('guest', circleBlob, { hatchMs: 60_000, grown: true });
     const live = manager.evictable();
@@ -619,6 +629,220 @@ describe('resident spawns survive the cap end to end', () => {
     expect(live.find((s) => s.id === 'guest')?.resident).toBe(false);
     // And the guard would take the guest, despite the resident being older.
     expect(chooseEviction(live)?.id).toBe('guest');
+    manager.clearAll();
+  });
+});
+
+describe('standing on the ground — heights come from the Surface seam', () => {
+  /**
+   * Creatures walk on terrain (PLAN §7.2): locomotion still writes x/z only
+   * and the height is SAMPLED after it, every frame. A fixed ramp rather
+   * than the authored landscape — this is about the seam being used, not
+   * about what the map happens to be at some coordinate.
+   */
+  const SLOPE = 0.12;
+  const ramp: Surface = {
+    sampleHeight: (x, z) => x * SLOPE + z * 0.05,
+    normalAt: () => {
+      const len = Math.hypot(SLOPE, 1, 0.05);
+      return { x: -SLOPE / len, y: 1 / len, z: -0.05 / len };
+    },
+  };
+
+  /** The one live creature root, by the name it was spawned with. */
+  function rootOf(manager: ReturnType<typeof createCreatureManager>): Group {
+    const target = manager.hoverTargets()[0];
+    expect(target).toBeDefined();
+    return target!.object;
+  }
+
+  it('a grown creature spawns standing on the terrain, not on y = 0', () => {
+    const manager = createCreatureManager(stubWorld([]), {
+      autoHatch: false,
+      surface: ramp,
+    });
+    manager.spawn('walker', snowman, { name: 'walker', hatchMs: 60_000, grown: true });
+    const root = rootOf(manager);
+    expect(root.position.y).toBeCloseTo(
+      ramp.sampleHeight(root.position.x, root.position.z),
+      12,
+    );
+    // ...and the ramp is well off zero at the first spiral spot, so this
+    // is a real height rather than a zero that would pass either way.
+    expect(Math.abs(root.position.y)).toBeGreaterThan(0.1);
+    manager.clearAll();
+  });
+
+  it('the height follows a creature to a new x/z, every frame', () => {
+    // Driven through the viewer path (a host's poses) so the movement is
+    // real and deterministic — an autonomous agent is free to sit still,
+    // and this is about the height following, not about wandering.
+    const manager = createCreatureManager(stubWorld([]), {
+      autoHatch: false,
+      surface: ramp,
+    });
+    manager.spawn('walker', quadruped, { name: 'walker', hatchMs: 60_000, grown: true });
+    manager.pauseAi(true);
+    const root = rootOf(manager);
+    const startX = root.position.x;
+
+    let now = performance.now();
+    for (let f = 0; f < 40; f++) {
+      manager.followPoses([{ id: 'walker', x: 28 - f * 0.6, z: -14 + f * 0.4, heading: 0 }]);
+      now += 33;
+      manager.update(33, now);
+      // Sampled AFTER the follow ease wrote x/z — every single frame.
+      expect(root.position.y).toBeCloseTo(
+        ramp.sampleHeight(root.position.x, root.position.z),
+        12,
+      );
+    }
+    // It really travelled, and its height came with it.
+    expect(Math.abs(root.position.x - startX)).toBeGreaterThan(1);
+    manager.clearAll();
+  });
+
+  it('an autonomous creature never leaves the ground over a long run', () => {
+    const manager = createCreatureManager(stubWorld([]), {
+      autoHatch: false,
+      surface: ramp,
+    });
+    manager.spawn('roamer', quadruped, { name: 'roamer', hatchMs: 60_000, grown: true });
+    manager.setWanderSpeed(3);
+    const root = rootOf(manager);
+    let now = performance.now();
+    for (let f = 0; f < 300; f++) {
+      // A clamped 250ms spike every 60 frames, as the real loop delivers.
+      const dt = f % 60 === 59 ? 250 : 33;
+      now += dt;
+      manager.update(dt, now);
+      expect(root.position.y).toBeCloseTo(
+        ramp.sampleHeight(root.position.x, root.position.z),
+        12,
+      );
+    }
+    manager.clearAll();
+  });
+
+  it('the world terrain is the default — nobody has to ask for it', () => {
+    const manager = createCreatureManager(stubWorld([]), { autoHatch: false });
+    manager.spawn('walker', snowman, { name: 'walker', hatchMs: 60_000, grown: true });
+    const root = rootOf(manager);
+    // Compared against the seam, never a number: the map may change.
+    expect(root.position.y).toBe(
+      ROLLING_SURFACE.sampleHeight(root.position.x, root.position.z),
+    );
+    manager.clearAll();
+  });
+
+  it("an egg rests on the ground under it, and the entrance slides down to it", () => {
+    const world = stubWorld([]);
+    const manager = createCreatureManager(world, { autoHatch: false, surface: ramp });
+    manager.spawn('layer', snowman, { name: 'ada', hatchMs: 60_000 });
+
+    let group: Object3D | null = null;
+    world.scene.traverse((node) => {
+      if (node.name === 'egg ada') group = node;
+    });
+    const egg = group as Object3D | null;
+    expect(egg).not.toBeNull();
+    const ground = ramp.sampleHeight(egg!.position.x, egg!.position.z);
+    expect(Math.abs(ground)).toBeGreaterThan(0.1);
+    // Entrances slide (TASTE §2.1): it starts above its ground...
+    expect(egg!.position.y).toBeGreaterThan(ground + 1);
+
+    // ...and settles onto it, never onto zero.
+    let now = performance.now();
+    for (let f = 0; f < 200; f++) {
+      now += 33;
+      manager.update(33, now);
+    }
+    expect(egg!.position.y - ramp.sampleHeight(egg!.position.x, egg!.position.z)).toBeLessThan(
+      0.02,
+    );
+    manager.clearAll();
+  });
+
+  it('a hatched creature rises out of the ground and settles on it', () => {
+    const manager = createCreatureManager(stubWorld([]), {
+      autoHatch: true,
+      surface: ramp,
+    });
+    let now = performance.now();
+    manager.spawn('hatcher', snowman, { name: 'hatcher', hatchMs: 0 });
+    for (let i = 0; i < 200 && manager.hoverTargets().length < 1; i++) {
+      now += 50;
+      manager.update(50, now);
+    }
+    const root = rootOf(manager);
+    // Mid-rise: under the ground it is coming out of, never under y = 0.
+    // (The burst frame also ejects the newborn from its own egg's collider,
+    // so it is already a step away from where the shell stood — which is
+    // exactly why the rise re-samples rather than holding one height.)
+    const ground = ramp.sampleHeight(root.position.x, root.position.z);
+    expect(root.position.y).toBeLessThan(ground);
+    expect(root.position.y).toBeGreaterThan(ground - 2);
+
+    // The whole exit, then: standing exactly on the terrain.
+    for (let f = 0; f < 200; f++) {
+      now += 33;
+      manager.update(33, now);
+    }
+    expect(root.position.y).toBeCloseTo(
+      ramp.sampleHeight(root.position.x, root.position.z),
+      12,
+    );
+    manager.clearAll();
+  });
+
+  it('a retiring creature sinks below the ground it was standing on', () => {
+    // The population guard is the only thing that retires a creature, so
+    // the world has to be full for the sink to run at all. One fixture and
+    // grown arrivals keep that as cheap as a full room can be.
+    const manager = createCreatureManager(stubWorld([]), {
+      autoHatch: false,
+      surface: ramp,
+    });
+    manager.spawn('eldest', circleBlob, { name: 'eldest', hatchMs: 60_000, grown: true });
+    const root = rootOf(manager);
+    const ground = ramp.sampleHeight(root.position.x, root.position.z);
+    expect(root.position.y).toBeCloseTo(ground, 12);
+
+    for (let i = 1; i < MAX_POPULATION + 1; i++) {
+      manager.spawn(`filler-${i}`, circleBlob, { hatchMs: 60_000, grown: true });
+    }
+
+    // Mid-slide: under the terrain it was standing on — the sink used to be
+    // measured from y = 0, which on a raised tier is somewhere in the air.
+    let now = performance.now();
+    now += MOTION.primaryMs * 0.4;
+    manager.update(16, now);
+    expect(root.position.y).toBeLessThan(ground - 0.5);
+    expect(root.position.y).toBeGreaterThan(ground - 2.6);
+    manager.clearAll();
+  }, 120_000);
+
+  it('endManualMove sets the creature back down on the terrain', () => {
+    const manager = createCreatureManager(stubWorld([]), {
+      autoHatch: false,
+      surface: ramp,
+    });
+    manager.spawn('held', snowman, { name: 'held', hatchMs: 60_000, grown: true });
+    const root = rootOf(manager);
+    expect(manager.beginManualMove(root)).toBe(true);
+
+    // A gizmo drag: anywhere, on all three axes — while held, nothing
+    // re-grounds it.
+    root.position.set(24, 5.5, -11);
+    let now = performance.now();
+    for (let f = 0; f < 10; f++) {
+      now += 33;
+      manager.update(33, now);
+      expect(root.position.y).toBe(5.5);
+    }
+
+    manager.endManualMove(root);
+    expect(root.position.y).toBe(ramp.sampleHeight(24, -11));
     manager.clearAll();
   });
 });

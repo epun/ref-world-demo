@@ -3,8 +3,15 @@
  *
  * Shadow as a graphic shape: a single hard-edged value — solid SURFACE.shadow
  * — cut sharp against the ground. No gradient, no blur, no opacity falloff,
- * no penumbra. Each registered entity gets one stamp sitting just above y=0,
- * polygon-offset and render-ordered so it never z-fights the ground.
+ * no penumbra. Each registered entity gets one stamp lying ON the ground,
+ * polygon-offset and render-ordered so it never z-fights it.
+ *
+ * ON the ground, not on y=0: the pass samples the Surface seam (PLAN §7.2)
+ * under each stamp for its height AND its up-normal, so a stamp on a terrace
+ * riser lies flat against the riser rather than hovering level over it. A
+ * caller still only ever says WHERE on the ground plane (x, z) — the height
+ * and the tilt are the pass's business, which is the same seam discipline
+ * locomotion follows.
  *
  * TIME OF DAY (cellshader translation): the reference environment drives its
  * shadow-catcher from sun altitude (length/direction) and a per-weather
@@ -17,12 +24,21 @@
  * pure and exported for tests.
  */
 
-import { CircleGeometry, Color, Group, Mesh, MeshBasicMaterial } from 'three';
+import {
+  CircleGeometry,
+  Color,
+  Group,
+  Mesh,
+  MeshBasicMaterial,
+  Quaternion,
+  Vector3,
+} from 'three';
 import { SURFACE } from '../taste/tokens';
 import { KEY_DIRECTION } from './lighting';
+import { ROLLING_SURFACE, type Surface } from './surface';
 
-/** Just proud of the ground plane. */
-const SHADOW_LIFT = 0.02;
+/** Just proud of the sampled ground height. */
+export const SHADOW_LIFT = 0.02;
 const SHADOW_SEGMENTS = 64;
 
 // ── sun-stamp ellipse math (pure) ────────────────────────────────────────────
@@ -98,7 +114,8 @@ const clamp01 = (x: number): number => Math.min(1, Math.max(0, x));
 // ── the stamp pass ───────────────────────────────────────────────────────────
 
 export interface ShadowHandle {
-  /** Move the stamp on the ground plane. Y is owned by the pass. */
+  /** Move the stamp on the ground plane. Height and tilt are owned by the
+   * pass, which samples them from the Surface — a caster never says y. */
   setPosition(x: number, z: number): void;
 }
 
@@ -115,6 +132,17 @@ export class FlatShadows {
   readonly group = new Group();
 
   private readonly stamps = new Map<string, Stamp>();
+
+  /** The ground every stamp lies on. Defaults to the world's terrain; a
+   * caller with no landscape (tests, the phone stage) passes FLAT_SURFACE. */
+  private readonly surface: Surface;
+
+  // Orientation scratch, reused every lay() — this runs once per stamp per
+  // frame across the whole population.
+  private readonly worldUp = new Vector3(0, 1, 0);
+  private readonly groundNormal = new Vector3();
+  private readonly tilt = new Quaternion();
+  private readonly spin = new Quaternion();
 
   // One shared material: every shadow is the same single value by
   // construction — the per-frame presence step retints ALL stamps at once,
@@ -135,6 +163,10 @@ export class FlatShadows {
     STAMP_NOON_ALTITUDE,
   );
 
+  constructor(surface: Surface = ROLLING_SURFACE) {
+    this.surface = surface;
+  }
+
   /**
    * Drive the stamps from the sun (scene.ts calls this every frame with
    * environment-derived values). azimuth/altitude shape the shared ellipse;
@@ -149,16 +181,32 @@ export class FlatShadows {
     for (const stamp of this.stamps.values()) this.lay(stamp);
   }
 
+  /**
+   * Place one stamp: the sun ellipse decides WHERE on the ground plane, the
+   * Surface decides how high the ground is there and which way it faces.
+   *
+   * The height is sampled at the PUSHED position, not under the caster — a
+   * long dusk shadow reaching onto a terrace above lies on that terrace.
+   *
+   * Orientation is written as a quaternion in one go: align local +y (the
+   * disc's own normal — the geometry is rotated flat at build time) to the
+   * ground normal, THEN spin about the disc's own axis to point the long
+   * axis away from the sun. A quaternion and an Euler must not both be
+   * written, so the old `rotation.y` assignment is folded in as that spin
+   * rather than living beside it.
+   */
   private lay(stamp: Stamp): void {
     const e = this.ellipse;
     const push = e.offset * stamp.radius;
-    stamp.mesh.position.set(
-      stamp.x + e.dirX * push,
-      SHADOW_LIFT,
-      stamp.z + e.dirZ * push,
-    );
+    const px = stamp.x + e.dirX * push;
+    const pz = stamp.z + e.dirZ * push;
+    stamp.mesh.position.set(px, this.surface.sampleHeight(px, pz) + SHADOW_LIFT, pz);
+    const n = this.surface.normalAt(px, pz);
+    this.groundNormal.set(n.x, n.y, n.z);
+    this.tilt.setFromUnitVectors(this.worldUp, this.groundNormal);
+    this.spin.setFromAxisAngle(this.worldUp, stampRotationY(e));
+    stamp.mesh.quaternion.copy(this.tilt).multiply(this.spin);
     stamp.mesh.scale.set(e.stretch, 1, 1);
-    stamp.mesh.rotation.y = stampRotationY(e);
   }
 
   addShadow(id: string, radius: number): ShadowHandle {

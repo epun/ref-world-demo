@@ -216,12 +216,29 @@ export function roomForWorld(world: string): string {
  * An UNNAMED world keeps the deep link, because it has no choice: its room
  * was minted at random and cannot be derived from anything in the address,
  * so dropping it would strand the scan in a room of its own.
+ *
+ * `page` is that same rule applied one level up. A client's world is its
+ * own deployment of this repo at its own hostname (worlds.json,
+ * scripts/world-build.mjs), and the page declares which world it is in
+ * rather than reading it from a query. On such a deployment
+ * `location.pathname` is simply `/`, so `page` is `/` and the qr encodes
+ * `https://ref-world-meridian.vercel.app/` — the address on the card, the
+ * one the client was sent, the one anybody would paste. `/?world=<name>`
+ * on the public site still lands in the identical world, but a qr encoding
+ * it would be a second address for a place that is supposed to have one.
+ *
+ * It is ignored without a world, because an unnamed world's room is not in
+ * the path — a page-only url would strand the scan exactly as dropping the
+ * deep link would.
  */
 export function joinUrl(
   origin: string,
-  where: { world: string | null; room: string; epoch: string },
+  where: { world: string | null; room: string; epoch: string; page?: string },
 ): string {
-  if (where.world) return `${origin}/?world=${encodeURIComponent(where.world)}`;
+  if (where.world) {
+    if (where.page) return `${origin}${where.page}`;
+    return `${origin}/?world=${encodeURIComponent(where.world)}`;
+  }
   return `${origin}/draw/?room=${where.room}&w=${where.epoch}`;
 }
 

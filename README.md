@@ -31,6 +31,10 @@ tiny inside enormous soft hand-drawn environments.
 Many phones, one world. Game feel is modeled on the Chao from *Sonic Adventure*: hatch from
 an egg, waddle around, emote at you.
 
+The world itself has real geography to wander through: a forest, an open plain, a mountain
+range, small ponds, and a lake with an island reached by a land bridge — all on terraced
+ground that rises and sinks in tiers, not a flat plane.
+
 ## How a drawing becomes a character
 
 No 3D generation model in the critical path. The taste is flat black silhouettes, so a

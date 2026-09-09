@@ -33,8 +33,15 @@ export interface Steer {
   speed: number;
 }
 
-/** Half-extent of the roamable field; wander targets stay inside. */
-export const WORLD_EXTENT = 40;
+/** Half-extent of the roamable field; wander targets stay inside.
+ *
+ * 100, not 40 (2026-09-03): the map's environments were spread out across
+ * the field and scaled up — the forest sits at x -95, the range along
+ * z ≈ -118, the lake out at (80, 70) — and a 40-unit leash kept the
+ * population in the empty middle, walking toward scenery it could never
+ * reach. 100 puts every feature within reach, and still stops well short of
+ * the scatter's own 160-unit extent so nobody wanders off into bare paper. */
+export const WORLD_EXTENT = 100;
 
 /** Sit-beside / walk-together stand-off: approach targets sit this far
  * short of the peer. Never overlap — the emergent moment is two creatures

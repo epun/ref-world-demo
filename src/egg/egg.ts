@@ -80,6 +80,17 @@ export interface EggOptions {
   /** World-space rest position of the egg's ground contact. */
   x?: number;
   z?: number;
+  /**
+   * Ground height at (x, z) — where the shell rests (default 0).
+   *
+   * The egg does not know about terrain and must not: the placer samples the
+   * Surface seam (PLAN §7.2) and hands the answer in, exactly as it hands in
+   * x and z. Everything vertical here — the entrance slide, the wobble
+   * pivot, the hatch point — is measured FROM this, so a default of 0 is the
+   * flat world this module was written against (and the phone's stage, which
+   * has no landscape at all).
+   */
+  baseY?: number;
   /** Override the stroke-derived deterministic seed (dev only). */
   seed?: number;
   /**
@@ -284,6 +295,9 @@ export function createEgg(strokes: StrokeList, options: EggOptions = {}): Egg {
   const rng = makeRng(seed);
   const baseX = options.x ?? 0;
   const baseZ = options.z ?? 0;
+  // The ground under the shell (see EggOptions.baseY): every y below is an
+  // offset from it, never an absolute world height.
+  const baseY = options.baseY ?? 0;
 
   // ── shell texture ─────────────────────────────────────────────────────────
   const stamp = document.createElement('canvas');
@@ -336,7 +350,7 @@ export function createEgg(strokes: StrokeList, options: EggOptions = {}): Egg {
   const group = new Group();
   group.add(mesh);
   const wantsEntrance = options.entrance !== false;
-  group.position.set(baseX, wantsEntrance ? ENTRANCE_DROP : 0, baseZ);
+  group.position.set(baseX, baseY + (wantsEntrance ? ENTRANCE_DROP : 0), baseZ);
   group.rotation.y = FACE_CAMERA_Y;
 
   // ── motion state ──────────────────────────────────────────────────────────
@@ -395,7 +409,7 @@ export function createEgg(strokes: StrokeList, options: EggOptions = {}): Egg {
 
       // Ambient drift floor on top of the entrance slide.
       const drift = sampleDrift(nowMs, driftChannel, EGG_HEIGHT);
-      group.position.set(baseX + drift.x, drop, baseZ + drift.y);
+      group.position.set(baseX + drift.x, baseY + drop, baseZ + drift.y);
       group.rotation.y = FACE_CAMERA_Y + drift.rot;
     },
 
@@ -414,7 +428,9 @@ export function createEgg(strokes: StrokeList, options: EggOptions = {}): Egg {
     },
 
     hatchPoint(): Vector3 {
-      return new Vector3(group.position.x, EGG_HEIGHT * 0.55, group.position.z);
+      // World space in all three axes: the shell's own ground plus the
+      // height up the shell the character breaks out at.
+      return new Vector3(group.position.x, baseY + EGG_HEIGHT * 0.55, group.position.z);
     },
 
     dispose(): void {

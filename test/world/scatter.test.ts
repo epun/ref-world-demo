@@ -2,7 +2,7 @@
  * Scatter placement tests — pure functions over placement data. No WebGL.
  */
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   Group,
   InstancedMesh,
@@ -13,6 +13,13 @@ import {
   type MeshStandardMaterial,
 } from 'three';
 import { WORLD } from '../../src/taste/tokens';
+import {
+  sampleLandscape,
+  setTerrainParams,
+  TERRAIN_DEFAULTS,
+  WATER_BODIES,
+  waterColliders,
+} from '../../src/world/landscape';
 import { BUILDING_COURTYARD_VARIANT, PROP_VARIANT_COUNTS } from '../../src/world/props';
 import {
   applyInstanceVariation,
@@ -25,6 +32,8 @@ import {
   filterExcluded,
   instanceVariation,
   KIND_GROUP_LABELS,
+  PROP_SHADOW_LIFT,
+  TICK_LIFT,
   ROCK_SQUASH_Y,
   ROCK_WIDEN_XZ,
   VARIATION_BULGE,
@@ -48,6 +57,9 @@ import {
   colliderFor,
   TRUNK_FOOTPRINT,
 } from '../../src/world/scatter';
+// The ground seam (PLAN §7.2): the scatter samples it and derives no height
+// of its own, so the tests below inject one and read the matrices back.
+import { FLAT_SURFACE, ROLLING_SURFACE } from '../../src/world/surface';
 
 /** Collect the named prop InstancedMeshes wherever they sit — variant meshes
  * now live inside per-kind container groups (KIND_GROUP_LABELS), one level
@@ -92,7 +104,9 @@ describe('scatter placement', () => {
   it('every variant index is in range for its kind', () => {
     for (const p of computePlacements()) {
       expect(p.variant).toBeGreaterThanOrEqual(0);
-      if (p.kind === 'tick') {
+      // The flat ink marks (grass ticks, shoreline reeds) have no variant
+      // library behind them.
+      if (p.kind === 'tick' || p.kind === 'reed') {
         expect(p.variant).toBe(0);
       } else {
         expect(p.variant, p.kind).toBeLessThan(PROP_VARIANT_COUNTS[p.kind]);
@@ -148,7 +162,15 @@ describe('scatter placement', () => {
   it('cluster neighbors bias toward one variant — present but not total', () => {
     const placements = computePlacements({ kindDensity: { tree: 1, conifer: 1 } });
     for (const kind of ['tree', 'conifer'] as const) {
-      const of = placements.filter((p) => p.kind === kind);
+      // Measured on the PLAIN only. Inside the forest the stand is dense
+      // enough that separate clusters overlap, so a "near pair" there is
+      // often two different clusters' trees — which dilutes the bias
+      // without weakening it. The mechanic under test is per-cluster.
+      const of = placements.filter((p) => {
+        if (p.kind !== kind) return false;
+        const l = sampleLandscape(p.x, p.z);
+        return l.forest === 0 && l.mountain === 0 && !l.island;
+      });
       const near = SCATTER_STEP * 2;
       let pairs = 0;
       let same = 0;
@@ -246,8 +268,12 @@ describe('scatter placement', () => {
     for (const kind of ['palm', 'cactus', 'picnicTable', 'waterTower', 'monolith'] as const) {
       expect(SCATTER_KINDS).toContain(kind);
     }
+    // The landscape kinds ride the same generic api: `mountain` comes in
+    // through PROP_KINDS, `reed` is scatter's own ink mark.
+    expect(SCATTER_KINDS).toContain('mountain');
+    expect(SCATTER_KINDS).toContain('reed');
     expect(new Set(SCATTER_KINDS).size).toBe(SCATTER_KINDS.length);
-    expect(SCATTER_KINDS.length).toBe(12);
+    expect(SCATTER_KINDS.length).toBe(14);
   });
 
   it('new kinds land at their authored rarities and cluster shapes', () => {
@@ -297,7 +323,9 @@ describe('scatter placement', () => {
     // Monoliths: rare, mostly standing in pairs.
     const monoliths = of('monolith');
     expect(monoliths.length).toBeGreaterThan(1);
-    expect(monoliths.length).toBeLessThan(12);
+    // 20, not 12: the scattered region grew from ±120 to ±160 (2026-09-03),
+    // which is 1.8× the ground, and a per-cell rarity scales with it.
+    expect(monoliths.length).toBeLessThan(20);
     const paired = monoliths.filter((p) =>
       monoliths.some((q) => q !== p && Math.hypot(q.x - p.x, q.z - p.z) < near),
     ).length;
@@ -307,6 +335,10 @@ describe('scatter placement', () => {
   it('per-kind density is independent: one kind never moves another', () => {
     const key = (p: Placement): string => `${p.kind}:${p.x.toFixed(4)},${p.z.toFixed(4)}`;
     const base = computePlacements();
+    // NOTE the mountain slider is deliberately NOT in this test. A mountain
+    // sweeps the ground it stands on clear of everything else, so moving
+    // that one slider does move other kinds — a landscape feature displacing
+    // dressing is the intended behaviour, not a leak in the roll order.
 
     // Zeroing trees removes every tree and moves nothing else: ticks are
     // byte-identical, and every base conifer/rock/... placement survives
@@ -388,7 +420,17 @@ describe('scatter placement', () => {
       const meshes = namedMeshes(scatter.group);
       const kindOf = (name: string): string => name.split('-')[0]!;
       const swaySet = new Set<string>(WIND_SWAY_KINDS);
-      const rigid = ['building', 'rock', 'stump', 'picnicTable', 'waterTower', 'monolith'];
+      // Mountains are rigid too: rock does not lean with the weather, and a
+      // landmass least of all.
+      const rigid = [
+        'building',
+        'rock',
+        'stump',
+        'picnicTable',
+        'waterTower',
+        'monolith',
+        'mountain',
+      ];
       expect(meshes.some((m) => swaySet.has(kindOf(m.name)))).toBe(true);
       expect(meshes.some((m) => rigid.includes(kindOf(m.name)))).toBe(true);
 
@@ -547,12 +589,22 @@ describe('scatter colliders', () => {
     expect(monolith.r).toBeCloseTo(TRUNK_FOOTPRINT.monolith!, 9);
   });
 
-  it('handle: one collider per visible non-tick prop, hard/soft split by kind', () => {
+  it('handle: one collider per visible prop, plus the water circles', () => {
     const scatter = createScatter();
     try {
       const props = scatter.positions();
       const colliders = scatter.colliders();
-      expect(colliders.length).toBe(props.length);
+      // Props first, in positions() order, then the landscape's static water
+      // circles appended (creatures must not walk into a pond).
+      const water = waterColliders();
+      // A budget, not a fixture: the water circles are a uniform tiling now
+      // (2026-09-03) rather than one circle per pond plus a 16-circle ring,
+      // so the count tracks the wetted area. 1118 for the shipped layout; the
+      // exact number is landscape's business and pinned in its own tests.
+      expect(water.length).toBeGreaterThan(WATER_BODIES.length);
+      expect(water.length).toBeLessThanOrEqual(2500);
+      expect(colliders.length).toBe(props.length + water.length);
+      expect(colliders.slice(props.length)).toEqual(water);
       // Same iteration order as positions(): pair them up.
       props.forEach((p, i) => {
         const c = colliders[i]!;
@@ -584,8 +636,11 @@ describe('scatter colliders', () => {
 
       scatter.setKindDensity('tree', 1);
       const v1 = scatter.collidersVersion();
-      // Exclusions hide props — and their colliders with them.
-      const victim = scatter.colliders()[0]!;
+      // Exclusions hide props — and their colliders with them. Mountains are
+      // exempt from exclusions (they are landscape), and they are placed
+      // first, so pick a victim that is not one.
+      const victimIndex = scatter.positions().findIndex((p) => p.kind !== 'mountain');
+      const victim = scatter.colliders()[victimIndex]!;
       scatter.setExclusions([{ x: victim.x, z: victim.z, r: 0.5 }]);
       expect(scatter.collidersVersion()).toBeGreaterThan(v1);
       expect(
@@ -871,7 +926,9 @@ describe('zero kind density', () => {
       // same seed position (documented per-kind independence), so the ghost
       // check pairs colliders 1:1 with the visible props instead of
       // asserting the spot is empty.
-      expect(colliders).toHaveLength(positions.length);
+      // …plus the landscape's static water circles, which are appended after
+      // the props and belong to no placement at all.
+      expect(colliders).toHaveLength(positions.length + waterColliders().length);
       positions.forEach((p, i) => {
         expect(colliders[i]!.x).toBe(p.x);
         expect(colliders[i]!.z).toBe(p.z);
@@ -918,6 +975,226 @@ describe('kind grouping', () => {
       expect(trees.children.length).toBe(0);
       scatter.setKindDensity('tree', 1);
       expect(trees.children.length).toBeGreaterThan(0);
+    } finally {
+      scatter.dispose();
+    }
+  });
+});
+
+// ── everything stands on the ground (Surface seam) ───────────────────────────
+
+describe('scatter on the terrain', () => {
+  /** The stamp sheet: the one InstancedMesh left unnamed on the root. */
+  const stampsOf = (root: Group): InstancedMesh => {
+    const found = root.children.filter((o): o is InstancedMesh => o instanceof InstancedMesh);
+    expect(found).toHaveLength(1);
+    return found[0]!;
+  };
+
+  /** Bounded walk of an instanced mesh — every instance for a small one, a
+   * spread of ~60 for the grass sheets. */
+  function eachInstance(mesh: InstancedMesh, visit: (matrix: Matrix4, i: number) => void): void {
+    const matrix = new Matrix4();
+    const step = Math.max(1, Math.ceil(mesh.count / 60));
+    for (let i = 0; i < mesh.count; i += step) {
+      mesh.getMatrixAt(i, matrix);
+      visit(matrix, i);
+    }
+  }
+
+  it('seats every prop and every ink mark on the sampled height', () => {
+    const scatter = createScatter({ surface: ROLLING_SURFACE });
+    try {
+      const meshes = namedMeshes(scatter.group);
+      const pos = new Vector3();
+      const quat = new Quaternion();
+      const scl = new Vector3();
+      let offGround = 0;
+      for (const mesh of meshes) {
+        // Ticks and reeds are the flat ink marks; they ride a hair over the
+        // ground, everything else sits ON it.
+        const lift =
+          mesh.name.startsWith('grass') || mesh.name.startsWith('reeds') ? TICK_LIFT : 0;
+        eachInstance(mesh, (matrix, i) => {
+          matrix.decompose(pos, quat, scl);
+          const height = ROLLING_SURFACE.sampleHeight(pos.x, pos.z);
+          // 4 places: the matrix round-trips through float32, and so do the
+          // x/z the height is re-sampled at.
+          expect(pos.y, `${mesh.name}[${i}]`).toBeCloseTo(height + lift, 4);
+          if (Math.abs(height) > 0.01) offGround++;
+        });
+      }
+      // …and the map really is not flat: most instances are off zero.
+      expect(offGround).toBeGreaterThan(50);
+    } finally {
+      scatter.dispose();
+    }
+  });
+
+  it('lays every shadow stamp in the slope it falls on', () => {
+    const scatter = createScatter({ surface: ROLLING_SURFACE });
+    try {
+      const stamps = stampsOf(scatter.group);
+      expect(stamps.count).toBeGreaterThan(10);
+      const pos = new Vector3();
+      const quat = new Quaternion();
+      const scl = new Vector3();
+      const up = new Vector3();
+      let tilted = 0;
+      eachInstance(stamps, (matrix, i) => {
+        matrix.decompose(pos, quat, scl);
+        // No sun yet: the noon circle sits exactly over its prop.
+        const height = ROLLING_SURFACE.sampleHeight(pos.x, pos.z);
+        expect(pos.y, `stamp ${i}`).toBeCloseTo(height + PROP_SHADOW_LIFT, 4);
+        // Column 1 of the matrix is the stamp's own up: turned to the
+        // ground's normal, so a hard-edged disc on a riser lies IN it
+        // instead of sinking into the uphill side.
+        const e = matrix.elements;
+        up.set(e[4]!, e[5]!, e[6]!).normalize();
+        const n = ROLLING_SURFACE.normalAt(pos.x, pos.z);
+        expect(up.x, `stamp ${i} up.x`).toBeCloseTo(n.x, 3);
+        expect(up.y, `stamp ${i} up.y`).toBeCloseTo(n.y, 3);
+        expect(up.z, `stamp ${i} up.z`).toBeCloseTo(n.z, 3);
+        if (n.y < 0.999) tilted++;
+      });
+      expect(tilted).toBeGreaterThan(0);
+    } finally {
+      scatter.dispose();
+    }
+  });
+
+  it('re-samples the ground where a low sun pushes the stamp to', () => {
+    const scatter = createScatter({ surface: ROLLING_SURFACE });
+    try {
+      const stamps = stampsOf(scatter.group);
+      // A low sun: the ellipse stretches and slides the stamp off its prop,
+      // which on a slope is a different height entirely.
+      scatter.setSun(0.7, 0.15, 1);
+      const pos = new Vector3();
+      const quat = new Quaternion();
+      const scl = new Vector3();
+      let moved = 0;
+      eachInstance(stamps, (matrix, i) => {
+        matrix.decompose(pos, quat, scl);
+        const height = ROLLING_SURFACE.sampleHeight(pos.x, pos.z);
+        expect(pos.y, `stamp ${i}`).toBeCloseTo(height + PROP_SHADOW_LIFT, 4);
+        if (scl.x > scl.z) moved++;
+      });
+      // The sun did stretch them — otherwise this proves nothing.
+      expect(moved).toBeGreaterThan(0);
+    } finally {
+      scatter.dispose();
+    }
+  });
+
+  it('injects FLAT_SURFACE and gets the pre-terrain world back exactly', () => {
+    // The flat world is still representable, and it is what every assertion
+    // in this file that predates the terrain was written against: props at
+    // y=0, marks at their lift, stamps level and unrotated in y.
+    const scatter = createScatter({ surface: FLAT_SURFACE });
+    try {
+      const pos = new Vector3();
+      const quat = new Quaternion();
+      const scl = new Vector3();
+      for (const mesh of namedMeshes(scatter.group)) {
+        const lift =
+          mesh.name.startsWith('grass') || mesh.name.startsWith('reeds') ? TICK_LIFT : 0;
+        eachInstance(mesh, (matrix, i) => {
+          matrix.decompose(pos, quat, scl);
+          expect(pos.y, `${mesh.name}[${i}]`).toBeCloseTo(lift, 6);
+        });
+      }
+      const up = new Vector3();
+      eachInstance(stampsOf(scatter.group), (matrix, i) => {
+        matrix.decompose(pos, quat, scl);
+        expect(pos.y, `stamp ${i}`).toBeCloseTo(PROP_SHADOW_LIFT, 6);
+        const e = matrix.elements;
+        up.set(e[4]!, e[5]!, e[6]!).normalize();
+        expect(up.y, `stamp ${i}`).toBeCloseTo(1, 6);
+      });
+    } finally {
+      scatter.dispose();
+    }
+  });
+});
+
+describe('scatter — refreshTerrain re-seats the world on new ground', () => {
+  // Module state in landscape.ts: whatever a test moves, put it back.
+  afterEach(() => setTerrainParams(TERRAIN_DEFAULTS));
+
+  /** Every named prop/mark mesh's instance positions, flattened. */
+  const seatsOf = (scatter: { group: Group }): { x: number; y: number; z: number }[] => {
+    const out: { x: number; y: number; z: number }[] = [];
+    const matrix = new Matrix4();
+    for (const mesh of namedMeshes(scatter.group)) {
+      for (let i = 0; i < mesh.count; i++) {
+        mesh.getMatrixAt(i, matrix);
+        out.push({ x: matrix.elements[12]!, y: matrix.elements[13]!, z: matrix.elements[14]! });
+      }
+    }
+    return out;
+  };
+
+  it('moves every y to the new ground and leaves x, z and the counts alone', () => {
+    const scatter = createScatter({ surface: ROLLING_SURFACE });
+    try {
+      const before = seatsOf(scatter);
+      expect(before.length).toBeGreaterThan(100);
+      // The world really is on a hillside to begin with.
+      expect(before.some((s) => Math.abs(s.y) > 0.5)).toBe(true);
+
+      setTerrainParams({ elevation: 0 });
+      scatter.refreshTerrain();
+      const after = seatsOf(scatter);
+
+      // The placement did NOT re-roll: same count, same x/z, in the same
+      // order. A `setSeed`-style replace would fail every line of this.
+      expect(after).toHaveLength(before.length);
+      for (let i = 0; i < after.length; i++) {
+        expect(after[i]!.x, `instance ${i} x`).toBe(before[i]!.x);
+        expect(after[i]!.z, `instance ${i} z`).toBe(before[i]!.z);
+      }
+      // …and every y is on the new (flat) ground, at its kind's own lift.
+      for (let i = 0; i < after.length; i++) {
+        expect(Math.abs(after[i]!.y), `instance ${i} y`).toBeLessThanOrEqual(TICK_LIFT + 1e-9);
+      }
+      expect(after.some((s, i) => s.y !== before[i]!.y)).toBe(true);
+
+      // Put the dials back and the world stands exactly where it did.
+      setTerrainParams(TERRAIN_DEFAULTS);
+      scatter.refreshTerrain();
+      expect(seatsOf(scatter)).toEqual(before);
+    } finally {
+      scatter.dispose();
+    }
+  });
+
+  it('re-seats the shadow stamps too', () => {
+    const scatter = createScatter({ surface: ROLLING_SURFACE });
+    try {
+      const stamps = scatter.group.children.filter(
+        (o): o is InstancedMesh => o instanceof InstancedMesh,
+      );
+      expect(stamps).toHaveLength(1);
+      const matrix = new Matrix4();
+      const before: number[] = [];
+      for (let i = 0; i < stamps[0]!.count; i++) {
+        stamps[0]!.getMatrixAt(i, matrix);
+        before.push(matrix.elements[13]!);
+      }
+      expect(before.some((y) => Math.abs(y - PROP_SHADOW_LIFT) > 0.01)).toBe(true);
+
+      setTerrainParams({ elevation: 0 });
+      scatter.refreshTerrain();
+      // rebuild() makes a new sheet — find it again.
+      const after = scatter.group.children.filter(
+        (o): o is InstancedMesh => o instanceof InstancedMesh,
+      )[0]!;
+      expect(after.count).toBe(before.length);
+      for (let i = 0; i < after.count; i++) {
+        after.getMatrixAt(i, matrix);
+        expect(matrix.elements[13]!, `stamp ${i}`).toBeCloseTo(PROP_SHADOW_LIFT, 6);
+      }
     } finally {
       scatter.dispose();
     }

@@ -4,7 +4,10 @@
  * node with no DOM and no ghost-panel import.
  */
 
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { TERRAIN_DEFAULTS, TERRAIN_LIMITS } from '../../src/world/landscape';
 import { DEV_SKILLS_META } from '../../src/dev/skills-meta';
 
 describe('dev skill metadata', () => {
@@ -16,6 +19,7 @@ describe('dev skill metadata', () => {
       'refworld.character',
       'refworld.taste',
       'refworld.weather',
+      'refworld.paint',
     ]) {
       expect(ids).toContain(required);
     }
@@ -53,5 +57,100 @@ describe('dev skill metadata', () => {
     for (const drawing of mod.FALLBACK_DRAWINGS) {
       expect(drawing.length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe('the environment folder carries the terrain dials', () => {
+  // The panel needs a DOM to mount, so — like the ground/scene seam tests —
+  // this reads the source. What it pins is the wiring the user asked for
+  // (2026-09-03: adjust the amount of elevation and the spacing of the
+  // tiers), plus the two things easy to drop: the debounce in front of a
+  // ~300ms rebuild, and the session record so a replay re-applies the dial.
+  const source = readFileSync(join(process.cwd(), 'src/dev/index.ts'), 'utf8');
+
+  it('adds elevation, tier spacing and relief spread, at the module limits', () => {
+    for (const label of ["'elevation'", "'tier spacing'", "'relief spread'"]) {
+      expect(source, label).toContain(`folder.addSlider(${label}, {`);
+    }
+    expect(source).toContain('TERRAIN_LIMITS.elevation[0]');
+    expect(source).toContain('TERRAIN_LIMITS.elevation[1]');
+    expect(source).toContain('TERRAIN_LIMITS.tierStep[0]');
+    expect(source).toContain('TERRAIN_LIMITS.relief[1]');
+    // …and the sliders start where the world actually is, not at a literal.
+    expect(source).toContain('value: live.elevation');
+    expect(source).toContain('value: live.tierStep');
+    expect(source).toContain('value: live.relief');
+  });
+
+  it('debounces the rebuild and records each dial into the session log', () => {
+    expect(source).toContain('const TERRAIN_DEBOUNCE_MS = 150;');
+    expect(source).toContain('TERRAIN_DEBOUNCE_MS);');
+    for (const kind of ['elevation', 'tierStep', 'relief']) {
+      expect(source, kind).toContain(`session?.world('terrain', v, '${kind}')`);
+    }
+  });
+
+  it('and main.ts replays that field back onto the world', () => {
+    const main = readFileSync(join(process.cwd(), 'src/main.ts'), 'utf8');
+    expect(main).toContain("field === 'terrain'");
+    expect(main).toContain('world.setTerrain({ [kind]: value })');
+  });
+
+  it('keeps the shipped defaults inside their own limits', () => {
+    for (const key of ['elevation', 'tierStep', 'relief'] as const) {
+      const [lo, hi] = TERRAIN_LIMITS[key];
+      expect(TERRAIN_DEFAULTS[key], key).toBeGreaterThanOrEqual(lo);
+      expect(TERRAIN_DEFAULTS[key], key).toBeLessThanOrEqual(hi);
+    }
+  });
+});
+
+describe('the paint skill is wired the way the port plan asks', () => {
+  // Same reading as the terrain-dial block above: the panel needs a dom to
+  // mount, so this pins the wiring in source. What it protects is the four
+  // things a refactor could silently drop and nothing else would notice —
+  // the hook into the one module that owns heights, the world size the layer
+  // is mapped against, the gate that keeps the world's own pointer working,
+  // and the rebuild that has to happen when the pointer lifts.
+  const source = readFileSync(join(process.cwd(), 'src/dev/paint.ts'), 'utf8');
+
+  it('installs the painted sampler on the landscape, and takes it off again', () => {
+    expect(source).toContain("import { setPaintedHeight } from '../world/landscape'");
+    expect(source).toContain('setPaintedHeight(paintedSampler(map))');
+    expect(source).toContain('setPaintedHeight(null)');
+  });
+
+  it('shares the paint layer buffer with the map rather than copying it', () => {
+    expect(source).toContain('createPaintedMap(PAINTED_RES, PAINTED_SIZE, layer.data as Float32Array)');
+    expect(source).toContain('worldSize: PAINTED_SIZE');
+  });
+
+  it('leaves the world its pointer until painting is switched on', () => {
+    expect(source).toContain('canPaint: (event: PointerEvent): boolean => painting && !event.shiftKey');
+    expect(source).toContain('brush.enabled = false');
+    expect(source).toContain('handles.setSoloDrag?.(!on)');
+  });
+
+  it('registers raise, lower, flatten and smooth on the height layer, hotkeys 1-4', () => {
+    for (const id of ['raise', 'lower', 'flatten', 'smooth']) {
+      expect(source, id).toContain(`id: '${id}'`);
+    }
+    expect(source).toContain("const TOOL_KEYS = ['1', '2', '3', '4'] as const;");
+    expect(source).toContain('layer: HEIGHT_LAYER');
+    expect(source).toContain("altMode: 'smooth'");
+  });
+
+  it('throttles the rebuild during a stroke and always rebuilds on strokeend', () => {
+    expect(source).toContain('const REBUILD_MIN_MS = 125;');
+    expect(source).toContain("brush.on('stroke', ()");
+    expect(source).toContain("brush.on('strokeend', () => {");
+    // the strokeend handler is the unthrottled one
+    const end = source.slice(source.indexOf("brush.on('strokeend'"));
+    expect(end.slice(0, 400)).toContain('rebuildNow()');
+  });
+
+  it('leaves a marked hook where the session paint event goes (plan step 6)', () => {
+    expect(source).toContain('session hook');
+    expect(source).toContain("k: 'paint'");
   });
 });

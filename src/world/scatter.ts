@@ -42,15 +42,31 @@ import {
 import type { Collider } from '../physics/colliders';
 import { MOTION, SURFACE, WORLD } from '../taste/tokens';
 import {
+  isWater,
+  sampleLandscape,
+  shoreSamples,
+  waterColliders,
+  WATER_BODIES,
+  type LandscapeSample,
+} from './landscape';
+import {
   BUILDING_COURTYARD_VARIANT,
   buildPropGeometries,
+  MOUNTAIN_FOOTPRINT,
   PROP_KINDS,
   PROP_VARIANT_COUNTS,
   type PropKind,
 } from './props';
 import { stampEllipse, stampRotationY, type StampEllipse } from './shadows';
+import { ROLLING_SURFACE, type Surface } from './surface';
 
-export type ScatterKind = PropKind | 'tick';
+export type ScatterKind = PropKind | 'tick' | 'reed';
+
+/** The flat ink marks: no collider, no shadow stamp, no inflated variant
+ * geometry behind them. Everything else in a placement list is a prop. */
+function isMark(kind: ScatterKind): kind is 'tick' | 'reed' {
+  return kind === 'tick' || kind === 'reed';
+}
 
 export interface Placement {
   kind: ScatterKind;
@@ -74,8 +90,10 @@ export interface Exclusion {
 
 /** Iso-grid step in world units. */
 export const SCATTER_STEP = 6;
-/** Half-extent of the scattered region. */
-export const SCATTER_EXTENT = 120;
+/** Half-extent of the scattered region. 160 (2026-09-03): the map's
+ * environments were spread out and scaled up, and the range now runs along
+ * z ≈ -118. */
+export const SCATTER_EXTENT = 160;
 /** World seed — one world, one growth. The shipped default. */
 export const SCATTER_SEED = 7;
 
@@ -128,7 +146,102 @@ const SEED_PROB: Record<ScatterKind, number> = {
   picnicTable: 0.003,
   waterTower: 0.004,
   monolith: 0.004,
+  // Neither of these rolls per cell in the plain. A mountain is landscape:
+  // it comes from the map's own weight field in a pre-pass. A reed grows on
+  // a shoreline or nowhere.
+  mountain: 0,
+  reed: 0,
 };
+
+// ── landscape-aware seeding ──────────────────────────────────────────────────
+// The plain is still the world that shipped: a cell whose forest and mountain
+// weights are both 0 rolls EXACTLY the old expression (see `prob` in
+// computePlacements). What the map adds is three regional tables that blend
+// in with those weights, a water cut-out that nothing crosses, and mountains
+// placed from the weight field before anything else claims the ground.
+
+type RegionSeed = Partial<Record<ScatterKind, number>>;
+
+/** Inside the forest: a real stand — trees and conifers an order of
+ * magnitude past the plain's, bushes and stumps under them, the odd stone.
+ * Absolute per-cell probabilities; the panel's sliders scale them through
+ * `userMult`, so a slider at its shipped default leaves these as authored. */
+const FOREST_SEED: RegionSeed = {
+  tree: 0.26,
+  conifer: 0.18,
+  bush: 0.05,
+  stump: 0.03,
+  rock: 0.006,
+  tick: 0.1,
+};
+
+/** On the range: scree, stubborn conifers, standing stones, thin grass. */
+const MOUNTAIN_SEED: RegionSeed = {
+  rock: 0.05,
+  conifer: 0.04,
+  monolith: 0.012,
+  bush: 0.006,
+  tick: 0.06,
+};
+
+/** The island grows its own thing. Nothing BUILT is in this table, so no
+ * building, tower, picnic table or cactus ever reaches it — which is now
+ * doubly true: nothing WALKS there either (2026-09-03, the causeway went and
+ * the water runs the whole way round).
+ *
+ * Rock and bush at 0.05 rather than 0.04: the island is a 14-unit hill with a
+ * crown on it now instead of a 9-unit speck, and a crown wants a little more
+ * standing on it than a couple of palms. */
+const ISLAND_SEED: RegionSeed = {
+  palm: 0.12,
+  tree: 0.06,
+  rock: 0.05,
+  bush: 0.05,
+  tick: 0.16,
+};
+
+/** [D] Planting keep-out from every shoreline. A cell this close to water
+ * seeds NOTHING — not even a tick — so a cluster's seed can never sit on
+ * the waterline and throw its whole grove into the pond. */
+const SHORE_KEEPOUT = 1;
+/** [D] The final cut: no placement of any kind, cluster neighbours and
+ * shoreline reeds included, may stand in water or this close to it. */
+const WATER_KEEPOUT = 0.6;
+
+/** Mountain weight a cell needs before it may seed a mountain at all. */
+const MOUNTAIN_MIN_WEIGHT = 0.35;
+/** Per-cell mountain roll at weight 1. Squared in the weight below, so the
+ * range crowds its own core and never strays onto its skirt. [D] */
+const MOUNTAIN_SEED_PROB = 0.22;
+/** Hash salts for the mountain pre-pass and the shoreline reed walk. Both
+ * APPENDED to the salt family: every pre-existing kind still rolls the
+ * exact salt it rolled before the map existed. */
+const MOUNTAIN_SALT = 71.9;
+const REED_SALT = 81.3;
+
+/** At most this many mountains in the region, in cell order — a backdrop
+ * range, not a mountain world. */
+export const MOUNTAIN_MAX = 24;
+/** Fraction of a mountain's footprint swept clear of everything else. A
+ * tree poking out of a mountainside is a bug; the 0.85 leaves the skirt
+ * plantable, so the range meets the forest instead of ending on bare
+ * paper. [D] */
+export const MOUNTAIN_CLEAR_FIT = 0.85;
+
+/** [D] A cluster that lands on the island is drawn in tight and carries a
+ * couple of extra neighbours: one grove, rather than two lone palms with the
+ * rest of the stand drowned in the lake. Written when the island was barely
+ * wider than one cluster's reach; kept at 14 units because a grove reads as
+ * an island's own planting and a scatter reads as more of the plain. */
+const ISLAND_CLUSTER_SPREAD = 0.4;
+const ISLAND_CLUSTER_EXTRAS = 2;
+
+/** Fraction of shore samples carrying a reed at density 1 — reeds are the
+ * shoreline's texture, so this is a keep rate, not a rarity. */
+const REED_SHORE_KEEP = 0.6;
+/** How far a reed steps off its shore sample, along the outward normal. */
+const REED_OFFSET_MIN = 0.3;
+const REED_OFFSET_SPAN = 0.9;
 
 /** At most this many buildings in the whole region, in cell iteration order.
  * Raised from 4 (user report: "where are the buildings") — structures should
@@ -162,8 +275,9 @@ const PROP_ROLL_ORDER: PropKind[] = [
   'monolith',
 ];
 
-/** Every controllable scatter kind, for generic dev-panel controls. */
-export const SCATTER_KINDS: ScatterKind[] = [...PROP_KINDS, 'tick'];
+/** Every controllable scatter kind, for generic dev-panel controls.
+ * `mountain` rides in through PROP_KINDS; `reed` is scatter's own. */
+export const SCATTER_KINDS: ScatterKind[] = [...PROP_KINDS, 'tick', 'reed'];
 
 function cellHash(ix: number, iz: number, salt: number): number {
   const x =
@@ -186,6 +300,15 @@ export interface PlacementOptions {
  * cluster seed and spawns 1–4 neighbors at 0.6–1.6 steps around it (ticks:
  * 2–4 marks total). Neighbor counts hash independently of the kind roll, so
  * the total instance count is monotone in the density multiplier.
+ *
+ * The map (src/world/landscape.ts) governs WHICH kinds roll where: the
+ * forest, the range and the island each carry their own per-cell table,
+ * blended in by the cell's soft weight, and water is a hole nothing crosses.
+ * Mountains are placed first — they are landscape, so the ground they cover
+ * has to be known before anything else is planted on it.
+ *
+ * PERF: this runs on every density-slider move, so the landscape is sampled
+ * exactly ONCE per cell (into `land` below) and shared by both passes.
  */
 export function computePlacements(opts: PlacementOptions = {}): Placement[] {
   const density = Math.max(0, opts.density ?? 1);
@@ -194,10 +317,54 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
   const cells = Math.floor(SCATTER_EXTENT / SCATTER_STEP);
   const buildings: { x: number; z: number; variant: number }[] = [];
   const towers: { x: number; z: number; variant: number }[] = [];
+  /** Placed mountains as footprint circles (radius at instance scale). */
+  const mountains: { x: number; z: number; r: number }[] = [];
+
+  /**
+   * The panel's slider RELATIVE to the shipped default. The regional tables
+   * above are authored in absolute per-cell terms, so they must not be
+   * multiplied by a default that is already baked into them — but a slider
+   * still has to scale them, and 0 still has to mean none.
+   */
+  const userMult = (kind: ScatterKind): number =>
+    Math.max(0, kindDensity[kind] ?? 1) / (DEFAULT_KIND_DENSITY[kind] ?? 1);
+
+  /** Inside a placed mountain's swept ground. */
+  const underMountain = (x: number, z: number): boolean => {
+    for (const mt of mountains) {
+      const dx = x - mt.x;
+      const dz = z - mt.z;
+      const r = mt.r * MOUNTAIN_CLEAR_FIT;
+      if (dx * dx + dz * dz < r * r) return true;
+    }
+    return false;
+  };
+
+  /** Instance scale for a placement, hashed from its quantized position. */
+  const scaleAt = (x: number, z: number, salt: number): number =>
+    0.7 + cellHash(Math.round(x * 8), Math.round(z * 8), salt + 3.1) * 0.6;
+
+  /** The one gate every placement passes through, cluster neighbours and
+   * shoreline reeds included: the hatch clearing, then the water cut-out,
+   * then the ground a mountain already stands on. */
+  const place = (
+    kind: ScatterKind,
+    variant: number,
+    x: number,
+    z: number,
+    scale: number,
+    rotY: number,
+  ): void => {
+    const clear = isMark(kind) ? ORIGIN_CLEAR_TICKS : ORIGIN_CLEAR_PROPS;
+    if (x * x + z * z < clear * clear) return;
+    // Nothing ever stands in water.
+    if (isWater(x, z, WATER_KEEPOUT)) return;
+    // …and nothing but a mountain stands on a mountain.
+    if (kind !== 'mountain' && underMountain(x, z)) return;
+    out.push({ kind, variant, x, z, scale, rotY });
+  };
 
   const push = (kind: ScatterKind, variant: number, x: number, z: number, salt: number): void => {
-    const clear = kind === 'tick' ? ORIGIN_CLEAR_TICKS : ORIGIN_CLEAR_PROPS;
-    if (x * x + z * z < clear * clear) return;
     // Buildings face the default iso camera (azimuth π/4) with a hand-placed
     // jitter: their silhouettes are directional (gate arch, hut doorway) and
     // must read from the frame, where trees and rocks read from any side.
@@ -205,14 +372,7 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
       kind === 'building'
         ? Math.PI / 4 + (cellHash(Math.round(x * 8), Math.round(z * 8), salt + 4.2) - 0.5) * 0.5
         : cellHash(Math.round(x * 8), Math.round(z * 8), salt + 4.2) * Math.PI * 2;
-    out.push({
-      kind,
-      variant,
-      x,
-      z,
-      scale: 0.7 + cellHash(Math.round(x * 8), Math.round(z * 8), salt + 3.1) * 0.6,
-      rotY,
-    });
+    place(kind, variant, x, z, scaleAt(x, z, salt), rotY);
   };
 
   /** Jittered seed position for the cell (the grid places, never forms). */
@@ -222,15 +382,37 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
     return { sx: ix * SCATTER_STEP + jx, sz: iz * SCATTER_STEP + jz };
   };
 
-  const cluster = (kind: ScatterKind, ix: number, iz: number, extras: number): void => {
+  // One landscape sample per cell, shared by the mountain pre-pass and the
+  // seeding loop. A cell inside the shore keep-out is recorded as null: it
+  // seeds nothing at all, so its region never has to be resolved.
+  const span = cells * 2 + 1;
+  const cellAt = (ix: number, iz: number): number => (iz + cells) * span + (ix + cells);
+  const seeds: { sx: number; sz: number }[] = new Array<{ sx: number; sz: number }>(span * span);
+  const land: (LandscapeSample | null)[] = new Array<LandscapeSample | null>(span * span);
+  for (let iz = -cells; iz <= cells; iz++) {
+    for (let ix = -cells; ix <= cells; ix++) {
+      const sp = seedPos(ix, iz);
+      const i = cellAt(ix, iz);
+      seeds[i] = sp;
+      land[i] = isWater(sp.sx, sp.sz, SHORE_KEEPOUT) ? null : sampleLandscape(sp.sx, sp.sz);
+    }
+  }
+
+  const cluster = (
+    kind: ScatterKind,
+    ix: number,
+    iz: number,
+    extras: number,
+    spread = 1,
+  ): void => {
     const { sx, sz } = seedPos(ix, iz);
-    const count = kind === 'tick' ? 1 : PROP_VARIANT_COUNTS[kind];
+    const count = kind === 'tick' || kind === 'reed' ? 1 : PROP_VARIANT_COUNTS[kind];
     // The cluster's species: uniform over the kind's variants.
     const clusterVariant = Math.min(count - 1, Math.floor(cellHash(ix, iz, 31.1) * count));
     push(kind, clusterVariant, sx, sz, 1);
     for (let n = 0; n < extras; n++) {
       const a = cellHash(ix, iz, 21.3 + n * 5.7) * Math.PI * 2;
-      const r = (0.6 + cellHash(ix, iz, 22.5 + n * 5.7)) * SCATTER_STEP;
+      const r = (0.6 + cellHash(ix, iz, 22.5 + n * 5.7)) * SCATTER_STEP * spread;
       // Neighbor bias: mostly the cluster's variant, sometimes a stray.
       const variant =
         cellHash(ix, iz, 32.2 + n * 5.7) < CLUSTER_VARIANT_BIAS
@@ -286,12 +468,86 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
     push('waterTower', variant, sx, sz, 1);
   };
 
+  /** Place one mountain and record the ground it covers. Mountains are the
+   * only kind exempt from their own clearing, so a range is a merged mass
+   * rather than a ring of separated cones. */
+  const mountainCount = PROP_VARIANT_COUNTS.mountain;
+  const pushMountain = (variant: number, x: number, z: number, salt: number): void => {
+    if (mountains.length >= MOUNTAIN_MAX) return;
+    // The weight gate applies to the extras too, not just the cell that
+    // rolled: a summit that wandered off the range onto open plain would
+    // read as a mistake, not as scenery.
+    if (sampleLandscape(x, z).mountain < MOUNTAIN_MIN_WEIGHT) return;
+    const before = out.length;
+    push('mountain', variant, x, z, salt);
+    if (out.length === before) return; // dropped: origin clearing or water
+    const p = out[out.length - 1]!;
+    mountains.push({ x: p.x, z: p.z, r: (MOUNTAIN_FOOTPRINT[variant] ?? 0) * p.scale });
+  };
+
+  // ── mountains: a PRE-pass over the same cells ─────────────────────────
+  // Landscape, not dressing. Placed before anything else so `underMountain`
+  // is complete by the time the seeding loop reads it.
+  for (let iz = -cells; iz <= cells && mountains.length < MOUNTAIN_MAX; iz++) {
+    for (let ix = -cells; ix <= cells && mountains.length < MOUNTAIN_MAX; ix++) {
+      const sample = land[cellAt(ix, iz)];
+      if (!sample || sample.mountain < MOUNTAIN_MIN_WEIGHT) continue;
+      const m = sample.mountain;
+      const prob = MOUNTAIN_SEED_PROB * m * m * density * userMult('mountain');
+      if (cellHash(ix, iz, MOUNTAIN_SALT) >= prob) continue;
+      const { sx, sz } = seeds[cellAt(ix, iz)]!;
+      const variant = Math.min(
+        mountainCount - 1,
+        Math.floor(cellHash(ix, iz, MOUNTAIN_SALT + 1.3) * mountainCount),
+      );
+      pushMountain(variant, sx, sz, 1);
+      // 0–2 more summits at 1.2–2.2 steps: a range, never a lone cone.
+      const extras = Math.floor(cellHash(ix, iz, MOUNTAIN_SALT + 2.6) * 3);
+      for (let n = 0; n < extras; n++) {
+        const a = cellHash(ix, iz, MOUNTAIN_SALT + 4.1 + n * 5.7) * Math.PI * 2;
+        const r = (1.2 + cellHash(ix, iz, MOUNTAIN_SALT + 5.3 + n * 5.7)) * SCATTER_STEP;
+        const v = Math.min(
+          mountainCount - 1,
+          Math.floor(cellHash(ix, iz, MOUNTAIN_SALT + 6.7 + n * 5.7) * mountainCount),
+        );
+        pushMountain(v, sx + Math.cos(a) * r, sz + Math.sin(a) * r, 2 + n);
+      }
+    }
+  }
+
   for (let iz = -cells; iz <= cells; iz++) {
     for (let ix = -cells; ix <= cells; ix++) {
+      const sample = land[cellAt(ix, iz)];
+      // Water (plus its shore keep-out) seeds nothing — not even a tick.
+      if (!sample) continue;
+      const { sx, sz } = seeds[cellAt(ix, iz)]!;
+      // Ground a mountain stands on is landscape, not planting soil.
+      if (underMountain(sx, sz)) continue;
+      const f = sample.forest;
+      const m = sample.mountain;
+      /**
+       * The cell's probability for one kind. With f = m = 0 and no island
+       * this collapses to EXACTLY the pre-map expression, so the open plain
+       * is still the world that shipped.
+       */
+      const prob = (kind: ScatterKind): number => {
+        const user = density * userMult(kind);
+        // The island is its own flora list, not a blend over the plain.
+        if (sample.island) return (ISLAND_SEED[kind] ?? 0) * user;
+        const base = SEED_PROB[kind] * density * Math.max(0, kindDensity[kind] ?? 1);
+        return (
+          base * (1 - f) * (1 - m) +
+          f * (FOREST_SEED[kind] ?? 0) * user +
+          m * (MOUNTAIN_SEED[kind] ?? 0) * user
+        );
+      };
+      // The island's own grove rule (see ISLAND_CLUSTER_SPREAD).
+      const spread = sample.island ? ISLAND_CLUSTER_SPREAD : 1;
+      const bonus = sample.island ? ISLAND_CLUSTER_EXTRAS : 0;
       // Tick layer: independent roll — ticks are ground texture, not props.
-      if (cellHash(ix, iz, 1.1) < SEED_PROB.tick * density * Math.max(0, kindDensity.tick ?? 1)) {
-        const extras = 1 + Math.floor(cellHash(ix, iz, 2.2) * 3); // 2–4 total
-        cluster('tick', ix, iz, extras);
+      if (cellHash(ix, iz, 1.1) < prob('tick')) {
+        const extras = 1 + Math.floor(cellHash(ix, iz, 2.2) * 3) + bonus; // 2–4 (+island)
+        cluster('tick', ix, iz, extras, spread);
       }
       // Prop layer: every kind rolls INDEPENDENTLY (own salt), so a per-kind
       // density change never moves another kind's placements. First passing
@@ -300,8 +556,7 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
       // hashes independently of the chosen kind (monotonicity).
       for (let k = 0; k < PROP_ROLL_ORDER.length; k++) {
         const kind = PROP_ROLL_ORDER[k]!;
-        const prob = SEED_PROB[kind] * density * Math.max(0, kindDensity[kind] ?? 1);
-        if (cellHash(ix, iz, 3.3 + k * 17.77) < prob) {
+        if (cellHash(ix, iz, 3.3 + k * 17.77) < prob(kind)) {
           if (kind === 'building') {
             if (buildings.length >= BUILDING_MAX) break;
             placeBuilding(ix, iz);
@@ -309,16 +564,43 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
             if (towers.length >= WATER_TOWER_MAX) break;
             placeWaterTower(ix, iz);
           } else if (kind === 'cactus' || kind === 'picnicTable') {
-            cluster(kind, ix, iz, 0); // sparse loners
+            cluster(kind, ix, iz, 0, spread); // sparse loners
           } else if (kind === 'monolith') {
             // Standing stones come mostly in pairs, sometimes alone.
-            cluster(kind, ix, iz, cellHash(ix, iz, 4.4) < 0.65 ? 1 : 0);
+            cluster(kind, ix, iz, cellHash(ix, iz, 4.4) < 0.65 ? 1 : 0, spread);
           } else {
-            const extras = 1 + Math.floor(cellHash(ix, iz, 4.4) * 4); // 1–4
-            cluster(kind, ix, iz, extras);
+            const extras = 1 + Math.floor(cellHash(ix, iz, 4.4) * 4) + bonus; // 1–4 (+island)
+            cluster(kind, ix, iz, extras, spread);
           }
           break;
         }
+      }
+    }
+  }
+
+  // ── shoreline reeds ───────────────────────────────────────────────────
+  // The shore's own texture, walked off the landscape's shore samples
+  // rather than the iso grid: every pond gets a fringe, and the fringe
+  // follows the drawn waterline instead of a lattice near it. Deterministic
+  // in (sample index, body index) through the same cellHash family.
+  const reedKeep = REED_SHORE_KEEP * density * userMult('reed');
+  if (reedKeep > 0) {
+    for (let b = 0; b < WATER_BODIES.length; b++) {
+      const samples = shoreSamples(WATER_BODIES[b]!);
+      for (let i = 0; i < samples.length; i++) {
+        if (cellHash(i, b, REED_SALT) >= reedKeep) continue;
+        const s = samples[i]!;
+        // Step onto land along the shore normal, then let the water cut-out
+        // in `place` drop anything still standing too near the edge.
+        const off = REED_OFFSET_MIN + cellHash(i, b, REED_SALT + 1.7) * REED_OFFSET_SPAN;
+        place(
+          'reed',
+          0,
+          s.x + s.nx * off,
+          s.z + s.nz * off,
+          0.8 + cellHash(i, b, REED_SALT + 2.9) * 0.5,
+          cellHash(i, b, REED_SALT + 4.3) * Math.PI * 2,
+        );
       }
     }
   }
@@ -392,10 +674,16 @@ export function applyInstanceVariation(
   return { x, y, z };
 }
 
-/** Placements outside every exclusion circle (strictly inside = hidden). */
+/** Placements outside every exclusion circle (strictly inside = hidden).
+ *
+ * Mountains are EXEMPT. The exclusion circles are a character's negative
+ * space (TASTE §2.3) and hiding the dressing around a creature is the whole
+ * point of them — but a mountain is landscape, and a mountain blinking out
+ * because a creature wandered up to it would be absurd. */
 export function filterExcluded(placements: Placement[], exclusions: Exclusion[]): Placement[] {
   if (exclusions.length === 0) return placements;
   return placements.filter((p) => {
+    if (p.kind === 'mountain') return true;
     for (const e of exclusions) {
       const dx = p.x - e.x;
       const dz = p.z - e.z;
@@ -438,14 +726,16 @@ export const BUSH_SOFT_FOOTPRINT = 1.0;
 /**
  * Pure per-placement collider. `baseRadius` is the variant's inflated
  * footprint radius (grounded kinds use it); trunk kinds override it with
- * their trunk footprint. Returns null for ticks.
+ * their trunk footprint. Returns null for the flat ink marks (ticks,
+ * reeds). Mountains take the grounded path: they block at their base
+ * extent, which is exactly what a mountain does.
  */
 export function colliderFor(
   p: Placement,
   baseRadius: number,
   kindScaleMult = 1,
 ): Collider | null {
-  if (p.kind === 'tick') return null;
+  if (isMark(p.kind)) return null;
   const s = p.scale * kindScaleMult;
   if (p.kind === 'bush') {
     return { x: p.x, z: p.z, r: BUSH_SOFT_FOOTPRINT * s, hard: false };
@@ -486,6 +776,63 @@ function buildTickGeometry(): BufferGeometry {
       -hx, 0, -hz, hx, 0, hz, topX + hx * t, topY, topZ + hz * t,
       -hx, 0, -hz, topX + hx * t, topY, topZ + hz * t, topX - hx * t, topY, topZ - hz * t,
     );
+  }
+  const geometry = new BufferGeometry();
+  geometry.setAttribute('position', new BufferAttribute(new Float32Array(positions), 3));
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+// ── reed geometry ────────────────────────────────────────────────────────────
+// A shoreline reed is the tick's tall cousin: three thin blades in crossing
+// vertical planes, two of them carrying a cattail head just under the tip.
+// Ink marks, not inflated forms — same unlit ink material and the same tick
+// wind profile, so the fringe around a pond sways harder than the grass
+// inland and the water reads as somewhere the weather touches.
+
+const REED_BLADES: { rotY: number; lean: number; h: number; w: number; head: boolean }[] = [
+  { rotY: 0.3, lean: -0.16, h: 1.45, w: 0.05, head: true },
+  { rotY: 1.25, lean: 0.13, h: 1.2, w: 0.045, head: true },
+  { rotY: 0.85, lean: 0.26, h: 1.1, w: 0.04, head: false },
+];
+/** Cattail head — a small ellipse of a few triangles, carried by the stem. */
+const REED_HEAD_H = 0.28;
+const REED_HEAD_W = 0.11;
+const REED_HEAD_SEGMENTS = 7;
+
+function buildReedGeometry(): BufferGeometry {
+  const positions: number[] = [];
+  for (const blade of REED_BLADES) {
+    const dirX = Math.cos(blade.rotY);
+    const dirZ = -Math.sin(blade.rotY);
+    const topX = dirX * Math.sin(blade.lean) * blade.h;
+    const topY = Math.cos(blade.lean) * blade.h;
+    const topZ = dirZ * Math.sin(blade.lean) * blade.h;
+    const hx = dirX * blade.w * 0.5;
+    const hz = dirZ * blade.w * 0.5;
+    // Reeds taper less than grass: a standing stem, not a pen flick.
+    const t = 0.55;
+    positions.push(
+      -hx, 0, -hz, hx, 0, hz, topX + hx * t, topY, topZ + hz * t,
+      -hx, 0, -hz, topX + hx * t, topY, topZ + hz * t, topX - hx * t, topY, topZ - hz * t,
+    );
+    if (!blade.head) continue;
+    // Fan ellipse in the blade's OWN plane, centered just below the tip, so
+    // the head always reads as carried by that stem — never floating.
+    const cy = topY - REED_HEAD_H * 0.55;
+    const k = cy / topY;
+    const cx = topX * k;
+    const cz = topZ * k;
+    for (let i = 0; i < REED_HEAD_SEGMENTS; i++) {
+      const a0 = (i / REED_HEAD_SEGMENTS) * Math.PI * 2;
+      const a1 = ((i + 1) / REED_HEAD_SEGMENTS) * Math.PI * 2;
+      const rim = (a: number): number[] => [
+        cx + dirX * Math.cos(a) * REED_HEAD_W * 0.5,
+        cy + Math.sin(a) * REED_HEAD_H * 0.5,
+        cz + dirZ * Math.cos(a) * REED_HEAD_W * 0.5,
+      ];
+      positions.push(cx, cy, cz, ...rim(a0), ...rim(a1));
+    }
   }
   const geometry = new BufferGeometry();
   geometry.setAttribute('position', new BufferAttribute(new Float32Array(positions), 3));
@@ -703,11 +1050,13 @@ function variationBeginGlsl(): string {
 
 // ── instanced assembly ───────────────────────────────────────────────────────
 
-/** Just proud of the ground; under the creature shadows' 0.02 lift. */
-const PROP_SHADOW_LIFT = 0.018;
-const TICK_LIFT = 0.015;
+/** Just proud of the ground; under the creature shadows' 0.02 lift. Both
+ * are lifts ABOVE the sampled terrain height, never absolute heights — the
+ * Surface seam owns y everywhere in this file. */
+export const PROP_SHADOW_LIFT = 0.018;
+export const TICK_LIFT = 0.015;
 /** Shadow stamp sits a touch inside the footprint, like the creatures'. */
-const SHADOW_FIT = 0.8;
+export const SHADOW_FIT = 0.8;
 /** No stamp beyond this radius: the walled courtyard's footprint would
  * flood its own open interior with one giant disc — a building that large
  * is its own ground figure. */
@@ -718,9 +1067,21 @@ export const SHADOW_MAX_RADIUS = 4;
  * (cheap) shared material-value update. */
 export const SHADOW_SUN_EPS = Math.PI / 180;
 
+/** A prop's stamp, seated on the ground it stands on. */
+interface ShadowSpot {
+  x: number;
+  z: number;
+  r: number;
+  /** Terrain height at (x, z) plus PROP_SHADOW_LIFT. */
+  y: number;
+  /** Up-normal at (x, z): the stamp lies IN the slope, not across it. */
+  normal: { x: number; y: number; z: number };
+}
+
 export interface Scatter {
   group: Group;
-  /** Currently visible non-tick props, for behavior affordances. */
+  /** Currently visible props, for behavior affordances. The flat ink
+   * marks (ticks, reeds) are not props and never appear here. */
   positions(): { x: number; z: number; kind: PropKind; r: number }[];
   /** Hide instances inside the circles. Rebuilds visibility on call. */
   setExclusions(points: Exclusion[]): void;
@@ -728,6 +1089,17 @@ export interface Scatter {
   setDensity(mult: number): void;
   /** Re-roll placement from a new seed — a different world, same rules. */
   setSeed(seed: number): void;
+  /**
+   * Re-seat every instance and every shadow stamp on the ground as it now
+   * stands — for when the live terrain dials have moved (landscape's
+   * `setTerrainParams`, driven by WorldHandles.setTerrain).
+   *
+   * Placements are NOT re-rolled: x/z and the per-instance variation are
+   * pure functions of (cell, seed, density) and know nothing about height,
+   * so this is the same world with its trees put back down on the new
+   * hillside — not a different one.
+   */
+  refreshTerrain(): void;
   /** Per-kind density multiplier, layered on the global one. Independent per
    * kind: changing one kind never moves another kind's placements. */
   setKindDensity(kind: ScatterKind, mult: number): void;
@@ -752,9 +1124,12 @@ export interface Scatter {
   windState(): { strength: number; azimuth: number; timeMs: number };
   /**
    * Physics colliders for the currently visible props: hard bodies block,
-   * soft bodies (bush) damp + sway; ticks have none. Cached — rebuilt lazily
-   * after placements/exclusions/scales change. Consumers key their spatial
-   * index on collidersVersion() and re-query only when it moves.
+   * soft bodies (bush) damp + sway; the ink marks have none. The
+   * landscape's water circles are appended after them — water blocks
+   * creatures, and it rides this cache so consumers keep ONE spatial index.
+   * Cached — rebuilt lazily after placements/exclusions/scales change.
+   * Consumers key their spatial index on collidersVersion() and re-query
+   * only when it moves.
    */
   colliders(): Collider[];
   /** Bumps whenever the collider set may have changed. */
@@ -804,10 +1179,22 @@ export const KIND_GROUP_LABELS: Record<ScatterKind, string> = {
   monolith: 'monoliths',
   picnicTable: 'picnic tables',
   waterTower: 'water towers',
+  mountain: 'mountains',
   tick: 'grass',
+  reed: 'reeds',
 };
 
-export function createScatter(): Scatter {
+export interface ScatterOptions {
+  /**
+   * Where the ground is. Every instance — prop, mark and shadow stamp — is
+   * seated on this and on nothing else (PLAN §7.2). Defaults to the world's
+   * terrain; tests pass FLAT_SURFACE to get the old flat field back.
+   */
+  surface?: Surface;
+}
+
+export function createScatter(opts: ScatterOptions = {}): Scatter {
+  const surface = opts.surface ?? ROLLING_SURFACE;
   const group = new Group();
   // One named container group per kind, created up front and never removed:
   // the outliner row is stable even at density zero, so the kind stays
@@ -1032,6 +1419,7 @@ export function createScatter(): Scatter {
   const shadowInkValue = new Color(SURFACE.shadow);
 
   const tickGeometry = buildTickGeometry();
+  const reedGeometry = buildReedGeometry();
   const shadowGeometry = new CircleGeometry(1, 40);
   shadowGeometry.rotateX(-Math.PI / 2);
 
@@ -1042,7 +1430,12 @@ export function createScatter(): Scatter {
   let sunAzimuth = Number.NaN;
   let sunAltitude = Number.NaN;
   let shadowMesh: InstancedMesh | null = null;
-  let shadowSpots: { x: number; z: number; r: number }[] = [];
+  /**
+   * One stamp: where it sits, how big it is, and how the ground lies under
+   * it. `y` and `normal` are sampled once per rebuild rather than per lay —
+   * a re-lay runs on every ~1° of sun and the terrain has not moved.
+   */
+  let shadowSpots: ShadowSpot[] = [];
 
   let globalDensity = 1;
   const kindDensity: Partial<Record<ScatterKind, number>> = { ...DEFAULT_KIND_DENSITY };
@@ -1064,7 +1457,10 @@ export function createScatter(): Scatter {
 
   const matrix = new Matrix4();
   const quat = new Quaternion();
+  const tilt = new Quaternion();
+  const spin = new Quaternion();
   const axisY = new Vector3(0, 1, 0);
+  const normal = new Vector3();
   const pos = new Vector3();
   const scl = new Vector3();
 
@@ -1081,20 +1477,29 @@ export function createScatter(): Scatter {
   /** Write every shadow-disc instance matrix from the current sun ellipse:
    * long axis r×stretch along the away-from-sun direction, short axis r,
    * center pushed away from the sun by offset×r. Circle when the sun is at
-   * the noon reference (or before the first setSun). */
+   * the noon reference (or before the first setSun).
+   *
+   * ON A SLOPE the stamp is turned to lie IN the ground: +y to the sampled
+   * normal first, then the ellipse's own spin about that normal. A stamp
+   * left flat sinks into the riser on its uphill side and floats off the
+   * downhill one — a hard-edged mark cannot afford either (TASTE §2.4).
+   * The push moves it downhill or up, so its height is re-sampled at the
+   * pushed point; the normal is not, because a stamp belongs to the ground
+   * its prop stands on. */
   function layShadows(): void {
     if (!shadowMesh) return;
     const e = sunEllipse;
-    if (e) quat.setFromAxisAngle(axisY, stampRotationY(e));
-    else quat.identity();
     for (let i = 0; i < shadowSpots.length; i++) {
       const s = shadowSpots[i]!;
       const push = e ? e.offset * s.r : 0;
-      pos.set(
-        s.x + (e ? e.dirX * push : 0),
-        PROP_SHADOW_LIFT,
-        s.z + (e ? e.dirZ * push : 0),
-      );
+      const x = s.x + (e ? e.dirX * push : 0);
+      const z = s.z + (e ? e.dirZ * push : 0);
+      pos.set(x, push === 0 ? s.y : surface.sampleHeight(x, z) + PROP_SHADOW_LIFT, z);
+      normal.set(s.normal.x, s.normal.y, s.normal.z);
+      tilt.setFromUnitVectors(axisY, normal);
+      if (e) spin.setFromAxisAngle(normal, stampRotationY(e));
+      else spin.identity();
+      quat.copy(spin).multiply(tilt);
       scl.set(s.r * (e ? e.stretch : 1), 1, s.r);
       shadowMesh.setMatrixAt(i, matrix.compose(pos, quat, scl));
     }
@@ -1142,7 +1547,10 @@ export function createScatter(): Scatter {
         const variation = new Float32Array(of.length * 4);
         of.forEach((p, i) => {
           quat.setFromAxisAngle(axisY, p.rotY);
-          pos.set(p.x, 0, p.z);
+          // Seated on the ground, standing straight up: a tree grows toward
+          // the sky on a hillside, it does not lean out normal to the slope.
+          // A mountain's base follows the shoulder it sits on the same way.
+          pos.set(p.x, surface.sampleHeight(p.x, p.z), p.z);
           scl.set(p.scale * kMult * widenXZ, p.scale * kMult * squashY, p.scale * kMult * widenXZ);
           mesh.setMatrixAt(i, matrix.compose(pos, quat, scl));
           variation.set(instanceVariation(p.x, p.z), i * 4);
@@ -1165,7 +1573,7 @@ export function createScatter(): Scatter {
       const variation = new Float32Array(ticks.length * 4);
       ticks.forEach((p, i) => {
         quat.setFromAxisAngle(axisY, p.rotY);
-        pos.set(p.x, TICK_LIFT, p.z);
+        pos.set(p.x, surface.sampleHeight(p.x, p.z) + TICK_LIFT, p.z);
         scl.setScalar(p.scale * tickMult);
         mesh.setMatrixAt(i, matrix.compose(pos, quat, scl));
         variation.set(instanceVariation(p.x, p.z), i * 4);
@@ -1176,10 +1584,37 @@ export function createScatter(): Scatter {
       groupFor('tick').add(mesh);
     }
 
-    // One shadow disc per large/medium prop — ticks get none. Matrices are
-    // laid by layShadows from the current sun ellipse.
-    const shadowed = visible.filter((p) => p.kind !== 'tick');
-    const spots = shadowed
+    // Reeds: the same ink material and wind profile as the grass, their own
+    // taller geometry, their own outliner row.
+    const reeds = visible.filter((p) => p.kind === 'reed');
+    if (reeds.length > 0) {
+      const mesh = new InstancedMesh(reedGeometry, tickMaterial, reeds.length);
+      mesh.name = `reeds (${reeds.length})`;
+      mesh.frustumCulled = false;
+      const reedMult = scaleOf('reed');
+      const variation = new Float32Array(reeds.length * 4);
+      reeds.forEach((p, i) => {
+        quat.setFromAxisAngle(axisY, p.rotY);
+        pos.set(p.x, surface.sampleHeight(p.x, p.z) + TICK_LIFT, p.z);
+        scl.setScalar(p.scale * reedMult);
+        mesh.setMatrixAt(i, matrix.compose(pos, quat, scl));
+        variation.set(instanceVariation(p.x, p.z), i * 4);
+      });
+      mesh.geometry.setAttribute('aVariation', new InstancedBufferAttribute(variation, 4));
+      mesh.instanceMatrix.needsUpdate = true;
+      meshes.push(mesh);
+      groupFor('reed').add(mesh);
+    }
+
+    // One shadow disc per large/medium prop — the flat ink marks get none,
+    // and a mountain's footprint is far past SHADOW_MAX_RADIUS so the
+    // filter below drops it too (a mountain is its own ground figure).
+    // Matrices are laid by layShadows from the current sun ellipse.
+    const shadowed = visible.filter((p) => !isMark(p.kind));
+    // The ground under each stamp is sampled HERE, once per rebuild: a
+    // re-lay runs on every ~1° the sun glides through, and the terrain is
+    // the one thing in that loop that never changes.
+    const spots: ShadowSpot[] = shadowed
       .map((p) => ({
         x: p.x,
         z: p.z,
@@ -1189,6 +1624,8 @@ export function createScatter(): Scatter {
           scaleOf(p.kind) *
           (p.kind === 'rock' ? ROCK_WIDEN_XZ : 1) *
           SHADOW_FIT,
+        y: surface.sampleHeight(p.x, p.z) + PROP_SHADOW_LIFT,
+        normal: surface.normalAt(p.x, p.z),
       }))
       .filter((s) => s.r <= SHADOW_MAX_RADIUS);
     if (spots.length > 0) {
@@ -1209,7 +1646,7 @@ export function createScatter(): Scatter {
     group,
     positions() {
       return filterExcluded(placements, exclusions)
-        .filter((p) => p.kind !== 'tick')
+        .filter((p) => !isMark(p.kind))
         .map((p) => ({
           x: p.x,
           z: p.z,
@@ -1233,6 +1670,12 @@ export function createScatter(): Scatter {
     setSeed(seed: number): void {
       setScatterSeed(seed);
       replace();
+      rebuild();
+    },
+    refreshTerrain(): void {
+      // No `replace()`: the terrain moved, the placement did not. rebuild()
+      // re-samples surface.sampleHeight for every instance and re-takes each
+      // stamp's height and normal.
       rebuild();
     },
     setKindDensity(kind: ScatterKind, mult: number): void {
@@ -1282,10 +1725,17 @@ export function createScatter(): Scatter {
       if (!colliderCache) {
         colliderCache = [];
         for (const p of filterExcluded(placements, exclusions)) {
-          if (p.kind === 'tick') continue;
+          if (isMark(p.kind)) continue;
           const c = colliderFor(p, variantOf(p).radius, scaleOf(p.kind));
           if (c) colliderCache.push(c);
         }
+        // Water blocks creatures. The landscape's circles are static (the
+        // lake's tile the whole ring round its island — nothing reaches it on
+        // foot, which is what an island is), but they ride the same cache so
+        // consumers keep ONE spatial index keyed on collidersVersion().
+        // Appended LAST, so the prop colliders still pair 1:1 with
+        // positions() by index.
+        for (const c of waterColliders()) colliderCache.push(c);
       }
       return colliderCache;
     },
@@ -1331,6 +1781,7 @@ export function createScatter(): Scatter {
       for (const variants of geometries.values())
         for (const v of variants) v.geometry.dispose();
       tickGeometry.dispose();
+      reedGeometry.dispose();
       shadowGeometry.dispose();
       propMaterial.dispose();
       rockMaterial.dispose();

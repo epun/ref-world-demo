@@ -6,7 +6,7 @@
  * → grain (the final paper layer). GENERATOR §ink rendering pass.
  */
 
-import { Color, Scene, WebGLRenderer, type MeshBasicMaterial } from 'three';
+import { Color, Scene, WebGLRenderer } from 'three';
 import { SURFACE } from '../taste/tokens';
 import { CameraRig } from './camera';
 import { createEnvironment, type Environment } from './environment';
@@ -16,6 +16,9 @@ import { InkPass } from './ink';
 import { createLighting } from './lighting';
 import { createScatter, type Scatter } from './scatter';
 import { FlatShadows } from './shadows';
+import { setTerrainParams, terrainParams, type TerrainParams } from './landscape';
+import { ROLLING_SURFACE, type Surface } from './surface';
+import { createWater, type Water } from './water';
 
 export type FrameCallback = (dt: number, nowMs: number) => void;
 
@@ -31,11 +34,25 @@ export const DT_CLAMP_MS = 250;
 export interface WorldHandles {
   scene: Scene;
   cameraRig: CameraRig;
+  /**
+   * The ground under everything (PLAN §7.2). The one seam every consumer
+   * samples for a height or an up-normal — the ground mesh, the scatter, the
+   * shadow stamps and every walker — so that the flat map can become a sphere
+   * planet without a caller changing.
+   */
+  surface: Surface;
   /** The renderer, for dev-panel pixel readbacks. */
   renderer: WebGLRenderer;
   shadows: FlatShadows;
   /** Prop scatter: exclusions come from the creature coordinator. */
   scatter: Scatter;
+  /**
+   * Ponds and the lake: flat fills, drawn shorelines, drifting ripple marks.
+   * Built once from the authored geography (src/world/landscape.ts) — the
+   * seed re-rolls props, never the map. Only the live terrain dials move it,
+   * and only in y (setTerrain below).
+   */
+  water: Water;
   /** Ink pass tuning surface for the dev panel. */
   ink: InkPass;
   /** Grain pass amplitude handle (dev panel slider + grain gate). */
@@ -44,11 +61,44 @@ export interface WorldHandles {
   environment: Environment;
   /**
    * Dev color grade for the paper field: set the scene background and the
-   * ground disc to a css color (e.g. a picker's hex string). Night dimming
+   * ground to a css color (e.g. a picker's hex string). Night dimming
    * keeps scaling the chosen color, so time of day still reads. Passing the
    * ground token restores the shipped achromatic look exactly.
    */
   setBackgroundColor(color: string): void;
+  /**
+   * Move the live terrain dials and rebuild the world under them
+   * (src/world/landscape.ts `TerrainParams`): how much elevation, how far
+   * apart the tiers sit, how wide the relief is spread.
+   *
+   * Three systems have to be told, in this order — the ground re-displaces
+   * its field, the scatter re-seats every instance and stamp on it, and the
+   * water re-seats each body's sheets on its new level.
+   *
+   * Creatures, eggs and their shadow stamps re-sample the Surface every
+   * frame, so they follow on their own. ONE exception, and it is acceptable
+   * for a dev dial: an egg's `baseY` is fixed when it is placed, so an egg
+   * already incubating stays at the height the ground had under it until it
+   * hatches.
+   */
+  setTerrain(next: Partial<TerrainParams>): void;
+  /** The dials the world is currently shaped by. */
+  terrain(): TerrainParams;
+  /**
+   * Hand the ONE-pointer drag to something else, or take it back.
+   *
+   * The view controls below own a plain drag: it orbits, and shift+drag
+   * pans. A dev tool that draws on the ground (src/dev/paint.ts) needs the
+   * same gesture, and both listeners sit on the same canvas — neither can
+   * out-order the other, so the world has to let go rather than the tool
+   * shout louder. False parks the orbit; the pointer is still tracked, so
+   * handing it back mid-drag resumes from where the pointer is instead of
+   * lurching (TASTE §2.1: no cuts).
+   *
+   * Two-finger pinch/twist and the wheel keep working either way — a tool
+   * that owns one pointer has no claim on the operator's zoom.
+   */
+  setSoloDrag(enabled: boolean): void;
   /** Register per-frame work (entity drift, gaits, …). Runs before render. */
   onFrame(callback: FrameCallback): void;
   /**
@@ -69,26 +119,33 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
   renderer.setPixelRatio(pixelRatio);
 
   const scene = new Scene();
-  // Beyond the ground disc the frame is still the ground value — one field.
+  // Beyond the ground the frame is still the ground value — one field.
   // The environment engine dips its value at night (never its hue), so the
   // token stays the base and the live background is a scaled copy.
   const backgroundBase = new Color(SURFACE.ground);
   const background = backgroundBase.clone();
   scene.background = background;
   // Paper color (dev color grade): setBackgroundColor swaps backgroundBase
-  // (and the ground disc) wholesale; the night dimming below keeps scaling
-  // whatever base is current, so time of day still reads under a grade.
+  // (and the ground's one material) wholesale; the night dimming below keeps
+  // scaling whatever base is current, so time of day still reads under a grade.
   let backgroundLumaScale = 1;
 
   const cameraRig = new CameraRig(window.innerWidth / window.innerHeight);
   const shadows = new FlatShadows();
   const ink = new InkPass();
   const grain = new GrainPass();
-  const scatter = createScatter();
+  // The world's terrain. Everything below is seated on THIS and nothing else
+  // derives a height of its own (src/world/surface.ts).
+  const surface = ROLLING_SURFACE;
+  const scatter = createScatter({ surface });
   const lighting = createLighting();
 
-  const ground = createGround();
-  scene.add(ground, lighting.group, shadows.group, scatter.group);
+  const ground = createGround(surface);
+  // Water sits directly on its basin's paper, under the ticks, the prop stamps
+  // and the creature shadows — so a creature walking the shore still casts
+  // across it.
+  const water = createWater();
+  scene.add(ground.group, water.group, lighting.group, shadows.group, scatter.group);
 
   // Time-of-day + weather. All its setters glide through ζ≥1 springs; the
   // per-frame update pushes sun direction, light balance, exposure, fog and
@@ -112,6 +169,8 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
   (window as Window & { __refworldScatter?: Scatter }).__refworldScatter = scatter;
   // The live camera, for framing/focus smokes.
   (window as Window & { __refworldCamera?: unknown }).__refworldCamera = cameraRig.camera;
+  // And the water, for the shoreline/ripple smokes and the stillness probe.
+  (window as Window & { __refworldWater?: Water }).__refworldWater = water;
 
   const resize = (): void => {
     const width = window.innerWidth;
@@ -134,6 +193,12 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
   canvas.style.touchAction = 'none';
   canvas.addEventListener('contextmenu', (event) => event.preventDefault());
   let panning = false;
+  /**
+   * Whether a ONE-pointer drag still turns the camera — see setSoloDrag.
+   * Two-finger pinch/twist and the wheel are untouched by it, so a tool that
+   * owns the single pointer never costs the operator their zoom.
+   */
+  let soloDrag = true;
   canvas.addEventListener('pointerdown', (event) => {
     pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
     // Shift+drag pans; plain drag orbits (user scheme, cellshader feel).
@@ -146,9 +211,14 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
     if (pointers.size === 1) {
       const dx = event.clientX - prev.x;
       const dy = event.clientY - prev.y;
-      if (panning) cameraRig.panBy(dx, dy, window.innerHeight);
-      else cameraRig.rotateBy(dx, dy, window.innerHeight);
+      // The pointer's position is remembered whether or not the camera acts
+      // on it: a drag handed back mid-stroke must not arrive as one huge
+      // delta, which is a cut, and there are none of those (TASTE §2.1).
       pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      if (soloDrag) {
+        if (panning) cameraRig.panBy(dx, dy, window.innerHeight);
+        else cameraRig.rotateBy(dx, dy, window.innerHeight);
+      }
     } else if (pointers.size === 2) {
       // Pinch: zoom by distance ratio; twist: rotate by angle delta.
       const entries = [...pointers.entries()];
@@ -209,6 +279,12 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
 
     cameraRig.update(dt, nowMs);
     environment.update(dt, nowMs);
+    // The ripple drift: one uniform write, a sine of wall-clock time. Nothing
+    // on the water ever fully arrests (TASTE §2.1).
+    water.update(nowMs);
+    // And the ground's own drawn tier lines, whose pen wobble drifts on the
+    // ambient beat — the same deal, one uniform write.
+    ground.update(nowMs);
     // Sun-driven shadow stamps: one shared ellipse + one flat value per
     // frame for every stamp (scatter throttles its instanced re-lay).
     const sun = environment.sun;
@@ -228,16 +304,30 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
   return {
     scene,
     cameraRig,
+    surface,
     renderer,
     shadows,
     scatter,
+    water,
     ink,
     grain,
     environment,
     setBackgroundColor: (color: string): void => {
       backgroundBase.set(color);
       background.copy(backgroundBase).multiplyScalar(backgroundLumaScale);
-      (ground.material as MeshBasicMaterial).color.copy(backgroundBase);
+      // One material for both ground meshes: the field and the far ring can
+      // never drift apart under a grade.
+      ground.material.color.copy(backgroundBase);
+    },
+    setTerrain: (next: Partial<TerrainParams>): void => {
+      setTerrainParams(next);
+      ground.rebuild();
+      scatter.refreshTerrain();
+      water.refreshLevels();
+    },
+    terrain: (): TerrainParams => terrainParams(),
+    setSoloDrag: (enabled: boolean): void => {
+      soloDrag = enabled;
     },
     onFrame: (callback: FrameCallback): void => {
       frameCallbacks.push(callback);

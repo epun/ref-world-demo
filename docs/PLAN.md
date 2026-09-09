@@ -78,7 +78,7 @@ replace it.** Nothing generates a new shape.
 | `src/inflate/` | Silhouette → `BufferGeometry`. Teddy-style puff. **Pure + deterministic** |
 | `src/character/` | Archetype, gait, locomotion, emotes, eye SDF |
 | `src/egg/` | Egg mesh, drawing wrap, wobble, crack shader, hatch sequence |
-| `src/world/` | Camera rig, ground, `Surface`, scatter placement, shadow pass |
+| `src/world/` | Camera rig, ground, `Surface`, scatter placement, shadow pass, landscape (authored map), water |
 | `src/motion/` | Drift-settle solver, ambient-drift floor, the ζ≥1 spring |
 | `src/net/` | Room protocol, WebSocket client, state sync |
 | `src/phone/` | The companion app — draw, wait, alive, emote wheel, minimap |
@@ -349,9 +349,66 @@ interface Surface {
 never touches world-space Y** — that discipline is the entire cost of keeping the planet
 available, and it's cheap if held from the start and expensive to retrofit.
 
+`RollingSurface` has since shipped as `ROLLING_SURFACE` in `src/world/surface.ts`, wrapping
+the terraced terrain authored in `src/world/landscape.ts`. `FlatSurface` shipped alongside it
+as `FLAT_SURFACE` and remains in use for the phone's character stage and for tests that want
+a plane. `SphereSurface` is still open behind the same seam.
+
 A curved horizon suits the world brief's pixel-planet reference well, and it interacts
 nicely with §7.1: on a sphere, the camera tour becomes an orbit and dispersal is bounded by
 the planet's surface area. P5, not P0.
+
+### 7.3 Painted terrain (dev) — *(partly shipped)*
+
+The geography stays **authored** (`src/world/landscape.ts`, hand-placed and fixed). Painting
+is the one way a person adds to it, and it is a **dev** surface: the demo build never paints,
+it loads. The port of EnvPaint's brush engine into this world is planned in
+`envpaint/docs/port-meridian.md`; this section is what has landed and what has not.
+
+**The hook.** `landscape.ts` gains exactly one new export, `setPaintedHeight(sampler | null)`,
+and `terracedLand` becomes `terrace(smoothField(x, z) + painted(x, z)) * farGate(...)`. The
+offset goes in **before the terrace** so a painted hill gets the same risers the authored
+relief has — the ink pass only draws elevation it can find a contour on, and painting after
+the terrace would let a smooth ramp exist (TASTE §3) — and **before the far gate**, so painted
+land settles onto the flat outer disc at the rim like everything else. It is **not** scaled by
+the `elevation` dial [D]: the dials are multipliers on the authored geography, and a painted
+unit is a world unit somebody put there by hand.
+
+The hook lives in `landscape.ts` for the reason that module's header already gives for height
+living there at all — heights come from one place, and a second place would be the second
+shoreline in the height dimension. `terrainHeight`, `terrainNormal`, `waterLevel` and every
+consumer are unchanged, and `Surface` stays two methods wide (§7.2): a painted map is a term
+inside the one surface, not a second one. With no sampler set the world is the authored world,
+pinned at 2,000 sample points in `test/world/painted.test.ts`.
+
+**The map.** `src/world/painted.ts` — pure, importing nothing: a `Float32Array` of `res²`
+world-unit offsets over a square `size` units across, centred on the origin (512 texels over
+400 units, 0.78 u a texel). Bilinear between half-texel centres, exactly zero outside, fading
+to zero across the last half texel so the rim never draws itself as a square contour. Its
+array is deliberately **the same buffer** an `envpaint` paint layer stamps into, so a dab is
+visible to the next height sample with no copy and no sync step. `serializeMap` /
+`deserializeMap` are base64 float32, ready for the committed map the bake step will write.
+
+**The skill.** `src/dev/paint.ts`, registered as `refworld.paint` and reached by a dynamic
+import inside `initDevPanel`, so envpaint lands in its own dev chunk and never in the demo
+build. Raise / lower / flatten / smooth on the height layer, hotkeys 1-4, EnvPaint's tool
+strip while painting is on, EnvPaint's edge-shape defaults (TASTE §2.5: no clean discs), and
+ghost-panel's undo stack through EnvPaint's `History.attachUI`. Painting is off until a
+checkbox says otherwise: the world keeps its own pointer, and even with painting on shift+drag
+stays the world's pan. While a stroke owns the plain drag the world parks its own one-pointer
+orbit (`WorldHandles.setSoloDrag`) — both listen on the same canvas and neither can out-order
+the other, so the world lets go rather than the tool shouting louder.
+
+After every batch of stamps the world re-cuts itself with `setTerrain({})` (ground → scatter →
+water), throttled to ~8 rebuilds a second because one rebuild measures ~250-330ms, with one
+guaranteed rebuild on `strokeend`.
+
+**Deferred**, in the order the port plan takes them: painted **water** — level tools, connected
+components, outlines feeding `water.ts` (the one genuinely new piece: a painted lake has no
+blob to walk a shoreline round); painted **forest / mountain / clearing weights** for scatter;
+and **recording, saving and baking** — the `paint` session event per stamp, a "save map"
+button, and a committed `map.json` the deployment loads. `src/dev/paint.ts` carries one marked
+hook comment where the session event goes.
 
 ---
 
