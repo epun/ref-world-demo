@@ -150,6 +150,14 @@ export interface DevHandles {
   /** …and reads them back, so the sliders start where the world is. */
   terrain?(): { elevation: number; tierStep: number; relief: number };
   /**
+   * Show or hide the authored map (WorldHandles.setLandscape). The world
+   * opens as a flat plain; this is the switch that brings the geography and
+   * its elevation in, live.
+   */
+  setLandscape?(on: boolean): void;
+  /** …and reads it back, so the checkbox starts where the world is. */
+  landscape?(): boolean;
+  /**
    * Park the world's own one-pointer drag (`WorldHandles.setSoloDrag`), so a
    * dev tool that draws on the ground can own the same gesture instead of
    * orbiting the camera underneath itself. Only the paint skill uses it, and
@@ -1094,93 +1102,6 @@ export async function initDevPanel(
         });
       }
 
-      // ── the terrain dials ───────────────────────────────────────────────
-      // 2026-09-03, user ask: "there is a lot of elevation change. I want to
-      // be able to adjust the amount of elevation change there is in the map
-      // and their spacing in proximity to each other." Three multipliers over
-      // the authored geography (src/world/landscape.ts `TerrainParams`) —
-      // how much height, how far apart the tiers, how wide the relief is
-      // spread — each rebuilding the ground, the scatter and the water.
-      const setTerrain = handles.setTerrain?.bind(handles);
-      const readTerrain = handles.terrain?.bind(handles);
-      if (setTerrain && readTerrain) {
-        const live = readTerrain();
-        // TRAILING DEBOUNCE. One rebuild is ~300ms of ground displacement +
-        // scatter re-lay, and a slider drag emits a change per pointermove:
-        // undebounced, a single sweep queues thirty of them and the frame
-        // loop stops for ten seconds. Trailing rather than leading, so the
-        // value you let go on is the one the world ends up standing at.
-        let pending: { elevation?: number; tierStep?: number; relief?: number } = {};
-        let timer: ReturnType<typeof setTimeout> | null = null;
-        const readout = (): void => {
-          const now = readTerrain();
-          // Coarse walk of the scattered region — this runs once per settled
-          // drag, never per frame, so a 5-unit grid is plenty to report the
-          // range the dials just produced.
-          let lo = Infinity;
-          let hi = -Infinity;
-          for (let x = -155; x <= 155; x += 5) {
-            for (let z = -155; z <= 155; z += 5) {
-              const h = terrainHeight(x, z);
-              if (h < lo) lo = h;
-              if (h > hi) hi = h;
-            }
-          }
-          folder
-            .get('terrain-readout')
-            ?.setText?.(
-              `elevation ${now.elevation.toFixed(2)} · tiers ${now.tierStep.toFixed(1)} · ` +
-                `relief ${now.relief.toFixed(2)} · height ${lo.toFixed(1)} to ${hi.toFixed(1)}`,
-            );
-        };
-        const queue = (next: { elevation?: number; tierStep?: number; relief?: number }): void => {
-          pending = { ...pending, ...next };
-          if (timer !== null) clearTimeout(timer);
-          timer = setTimeout(() => {
-            timer = null;
-            const apply = pending;
-            pending = {};
-            setTerrain(apply);
-            readout();
-          }, TERRAIN_DEBOUNCE_MS);
-        };
-        folder.addSlider('elevation', {
-          min: TERRAIN_LIMITS.elevation[0],
-          max: TERRAIN_LIMITS.elevation[1],
-          step: 0.05,
-          value: live.elevation,
-          id: 'terrain-elevation',
-          onChange: (v) => {
-            queue({ elevation: v });
-            session?.world('terrain', v, 'elevation');
-          },
-        });
-        folder.addSlider('tier spacing', {
-          min: TERRAIN_LIMITS.tierStep[0],
-          max: TERRAIN_LIMITS.tierStep[1],
-          step: 0.1,
-          value: live.tierStep,
-          id: 'terrain-tier-step',
-          onChange: (v) => {
-            queue({ tierStep: v });
-            session?.world('terrain', v, 'tierStep');
-          },
-        });
-        folder.addSlider('relief spread', {
-          min: TERRAIN_LIMITS.relief[0],
-          max: TERRAIN_LIMITS.relief[1],
-          step: 0.05,
-          value: live.relief,
-          id: 'terrain-relief',
-          onChange: (v) => {
-            queue({ relief: v });
-            session?.world('terrain', v, 'relief');
-          },
-        });
-        folder.addInfo('', 'terrain-readout');
-        readout();
-      }
-
       // Shader style properties in their own section (user ask): the render
       // look — grain, the ink pass, and the color grade — separated from the
       // environment's density and scale variables.
@@ -1305,6 +1226,138 @@ export async function initDevPanel(
       panelUi.panel.removeFolder('environment');
       panelUi.panel.removeFolder('shader style');
     },
+  });
+
+  // ── refworld.landscape — the map behind a switch ──────────────────────────
+  // 2026-09-09, user ask: "I want to have the plain version of the original
+  // world, where it was quite flat and there wasn't any elevation or any
+  // interesting land features or landmarks… we're probably going to sculpt
+  // the environment live with the audience." So the world SHIPS plain and the
+  // whole authored map — forest, range, lake, island, ponds, reeds, every
+  // foot of elevation — lives behind the first control in this folder. The
+  // three terrain dials moved here with it: once the map is on, these are
+  // what shape it in front of the room.
+
+  ui.skills.register({
+    ...metaOf('refworld.landscape'),
+    apply: (panelUi) => {
+      const folder = panelUi.addFolder('landscape');
+      const setLandscape = handles.setLandscape?.bind(handles);
+      const readLandscape = handles.landscape?.bind(handles);
+      /** The terrain readout below, once it exists — the switch re-runs it,
+       * because revealing the map is exactly when the height range it reports
+       * stops being `0.0 to 0.0`. */
+      let refreshReadout: () => void = () => {};
+      if (setLandscape) {
+        folder.addCheckbox('landscape', {
+          value: readLandscape?.() ?? false,
+          id: 'landscape-mode',
+          tooltip: 'reveal the authored map — forest, range, lake, island, and the elevation',
+          onChange: (on) => {
+            setLandscape(on);
+            refreshReadout();
+            // Recorded as a number, like every other world dial: the log's
+            // `value` is a number or a string, and a replay reads either
+            // (docs/SESSION.md §world).
+            session?.world('landscape', on ? 1 : 0);
+          },
+        });
+      }
+
+      // ── the terrain dials ───────────────────────────────────────────────
+      // 2026-09-03, user ask: "there is a lot of elevation change. I want to
+      // be able to adjust the amount of elevation change there is in the map
+      // and their spacing in proximity to each other." Three multipliers over
+      // the authored geography (src/world/landscape.ts `TerrainParams`) —
+      // how much height, how far apart the tiers, how wide the relief is
+      // spread — each rebuilding the ground, the scatter and the water.
+      const setTerrain = handles.setTerrain?.bind(handles);
+      const readTerrain = handles.terrain?.bind(handles);
+      if (setTerrain && readTerrain) {
+        const live = readTerrain();
+        // TRAILING DEBOUNCE. One rebuild is ~300ms of ground displacement +
+        // scatter re-lay, and a slider drag emits a change per pointermove:
+        // undebounced, a single sweep queues thirty of them and the frame
+        // loop stops for ten seconds. Trailing rather than leading, so the
+        // value you let go on is the one the world ends up standing at.
+        let pending: { elevation?: number; tierStep?: number; relief?: number } = {};
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        const readout = (): void => {
+          const now = readTerrain();
+          // Coarse walk of the scattered region — this runs once per settled
+          // drag, never per frame, so a 5-unit grid is plenty to report the
+          // range the dials just produced.
+          let lo = Infinity;
+          let hi = -Infinity;
+          for (let x = -155; x <= 155; x += 5) {
+            for (let z = -155; z <= 155; z += 5) {
+              const h = terrainHeight(x, z);
+              if (h < lo) lo = h;
+              if (h > hi) hi = h;
+            }
+          }
+          folder
+            .get('terrain-readout')
+            ?.setText?.(
+              `elevation ${now.elevation.toFixed(2)} · tiers ${now.tierStep.toFixed(1)} · ` +
+                `relief ${now.relief.toFixed(2)} · height ${lo.toFixed(1)} to ${hi.toFixed(1)}`,
+            );
+        };
+        const queue = (next: { elevation?: number; tierStep?: number; relief?: number }): void => {
+          pending = { ...pending, ...next };
+          if (timer !== null) clearTimeout(timer);
+          timer = setTimeout(() => {
+            timer = null;
+            const apply = pending;
+            pending = {};
+            setTerrain(apply);
+            readout();
+          }, TERRAIN_DEBOUNCE_MS);
+        };
+        folder.addSlider('elevation', {
+          min: TERRAIN_LIMITS.elevation[0],
+          max: TERRAIN_LIMITS.elevation[1],
+          step: 0.05,
+          value: live.elevation,
+          id: 'terrain-elevation',
+          onChange: (v) => {
+            queue({ elevation: v });
+            session?.world('terrain', v, 'elevation');
+          },
+        });
+        folder.addSlider('tier spacing', {
+          min: TERRAIN_LIMITS.tierStep[0],
+          max: TERRAIN_LIMITS.tierStep[1],
+          step: 0.1,
+          value: live.tierStep,
+          id: 'terrain-tier-step',
+          onChange: (v) => {
+            queue({ tierStep: v });
+            session?.world('terrain', v, 'tierStep');
+          },
+        });
+        folder.addSlider('relief spread', {
+          min: TERRAIN_LIMITS.relief[0],
+          max: TERRAIN_LIMITS.relief[1],
+          step: 0.05,
+          value: live.relief,
+          id: 'terrain-relief',
+          onChange: (v) => {
+            queue({ relief: v });
+            session?.world('terrain', v, 'relief');
+          },
+        });
+        folder.addInfo('', 'terrain-readout');
+        refreshReadout = readout;
+        readout();
+      }
+
+      if (!setLandscape && !handles.setTerrain) {
+        folder.addInfo('no landscape handles were provided', 'landscape-empty');
+      }
+      return { folder };
+    },
+    teardown: (panelUi) => panelUi.panel.removeFolder('landscape'),
   });
 
   // ── refworld.weather — environment/weather controls (defensive) ───────────

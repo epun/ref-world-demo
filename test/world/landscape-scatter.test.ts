@@ -6,12 +6,25 @@
  * The invariant these all circle: the plain is still the world that shipped
  * before the map existed, and everything else is a departure from it that
  * the map asked for.
+ *
+ * THE MODE. That invariant now has a switch on it (src/world/landscape.ts
+ * `LandscapeMode`): the world SHIPS plain and the map is revealed live. So
+ * this file runs in the landscape mode — that is what it measures — and the
+ * last block below flips back to plain and pins the other half: with the map
+ * off, the placement really is the pre-map world, whole.
  */
 
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { InstancedMesh, type Material, type MeshStandardMaterial } from 'three';
 import { WORLD } from '../../src/taste/tokens';
-import { isWater, sampleLandscape, WATER_BODIES, WOBBLE_MAX } from '../../src/world/landscape';
+import {
+  isAuthoredWater,
+  isWater,
+  sampleLandscape,
+  setLandscapeMode,
+  WATER_BODIES,
+  WOBBLE_MAX,
+} from '../../src/world/landscape';
 import { MOUNTAIN_FOOTPRINT, PROP_VARIANT_COUNTS } from '../../src/world/props';
 import {
   computePlacements,
@@ -19,10 +32,24 @@ import {
   filterExcluded,
   MOUNTAIN_CLEAR_FIT,
   MOUNTAIN_MAX,
+  SCATTER_STEP,
   SHADOW_FIT,
   SHADOW_MAX_RADIUS,
   type Placement,
 } from '../../src/world/scatter';
+
+beforeAll(() => setLandscapeMode('landscape'));
+afterAll(() => setLandscapeMode('plain'));
+
+/** Run `f` with the map switched off, then put the file's mode back. */
+function inPlain<T>(f: () => T): T {
+  setLandscapeMode('plain');
+  try {
+    return f();
+  } finally {
+    setLandscapeMode('landscape');
+  }
+}
 
 const shipped = (): Placement[] => computePlacements();
 
@@ -349,6 +376,116 @@ describe('the plain is the world that shipped', () => {
       'tick:0:-8.4336:9.1790:0.9504:5.2106',
       'tick:0:10.3971:2.5703:1.0100:1.5532',
     ]);
+  });
+
+  // ── …and with the map switched OFF, that is the WHOLE world ────────────
+  // The block above measures the deep plain inside the MAPPED world: the
+  // ground the map does not reach. In the plain mode there is no map to reach
+  // anywhere, so the same pre-map expression governs every cell — which is
+  // the world the room now opens on (2026-09-09, user ask).
+
+  /** The same deep-plain digest, taken in the plain mode. Four short of the
+   * mapped fixture, and the assertion below says exactly why: a cluster
+   * seeded inside the forest can throw a neighbour a step or two clear of it,
+   * onto ground the predicate calls deep plain. Those four spill-overs are
+   * the map's, so the plain world does not have them — it does not move a
+   * single one of the other 1123. */
+  const PLAIN_MODE_COUNT = 1123;
+  const PLAIN_MODE_DIGEST = '0aa1f225';
+
+  it('places no mountain and no reed anywhere in the plain mode', () => {
+    const plain = inPlain(() => computePlacements());
+    expect(plain.length).toBeGreaterThan(0);
+    expect(kindsOf(plain, 'mountain')).toHaveLength(0);
+    expect(kindsOf(plain, 'reed')).toHaveLength(0);
+    // Both really do exist in the mapped world — the assertions above are not
+    // measuring an empty list.
+    expect(kindsOf(shipped(), 'mountain').length).toBeGreaterThan(0);
+    expect(kindsOf(shipped(), 'reed').length).toBeGreaterThan(0);
+  });
+
+  it('rolls the pre-map expression over the ENTIRE field in the plain mode', () => {
+    const plain = inPlain(() => computePlacements());
+    // The fixture selects deep-plain GROUND, so the predicate is evaluated
+    // against the map (this file's mode) even though the placements were
+    // rolled without it.
+    const deep = plain.filter(deepPlain).map(key);
+    expect(deep).toHaveLength(PLAIN_MODE_COUNT);
+    expect(digest(deep)).toBe(PLAIN_MODE_DIGEST);
+
+    // Nothing MOVED: every deep-plain placement of the plain world is in the
+    // mapped one too, digit for digit. The map only ever adds to this ground.
+    const mapped = new Set(shipped().filter(deepPlain).map(key));
+    for (const k of deep) expect(mapped.has(k), k).toBe(true);
+  });
+
+  it('differs from the mapped fixture only where a region spills over its edge', () => {
+    const plain = new Set(inPlain(() => computePlacements()).filter(deepPlain).map(key));
+    const extra = shipped().filter(deepPlain).filter((p) => !plain.has(key(p)));
+    expect(extra).toHaveLength(PLAIN_COUNT - PLAIN_MODE_COUNT);
+    for (const p of extra) {
+      // Every one of them stands within a single scatter step of ground the
+      // map weights — a neighbour thrown clear of a cluster seeded inside the
+      // forest, which is precisely what the plain world has no seed for.
+      let nearest = Infinity;
+      for (let r = 0.5; r <= SCATTER_STEP && nearest === Infinity; r += 0.5) {
+        for (let a = 0; a < 64; a++) {
+          const th = (a / 64) * Math.PI * 2;
+          const l = sampleLandscape(p.x + Math.cos(th) * r, p.z + Math.sin(th) * r);
+          if (l.forest > 0 || l.mountain > 0) {
+            nearest = r;
+            break;
+          }
+        }
+      }
+      expect(nearest, `${p.kind} at ${p.x.toFixed(1)},${p.z.toFixed(1)}`).toBeLessThanOrEqual(
+        SCATTER_STEP,
+      );
+    }
+  });
+
+  it('is untouched around the hatch clearing in the plain mode too', () => {
+    // The readable half of the fixture, in the other mode: the disc the
+    // creatures spawn into is far from every feature in either world, so it
+    // must not move a digit when the map goes away.
+    const disc = inPlain(() =>
+      computePlacements()
+        .filter((p) => Math.hypot(p.x, p.z) <= 14)
+        .map(key),
+    );
+    expect(disc).toEqual([
+      'tick:0:1.3146:7.1223:0.8188:3.3447',
+      'tick:0:-4.8633:9.7157:1.2596:2.7263',
+      'tick:0:-8.4336:9.1790:0.9504:5.2106',
+      'tick:0:10.3971:2.5703:1.0100:1.5532',
+    ]);
+  });
+
+  it('plants the ground the map used to claim, and every cell reads as plain', () => {
+    const plain = inPlain(() => computePlacements());
+    // The lake's own footprint: ground nothing may stand on in the mapped
+    // world, open field in this one.
+    expect(plain.filter((p) => isAuthoredWater(p.x, p.z)).length).toBeGreaterThan(10);
+    // …and the map's own weights are gone, so every placement rolled the
+    // open-plain expression.
+    inPlain(() => {
+      for (const p of plain) {
+        const at = `${p.kind} at ${p.x.toFixed(1)},${p.z.toFixed(1)}`;
+        expect(isWater(p.x, p.z), at).toBe(false);
+        const l = sampleLandscape(p.x, p.z);
+        expect(l.region, at).toBe('plain');
+        expect(l.forest + l.mountain, at).toBe(0);
+      }
+    });
+    // Fewer props overall than the mapped world, which is the forest doing
+    // its job: a stand is an order of magnitude denser than open field.
+    expect(plain.length).toBeLessThan(shipped().length);
+  });
+
+  it('gives the identical world back when the map is switched on again', () => {
+    const before = shipped().map(key);
+    inPlain(() => computePlacements());
+    expect(shipped().map(key)).toEqual(before);
   });
 
   it('stays cheap enough to run on a slider drag', () => {

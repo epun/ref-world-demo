@@ -6,21 +6,31 @@
  * (src/world/surface.ts) and nothing else, its rim is flat where the terrain
  * is flat so the far field meets it without a seam, and it carries the
  * normals the ink pass needs to draw the terraces at all.
+ *
+ * THE MODE. There is only terrain to displace in the landscape mode
+ * (src/world/landscape.ts) — the world SHIPS as a flat plain — so this file
+ * switches it on and puts it back. The plain field is measured at the bottom:
+ * it is the same ground the FLAT_SURFACE case already pins, arrived at from
+ * the other direction.
  */
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { Color, Mesh, MeshBasicMaterial, type BufferAttribute } from 'three';
 import { SURFACE } from '../../src/taste/tokens';
 import { FIELD_SEGMENTS, FIELD_SIZE, createGround } from '../../src/world/ground';
 import {
+  setLandscapeMode,
   setTerrainParams,
   TERRAIN,
   TERRAIN_DEFAULTS,
   terrainParams,
 } from '../../src/world/landscape';
 import { FLAT_SURFACE, ROLLING_SURFACE } from '../../src/world/surface';
+
+beforeAll(() => setLandscapeMode('landscape'));
+afterAll(() => setLandscapeMode('plain'));
 
 const field = (ground = createGround(ROLLING_SURFACE)): Mesh =>
   ground.group.getObjectByName('ground-field') as Mesh;
@@ -201,6 +211,20 @@ describe('ground — the terrain draws its own tiers', () => {
     expect(scene).toContain('ground.update(nowMs)');
   });
 
+  it('is rebuilt with the scatter, the water and its visibility when the map is toggled', () => {
+    // Same reason (scene.ts needs a gl context). FOUR calls, not the dial's
+    // three: switching the map on re-cuts the ground, RE-ROLLS the scatter
+    // (the map decides what grows where), re-levels the water onto its
+    // basins — a body sits under the plain's zero — and only then shows it.
+    const scene = readFileSync(join(process.cwd(), 'src/world/scene.ts'), 'utf8');
+    const body = scene.slice(scene.indexOf('setLandscape: ('));
+    expect(body).toContain("setLandscapeMode(on ? 'landscape' : 'plain')");
+    expect(body).toContain('ground.rebuild()');
+    expect(body).toContain('scatter.refreshLandscape()');
+    expect(body).toContain('water.refreshLevels()');
+    expect(body).toContain('water.setVisible(on)');
+  });
+
   it('is rebuilt with the scatter and the water when a terrain dial moves', () => {
     // Same reason as above (scene.ts needs a gl context): the seam is read in
     // the source. All THREE have to be told, or the props stand in the air
@@ -279,5 +303,52 @@ describe('ground — it rebuilds under the terrain dials', () => {
     setTerrainParams({ tierStep: TERRAIN.terraceStep });
     ground.rebuild();
     expect(uStep.value).toBe(TERRAIN.terraceStep);
+  });
+});
+
+describe('ground — the plain mode is a flat field', () => {
+  /** Build a ground with the map switched off, then put the file's mode
+   * back. */
+  function inPlain<T>(f: () => T): T {
+    setLandscapeMode('plain');
+    try {
+      return f();
+    } finally {
+      setLandscapeMode('landscape');
+    }
+  }
+
+  it('displaces nothing — the world opens on flat paper', () => {
+    // The world ships plain (2026-09-09, user ask), so this is the ground the
+    // room actually opens on: the same plane FLAT_SURFACE gives, reached
+    // through ROLLING_SURFACE with no map under it.
+    const attr = inPlain(() => positionOf(field()));
+    for (let i = 0; i < attr.count; i++) expect(attr.getY(i)).toBe(0);
+  });
+
+  it('re-displaces on rebuild when the map is switched on', () => {
+    // What WorldHandles.setLandscape leans on: the same geometry, re-cut.
+    const ground = inPlain(() => createGround(ROLLING_SURFACE));
+    const mesh = ground.group.getObjectByName('ground-field') as Mesh;
+    const attr = positionOf(mesh);
+    for (let i = 0; i < attr.count; i++) expect(attr.getY(i)).toBe(0);
+
+    ground.rebuild(); // the file's mode is landscape again
+    expect(positionOf(mesh)).toBe(attr);
+    let moved = 0;
+    for (const i of seededIndices(50, attr.count)) {
+      if (Math.abs(attr.getY(i)) > 1e-6) moved++;
+      expect(attr.getY(i), `vertex ${i}`).toBeCloseTo(
+        ROLLING_SURFACE.sampleHeight(attr.getX(i), attr.getZ(i)),
+        4,
+      );
+    }
+    expect(moved).toBeGreaterThan(20);
+
+    // …and back to flat when it is switched off again.
+    inPlain(() => {
+      ground.rebuild();
+      for (let i = 0; i < attr.count; i++) expect(attr.getY(i)).toBe(0);
+    });
   });
 });

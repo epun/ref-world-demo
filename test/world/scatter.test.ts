@@ -1,8 +1,14 @@
 /**
  * Scatter placement tests — pure functions over placement data. No WebGL.
+ *
+ * THE MODE. The world ships as a flat plain with no map in it
+ * (src/world/landscape.ts `LandscapeMode`); this file measures the mapped
+ * world — water circles in the collider set, props seated on real terrain —
+ * so it switches the map on and puts it back. `refreshLandscape` and the
+ * plain placement have their own block at the bottom.
  */
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import {
   Group,
   InstancedMesh,
@@ -14,7 +20,9 @@ import {
 } from 'three';
 import { WORLD } from '../../src/taste/tokens';
 import {
+  landscapeMode,
   sampleLandscape,
+  setLandscapeMode,
   setTerrainParams,
   TERRAIN_DEFAULTS,
   WATER_BODIES,
@@ -71,6 +79,9 @@ function namedMeshes(root: { traverse(cb: (o: unknown) => void): void }): Instan
   });
   return out;
 }
+
+beforeAll(() => setLandscapeMode('landscape'));
+afterAll(() => setLandscapeMode('plain'));
 
 describe('scatter placement', () => {
   it('is deterministic (positions and variants alike)', () => {
@@ -1195,6 +1206,112 @@ describe('scatter — refreshTerrain re-seats the world on new ground', () => {
         after.getMatrixAt(i, matrix);
         expect(matrix.elements[13]!, `stamp ${i}`).toBeCloseTo(PROP_SHADOW_LIFT, 6);
       }
+    } finally {
+      scatter.dispose();
+    }
+  });
+});
+
+describe('scatter — refreshLandscape switches the map on and off', () => {
+  /** Run `f` with the map switched off, then put the file's mode back. */
+  function inPlain<T>(f: () => T): T {
+    setLandscapeMode('plain');
+    try {
+      return f();
+    } finally {
+      setLandscapeMode('landscape');
+    }
+  }
+
+  it('places no mountain, no reed and no water collider in the plain mode', () => {
+    inPlain(() => {
+      const scatter = createScatter();
+      try {
+        // This is the world the room opens on.
+        const kinds = new Set(scatter.positions().map((p) => p.kind as string));
+        expect(kinds.has('mountain')).toBe(false);
+        // The mark kinds are not in positions(); read their outliner rows.
+        expect(scatter.group.getObjectByName('mountains')!.children).toHaveLength(0);
+        expect(scatter.group.getObjectByName('reeds')!.children).toHaveLength(0);
+        // …and no water blocks anything, because there is none. (The water
+        // circles are appended at COLLIDER time, not at build time, so this
+        // has to be asked inside the mode.)
+        expect(scatter.colliders()).toHaveLength(scatter.positions().length);
+      } finally {
+        scatter.dispose();
+      }
+    });
+    expect(landscapeMode()).toBe('landscape'); // the file's mode, put back
+  });
+
+  it('brings both back — and the water circles with them — on refreshLandscape', () => {
+    const scatter = inPlain(() => createScatter());
+    try {
+      const before = scatter.collidersVersion();
+      expect(scatter.group.getObjectByName('mountains')!.children).toHaveLength(0);
+
+      // The mode is the world's, not the scatter's: flip it, then tell it.
+      scatter.refreshLandscape();
+
+      expect(scatter.group.getObjectByName('mountains')!.children.length).toBeGreaterThan(0);
+      expect(scatter.group.getObjectByName('reeds')!.children.length).toBeGreaterThan(0);
+      // A rebuild ran, so consumers keyed on the version re-query — which is
+      // what makes the lake start blocking creatures.
+      expect(scatter.collidersVersion()).toBeGreaterThan(before);
+      const water = scatter.colliders().slice(scatter.positions().length);
+      expect(water).toEqual(waterColliders());
+      expect(water.length).toBeGreaterThan(100);
+      for (const c of water) expect(c.hard).toBe(true);
+    } finally {
+      scatter.dispose();
+    }
+  });
+
+  it('takes them away again, and gives back the identical world on the way back', () => {
+    const scatter = createScatter();
+    try {
+      const key = (): string =>
+        scatter
+          .positions()
+          .map((p) => `${p.kind}:${p.x.toFixed(4)}:${p.z.toFixed(4)}:${p.r.toFixed(4)}`)
+          .join('|');
+      const mapped = key();
+      const version = scatter.collidersVersion();
+
+      inPlain(() => {
+        scatter.refreshLandscape();
+        expect(key()).not.toBe(mapped);
+        // Asked inside the mode: the water circles are appended when the
+        // collider set is built, and in the plain world there are none.
+        expect(scatter.colliders()).toHaveLength(scatter.positions().length);
+        expect(scatter.collidersVersion()).toBeGreaterThan(version);
+      });
+
+      scatter.refreshLandscape();
+      // Same seed, same rules, the same country back: placement for
+      // placement, not just count for count.
+      expect(key()).toBe(mapped);
+    } finally {
+      scatter.dispose();
+    }
+  });
+
+  it('seats the plain world on flat ground', () => {
+    const scatter = inPlain(() => createScatter({ surface: ROLLING_SURFACE }));
+    try {
+      let checked = 0;
+      scatter.group.traverse((o) => {
+        if (!(o instanceof InstancedMesh)) return;
+        const m = new Matrix4();
+        for (let i = 0; i < o.count && checked < 200; i++) {
+          o.getMatrixAt(i, m);
+          const pos = new Vector3().setFromMatrixPosition(m);
+          // Flat paper: every instance sits on 0, plus its own small lift.
+          expect(Math.abs(pos.y), `${o.name} #${i}`).toBeLessThan(0.05);
+          checked++;
+        }
+      });
+      expect(checked).toBeGreaterThan(50);
     } finally {
       scatter.dispose();
     }

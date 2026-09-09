@@ -366,7 +366,12 @@ it loads. The port of EnvPaint's brush engine into this world is planned in
 `envpaint/docs/port-meridian.md`; this section is what has landed and what has not.
 
 **The hook.** `landscape.ts` gains exactly one new export, `setPaintedHeight(sampler | null)`,
-and `terracedLand` becomes `terrace(smoothField(x, z) + painted(x, z)) * farGate(...)`. The
+and `terracedLand` becomes `terrace(field(x, z) + painted(x, z)) * farGate(...)`, where `field`
+is `smoothField` in the landscape mode and 0 in the plain one — the mode gates the AUTHORED
+geography, never a person's own hand, so the flat field the world opens on is fully paintable
+and a painted hill survives the switch in both directions. That is what the toggle is for:
+open flat, sculpt live. (`terrace(0)` is exactly 0, so an unpainted plain world is exactly
+flat paper, and `terrainNormal` keeps answering straight up until something is painted.) The
 offset goes in **before the terrace** so a painted hill gets the same risers the authored
 relief has — the ink pass only draws elevation it can find a contour on, and painting after
 the terrace would let a smooth ramp exist (TASTE §3) — and **before the far gate**, so painted

@@ -15,14 +15,23 @@
  * sample for sample, at 2,000 points. After that, that a painted constant
  * comes out as `terrace(field + constant)` — the expectation re-derived from
  * the module's own dials at each point, never a recorded number.
+ *
+ * THE MODE. Everything above is about the AUTHORED field a painted offset is
+ * added to, and that field only exists in the landscape mode — the world
+ * ships plain (src/world/landscape.ts `LandscapeMode`). So this file switches
+ * the map on and puts it back. The plain world is paintable too, and that is
+ * not an afterthought but the point of the mode (open flat, sculpt live): it
+ * has a block of its own at the bottom.
  */
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import {
   isWater,
+  setLandscapeMode,
   setPaintedHeight,
   TERRAIN,
   terrainHeight,
+  terrainNormal,
   terrainParams,
   WATER_BODIES,
   waterLevel,
@@ -40,6 +49,8 @@ import {
   PAINTED_SIZE,
 } from '../../src/world/painted';
 
+beforeAll(() => setLandscapeMode('landscape'));
+afterAll(() => setLandscapeMode('plain'));
 afterEach(() => setPaintedHeight(null));
 
 /** Deterministic probes over the field, the same sin-hash family the world
@@ -336,5 +347,143 @@ describe('the painted hook — a constant painted everywhere', () => {
       // painted tier under a pond lifts the pond by exactly one tier.
       expect(waterLevel(b)).toBeCloseTo((before[i] ?? 0) + terrainParams().tierStep, 9);
     });
+  });
+});
+
+// ── the plain world is paintable ─────────────────────────────────────────────
+
+describe('the painted hook — sculpting the world the room opens on', () => {
+  /** Probes inside the far fade, where a height is whatever was painted and
+   * nothing else — past `farStart` the ground settles onto the flat outer
+   * disc, painted or authored, which the rim test below pins separately.
+   * (`probes` walks a SQUARE, so a radial cut is not the same as a smaller
+   * extent: the corners of a ±130 square reach 184.) */
+  const inField = (count: number): [number, number][] =>
+    probes(count, TERRAIN.farStart).filter(([x, z]) => Math.hypot(x, z) < TERRAIN.farStart - 10);
+
+  /** Run `f` with the map switched off — the mode the world ships in — then
+   * put this file's mode back. */
+  function inPlain<T>(f: () => T): T {
+    setLandscapeMode('plain');
+    try {
+      return f();
+    } finally {
+      setLandscapeMode('landscape');
+    }
+  }
+
+  it('is exactly flat paper while nothing is painted', () => {
+    inPlain(() => {
+      for (const [x, z] of probes(400, 260)) {
+        expect(terrainHeight(x, z), `${x},${z}`).toBe(0);
+        expect(ROLLING_SURFACE.sampleHeight(x, z), `${x},${z}`).toBe(0);
+        expect(terrainNormal(x, z), `${x},${z}`).toEqual({ x: 0, y: 1, z: 0 });
+      }
+      // …and an all-zero map installed changes not one sample of that.
+      const map = createPaintedMap();
+      setPaintedHeight(paintedSampler(map));
+      for (const [x, z] of probes(400, 260)) expect(terrainHeight(x, z), `${x},${z}`).toBe(0);
+    });
+  });
+
+  it('raises the flat field where it is painted — this is the whole point of the mode', () => {
+    // 2026-09-09, user ask: the world opens flat and the environment is
+    // sculpted live from there. A painted offset that the mode swallowed
+    // would make the plain world the one world nobody can shape.
+    inPlain(() => {
+      const step = terrainParams().tierStep;
+      setPaintedHeight(() => step);
+      // Inside `farStart`: past it the far fade settles every height onto the
+      // flat outer disc, painted or authored, which the rim test below pins.
+      const points = inField(300);
+      expect(points.length).toBeGreaterThan(100);
+      for (const [x, z] of points) {
+        // No authored field under it, so the painted tier IS the height —
+        // terraced, exactly as an authored one would be…
+        expect(terrainHeight(x, z), `${x},${z}`).toBeCloseTo(step, 9);
+      }
+      // …including in the hatch clearing, which the authored relief is gated
+      // out of but a person's own hand is not.
+      expect(terrainHeight(0, 0)).toBeCloseTo(step, 9);
+      // …and through the seam the world actually samples.
+      expect(ROLLING_SURFACE.sampleHeight(12, -8)).toBeCloseTo(step, 9);
+    });
+  });
+
+  it('terraces a painted hill on the plain, the same way it terraces the map', () => {
+    // A painted ramp comes out as a flight of treads, not a smooth swell —
+    // the reason the offset goes in BEFORE the terrace (TASTE §3, and the ink
+    // pass only draws elevation where there is a contour).
+    inPlain(() => {
+      const step = terrainParams().tierStep;
+      // A gentle ramp across x, sampled well inside the far fade so the only
+      // thing shaping the profile is the terrace.
+      const ramp = (x: number): number => (x + 130) / 40;
+      setPaintedHeight(ramp);
+      const heights: number[] = [];
+      const raw: number[] = [];
+      for (let x = -120; x <= 120; x += 1) {
+        heights.push(terrainHeight(x, 0));
+        raw.push(ramp(x));
+      }
+      const onTread = (vs: number[]): number =>
+        vs.filter((h) => Math.abs(h / step - Math.round(h / step)) < 1e-9).length;
+      // A LINEAR ramp crosses a tier only at isolated points; the terraced
+      // one holds each tread for a stretch, which is what the ink pass needs
+      // to find a contour at all. That difference is the whole assertion.
+      expect(onTread(raw)).toBeLessThan(5);
+      expect(onTread(heights)).toBeGreaterThan(heights.length / 4);
+      // …and it is still the same hill: never more than one tier off the
+      // ramp it was painted as.
+      heights.forEach((h, i) => expect(Math.abs(h - (raw[i] ?? 0))).toBeLessThanOrEqual(step));
+    });
+  });
+
+  it('gives a painted hill real normals, where the bare plain has none', () => {
+    inPlain(() => {
+      // The bare plain: straight up, everywhere.
+      expect(terrainNormal(30, 0)).toEqual({ x: 0, y: 1, z: 0 });
+      // A ramp painted across x. The terraced surface is FLAT on its treads,
+      // so only the risers tilt — walk the ramp and find them.
+      setPaintedHeight((x) => x * 0.05);
+      let tilted = 0;
+      for (let x = 0; x <= 60; x += 0.25) {
+        const n = terrainNormal(x, 0);
+        expect(Math.hypot(n.x, n.y, n.z), `${x}`).toBeCloseTo(1, 12);
+        // Whatever the sample, the tilt is against x and never across z: a
+        // ramp in x has no gradient in z, painted or not.
+        expect(Math.abs(n.z), `${x}`).toBeLessThan(1e-9);
+        expect(n.x, `${x}`).toBeLessThanOrEqual(0);
+        if (n.y < 0.999) tilted++;
+      }
+      // The risers are really there — a plain that swallowed the paint would
+      // have reported straight up at every one of those samples.
+      expect(tilted).toBeGreaterThan(10);
+    });
+  });
+
+  it('settles onto the flat outer disc at the rim, mode or no mode', () => {
+    inPlain(() => {
+      setPaintedHeight(() => 3);
+      // Past `farEnd` the ground is the flat ring, and a painted offset may
+      // not lift it off the paper any more than an authored one may.
+      for (const [x, z] of [[0, 300], [300, 0], [-260, 260]] as [number, number][]) {
+        expect(terrainHeight(x, z), `${x},${z}`).toBe(0);
+      }
+    });
+  });
+
+  it('keeps the paint across the switch, in both directions', () => {
+    // Toggling the map is a rebuild, never a re-authoring — and a person's
+    // own hand is not part of the map, so it survives the trip.
+    const step = terrainParams().tierStep;
+    const points = inField(160);
+    setPaintedHeight(() => step);
+    const mapped = points.map(([x, z]) => terrainHeight(x, z));
+    const plain = inPlain(() => points.map(([x, z]) => terrainHeight(x, z)));
+    // Still painted in the plain world…
+    expect(plain.every((h) => Math.abs(h - step) < 1e-9)).toBe(true);
+    // …and the mapped world comes back exactly as it was.
+    points.forEach(([x, z], i) => expect(terrainHeight(x, z)).toBe(mapped[i]));
   });
 });

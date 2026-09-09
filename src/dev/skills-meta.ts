@@ -48,11 +48,11 @@ export const DEV_SKILLS_META: readonly DevSkillMeta[] = [
       'environment variables in the right-hand panel — scatter density, grain amplitude, and the ink pass (edge threshold, line width, wobble, hatch strength).',
   },
   {
-    id: 'refworld.weather',
-    name: 'weather',
+    id: 'refworld.landscape',
+    name: 'landscape',
     category: 'refworld',
     description:
-      'weather controls — clear/overcast/fog/rain/snow, time of day, intensity, wind override. no-ops gracefully when the world exposes no environment handle.',
+      'the authored map behind a switch — the world opens as a flat plain and this reveals the forest, the range, the lake and its island, plus the three terrain dials (elevation, tier spacing, relief spread) for sculpting it live.',
   },
   {
     id: 'refworld.paint',
@@ -60,6 +60,13 @@ export const DEV_SKILLS_META: readonly DevSkillMeta[] = [
     category: 'refworld',
     description:
       'sculpt the terrain by hand (plan §7) — raise, lower, flatten and smooth over a painted height map, added to the authored land before it is terraced so a painted hill gets the same risers. envpaint\'s brush engine; dev only, and the demo build never paints.',
+  },
+  {
+    id: 'refworld.weather',
+    name: 'weather',
+    category: 'refworld',
+    description:
+      'weather controls — clear/overcast/fog/rain/snow, time of day, intensity, wind override. no-ops gracefully when the world exposes no environment handle.',
   },
   {
     id: 'refworld.character',

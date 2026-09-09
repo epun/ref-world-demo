@@ -343,6 +343,34 @@ function main(): void {
     history.replaceState(null, '', `${location.pathname}?${params}${location.hash}`);
   }
 
+  // ── the landscape mode ────────────────────────────────────────────────────
+  /*
+   * The world OPENS PLAIN (src/world/landscape.ts): a flat field of scattered
+   * props on flat paper, with the authored map — forest, range, lake, island,
+   * ponds, reeds, elevation — switched on live from the ghost panel in front
+   * of the audience (2026-09-09, user ask).
+   *
+   * The panel is dev chrome and tree-shakes out of the demo build, so the
+   * mode also has to be reachable from the ADDRESS: `?landscape=1` (or
+   * `landscape=on`) opens the world with the map already revealed, which is
+   * the only way to get it on a deployed link. Read here, next to `?world=`,
+   * and applied before a single creature spawns — the eggs land on the ground
+   * the world is going to keep.
+   */
+  const landscapeParam = (params.get('landscape') ?? '').toLowerCase();
+  const wantsLandscape = landscapeParam === '1' || landscapeParam === 'on';
+  if (wantsLandscape) world.setLandscape(true);
+  /**
+   * …and the panel's own toggle writes the same parameter back, the way the
+   * minted room is written back above: a reload during a demo keeps the world
+   * the operator had built up instead of dropping it back to the flat field.
+   */
+  const writeLandscapeParam = (on: boolean): void => {
+    if (on) params.set('landscape', '1');
+    else params.delete('landscape');
+    history.replaceState(null, '', `${location.pathname}?${params}${location.hash}`);
+  };
+
   // ── world session ────────────────────────────────────────────────────────
   // A world page load is a NEW world: nothing survives a refresh, so every
   // creature drawn into the previous session is gone. The session id says
@@ -505,6 +533,10 @@ function main(): void {
         world.scatter.setDensity(value);
       } else if (field === 'wanderSpeed' && typeof value === 'number') {
         creatures.setWanderSpeed(value);
+      } else if (field === 'landscape') {
+        // The map on or off. Recorded as 1/0 by the panel; a boolean is
+        // accepted too, so a hand-written log reads the way it looks.
+        world.setLandscape(value === 1 || value === true);
       } else if (field === 'terrain' && typeof value === 'number') {
         // One event per dial, the dial's name in `kind` — the same shape as
         // kindDensity/kindScale (docs/SESSION.md §world). Anything else in
@@ -1278,6 +1310,14 @@ function main(): void {
         // the ground field, re-seats the scatter and re-levels the water.
         setTerrain: (next) => world.setTerrain(next),
         terrain: () => world.terrain(),
+        // The landscape mode (src/world/landscape.ts): reveal or hide the
+        // authored map. Written back into the address as well as applied, so
+        // a reload keeps the world the operator is standing in.
+        setLandscape: (on) => {
+          world.setLandscape(on);
+          writeLandscapeParam(on);
+        },
+        landscape: () => world.landscape(),
         // The paint skill draws on the ground with a plain drag, which is
         // the same gesture the view controls orbit with; the world lets go
         // of it while a stroke is live (src/world/scene.ts setSoloDrag).

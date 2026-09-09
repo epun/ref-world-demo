@@ -6,13 +6,23 @@
  * determinism, the origin clearing staying open plain, water/island being a
  * hard partition, and the derived outputs (colliders, shores, ripples) all
  * agreeing with `isWater` rather than drifting from it.
+ *
+ * THE MODE. The world SHIPS in `'plain'` — a flat field with no map in it at
+ * all — so everything below that measures the authored geography runs with
+ * the mode switched to `'landscape'` and puts it back afterwards. The mode
+ * itself is measured in its own block at the bottom of this file, which is
+ * also where the plain answers are pinned.
  */
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import {
+  activeWaterBodies,
   FOREST_BLOBS,
   FOREST_FALLOFF,
   ISLAND_OUTLINE_POINTS,
+  isAuthoredWater,
   isWater,
   islandOutline,
   MOUNTAIN_BLOBS,
@@ -20,7 +30,9 @@ import {
   OUTLINE_POINTS,
   RIPPLE_MARGIN,
   rippleSpots,
+  landscapeMode,
   sampleLandscape,
+  setLandscapeMode,
   shoreSamples,
   setTerrainParams,
   TERRAIN,
@@ -119,6 +131,12 @@ function edgePoints(b: Blob, n = 512): [number, number][] {
   }
   return out;
 }
+
+/** Every block below this line measures the AUTHORED map, which only exists
+ * in the landscape mode. The mode is module state, so it is set once for the
+ * file and restored after it. */
+beforeAll(() => setLandscapeMode('landscape'));
+afterAll(() => setLandscapeMode('plain'));
 
 describe('landscape — determinism', () => {
   it('samples identically on repeat calls', () => {
@@ -490,27 +508,30 @@ describe('landscape — the polygons the water is drawn from', () => {
 });
 
 describe('landscape — colliders', () => {
-  const cols = waterColliders();
+  /** Lazily, and once: the tiling is only authored in the landscape mode and
+   * `beforeAll` has not run yet while this block is being collected. */
+  let colsCache: ReturnType<typeof waterColliders> | null = null;
+  const cols = (): ReturnType<typeof waterColliders> => (colsCache ??= waterColliders());
 
   it('tiles every body with same-size hard circles, and not too many', () => {
-    expect(cols.length).toBeGreaterThan(WATER_BODIES.length * 4);
+    expect(cols().length).toBeGreaterThan(WATER_BODIES.length * 4);
     // A budget, not a fixture: the tiling is what the collider grid indexes
     // every frame. Measured 1118 for the shipped layout, ~1050 of them the
     // lake.
-    expect(cols.length).toBeLessThanOrEqual(2500);
-    for (const c of cols) {
+    expect(cols().length).toBeLessThanOrEqual(2500);
+    for (const c of cols()) {
       expect(c.hard).toBe(true);
       expect(c.r).toBe(WATER_COLLIDER_R);
     }
   });
 
   it('centers every collider on water', () => {
-    for (const c of cols) expect(isWater(c.x, c.z)).toBe(true);
+    for (const c of cols()) expect(isWater(c.x, c.z)).toBe(true);
   });
 
   it('covers each pond, center included', () => {
     for (const p of PONDS) {
-      const own = cols.filter((c) => Math.hypot(c.x - p.x, c.z - p.z) <= c.r);
+      const own = cols().filter((c) => Math.hypot(c.x - p.x, c.z - p.z) <= c.r);
       // The tiling is anchored on the body center, so a pond always gets a
       // circle dead on it — no pond is ever left as an open puddle.
       expect(own.length, `pond at ${p.x},${p.z}`).toBeGreaterThan(0);
@@ -537,7 +558,7 @@ describe('landscape — colliders', () => {
       const z = ISLAND.z + sin * mid;
       expect(isWater(x, z), `bearing ${th.toFixed(2)}`).toBe(true);
       expect(
-        cols.some((c) => Math.hypot(x - c.x, z - c.z) < c.r),
+        cols().some((c) => Math.hypot(x - c.x, z - c.z) < c.r),
         `unblocked water on bearing ${th.toFixed(2)}`,
       ).toBe(true);
     }
@@ -553,7 +574,7 @@ describe('landscape — colliders', () => {
         for (let z = body.z - reach; z <= body.z + reach; z += 0.4) {
           if (!isWater(x, z)) continue;
           let clear = Infinity;
-          for (const c of cols) clear = Math.min(clear, Math.hypot(x - c.x, z - c.z) - c.r);
+          for (const c of cols()) clear = Math.min(clear, Math.hypot(x - c.x, z - c.z) - c.r);
           expect(clear, `open water at ${x.toFixed(1)},${z.toFixed(1)}`).toBeLessThan(1.8);
         }
       }
@@ -790,7 +811,12 @@ describe('landscape — terrain height', () => {
     }
   });
 
-  it('holds every slope inside the bound, risers included', () => {
+  // AN EXPLICIT BUDGET, not a flake guard. The 0.5-unit sweep walks ~386k
+  // cells at four `terrainHeight` samples each — ~1.5M calls, every one of
+  // them carrying the painted-offset lookup since the paint hook landed — and
+  // measures ~6s, over vitest's 5s default. The bound is the assertion; the
+  // clock is not, so this buys the time rather than coarsening the grid.
+  it('holds every slope inside the bound, risers included', { timeout: 30_000 }, () => {
     // The terrace multiplies the smooth field's gradient by 1.5 / the riser
     // width, so this is the number the [D] falloffs were tuned against:
     // terraceRiser 0.2–0.8, mountainShelfFalloff 70, shoreRamp 16. Measured
@@ -803,16 +829,26 @@ describe('landscape — terrain height', () => {
     // ground, so it would want a 15-unit run), and a bank is the one landform
     // whose job is to be steeper than the field around it.
     let worst = 0;
+    let sampled = 0;
     walk(0.5, (x, z) => {
       if (nearIsland(x, z)) return;
+      // Past the far fade the terrain is 0 BY CONSTRUCTION, so a cell out
+      // there contributes a gradient of exactly 0 and cannot be the worst.
+      // The margin is the sample step: a cell kept at farEnd + 1 still has
+      // both of its ±0.5 neighbours measured, so the fade band itself — the
+      // steepest part of the rim — is walked in full. The ±155 square's
+      // corners reach 219, so this drops a real slice of the sweep.
+      if (Math.hypot(x, z) > TERRAIN.farEnd + 1) return;
       const gx = terrainHeight(x + 0.5, z) - terrainHeight(x - 0.5, z);
       const gz = terrainHeight(x, z + 0.5) - terrainHeight(x, z - 0.5);
       worst = Math.max(worst, Math.hypot(gx, gz));
+      sampled++;
     });
+    // The skip is a saving, never a hole: the sweep still walks essentially
+    // the whole square (the corners past farEnd are all it drops).
+    expect(sampled).toBeGreaterThan(330_000);
     expect(worst).toBeLessThanOrEqual(0.6);
-    // 640k points, four samples each: ~5 s on a loaded 4-core runner, which
-    // is the default timeout. The bound is the assertion; the clock is not.
-  }, 30_000);
+  });
 
   it('climbs the island out of the water onto a contour crown', () => {
     const level = waterLevel(LAKE);
@@ -1255,5 +1291,166 @@ describe('landscape — the terrain dials', () => {
     }
     expect(field).toBeLessThanOrEqual(1.25);
     expect(island).toBeLessThanOrEqual(2.2);
+  });
+});
+
+// ── the landscape mode ───────────────────────────────────────────────────────
+
+describe('landscape — the mode', () => {
+  /** A coarse walk of the whole scattered region, plus the interesting
+   * places by name: the lake, its island, the forest, the range. */
+  const GRID: [number, number][] = [];
+  for (let x = -160; x <= 160; x += 8) {
+    for (let z = -160; z <= 160; z += 8) GRID.push([x, z]);
+  }
+  const NAMED: [number, number][] = [
+    [0, 0],
+    [LAKE.x, LAKE.z],
+    [ISLAND.x, ISLAND.z],
+    [LAKE.x + LAKE.r * 0.5, LAKE.z],
+    [FOREST_BLOBS[0]!.x, FOREST_BLOBS[0]!.z],
+    [FOREST_BLOBS[1]!.x, FOREST_BLOBS[1]!.z],
+    [MOUNTAIN_BLOBS[1]!.x, MOUNTAIN_BLOBS[1]!.z],
+    [PONDS[0]!.x, PONDS[0]!.z],
+    [-40, 40],
+    [70, -70],
+  ];
+
+  /** Run `f` with the mode set to `mode`, then put the file's mode back. */
+  function inMode<T>(mode: 'plain' | 'landscape', f: () => T): T {
+    setLandscapeMode(mode);
+    try {
+      return f();
+    } finally {
+      setLandscapeMode('landscape');
+    }
+  }
+
+  it('ships plain — the module opens with no map in it', () => {
+    // The SHIPPED default, which this file's own beforeAll has already moved
+    // off. Read from the source rather than by re-importing the module: the
+    // mode is module state, and a second instance of it in the same run is
+    // exactly the thing that would make every other test here lie.
+    const source = readFileSync(join(process.cwd(), 'src/world/landscape.ts'), 'utf8');
+    expect(source).toContain("let activeLandscapeMode: LandscapeMode = 'plain';");
+  });
+
+  it('reports the mode it was last set to', () => {
+    expect(landscapeMode()).toBe('landscape');
+    inMode('plain', () => expect(landscapeMode()).toBe('plain'));
+    expect(landscapeMode()).toBe('landscape');
+  });
+
+  it('answers plain, dry and flat everywhere in the plain mode', () => {
+    inMode('plain', () => {
+      for (const [x, z] of [...GRID, ...NAMED]) {
+        const at = `${x},${z}`;
+        expect(sampleLandscape(x, z), at).toEqual({
+          forest: 0,
+          mountain: 0,
+          water: false,
+          island: false,
+          region: 'plain',
+        });
+        expect(isWater(x, z), at).toBe(false);
+        // …with a pad too: a keep-out around nothing is still nothing.
+        expect(isWater(x, z, 4), at).toBe(false);
+        expect(terrainHeight(x, z), at).toBe(0);
+        expect(terrainNormal(x, z), at).toEqual({ x: 0, y: 1, z: 0 });
+      }
+    });
+  });
+
+  it('holds no water bodies, no colliders and no levels in the plain mode', () => {
+    inMode('plain', () => {
+      expect(activeWaterBodies()).toEqual([]);
+      expect(waterColliders()).toEqual([]);
+      for (const body of WATER_BODIES) expect(waterLevel(body), body.kind).toBe(0);
+    });
+  });
+
+  it('keeps the authored map exported whatever the mode — the renderer builds from it', () => {
+    // The water pass builds its fills, shores and ripples ONCE from these,
+    // in either mode, and only hides them. So the arrays themselves must not
+    // move, and the geography they describe must still be readable.
+    inMode('plain', () => {
+      expect(WATER_BODIES).toHaveLength(5);
+      expect(FOREST_BLOBS).toHaveLength(2);
+      expect(MOUNTAIN_BLOBS).toHaveLength(4);
+      expect(waterOutline(LAKE)).toHaveLength(OUTLINE_POINTS);
+      expect(islandOutline(LAKE)).toHaveLength(ISLAND_OUTLINE_POINTS);
+      // …and the authored query still answers, which is what the water
+      // renderer's shoreline guard rides.
+      expect(isAuthoredWater(LAKE.x + LAKE.r * 0.5, LAKE.z)).toBe(true);
+      expect(isAuthoredWater(0, 0)).toBe(false);
+    });
+  });
+
+  it('reproduces the authored map exactly when it is switched back on', () => {
+    // Pinned in both modes, sample for sample: switching away and back is
+    // not allowed to perturb one digit of the geography.
+    const before = NAMED.map(([x, z]) => ({
+      sample: sampleLandscape(x, z),
+      water: isWater(x, z),
+      height: terrainHeight(x, z),
+      normal: terrainNormal(x, z),
+    }));
+    const levels = WATER_BODIES.map((b) => waterLevel(b));
+    const colliders = waterColliders().length;
+
+    inMode('plain', () => {
+      // …and it really was a different world in between.
+      expect(waterColliders()).toHaveLength(0);
+    });
+
+    NAMED.forEach(([x, z], i) => {
+      const at = `${x},${z}`;
+      expect(sampleLandscape(x, z), at).toEqual(before[i]!.sample);
+      expect(isWater(x, z), at).toBe(before[i]!.water);
+      expect(terrainHeight(x, z), at).toBe(before[i]!.height);
+      expect(terrainNormal(x, z), at).toEqual(before[i]!.normal);
+    });
+    expect(WATER_BODIES.map((b) => waterLevel(b))).toEqual(levels);
+    expect(waterColliders()).toHaveLength(colliders);
+    expect(activeWaterBodies()).toEqual(WATER_BODIES);
+  });
+
+  it('measures a real map in the landscape mode — the plain answers are not a tautology', () => {
+    // The negative half of the test above: the values it pins are only
+    // meaningful because the landscape mode does NOT answer plain everywhere.
+    expect(isWater(LAKE.x + LAKE.r * 0.5, LAKE.z)).toBe(true);
+    expect(sampleLandscape(FOREST_BLOBS[0]!.x, FOREST_BLOBS[0]!.z).forest).toBeGreaterThan(0.9);
+    expect(sampleLandscape(MOUNTAIN_BLOBS[1]!.x, MOUNTAIN_BLOBS[1]!.z).mountain).toBeGreaterThan(
+      0.9,
+    );
+    expect(Math.abs(terrainHeight(-40, 40))).toBeGreaterThan(0.1);
+    expect(waterColliders().length).toBeGreaterThan(100);
+  });
+
+  it('is idempotent — setting the mode it is already in changes nothing', () => {
+    const height = terrainHeight(-40, 40);
+    setLandscapeMode('landscape');
+    expect(terrainHeight(-40, 40)).toBe(height);
+    inMode('plain', () => {
+      setLandscapeMode('plain');
+      expect(terrainHeight(-40, 40)).toBe(0);
+    });
+    expect(terrainHeight(-40, 40)).toBe(height);
+  });
+
+  it('leaves the terrain dials alone — they are a separate piece of state', () => {
+    // A dial set while the world is plain still applies when the map comes
+    // back: the mode says WHETHER there is a map, the dials say what shape.
+    const shipped = terrainParams();
+    inMode('plain', () => {
+      setTerrainParams({ elevation: 1.4 });
+      expect(terrainParams().elevation).toBe(1.4);
+      expect(terrainHeight(-40, 40)).toBe(0);
+    });
+    expect(terrainParams().elevation).toBe(1.4);
+    const steep = terrainHeight(-40, 40);
+    setTerrainParams(shipped);
+    expect(terrainParams()).toEqual(shipped);
+    expect(Math.abs(steep)).toBeGreaterThan(0);
   });
 });

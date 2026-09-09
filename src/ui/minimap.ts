@@ -15,7 +15,9 @@
  *   not chrome — the world brief's own reference is "isometric village and
  *   mountain maps", and a lake drawn on a map is terrain, exactly like the
  *   prop marks beside it. The mark-set lint (TASTE §4) watches this file:
- *   nothing here has become a panel, a card, or a shadow;
+ *   nothing here has become a panel, a card, or a shadow. Drawn only in the
+ *   landscape mode — the plain world the room opens on holds no water, and a
+ *   map of it shows none;
  * - prop marks: sparse tiny WORLD.neutral dots, subsampled from the scatter
  *   so the map stays quiet (density is the design, TASTE §2.3);
  * - creatures: small CHARACTER.body dots — the world view has no "self",
@@ -37,7 +39,12 @@
 
 import { Vector3 } from 'three';
 import { sampleDrift } from '../motion/ambient';
-import { WATER_BODIES, islandOutline, waterOutline } from '../world/landscape';
+import {
+  WATER_BODIES,
+  islandOutline,
+  landscapeMode,
+  waterOutline,
+} from '../world/landscape';
 import {
   mapBorderInset,
   mapMarkScale,
@@ -301,6 +308,11 @@ export function installWorldMinimap(opts: WorldMinimapOptions): WorldMinimapHand
     // the island back over the lake in the ground value: at map scale a hole
     // in the fill and a shape painted over it are the same picture, and this
     // one is a shape with its own drawn shore.
+    //
+    // …in the landscape mode. The plain world has no water in it, so the map
+    // of it has none either. Read per draw, not once at creation: the mode is
+    // a live switch (WorldHandles.setLandscape) and this is one branch.
+    const mapped = landscapeMode() === 'landscape';
     waterMarks(frame);
     ctx.lineWidth = 1;
     ctx.strokeStyle = WORLD.ink;
@@ -314,8 +326,10 @@ export function installWorldMinimap(opts: WorldMinimapOptions): WorldMinimapHand
       ctx.fill();
       ctx.stroke();
     };
-    for (const poly of waterCache) ring(poly, WORLD.neutralMid);
-    for (const poly of islandCache) ring(poly, SURFACE.ground);
+    if (mapped) {
+      for (const poly of waterCache) ring(poly, WORLD.neutralMid);
+      for (const poly of islandCache) ring(poly, SURFACE.ground);
+    }
 
     // Prop marks: sparse neutral dots, the terrain at a glance.
     ctx.fillStyle = WORLD.neutral;

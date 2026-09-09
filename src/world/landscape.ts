@@ -27,6 +27,26 @@
  * feature reaches within 40 units of it — comfortably past the ~11-unit
  * clearing scatter keeps — and the terrain is exactly flat inside 10.
  *
+ * TWO MODES, ONE MAP (2026-09-09, user ask — *"I want to have the plain
+ * version of the original world, where it was quite flat and there wasn't any
+ * elevation or any interesting land features or landmarks… we're probably
+ * going to sculpt the environment live with the audience"*). The world SHIPS
+ * as `'plain'`: an open flat field of scattered props on flat paper, the way
+ * it looked before this module existed — no forest, no range, no water, no
+ * island, no reeds, no elevation at all. `'landscape'` restores the authored
+ * map below bit for bit. See `setLandscapeMode`.
+ *
+ * The mode gates the QUERIES, never the data: `WATER_BODIES`, `FOREST_BLOBS`
+ * and `MOUNTAIN_BLOBS` stay exported as authored whatever the mode, because
+ * the water renderer builds its meshes from them once and then just hides
+ * them. So switching modes is a rebuild, never a re-authoring, and the map
+ * that comes back is the same one that went away.
+ *
+ * …and it gates the AUTHORED geography only. The painted offset below is a
+ * person's own hand, not the map, so it survives the switch in both
+ * directions and the plain field is fully paintable: opening flat and
+ * sculpting from there is what the mode is FOR.
+ *
  * Coordinates are world units on the x/z ground plane. HEIGHT lives here too
  * (`terrainHeight` / `terrainNormal` / `waterLevel`, at the bottom of this
  * file) because it is geography like everything else above it — the basins
@@ -222,6 +242,65 @@ export const WATER_BODIES: readonly WaterBody[] = [
   { kind: 'pond', x: -95, z: -58, r: 6, seed: 404 },
 ];
 
+// ── the landscape mode ───────────────────────────────────────────────────────
+
+/**
+ * `'plain'` — the world before this module existed: one flat field of
+ * scattered props, no features and no height. `'landscape'` — the authored
+ * map above, exactly as written.
+ */
+export type LandscapeMode = 'plain' | 'landscape';
+
+/**
+ * The mode actually in force.
+ *
+ * Module state rather than an argument, for the same reason as `activeTerrain`
+ * below and scatter's `activeSeed`: these queries are called from pure helpers
+ * all over the world that take no instance, and threading a mode through every
+ * one of them would put it in a hundred signatures.
+ *
+ * Determinism is unaffected — this is explicit state, not a clock or a random:
+ * the same mode always gives the same map, and the shipped default is the one
+ * the world opens in.
+ *
+ * `'plain'` IS the shipped default (2026-09-09, user ask): the room opens on
+ * a flat field and the map is switched on live in front of the audience.
+ */
+let activeLandscapeMode: LandscapeMode = 'plain';
+
+/** The mode the world is currently reading. */
+export function landscapeMode(): LandscapeMode {
+  return activeLandscapeMode;
+}
+
+/**
+ * Switch the map on or off. Every pure query in this file answers for the
+ * mode set here, and callers must rebuild the ground / scatter / water to SEE
+ * it (WorldHandles.setLandscape does all three).
+ */
+export function setLandscapeMode(mode: LandscapeMode): void {
+  activeLandscapeMode = mode;
+}
+
+/** True when the authored map is the one being read. */
+function mapped(): boolean {
+  return activeLandscapeMode === 'landscape';
+}
+
+/**
+ * The water bodies that actually hold water right now — the authored list in
+ * `'landscape'`, none at all in `'plain'`.
+ *
+ * The one seam every consumer that WALKS the water should use (scatter's reed
+ * fringe, the collider tiling). `WATER_BODIES` itself stays the authored list
+ * in both modes, for the renderer that builds its meshes once and hides them.
+ */
+export function activeWaterBodies(): readonly WaterBody[] {
+  return mapped() ? WATER_BODIES : EMPTY_BODIES;
+}
+
+const EMPTY_BODIES: readonly WaterBody[] = [];
+
 // ── water ────────────────────────────────────────────────────────────────────
 
 function islandBlob(body: WaterBody): Blob | null {
@@ -245,17 +324,32 @@ function bodyHoldsWater(body: WaterBody, x: number, z: number, pad: number): boo
   return Math.hypot(ix, iz) > wobbledRadius(isl, Math.atan2(iz, ix)) - pad;
 }
 
-/** True inside any water body. `pad > 0` grows every water body outward by
- * `pad` units (a shore keep-out for planting). */
-export function isWater(x: number, z: number, pad = 0): boolean {
+/**
+ * True inside any AUTHORED water body, whatever the mode — the map as
+ * written. `pad > 0` grows every body outward by `pad` units.
+ *
+ * The one query that ignores the mode, and it exists for the water renderer:
+ * it builds its fills, shorelines and ripples from the authored bodies in
+ * both modes (it only hides them), so the guard that asks "is there water on
+ * the wet side of this segment" has to ask the geography rather than the
+ * world currently on screen. Everything else wants `isWater`.
+ */
+export function isAuthoredWater(x: number, z: number, pad = 0): boolean {
   for (const body of WATER_BODIES) if (bodyHoldsWater(body, x, z, pad)) return true;
   return false;
+}
+
+/** True inside any water body the world is actually holding. `pad > 0` grows
+ * every water body outward by `pad` units (a shore keep-out for planting).
+ * Always false in the plain mode: that world has no water in it. */
+export function isWater(x: number, z: number, pad = 0): boolean {
+  return mapped() && isAuthoredWater(x, z, pad);
 }
 
 /** True on land that sits inside a lake's outer shore — which, with the
  * causeway gone, is the island and nothing else. */
 function isIslandLand(x: number, z: number): boolean {
-  for (const body of WATER_BODIES) {
+  for (const body of activeWaterBodies()) {
     if (!body.island) continue;
     const dx = x - body.x;
     const dz = z - body.z;
@@ -280,8 +374,15 @@ function blobWeight(blobs: readonly Blob[], falloff: number, x: number, z: numbe
   return w;
 }
 
-/** Everything the rest of the world needs to know about one spot of ground. */
+/** Everything the rest of the world needs to know about one spot of ground.
+ *
+ * In `'plain'` mode this answers as if the map did not exist — open, dry,
+ * unweighted plain everywhere — so every consumer that reads it (scatter's
+ * regional tables above all) falls back to the pre-map world with no branch
+ * of its own. A fresh object per call, like the mapped path: nobody mutates
+ * a shared sample. */
 export function sampleLandscape(x: number, z: number): LandscapeSample {
+  if (!mapped()) return { forest: 0, mountain: 0, water: false, island: false, region: 'plain' };
   const water = isWater(x, z);
   const island = water ? false : isIslandLand(x, z);
   // Nothing grows on water, and the island is its own thing — the forest and
@@ -685,7 +786,13 @@ function painted(x: number, z: number): number {
  * not a no-paint zone.
  */
 function terracedLand(x: number, z: number): number {
-  return terrace(smoothField(x, z) + painted(x, z)) * farGate(Math.hypot(x, z));
+  // The AUTHORED field is what the mode gates; the painted offset is not.
+  // In the plain mode there is no smooth field to snap — but a painted hill
+  // is still land, and it still terraces and still settles onto the flat
+  // outer disc at the rim. `terrace(0)` is exactly 0, so an unpainted plain
+  // world is exactly flat paper.
+  const field = mapped() ? smoothField(x, z) : 0;
+  return terrace(field + painted(x, z)) * farGate(Math.hypot(x, z));
 }
 
 /**
@@ -694,6 +801,9 @@ function terracedLand(x: number, z: number): number {
  * number per body, so a water surface is a plane and never a warped sheet.
  */
 export function waterLevel(body: WaterBody): number {
+  // No basin in a flat field — and the water renderer still asks, because it
+  // keeps its (hidden) sheets seated whatever the mode.
+  if (!mapped()) return 0;
   return terracedLand(body.x, body.z) - TERRAIN.basinDrop * activeTerrain.elevation;
 }
 
@@ -710,6 +820,12 @@ export function waterLevel(body: WaterBody): number {
  * nearest body".
  */
 export function terrainHeight(x: number, z: number): number {
+  // The plain has no authored geography in it — no shelves, no basins, no
+  // island — so it is `terracedLand` and nothing else. NOT a bare 0: the
+  // painted offset lives inside `terracedLand`, and painting the flat field
+  // is the whole point of opening on one (2026-09-09, user ask — open flat,
+  // then sculpt in front of the audience). Unpainted, this is exactly 0.
+  if (!mapped()) return terracedLand(x, z);
   const { elevation, relief } = activeTerrain;
   // The shore ramp and the rim guard are horizontal distances, so they ride
   // `relief` — a wider relief spreads a basin's climb-out over more ground.
@@ -770,6 +886,11 @@ export function terrainHeight(x: number, z: number): number {
 
 /** Unit surface normal by central differences. */
 export function terrainNormal(x: number, z: number): { x: number; y: number; z: number } {
+  // Straight up, exactly — a central difference over a flat field would land
+  // on -0 for x and z rather than 0, and the plain is paper. Only while
+  // nothing is painted, though: a painted hill on the plain has real slopes,
+  // and a stamp that lay flat across one would read as a sticker.
+  if (!mapped() && paintedHeight === null) return { x: 0, y: 1, z: 0 };
   const e = TERRAIN.normalStep;
   const dhdx = (terrainHeight(x + e, z) - terrainHeight(x - e, z)) / (2 * e);
   const dhdz = (terrainHeight(x, z + e) - terrainHeight(x, z - e)) / (2 * e);
@@ -849,13 +970,15 @@ const WATER_COLLIDER_ROW = 0.866;
  * dead center — and the whole thing is integer-indexed, so it is
  * deterministic to the bit. Allocates fresh each call; callers own the
  * result.
+ *
+ * Empty in `'plain'` mode: there is no water to block.
  */
 export function waterColliders(): Collider[] {
   const out: Collider[] = [];
   const step = WATER_COLLIDER_R;
   const row = WATER_COLLIDER_R * WATER_COLLIDER_ROW;
   const pad = -(WATER_COLLIDER_R - WATER_COLLIDER_BITE);
-  for (const body of WATER_BODIES) {
+  for (const body of activeWaterBodies()) {
     const reach = body.r * WOBBLE_MAX;
     const jn = Math.ceil(reach / row);
     const iMax = Math.ceil(reach / step) + 1;
