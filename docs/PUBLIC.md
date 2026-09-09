@@ -50,7 +50,7 @@ client is not `/?world=meridian` on the public site — it is **its own
 deployment of this same repo**, at its own hostname:
 
 ```
-https://ref-world-meridian-evanmpuns-projects.vercel.app/     a custom domain later
+https://ref-world-meridian.vercel.app/     a custom domain later
 ```
 
 A world may also carry `"dev": true`. That deployment keeps the dev surface
@@ -61,11 +61,14 @@ rest, so the public world and a client world without the flag are byte-for-byte
 what they were. (A vercel *preview* — a branch alias, never a production url —
 keeps the dev surface too, so a change can be looked at before it ships.)
 
-Vercel may assign a team-suffixed hostname instead of the plain
-`ref-world-<name>.vercel.app` you'd expect — the host in `worlds.json` has
-to be whatever the project's production url actually is, or the build
-resolves to nothing and produces the public world instead; if that happens,
-fix it with `node scripts/new-world.mjs <name> --clean --host <that host>`.
+The host in `worlds.json` has to be whatever the project's production url
+actually is — the first domain on the project, which Vercel may set as a
+team-suffixed hostname before the plain `ref-world-<name>.vercel.app` is
+attached, and changes when it is. A host the map does not know resolves to
+nothing and the build produces the public world instead, without a word; if
+that happens, fix it with `node scripts/new-world.mjs <name> --clean --host
+<that host>` (meridian did, 2026-09-09: the plain domain arrived and the
+production build fell back to the public world until the map was updated).
 
 One codebase, one store, many deployments. The client's link is an address,
 the card it unfurls into carries their name rather than the public world's,
@@ -78,7 +81,7 @@ sees.
 ```json
 {
   "worlds": {
-    "meridian": { "host": "ref-world-meridian-evanmpuns-projects.vercel.app", "residents": "none" }
+    "meridian": { "host": "ref-world-meridian.vercel.app", "residents": "none" }
   }
 }
 ```
@@ -252,7 +255,7 @@ deployment is an address, not a second store — but point it at that
 deployment's host so the write and the read are the same place:
 
 ```bash
-node scripts/seed-world.mjs https://ref-world-meridian-evanmpuns-projects.vercel.app meridian
+node scripts/seed-world.mjs https://ref-world-meridian.vercel.app meridian
 ```
 
 `scripts/new-world.mjs` prints that line with the name already in it.
