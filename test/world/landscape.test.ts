@@ -810,7 +810,9 @@ describe('landscape — terrain height', () => {
       worst = Math.max(worst, Math.hypot(gx, gz));
     });
     expect(worst).toBeLessThanOrEqual(0.6);
-  });
+    // 640k points, four samples each: ~5 s on a loaded 4-core runner, which
+    // is the default timeout. The bound is the assertion; the clock is not.
+  }, 30_000);
 
   it('climbs the island out of the water onto a contour crown', () => {
     const level = waterLevel(LAKE);
