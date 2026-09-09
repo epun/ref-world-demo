@@ -5,8 +5,14 @@
  * Both are here rather than in the tray because both have a right answer
  * that is easy to get wrong in a way nobody notices until a creature walks
  * the wrong way on a projector.
+ *
+ * The mark itself is at the end, pinned as a source fact — the painting is
+ * DOM-shaped, this project keeps no jsdom, and what matters about it is
+ * which token each part is drawn in.
  */
 
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   DEADZONE,
@@ -16,6 +22,7 @@ import {
   stickVector,
   wavyRingPoints,
 } from '../../src/world/joystick';
+import { SURFACE, WORLD } from '../../src/taste/tokens';
 
 const CENTRE = 100;
 const RADIUS = 50;
@@ -144,5 +151,36 @@ describe('wavyRingPoints', () => {
     expect(Math.min(...radii)).toBeGreaterThan(38);
     expect(Math.max(...radii)).toBeLessThan(42);
     expect(radii.every((r) => r !== 40)).toBe(true);
+  });
+});
+
+describe('the stick as a mark', () => {
+  const src = () => readFileSync(join(process.cwd(), 'src/world/joystick.ts'), 'utf8');
+
+  it('fills the knob with the paper light the device carries', () => {
+    // User ask, 2026-09-09: "fill in the center of the joystick with the
+    // same offwhite fill as the device". The shell's body is #e9ebe9 —
+    // WORLD.light — so the token is the same one, never a second literal
+    // that happens to match today (the static gate bans the literal here
+    // anyway, which is the point of the token).
+    expect(src()).toMatch(/\.stick-knob \{ fill: \$\{WORLD\.light\};/);
+    expect(WORLD.light).toBe(SURFACE.canvas);
+    // ...and it keeps its ink outline. Light shape, dark wobbly line: the
+    // rule every form in this world is drawn to, and what stops a filled
+    // knob reading as a panel (TASTE §4).
+    expect(src()).toMatch(/\.stick-ring,\s*\n\.stick-knob \{\s*\n\s*stroke: \$\{WORLD\.ink\}/);
+    expect(src()).toMatch(/\.stick-knob \{ fill: [^;]*; stroke-width: 1\.75/);
+  });
+
+  it('leaves the well itself a hole through to the world', () => {
+    // Only the knob gained a fill. A filled well would be a dish sitting on
+    // the world — a card by another name.
+    expect(src()).toMatch(/\.stick-ring \{ fill: none;/);
+  });
+
+  it('never goes near the value the creature owns', () => {
+    // Near-black belongs to characters only (TASTE §1). A control as dark
+    // as the thing it steers competes with it.
+    expect(src()).not.toMatch(/CHARACTER\.|nearBlack/);
   });
 });

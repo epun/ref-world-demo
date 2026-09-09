@@ -135,6 +135,14 @@ phone's button set, not the protocol.
 map on mobile for now")*. The `corner` slot stays in the DOM and stays empty — empty
 is a state of a slot, never a removal.
 
+**In the world view the same handset gets a tray instead** (`src/world/tray.ts`): the
+device miniature in the left corner, the minimap in the right, and — since 2026-09-09
+— the stick on the viewport's own centre line rather than centred in whatever the two
+corners leave over, its knob filled with the shell's own `#e9ebe9` inside its ink
+outline, while the camera rides that handset's creature (`src/world/follow.ts`) with
+orbit and pinch still entirely the person's; a tap on the minimap suspends the follow
+and the next push of the stick resumes it.
+
 ### 2a. The sign state **[D]**
 
 > *"we're also missing the 'sign your masterpiece' screen. after the user finishes the

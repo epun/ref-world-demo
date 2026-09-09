@@ -365,6 +365,25 @@ async function boot(): Promise<void> {
     }
   }
 
+  /**
+   * The way out to the shared world, when there is one.
+   *
+   * Only for a PUBLIC world: an installation handset has no shared place to
+   * go — its world lives on a projection in the same room, which the person
+   * is already looking at. A control that leads nowhere is worse than no
+   * control, so `mountWorldLink` returns null and nothing is mounted.
+   *
+   * Derived here, above `mounts`: the `alive` mount reads it below, and
+   * `createMachine` can invoke that mount synchronously when a restore (kept
+   * link, or a handset returning to a room it already drew in) starts the
+   * machine on `alive` — this has to exist before `mounts` does, not just
+   * before `createMachine` is called.
+   */
+  const publicWorld = (new URLSearchParams(location.search).get('world') ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, '')
+    .slice(0, 24);
+
   const mounts: Record<PhoneState, ScreenMount> = {
     draw: (slots) =>
       mountDraw(slots, {
@@ -429,18 +448,6 @@ async function boot(): Promise<void> {
 
   const machine = createMachine(root, mounts, initialState, { entrance });
 
-  /**
-   * The way out to the shared world, when there is one.
-   *
-   * Only for a PUBLIC world: an installation handset has no shared place to
-   * go — its world lives on a projection in the same room, which the person
-   * is already looking at. A control that leads nowhere is worse than no
-   * control, so `mountWorldLink` returns null and nothing is mounted.
-   */
-  const publicWorld = (new URLSearchParams(location.search).get('world') ?? '')
-    .toLowerCase()
-    .replace(/[^a-z0-9-]/g, '')
-    .slice(0, 24);
   /**
    * Back to the pad — carrying the world, always.
    *
