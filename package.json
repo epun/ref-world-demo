@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@upstash/redis": "^1.38.2",
+    "envpaint": "file:vendor/envpaint-0.1.0.tgz",
     "three": "0.180.0"
   },
   "devDependencies": {

@@ -34,6 +34,23 @@
  * them anywhere else would be the second shoreline this module exists to
  * prevent. Consumers do not import them directly: they sample the Surface
  * seam (src/world/surface.ts), which is what PLAN §7.2 promised.
+ *
+ * PAINTED HEIGHT (PLAN §7, "painted terrain (dev)") lives here too, and only
+ * as a hook: `setPaintedHeight` installs an offset sampler that
+ * `terracedLand` adds to the smooth field. The map itself belongs to
+ * src/world/painted.ts — a pure flat array the dev paint skill fills — but
+ * the PLACE where a painted unit becomes a height is this module, for
+ * exactly the reason the paragraph above gives: heights come from one place.
+ * A hook anywhere else would be the second shoreline, in the height
+ * dimension, and the Surface seam would have two sources under it.
+ *
+ * The offset is added BEFORE the terrace and BEFORE the far gate: a painted
+ * hill gets risers like an authored one (the ink pass finds elevation only
+ * where there is a contour to draw), and it settles onto the flat outer disc
+ * at the rim like everything else. Nothing else in this file knows painting
+ * exists — `terrainHeight`, `terrainNormal`, `waterLevel` and every consumer
+ * are unchanged, and with no sampler set the world is identical to the
+ * authored one (test/world/painted.test.ts pins that at 2,000 points).
  */
 
 import type { Collider } from '../physics/colliders';
@@ -615,8 +632,40 @@ function terrace(v: number): number {
 }
 
 /**
- * The land: the smooth field snapped onto tiers, then faded to the flat
- * outer ground disc.
+ * The painted height offset in force, or null when nothing is painted.
+ *
+ * Module state, exactly like `activeTerrain` above and for the same reason:
+ * `terrainHeight` is called from pure helpers all over the world that take no
+ * instance. Determinism is unaffected — an injected function is explicit
+ * state, not a clock or a random, and a build that never installs one is the
+ * authored world unchanged. The demo build never installs one: only the dev
+ * paint skill (src/dev/paint.ts) calls this, and a baked map will call it
+ * from the loader later (envpaint docs/port-meridian.md §2.2).
+ */
+let paintedHeight: ((x: number, z: number) => number) | null = null;
+
+/**
+ * Install (or, with null, remove) the painted height offset — world units,
+ * added to the smooth field before terracing.
+ *
+ * The sampler must be pure and finite; this module holds it by reference and
+ * calls it once per height sample, so it is on the hot path of every ground
+ * vertex, every walker and every shadow stamp. Callers must rebuild the
+ * ground / scatter / water to SEE a change (`WorldHandles.setTerrain` does
+ * all three) — the same contract as `setTerrainParams`.
+ */
+export function setPaintedHeight(sampler: ((x: number, z: number) => number) | null): void {
+  paintedHeight = sampler;
+}
+
+/** The painted offset at (x, z) — 0 when nothing is painted. */
+function painted(x: number, z: number): number {
+  return paintedHeight ? paintedHeight(x, z) : 0;
+}
+
+/**
+ * The land: the smooth field, plus whatever has been painted onto it,
+ * snapped onto tiers, then faded to the flat outer ground disc.
  *
  * The far fade runs OUTSIDE the terrace, not inside it. Fading the smooth
  * field first and terracing afterwards made the fade band cross a tier every
@@ -624,9 +673,19 @@ function terrace(v: number): number {
  * turned the world's rim into a flight of steps at three times the slope
  * bound. Fading the terraced height instead just settles the tiers down onto
  * the disc.
+ *
+ * The painted offset goes in INSIDE the terrace, so a painted hill comes out
+ * with the same risers the authored relief has (envpaint docs/port-meridian.md
+ * §6 weighed painting after terracing and rejected it: it would let a smooth
+ * ramp exist, which TASTE §3 argues against). It is NOT scaled by the
+ * `elevation` dial [D] — the dials are multipliers on the AUTHORED geography,
+ * and a painted unit is a world unit somebody put there by hand at the dials
+ * that were in force. It is also outside `clearGate`, so the hatch clearing
+ * can be painted: the gate keeps the authored relief off the origin, it is
+ * not a no-paint zone.
  */
 function terracedLand(x: number, z: number): number {
-  return terrace(smoothField(x, z)) * farGate(Math.hypot(x, z));
+  return terrace(smoothField(x, z) + painted(x, z)) * farGate(Math.hypot(x, z));
 }
 
 /**

@@ -1217,6 +1217,10 @@ function main(): void {
         // the ground field, re-seats the scatter and re-levels the water.
         setTerrain: (next) => world.setTerrain(next),
         terrain: () => world.terrain(),
+        // The paint skill draws on the ground with a plain drag, which is
+        // the same gesture the view controls orbit with; the world lets go
+        // of it while a stroke is live (src/world/scene.ts setSoloDrag).
+        setSoloDrag: (enabled) => world.setSoloDrag(enabled),
         // Outliner selection focus — the minimap's click-to-pan spring.
         focusAt: (x, z) => world.cameraRig.frameAt(new Vector3(x, 0, z)),
         // Weather handle from a parallel workstream — forwarded as-is and

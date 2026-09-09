@@ -53,6 +53,14 @@ deployment of this same repo**, at its own hostname:
 https://ref-world-meridian-evanmpuns-projects.vercel.app/     a custom domain later
 ```
 
+A world may also carry `"dev": true`. That deployment keeps the dev surface
+(the ghost panel behind shift+d, and with it the painted terrain) that every
+other build tree-shakes out — for a world that is its author's workbench as
+well as a demo. Nothing about it is a runtime toggle: it is baked in with the
+rest, so the public world and a client world without the flag are byte-for-byte
+what they were. (A vercel *preview* — a branch alias, never a production url —
+keeps the dev surface too, so a change can be looked at before it ships.)
+
 Vercel may assign a team-suffixed hostname instead of the plain
 `ref-world-<name>.vercel.app` you'd expect — the host in `worlds.json` has
 to be whatever the project's production url actually is, or the build
