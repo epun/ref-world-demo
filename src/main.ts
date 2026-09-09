@@ -1219,6 +1219,20 @@ function main(): void {
     // A tap on the map is "show me over there". Let go of the creature
     // until they ask for it back by walking.
     onFocus: () => follow.suspend(),
+    /*
+     * Where YOU are (user ask, 2026-09-09: *"the mini map should show you
+     * where your character is in relation to the world"*).
+     *
+     * The same condition as the stick and the follow camera: a handset,
+     * with a creature of its own. A projection passes nothing — a wall
+     * has no self — and the map draws exactly as it always did.
+     *
+     * A function, not a point: the creature walks, and the map reads it
+     * per frame off the manager rather than being told about it.
+     */
+    ...(tray?.middle && myDrawerId.length > 0
+      ? { self: (): { x: number; z: number } | null => creatures.positionOf(myDrawerId) }
+      : {}),
     mount: tray ? tray.right : document.body,
   });
 

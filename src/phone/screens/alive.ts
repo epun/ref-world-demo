@@ -320,19 +320,25 @@ export function mountAliveScreen(
     ...(options.initialSpin ? { initial: options.initialSpin } : {}),
   });
   /*
-   * The corner, which has been empty since the minimap left the phone.
+   * SAVING — on the paper, not on the screen (user ask, 2026-09-09:
+   * *"move the download button on mobile view when the device is shown to
+   * the top right corner outside of the device"*).
    *
-   * It holds the KEEP mark now (user ask, 2026-09-08: people should be
-   * able to save their creature). The slot kept its box through that whole
-   * time precisely so something arriving in it would be a mount rather
-   * than a relayout — this is that mount, and nothing else on the screen
-   * moves to make room.
+   * It used to hold the `corner` slot, which is inside the well: a save
+   * control standing on the one object the screen is for. Outside the case
+   * it is what it actually is — something the person does with the device
+   * — so keepui mounts it on the PAGE and places itself against the
+   * screen's own top-right corner. Not into a slot and not into `field`:
+   * both sit under the stage, the stage carries the ambient drift
+   * transform, and a `position: fixed` child of a transformed box is fixed
+   * to that box instead of to the viewport. The corner slot goes back to
+   * being empty, which is a state of a slot and never a removal.
    *
    * Only with an identity. Every way of keeping a creature is addressed by
    * the id the world spawned it under: the filename carries it, the link
    * IS it, and the exports rebuild from it so what gets saved is the same
    * creature and not a lookalike. The local same-device flow has no id and
-   * gets no corner, which is the same rule the rest of this screen follows.
+   * gets no mark, which is the same rule the rest of this screen follows.
    */
   let keep: KeepUiHandle | null = null;
   if (options.identity !== undefined) {
@@ -344,9 +350,8 @@ export function mountAliveScreen(
       // here would be the placeholder forever.
       name: () => currentName,
       world: options.world ?? null,
+      mount: document.body,
     });
-    slots.corner.appendChild(keep.mark);
-    field.appendChild(keep.row);
   }
 
   // ── Portrait: the local deterministic pipeline (PLAN §6.3) ────────────────

@@ -131,7 +131,21 @@ export function createCompanionPanel(
     const el = document.createElement('iframe');
     el.className = 'companion-panel';
     el.setAttribute('title', 'your creature');
-    // Same origin, so the companion can talk back. Nothing else is granted.
+    /*
+     * Two policies, delegated explicitly (user report, 2026-09-09: the save
+     * rows *"don't do anything"*).
+     *
+     * Web Share and the async clipboard are permission-policy features, and
+     * a frame is not granted them by being same-origin: the default
+     * allowlist for `web-share` is `self`, which means the TOP document,
+     * not any frame inside it. So the companion's save control — the only
+     * thing on either surface that hands a file or a link to the phone —
+     * was calling `share` and `writeText` in a frame that had been denied
+     * both, and every save silently did nothing. Nothing else is granted;
+     * this is the smallest allowlist that lets a save leave the device.
+     */
+    el.setAttribute('allow', 'web-share; clipboard-write');
+    // Same origin, so the companion can talk back.
     el.src = options.href;
     root.appendChild(el);
     frame = el;

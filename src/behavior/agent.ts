@@ -75,6 +75,30 @@ export interface AgentProp extends Vec2 {
   kind: string;
 }
 
+/**
+ * A hand is on this creature right now — the stick, not the agent
+ * (src/world/joystick.ts, `DRIVE_IDLE_MS` in src/creatures/manager.ts).
+ *
+ * While one of these is passed in the agent HOLDS: it chooses nothing,
+ * steers nowhere, and its state machine does not advance. The person is the
+ * only thing moving the creature, and an agent still picking wander targets
+ * underneath would be a second opinion pulling against the thumb — which is
+ * exactly what the hold exists to stop.
+ *
+ * It carries what the creature is actually doing so the agent's springs can
+ * sit on the truth rather than on their own idea of it: the facing it is
+ * really pointing and the speed the hand is really asking for (0 once the
+ * stick is back at rest). That is what makes letting go a deceleration from
+ * the real speed at the real heading — ζ≥1, no abrupt stop — instead of a
+ * step onto whatever the agent had been imagining under the thumb.
+ */
+export interface AgentHold {
+  /** Ground speed the hand is asking for, world units/s. 0 at rest. */
+  speed: number;
+  /** The creature's actual facing this frame, radians. */
+  heading: number;
+}
+
 export interface AgentTick {
   /** Ground velocity, world units per second (caller integrates by dt). */
   vx: number;
@@ -135,7 +159,12 @@ export class BehaviorAgent {
     peers: readonly AgentPeer[],
     props: readonly AgentProp[] | null,
     colliders: ColliderGrid | null = null,
+    hold: AgentHold | null = null,
   ): AgentTick {
+    // Somebody is steering. The agent does not get a vote until they have
+    // been off the stick a while (see AgentHold).
+    if (hold) return this.heldTick(dt, hold);
+
     this.timeInState += dt;
 
     // Visit accounting for the dispersal novelty bonus.
@@ -255,12 +284,60 @@ export class BehaviorAgent {
     return tick;
   }
 
+  /**
+   * Where this agent is currently walking to, or null when it has no
+   * destination of its own. A readout — nothing steers by it — so a test
+   * can see that a hold actually dropped the target rather than inferring
+   * it from a trajectory.
+   */
+  get currentTarget(): Vec2 | null {
+    return this.wanderTarget;
+  }
+
   dispose(): void {
     this.headingSpring.dispose();
     this.speedSpring.dispose();
   }
 
   // ── internals ─────────────────────────────────────────────────────────────
+
+  /**
+   * A frame in which somebody else is moving this creature.
+   *
+   * Nothing of the agent's own runs: no state evaluation, no timers, no
+   * target picking, no emote — the hidden life is paused, not fast-
+   * forwarded, so it resumes where it left off rather than somewhere it
+   * never was. Only the springs advance, anchored to what is actually
+   * happening, so the frame the hold ends on is continuous in both speed
+   * and facing.
+   *
+   * The wander target goes. It was chosen from where the creature stood
+   * before the hand picked it up; the creature is somewhere else now, and
+   * setting off for it the instant the hold expires is a lurch backwards.
+   * The first decision after a hold is made fresh, from where it stands.
+   */
+  private heldTick(dt: number, hold: AgentHold): AgentTick {
+    this.wanderTarget = null;
+    // Not a teleport (the caution on Spring.reset): the value being written
+    // is where the creature already is and how fast it is already going.
+    // The spring is being told the truth, not moved.
+    this.headingSpring.reset(hold.heading);
+    if (hold.speed > 0) this.speedSpring.reset(hold.speed);
+    // Stick at rest inside the window: settle to a stop from the speed the
+    // hand left it at. A drift, never a brake (TASTE §2.1).
+    else this.speedSpring.retarget(0);
+
+    const speed = Math.max(0, this.speedSpring.update(dt));
+    const heading = this.headingSpring.update(dt);
+    return {
+      vx: Math.sin(heading) * speed,
+      vz: Math.cos(heading) * speed,
+      heading,
+      // The posture it was in when the hand arrived, unchanged — the state
+      // machine is frozen, so this is a readout, not a decision.
+      pose: this.state === 'sit' ? 'sit' : this.state === 'sleep' ? 'sleep' : null,
+    };
+  }
 
   private contextOf(
     self: Vec2,
