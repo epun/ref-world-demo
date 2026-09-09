@@ -63,12 +63,18 @@ export default defineConfig({
   },
   define: {
     // isDev gates src/dev/ (Ghost Panel skills). Must be a static boolean so the
-    // demo build tree-shakes the entire dev surface out. A world whose
-    // worlds.json entry says `dev: true` keeps it in its own deployment —
-    // meridian is its author's workbench as well as a demo, and the painted
-    // terrain lives in the panel with no other way to be reached. The public
-    // world and every other client world stay stripped.
-    __IS_DEV__: JSON.stringify(process.env.NODE_ENV !== 'production' || WORLD?.dev === true),
+    // demo build tree-shakes the entire dev surface out. Two builds keep it:
+    // a world whose worlds.json entry says `dev: true` (meridian is its
+    // author's workbench as well as a demo, and the painted terrain lives in
+    // the panel with no other way to be reached), and any vercel PREVIEW — a
+    // branch alias is a thing a reviewer opens to look at, never the url a
+    // client is handed. Every production build without the flag, the public
+    // world first among them, stays stripped exactly as before.
+    __IS_DEV__: JSON.stringify(
+      process.env.NODE_ENV !== 'production' ||
+        WORLD?.dev === true ||
+        process.env.VERCEL_ENV === 'preview',
+    ),
   },
   test: {
     include: ['test/**/*.test.ts'],
