@@ -811,10 +811,11 @@ describe('landscape — terrain height', () => {
     }
   });
 
-  // A 0.5-unit sweep of the whole field is ~1.5M `terrainHeight` calls, and
-  // since the painted hook landed each one carries an offset lookup too — it
-  // measures ~5s, which is over vitest's 5s default. It is a measurement, not
-  // a flake, so it gets the time rather than a coarser grid.
+  // AN EXPLICIT BUDGET, not a flake guard. The 0.5-unit sweep walks ~386k
+  // cells at four `terrainHeight` samples each — ~1.5M calls, every one of
+  // them carrying the painted-offset lookup since the paint hook landed — and
+  // measures ~6s, over vitest's 5s default. The bound is the assertion; the
+  // clock is not, so this buys the time rather than coarsening the grid.
   it('holds every slope inside the bound, risers included', { timeout: 30_000 }, () => {
     // The terrace multiplies the smooth field's gradient by 1.5 / the riser
     // width, so this is the number the [D] falloffs were tuned against:
@@ -847,9 +848,7 @@ describe('landscape — terrain height', () => {
     // the whole square (the corners past farEnd are all it drops).
     expect(sampled).toBeGreaterThan(330_000);
     expect(worst).toBeLessThanOrEqual(0.6);
-    // 640k points, four samples each: ~5 s on a loaded 4-core runner, which
-    // is the default timeout. The bound is the assertion; the clock is not.
-  }, 30_000);
+  });
 
   it('climbs the island out of the water onto a contour crown', () => {
     const level = waterLevel(LAKE);
