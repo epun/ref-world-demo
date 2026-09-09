@@ -19,6 +19,7 @@ describe('dev skill metadata', () => {
       'refworld.character',
       'refworld.taste',
       'refworld.weather',
+      'refworld.paint',
     ]) {
       expect(ids).toContain(required);
     }
@@ -101,5 +102,55 @@ describe('the environment folder carries the terrain dials', () => {
       expect(TERRAIN_DEFAULTS[key], key).toBeGreaterThanOrEqual(lo);
       expect(TERRAIN_DEFAULTS[key], key).toBeLessThanOrEqual(hi);
     }
+  });
+});
+
+describe('the paint skill is wired the way the port plan asks', () => {
+  // Same reading as the terrain-dial block above: the panel needs a dom to
+  // mount, so this pins the wiring in source. What it protects is the four
+  // things a refactor could silently drop and nothing else would notice —
+  // the hook into the one module that owns heights, the world size the layer
+  // is mapped against, the gate that keeps the world's own pointer working,
+  // and the rebuild that has to happen when the pointer lifts.
+  const source = readFileSync(join(process.cwd(), 'src/dev/paint.ts'), 'utf8');
+
+  it('installs the painted sampler on the landscape, and takes it off again', () => {
+    expect(source).toContain("import { setPaintedHeight } from '../world/landscape'");
+    expect(source).toContain('setPaintedHeight(paintedSampler(map))');
+    expect(source).toContain('setPaintedHeight(null)');
+  });
+
+  it('shares the paint layer buffer with the map rather than copying it', () => {
+    expect(source).toContain('createPaintedMap(PAINTED_RES, PAINTED_SIZE, layer.data as Float32Array)');
+    expect(source).toContain('worldSize: PAINTED_SIZE');
+  });
+
+  it('leaves the world its pointer until painting is switched on', () => {
+    expect(source).toContain('canPaint: (event: PointerEvent): boolean => painting && !event.shiftKey');
+    expect(source).toContain('brush.enabled = false');
+    expect(source).toContain('handles.setSoloDrag?.(!on)');
+  });
+
+  it('registers raise, lower, flatten and smooth on the height layer, hotkeys 1-4', () => {
+    for (const id of ['raise', 'lower', 'flatten', 'smooth']) {
+      expect(source, id).toContain(`id: '${id}'`);
+    }
+    expect(source).toContain("const TOOL_KEYS = ['1', '2', '3', '4'] as const;");
+    expect(source).toContain('layer: HEIGHT_LAYER');
+    expect(source).toContain("altMode: 'smooth'");
+  });
+
+  it('throttles the rebuild during a stroke and always rebuilds on strokeend', () => {
+    expect(source).toContain('const REBUILD_MIN_MS = 125;');
+    expect(source).toContain("brush.on('stroke', ()");
+    expect(source).toContain("brush.on('strokeend', () => {");
+    // the strokeend handler is the unthrottled one
+    const end = source.slice(source.indexOf("brush.on('strokeend'"));
+    expect(end.slice(0, 400)).toContain('rebuildNow()');
+  });
+
+  it('leaves a marked hook where the session paint event goes (plan step 6)', () => {
+    expect(source).toContain('session hook');
+    expect(source).toContain("k: 'paint'");
   });
 });

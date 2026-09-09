@@ -84,6 +84,21 @@ export interface WorldHandles {
   setTerrain(next: Partial<TerrainParams>): void;
   /** The dials the world is currently shaped by. */
   terrain(): TerrainParams;
+  /**
+   * Hand the ONE-pointer drag to something else, or take it back.
+   *
+   * The view controls below own a plain drag: it orbits, and shift+drag
+   * pans. A dev tool that draws on the ground (src/dev/paint.ts) needs the
+   * same gesture, and both listeners sit on the same canvas — neither can
+   * out-order the other, so the world has to let go rather than the tool
+   * shout louder. False parks the orbit; the pointer is still tracked, so
+   * handing it back mid-drag resumes from where the pointer is instead of
+   * lurching (TASTE §2.1: no cuts).
+   *
+   * Two-finger pinch/twist and the wheel keep working either way — a tool
+   * that owns one pointer has no claim on the operator's zoom.
+   */
+  setSoloDrag(enabled: boolean): void;
   /** Register per-frame work (entity drift, gaits, …). Runs before render. */
   onFrame(callback: FrameCallback): void;
   /**
@@ -178,6 +193,12 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
   canvas.style.touchAction = 'none';
   canvas.addEventListener('contextmenu', (event) => event.preventDefault());
   let panning = false;
+  /**
+   * Whether a ONE-pointer drag still turns the camera — see setSoloDrag.
+   * Two-finger pinch/twist and the wheel are untouched by it, so a tool that
+   * owns the single pointer never costs the operator their zoom.
+   */
+  let soloDrag = true;
   canvas.addEventListener('pointerdown', (event) => {
     pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
     // Shift+drag pans; plain drag orbits (user scheme, cellshader feel).
@@ -190,9 +211,14 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
     if (pointers.size === 1) {
       const dx = event.clientX - prev.x;
       const dy = event.clientY - prev.y;
-      if (panning) cameraRig.panBy(dx, dy, window.innerHeight);
-      else cameraRig.rotateBy(dx, dy, window.innerHeight);
+      // The pointer's position is remembered whether or not the camera acts
+      // on it: a drag handed back mid-stroke must not arrive as one huge
+      // delta, which is a cut, and there are none of those (TASTE §2.1).
       pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      if (soloDrag) {
+        if (panning) cameraRig.panBy(dx, dy, window.innerHeight);
+        else cameraRig.rotateBy(dx, dy, window.innerHeight);
+      }
     } else if (pointers.size === 2) {
       // Pinch: zoom by distance ratio; twist: rotate by angle delta.
       const entries = [...pointers.entries()];
@@ -300,6 +326,9 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
       water.refreshLevels();
     },
     terrain: (): TerrainParams => terrainParams(),
+    setSoloDrag: (enabled: boolean): void => {
+      soloDrag = enabled;
+    },
     onFrame: (callback: FrameCallback): void => {
       frameCallbacks.push(callback);
     },
