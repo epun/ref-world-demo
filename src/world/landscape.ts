@@ -71,9 +71,39 @@
  * exists — `terrainHeight`, `terrainNormal`, `waterLevel` and every consumer
  * are unchanged, and with no sampler set the world is identical to the
  * authored one (test/world/painted.test.ts pins that at 2,000 points).
+ *
+ * PAINTED WATER (envpaint docs/port-meridian.md §2.2, plan step 4) hangs on a
+ * hook of exactly the same shape — `setPaintedWater` — and it hangs HERE for
+ * the reason the paragraph above gives, one dimension over: heights and
+ * SHORELINES come from one place. A person paints a level into the water
+ * layer, src/world/painted-water.ts turns it into bodies and a signed
+ * distance to the nearest painted shore, and the field installed here is what
+ * `isWater`, `sampleLandscape`, `terrainHeight`, `terrainNormal` and
+ * `waterColliders` all answer from. A hook anywhere else would be the second
+ * shoreline this module exists to prevent — one for the ground, another for
+ * the physics, a third for the reeds, drifting apart by a fraction of a unit.
+ * Like the painted offset it is a person's own hand and NOT gated by the
+ * mode: painted water exists in `'plain'` and `'landscape'` alike, and the
+ * caller rebuilds the ground / scatter / water to see it.
+ *
+ * The painted basin is cut with the AUTHORED basin's maths, verbatim, with
+ * the distance field standing in for `d - wobbledRadius`: inside the shore
+ * the ground is EXACTLY the painted level (a flat sheet on a flat floor, like
+ * an authored body), the first `basinRim` units of bank hold that level where
+ * the land would otherwise fall below it, and the land climbs out over
+ * `shoreRamp`. [D] The level is ABSOLUTE — a painted unit is a world unit, so
+ * it is never scaled by the `elevation` dial, exactly as the painted height
+ * offset is not; the dials are multipliers on the AUTHORED geography, and
+ * somebody painted this waterline at the dials that were in force. [D] The
+ * pass runs ONCE over the whole field rather than once per body, because the
+ * field measures the NEAREST shore: where two painted bodies sit closer than
+ * two shore ramps the nearer one wins the ground between them. That is the
+ * same caveat the authored bodies carry (`terrainHeight`'s sequential basins)
+ * and it has the same answer — paint them further apart.
  */
 
 import type { Collider } from '../physics/colliders';
+import type { PaintedBody, PaintedWaterField } from './painted-water';
 
 export type Region = 'plain' | 'forest' | 'mountain' | 'island' | 'water';
 
@@ -303,6 +333,39 @@ const EMPTY_BODIES: readonly WaterBody[] = [];
 
 // ── water ────────────────────────────────────────────────────────────────────
 
+/**
+ * The painted water field in force, or null when no water is painted.
+ *
+ * Module state, exactly like `activeTerrain` and `paintedHeight` below and
+ * for the same reason: `isWater` and `terrainHeight` are called from pure
+ * helpers all over the world that take no instance, and threading a field
+ * through every one of them would put it in a hundred signatures.
+ * Determinism is unaffected — an installed field is explicit state, not a
+ * clock or a random, and a build that never installs one is the authored
+ * world unchanged.
+ */
+let paintedWaterField: PaintedWaterField | null = null;
+
+/**
+ * Install (or, with null, remove) the painted water field —
+ * src/world/painted-water.ts `deriveWater` makes one out of the painted level
+ * layer.
+ *
+ * The same contract as `setPaintedHeight`: this module holds the field by
+ * reference and calls `shore` once per water query, so it is on the hot path
+ * of every ground vertex, every placement and every walker, and callers must
+ * rebuild the ground / scatter / water to SEE a change (the dev paint skill's
+ * `rebuildLandscape` does all three).
+ */
+export function setPaintedWater(field: PaintedWaterField | null): void {
+  paintedWaterField = field;
+}
+
+/** The painted water the world is currently reading, or null. */
+export function paintedWater(): PaintedWaterField | null {
+  return paintedWaterField;
+}
+
 function islandBlob(body: WaterBody): Blob | null {
   return body.island ?? null;
 }
@@ -339,10 +402,22 @@ export function isAuthoredWater(x: number, z: number, pad = 0): boolean {
   return false;
 }
 
-/** True inside any water body the world is actually holding. `pad > 0` grows
- * every water body outward by `pad` units (a shore keep-out for planting).
- * Always false in the plain mode: that world has no water in it. */
+/**
+ * True inside any water the world is actually holding: PAINTED water in both
+ * modes, and the authored bodies in the landscape mode. `pad > 0` grows every
+ * body outward by `pad` units (a shore keep-out for planting); a negative pad
+ * shrinks it from every one of its shores at once.
+ *
+ * Painted first, and the painted test is EXACT rather than an approximation
+ * [D]: `shore` is a SIGNED distance to the nearest painted shoreline, so
+ * "inside the body grown by `pad`" is precisely "the signed distance is over
+ * `-pad`" — outer shores and island shores together, with no ring to walk and
+ * no polar angle to pick. With nothing painted this is the authored test it
+ * always was, so the plain world with no paint on it has no water in it.
+ */
 export function isWater(x: number, z: number, pad = 0): boolean {
+  const field = paintedWaterField;
+  if (field && field.shore(x, z) > -pad) return true;
   return mapped() && isAuthoredWater(x, z, pad);
 }
 
@@ -376,13 +451,19 @@ function blobWeight(blobs: readonly Blob[], falloff: number, x: number, z: numbe
 
 /** Everything the rest of the world needs to know about one spot of ground.
  *
- * In `'plain'` mode this answers as if the map did not exist — open, dry,
+ * In `'plain'` mode this answers as if the map did not exist — open,
  * unweighted plain everywhere — so every consumer that reads it (scatter's
  * regional tables above all) falls back to the pre-map world with no branch
- * of its own. A fresh object per call, like the mapped path: nobody mutates
+ * of its own. Dry everywhere too, until somebody paints water: that is a
+ * person's own hand rather than the map, so the plain sample reports it and
+ * the regional tables cut their planting out of it with no branch of their
+ * own either. A fresh object per call, like the mapped path: nobody mutates
  * a shared sample. */
 export function sampleLandscape(x: number, z: number): LandscapeSample {
-  if (!mapped()) return { forest: 0, mountain: 0, water: false, island: false, region: 'plain' };
+  if (!mapped()) {
+    const wet = isWater(x, z);
+    return { forest: 0, mountain: 0, water: wet, island: false, region: wet ? 'water' : 'plain' };
+  }
   const water = isWater(x, z);
   const island = water ? false : isIslandLand(x, z);
   // Nothing grows on water, and the island is its own thing — the forest and
@@ -820,66 +901,93 @@ export function waterLevel(body: WaterBody): number {
  * nearest body".
  */
 export function terrainHeight(x: number, z: number): number {
-  // The plain has no authored geography in it — no shelves, no basins, no
-  // island — so it is `terracedLand` and nothing else. NOT a bare 0: the
-  // painted offset lives inside `terracedLand`, and painting the flat field
-  // is the whole point of opening on one (2026-09-09, user ask — open flat,
-  // then sculpt in front of the audience). Unpainted, this is exactly 0.
-  if (!mapped()) return terracedLand(x, z);
   const { elevation, relief } = activeTerrain;
   // The shore ramp and the rim guard are horizontal distances, so they ride
   // `relief` — a wider relief spreads a basin's climb-out over more ground.
+  // They are read in BOTH modes now: the painted basin below is not gated by
+  // the map, and it cuts itself with these same two numbers.
   const shoreRamp = TERRAIN.shoreRamp * relief;
   const basinRim = TERRAIN.basinRim * relief;
   let h = terracedLand(x, z);
-  for (const body of WATER_BODIES) {
-    const dx = x - body.x;
-    const dz = z - body.z;
-    const d = Math.hypot(dx, dz);
-    // Signed distance to the OUTER wobbled shore: negative inside it, which
-    // is the island and the causeway too — the whole disc is one basin.
-    const out = d - wobbledRadius(body, Math.atan2(dz, dx));
-    if (out >= shoreRamp) continue;
-    const level = waterLevel(body);
-    const t = smoothstep(0, shoreRamp, out);
-    // out <= 0 → t = 0 → exactly `level`: flat basin, flat island, flat
-    // causeway, and no land inside the shore that water could sit above.
-    const blended = level + (h - level) * t;
-    // The rim guard is the continuous form of "never below the water line":
-    // a plain max() would hold every low tier in the world up to the level
-    // of the nearest lake, so the guard releases over the same ramp.
-    const rim = 1 - smoothstep(basinRim, shoreRamp, out);
-    h = blended + rim * Math.max(0, level - blended);
+  // The plain has no authored geography in it — no shelves, no basins, no
+  // island — so it is `terracedLand` and the painted pass below, and nothing
+  // else. NOT a bare 0: the painted offset lives inside `terracedLand`, and
+  // painting the flat field is the whole point of opening on one (2026-09-09,
+  // user ask — open flat, then sculpt in front of the audience). Unpainted,
+  // this is exactly 0.
+  if (mapped()) {
+    for (const body of WATER_BODIES) {
+      const dx = x - body.x;
+      const dz = z - body.z;
+      const d = Math.hypot(dx, dz);
+      // Signed distance to the OUTER wobbled shore: negative inside it, which
+      // is the island and the causeway too — the whole disc is one basin.
+      const out = d - wobbledRadius(body, Math.atan2(dz, dx));
+      if (out >= shoreRamp) continue;
+      const level = waterLevel(body);
+      const t = smoothstep(0, shoreRamp, out);
+      // out <= 0 → t = 0 → exactly `level`: flat basin, flat island, flat
+      // causeway, and no land inside the shore that water could sit above.
+      const blended = level + (h - level) * t;
+      // The rim guard is the continuous form of "never below the water line":
+      // a plain max() would hold every low tier in the world up to the level
+      // of the nearest lake, so the guard releases over the same ramp.
+      const rim = 1 - smoothstep(basinRim, shoreRamp, out);
+      h = blended + rim * Math.max(0, level - blended);
+    }
+    // …and then the island climbs back out of the basin that just flattened
+    // it. AFTER the basin pass, never inside it: the basin's job is to put one
+    // flat number under a sheet of water, and an island is land that stands on
+    // top of that number rather than a hole in it. `max` for the same reason —
+    // nothing here may ever pull the ground BELOW the water it is surrounded
+    // by, at any distance from the shore.
+    for (const body of WATER_BODIES) {
+      const isl = body.island;
+      if (!isl) continue;
+      const dx = x - isl.x;
+      const dz = z - isl.z;
+      const d = Math.hypot(dx, dz);
+      // Signed distance INTO the island from its own wobbled edge: 0 at the
+      // waterline, positive inland.
+      const edge = wobbledRadius(isl, Math.atan2(dz, dx));
+      const inIsl = edge - d;
+      if (inIsl <= 0) continue;
+      // Measured as a FRACTION of the island's own radius here, scaled back
+      // into units by its mean one. The wobbled radius swings by a sixth
+      // around the ring, and a rise read in flat units off it carries that
+      // swing straight into the gradient — the sideways term alone doubled the
+      // steepest bank (measured 1.75 against 1.15). Proportion also puts the
+      // crown over the middle whatever the edge is doing, and gives a pinched
+      // arm of the island a proportionally narrower bank, which is what a
+      // small headland looks like.
+      const climb = isl.r * (inIsl / edge);
+      const rise =
+        TERRAIN.islandRise * elevation * smoothstep(0, TERRAIN.islandRamp * relief, climb);
+      h = Math.max(h, waterLevel(body) + terrace(rise));
+    }
   }
-  // …and then the island climbs back out of the basin that just flattened
-  // it. AFTER the basin pass, never inside it: the basin's job is to put one
-  // flat number under a sheet of water, and an island is land that stands on
-  // top of that number rather than a hole in it. `max` for the same reason —
-  // nothing here may ever pull the ground BELOW the water it is surrounded
-  // by, at any distance from the shore.
-  for (const body of WATER_BODIES) {
-    const isl = body.island;
-    if (!isl) continue;
-    const dx = x - isl.x;
-    const dz = z - isl.z;
-    const d = Math.hypot(dx, dz);
-    // Signed distance INTO the island from its own wobbled edge: 0 at the
-    // waterline, positive inland.
-    const edge = wobbledRadius(isl, Math.atan2(dz, dx));
-    const inIsl = edge - d;
-    if (inIsl <= 0) continue;
-    // Measured as a FRACTION of the island's own radius here, scaled back
-    // into units by its mean one. The wobbled radius swings by a sixth
-    // around the ring, and a rise read in flat units off it carries that
-    // swing straight into the gradient — the sideways term alone doubled the
-    // steepest bank (measured 1.75 against 1.15). Proportion also puts the
-    // crown over the middle whatever the edge is doing, and gives a pinched
-    // arm of the island a proportionally narrower bank, which is what a
-    // small headland looks like.
-    const climb = isl.r * (inIsl / edge);
-    const rise =
-      TERRAIN.islandRise * elevation * smoothstep(0, TERRAIN.islandRamp * relief, climb);
-    h = Math.max(h, waterLevel(body) + terrace(rise));
+  // …and the PAINTED basin last of all, in both modes: the authored basin's
+  // maths verbatim, with the distance field's `-shore` standing in for the
+  // distance outside a wobbled radius. Last for the same reason the authored
+  // basins are — a basin's interior has to come out EXACTLY its level, and
+  // anything applied after it would multiply that flat sheet by something.
+  // One pass, not one per body: the field measures the nearest shore, so
+  // where two painted bodies sit closer than two ramps the nearer one wins.
+  const field = paintedWaterField;
+  if (field) {
+    // Distance OUTSIDE the painted shore: negative inside the water.
+    const out = -field.shore(x, z);
+    if (out < shoreRamp) {
+      // Absolute world units — the `elevation` dial multiplies the AUTHORED
+      // verticals and never a painted one (same rule as the painted height
+      // offset, and the same reason: somebody put this waterline here by
+      // hand at the dials that were in force).
+      const level = field.level(x, z);
+      const t = smoothstep(0, shoreRamp, out);
+      const blended = level + (h - level) * t;
+      const rim = 1 - smoothstep(basinRim, shoreRamp, out);
+      h = blended + rim * Math.max(0, level - blended);
+    }
   }
   return h;
 }
@@ -889,8 +997,11 @@ export function terrainNormal(x: number, z: number): { x: number; y: number; z: 
   // Straight up, exactly — a central difference over a flat field would land
   // on -0 for x and z rather than 0, and the plain is paper. Only while
   // nothing is painted, though: a painted hill on the plain has real slopes,
-  // and a stamp that lay flat across one would read as a sticker.
-  if (!mapped() && paintedHeight === null) return { x: 0, y: 1, z: 0 };
+  // and so does the bank of a painted pond, and a stamp that lay flat across
+  // either would read as a sticker.
+  if (!mapped() && paintedHeight === null && paintedWaterField === null) {
+    return { x: 0, y: 1, z: 0 };
+  }
   const e = TERRAIN.normalStep;
   const dhdx = (terrainHeight(x + e, z) - terrainHeight(x - e, z)) / (2 * e);
   const dhdz = (terrainHeight(x, z + e) - terrainHeight(x, z - e)) / (2 * e);
@@ -945,8 +1056,11 @@ export const WATER_COLLIDER_R = 2.2;
 /** [D] How far a collider is allowed to protrude past the shore onto land.
  * A circle is kept only where its center is water with the body shrunk by
  * `WATER_COLLIDER_R - WATER_COLLIDER_BITE`, so the worst case is this much
- * land blocked and at most ~1.6 units of shore water left unblocked. */
-const WATER_COLLIDER_BITE = 0.6;
+ * land blocked and at most ~1.6 units of shore water left unblocked.
+ *
+ * Exported so a test can measure the tiling against the number it was tiled
+ * by rather than against a copy of it. */
+export const WATER_COLLIDER_BITE = 0.6;
 
 /** [D] Row pitch of the tiling: a hex offset (rows staggered by half a
  * spacing, √3/2 apart) packs circles of one radius with no gap a creature
@@ -971,7 +1085,9 @@ const WATER_COLLIDER_ROW = 0.866;
  * deterministic to the bit. Allocates fresh each call; callers own the
  * result.
  *
- * Empty in `'plain'` mode: there is no water to block.
+ * Authored circles only in the landscape mode; painted bodies in BOTH — a
+ * person who paints a pond onto the flat field gets water that stops a
+ * creature, the same as an authored one.
  */
 export function waterColliders(): Collider[] {
   const out: Collider[] = [];
@@ -990,6 +1106,32 @@ export function waterColliders(): Collider[] {
         const x = body.x + (i + shift) * step;
         if (!bodyHoldsWater(body, x, z, pad)) continue;
         out.push({ x, z, r: WATER_COLLIDER_R, hard: true });
+      }
+    }
+  }
+  // The same tiling over every painted body, anchored on its bounds centre so
+  // a painted pond gets a circle in the middle of it just as an authored one
+  // does. The keep test is the distance field read directly: `shore > R -
+  // bite` IS "the body shrunk by R - bite still holds water here", with no
+  // ring to walk — and an island falls out for free, because `shore` is
+  // negative on the land inside a body.
+  const field = paintedWaterField;
+  if (field) {
+    const keep = WATER_COLLIDER_R - WATER_COLLIDER_BITE;
+    for (const body of field.bodies) {
+      const { x0, z0, x1, z1 } = body.bounds;
+      const cx = (x0 + x1) / 2;
+      const cz = (z0 + z1) / 2;
+      const jn = Math.ceil((z1 - z0) / 2 / row) + 1;
+      const iMax = Math.ceil((x1 - x0) / 2 / step) + 1;
+      for (let j = -jn; j <= jn; j++) {
+        const z = cz + j * row;
+        const shift = j % 2 === 0 ? 0 : 0.5;
+        for (let i = -iMax; i <= iMax; i++) {
+          const x = cx + (i + shift) * step;
+          if (field.shore(x, z) <= keep) continue;
+          out.push({ x, z, r: WATER_COLLIDER_R, hard: true });
+        }
       }
     }
   }
@@ -1064,6 +1206,36 @@ export function shoreSamples(body: WaterBody, spacing = SHORE_SPACING): ShoreSam
   return out;
 }
 
+/**
+ * The same shore samples along every PAINTED shoreline — the outer ring of
+ * each body and the ring of every island in it — or `[]` when no field is
+ * installed.
+ *
+ * The walker above is reused unchanged, and every one of its habits is
+ * already right here [D]: its `isWater` skip covers painted water now, so a
+ * sample that lands back in the pond is dropped by the same test that drops
+ * an authored one; its `SHORE_PUSH` nudge onto land is the same nudge for a
+ * traced ring as for a wobbled one; and a hole ring is EXACTLY the island
+ * case, so the flipped normal it already has points off the island and into
+ * the water's back.
+ *
+ * No `SHORE_WALK_SUBDIVISION` here [D]: an authored ring is a 96-point
+ * sampling of a smooth curve and has to be subdivided before an arc-length
+ * walk over it is accurate, but a painted ring is already densified to the
+ * brush's own texel scale — it IS the polygon, not an approximation of one,
+ * and there is nothing between its vertices to subdivide toward.
+ */
+export function paintedShoreSamples(spacing = SHORE_SPACING): ShoreSample[] {
+  const out: ShoreSample[] = [];
+  const field = paintedWaterField;
+  if (!field) return out;
+  for (const body of field.bodies) {
+    walkShore(body.outline, false, spacing, out);
+    for (const hole of body.holes) walkShore(hole, true, spacing, out);
+  }
+  return out;
+}
+
 // ── ripples ──────────────────────────────────────────────────────────────────
 
 /** [D] Roughly one ripple mark per this much water, so a pond gets a couple
@@ -1108,6 +1280,52 @@ export function rippleSpots(body: WaterBody, margin = RIPPLE_MARGIN): RippleSpot
       // Negative pad = the body shrunk by `margin` from every one of its
       // shores at once, which is exactly the clearance a mark needs.
       if (!bodyHoldsWater(body, x, z, -margin)) continue;
+      out.push({
+        x,
+        z,
+        rot: hash(body.seed + ix * 2.7 + iz * 6.3 + 13.1) * TAU,
+        len: 0.6 + 0.8 * hash(body.seed + ix * 5.9 + iz * 8.7 + 21.7),
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * Ripple marks inside one PAINTED body — the same jittered grid as
+ * `rippleSpots` above, over the body's bounds, keeping a mark only where the
+ * distance field says it is at least `margin` from every shore.
+ *
+ * The `shore` sampler is passed in rather than read off the installed field
+ * [D]: the water renderer builds a body's marks from the field it was handed,
+ * and a mark placed against some OTHER field that happened to be installed at
+ * the time would be a mark in the wrong pond.
+ *
+ * Same step and same hash salts as the authored version, off `body.seed` —
+ * which is the body's first texel index, so the same painted shape always
+ * ripples the same way. Deterministic; allocates fresh each call.
+ */
+export function paintedRippleSpots(
+  body: PaintedBody,
+  shore: (x: number, z: number) => number,
+  margin = RIPPLE_MARGIN,
+): RippleSpot[] {
+  const out: RippleSpot[] = [];
+  const step = Math.sqrt(RIPPLE_AREA_PER_SPOT);
+  const ix0 = Math.floor(body.bounds.x0 / step);
+  const ix1 = Math.floor(body.bounds.x1 / step);
+  const iz0 = Math.floor(body.bounds.z0 / step);
+  const iz1 = Math.floor(body.bounds.z1 / step);
+  for (let ix = ix0; ix <= ix1; ix++) {
+    for (let iz = iz0; iz <= iz1; iz++) {
+      if (hash(body.seed + ix * 7.1 + iz * 13.7) >= RIPPLE_KEEP) continue;
+      const jx = (hash(body.seed + ix * 3.3 + iz * 9.1 + 5.5) - 0.5) * 0.8 * step;
+      const jz = (hash(body.seed + ix * 11.9 + iz * 4.7 + 8.2) - 0.5) * 0.8 * step;
+      const x = (ix + 0.5) * step + jx;
+      const z = (iz + 0.5) * step + jz;
+      // The signed distance IS the clearance from every shore at once — the
+      // outer one and any island's — which is exactly what a mark needs.
+      if (shore(x, z) < margin) continue;
       out.push({
         x,
         z,

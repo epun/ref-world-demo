@@ -190,7 +190,8 @@ export interface DriveEvent extends EventBase {
  */
 export interface PaintEvent extends EventBase {
   k: 'paint';
-  /** `raise` | `lower` | `flatten` | `smooth`, or `clear` for the whole map. */
+  /** `raise` | `lower` | `flatten` | `smooth` on the height layer, `pond` |
+   * `drain` on the water one, or `clear` for the whole map. */
   tool: string;
   /** Ground-space centre of the dab — world units, the same space `egg`
    * records, converted from the brush's uv at the seam. Absent on `clear`. */
@@ -208,6 +209,10 @@ export interface PaintEvent extends EventBase {
   seed?: number;
   /** `flatten` only: the height the stroke levelled toward. */
   flattenTo?: number;
+  /** Water tools only: the absolute surface height the dab filled to, so a
+   * replay lays the same plane without re-reading a bank that may since have
+   * moved. Absent on a drain, which fills to nothing. */
+  level?: number;
 }
 
 /**

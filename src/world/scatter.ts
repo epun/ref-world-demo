@@ -44,10 +44,12 @@ import { MOTION, SURFACE, WORLD } from '../taste/tokens';
 import {
   activeWaterBodies,
   isWater,
+  paintedShoreSamples,
   sampleLandscape,
   shoreSamples,
   waterColliders,
   type LandscapeSample,
+  type ShoreSample,
 } from './landscape';
 import {
   BUILDING_COURTYARD_VARIANT,
@@ -585,29 +587,38 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
   // in (sample index, body index) through the same cellHash family.
   //
   // `activeWaterBodies()` and not the authored list: in the plain mode there
-  // is no water anywhere, so there is no shoreline to line and this whole
-  // pass places nothing.
+  // is no AUTHORED water anywhere, so there is no shoreline to line and this
+  // loop places nothing. Painted water is lined right after it, in both
+  // modes — a painted pond is a person's own hand, not the map, and a pond
+  // with no reeds on it would read as a hole in the paper.
   const reedKeep = REED_SHORE_KEEP * density * userMult('reed');
   const bodies = activeWaterBodies();
-  if (reedKeep > 0) {
-    for (let b = 0; b < bodies.length; b++) {
-      const samples = shoreSamples(bodies[b]!);
-      for (let i = 0; i < samples.length; i++) {
-        if (cellHash(i, b, REED_SALT) >= reedKeep) continue;
-        const s = samples[i]!;
-        // Step onto land along the shore normal, then let the water cut-out
-        // in `place` drop anything still standing too near the edge.
-        const off = REED_OFFSET_MIN + cellHash(i, b, REED_SALT + 1.7) * REED_OFFSET_SPAN;
-        place(
-          'reed',
-          0,
-          s.x + s.nx * off,
-          s.z + s.nz * off,
-          0.8 + cellHash(i, b, REED_SALT + 2.9) * 0.5,
-          cellHash(i, b, REED_SALT + 4.3) * Math.PI * 2,
-        );
-      }
+  const plantReeds = (samples: ShoreSample[], b: number): void => {
+    for (let i = 0; i < samples.length; i++) {
+      if (cellHash(i, b, REED_SALT) >= reedKeep) continue;
+      const s = samples[i]!;
+      // Step onto land along the shore normal, then let the water cut-out
+      // in `place` drop anything still standing too near the edge.
+      const off = REED_OFFSET_MIN + cellHash(i, b, REED_SALT + 1.7) * REED_OFFSET_SPAN;
+      place(
+        'reed',
+        0,
+        s.x + s.nx * off,
+        s.z + s.nz * off,
+        0.8 + cellHash(i, b, REED_SALT + 2.9) * 0.5,
+        cellHash(i, b, REED_SALT + 4.3) * Math.PI * 2,
+      );
     }
+  };
+  if (reedKeep > 0) {
+    for (let b = 0; b < bodies.length; b++) plantReeds(shoreSamples(bodies[b]!), b);
+    // The painted shores walk as ONE more body, at a body index a constant
+    // step past the authored list [D]: the roll for a painted reed is its own
+    // (a different index salts a different hash), and every authored reed
+    // still rolls the exact salt it rolled before painted water existed —
+    // painting a pond in the corner of the map may never move a reed on the
+    // lake.
+    plantReeds(paintedShoreSamples(), bodies.length);
   }
   return out;
 }

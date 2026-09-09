@@ -16,6 +16,14 @@
  * comes out as `terrace(field + constant)` — the expectation re-derived from
  * the module's own dials at each point, never a recorded number.
  *
+ * THE LEVEL LAYER rides alongside the height one, same shape, same sharing,
+ * `DRY` where there is no water — so it is pinned here on the same terms: it
+ * is adopted by reference, it clears back to dry rather than to zero, and it
+ * survives the round trip. A map saved before water existed carries no level
+ * layer at all and has to load as a dry one, or every committed map breaks
+ * the day the feature lands. (What a level MEANS — bodies, shores, the
+ * distance field — is test/world/painted-water.test.ts.)
+ *
  * THE MODE. Everything above is about the AUTHORED field a painted offset is
  * added to, and that field only exists in the landscape mode — the world
  * ships plain (src/world/landscape.ts `LandscapeMode`). So this file switches
@@ -39,8 +47,10 @@ import {
 } from '../../src/world/landscape';
 import { ROLLING_SURFACE } from '../../src/world/surface';
 import {
+  clearPaintedMap,
   createPaintedMap,
   deserializeMap,
+  DRY,
   paintedRange,
   paintedSampler,
   sampleHeight,
@@ -131,6 +141,36 @@ describe('painted map — sampling', () => {
     expect(() => createPaintedMap(16, 400, new Float32Array(4))).toThrow();
   });
 
+  it('starts dry, and adopts a level array by reference too', () => {
+    const fresh = createPaintedMap(8, 400);
+    expect(fresh.water.length).toBe(64);
+    expect(Array.from(fresh.water).every((v) => v === DRY)).toBe(true);
+
+    const shared = new Float32Array(16 * 16).fill(DRY);
+    const map = createPaintedMap(16, 400, undefined, shared);
+    expect(map.water).toBe(shared);
+    shared[8 * 16 + 8] = 2.5;
+    expect(map.water[8 * 16 + 8]).toBe(2.5);
+  });
+
+  it('refuses a level array of the wrong length', () => {
+    expect(() => createPaintedMap(16, 400, undefined, new Float32Array(4))).toThrow();
+  });
+
+  it('clears height to zero and water to dry, in place', () => {
+    // In place matters: the arrays are the paint layers' own buffers, so a
+    // clear that replaced them would leave the brush stamping into the old
+    // ones and the map would never come back.
+    const height = new Float32Array(8 * 8).fill(3);
+    const water = new Float32Array(8 * 8).fill(1.5);
+    const map = createPaintedMap(8, 400, height, water);
+    clearPaintedMap(map);
+    expect(map.height).toBe(height);
+    expect(map.water).toBe(water);
+    expect(Array.from(height).every((v) => v === 0)).toBe(true);
+    expect(Array.from(water).every((v) => v === DRY)).toBe(true);
+  });
+
   it('reports the painted range, zero on an unpainted map', () => {
     const map = createPaintedMap(8, 400);
     expect(paintedRange(map)).toEqual({ min: 0, max: 0 });
@@ -177,6 +217,39 @@ describe('painted map — serialisation', () => {
   it('refuses a payload that is not the resolution it claims', () => {
     const small = serializeMap(createPaintedMap(8, 400));
     expect(() => deserializeMap({ ...small, res: 16 })).toThrow();
+  });
+
+  it('round-trips the level layer beside the height one', () => {
+    const map = createPaintedMap(16, 400);
+    for (let i = 0; i < map.water.length; i++) {
+      map.water[i] = i % 3 === 0 ? DRY : Math.sin(i * 0.21) * 4;
+    }
+    map.height[7] = 1.25;
+    const json = serializeMap(map);
+    expect(json.water).toMatch(/^[A-Za-z0-9+/]*={0,2}$/);
+    const back = deserializeMap(json);
+    expect(Array.from(back.water)).toEqual(Array.from(map.water));
+    expect(back.height[7]).toBe(1.25);
+    // A copy, like the height layer: painting on after a save cannot rewrite
+    // the payload under the caller.
+    map.water.fill(9);
+    expect(deserializeMap(json).water[1]).toBe(back.water[1]);
+  });
+
+  it('loads a map saved before water existed as a dry one', () => {
+    const map = createPaintedMap(8, 400);
+    map.height[3] = 2;
+    const { water: _dropped, ...old } = serializeMap(map);
+    expect('water' in old).toBe(false);
+    const back = deserializeMap(old);
+    expect(back.height[3]).toBe(2);
+    expect(Array.from(back.water).every((v) => v === DRY)).toBe(true);
+  });
+
+  it('refuses a level payload that is not the resolution it claims', () => {
+    const small = serializeMap(createPaintedMap(8, 400));
+    const big = serializeMap(createPaintedMap(16, 400));
+    expect(() => deserializeMap({ ...small, water: big.water! })).toThrow();
   });
 });
 

@@ -15,6 +15,21 @@
  *   5. the strip goes when painting does, and clearing the map puts the
  *      authored height back exactly.
  *
+ * …then paints a POND at (-60, 30) with the water tools (plan step 4) and
+ * asserts the whole chain a level layer has to travel to become a body of
+ * water:
+ *
+ *   6. the layer holds a finite level there, and one body came out of it;
+ *   7. the Surface seam reads exactly that level inside the shore — the
+ *      basin is cut, the sheet is flat, and the ground agrees with the water;
+ *   8. the renderer drew it: a `painted-water-0` fill and a `painted-shore-0`
+ *      ribbon under a group named `painted-water`;
+ *   9. the physics blocks it — a hard collider in the middle of the pond;
+ *  10. the scatter answered too: reeds on the new shoreline, and no prop
+ *      left standing in the water;
+ *  11. one undo puts all of it back — no bodies, an empty group, and the
+ *      height at (-60, 30) as it was.
+ *
  * Screenshots before and after land next to this file. Playwright is
  * envpaint's devDependency, not this repo's; it is resolved out of that
  * checkout with createRequire rather than installed here.
@@ -124,24 +139,26 @@ await page.mouse.move(430, 330, { steps: 12 });
 await page.mouse.up();
 await page.keyboard.up('Shift');
 await settle(1600);
-const framing = await page.evaluate(
-  ({ at, w, h }) => {
-    const cam = window.__refworldCamera;
-    // Where the painted spot lands on screen, so the shots can be read.
-    const p = { x: at.x, y: 4, z: at.z };
-    cam.updateMatrixWorld();
-    const m = cam.projectionMatrix.clone().multiply(cam.matrixWorldInverse);
-    const e = m.elements;
-    const cw = e[3] * p.x + e[7] * p.y + e[11] * p.z + e[15];
-    const ndcX = (e[0] * p.x + e[4] * p.y + e[8] * p.z + e[12]) / cw;
-    const ndcY = (e[1] * p.x + e[5] * p.y + e[9] * p.z + e[13]) / cw;
-    return {
-      zoom: Number(cam.zoom.toFixed(3)),
-      spotOnScreen: [Math.round(((ndcX + 1) / 2) * w), Math.round(((1 - ndcY) / 2) * h)],
-    };
-  },
-  { at: AT, w: 1100, h: 760 },
-);
+/** Where a ground point lands on screen, so a shot can be read. */
+const framingOf = (at) =>
+  page.evaluate(
+    ({ at, w, h }) => {
+      const cam = window.__refworldCamera;
+      const p = { x: at.x, y: 4, z: at.z };
+      cam.updateMatrixWorld();
+      const m = cam.projectionMatrix.clone().multiply(cam.matrixWorldInverse);
+      const e = m.elements;
+      const cw = e[3] * p.x + e[7] * p.y + e[11] * p.z + e[15];
+      const ndcX = (e[0] * p.x + e[4] * p.y + e[8] * p.z + e[12]) / cw;
+      const ndcY = (e[1] * p.x + e[5] * p.y + e[9] * p.z + e[13]) / cw;
+      return {
+        zoom: Number(cam.zoom.toFixed(3)),
+        spotOnScreen: [Math.round(((ndcX + 1) / 2) * w), Math.round(((1 - ndcY) / 2) * h)],
+      };
+    },
+    { at, w: 1100, h: 760 },
+  );
+const framing = await framingOf(AT);
 console.log('framing', JSON.stringify(framing));
 
 const before = await probe();
@@ -223,6 +240,139 @@ const cleared = await page.evaluate(async (at) => {
 }, AT);
 console.log('cleared', JSON.stringify(cleared));
 
+// ── water (plan step 4) ──────────────────────────────────────────────────────
+// A pond at (-60, 30), painted with the `pond` tool onto the now-clear map.
+// The camera is still framed on the hill's spot, so pan first: shift+drag
+// moves the world with the finger, and a pan by (centre - where the pond is)
+// puts the pond in the middle whatever the zoom.
+const POND = { x: -60, z: 30, r: 10 };
+const CENTRE = [550, 380];
+for (let i = 0; i < 6; i++) {
+  const { spotOnScreen } = await framingOf(POND);
+  const dx = CENTRE[0] - spotOnScreen[0];
+  const dy = CENTRE[1] - spotOnScreen[1];
+  if (Math.hypot(dx, dy) < 14) break;
+  // Clamped so the drag stays on the canvas — a long pan just takes two.
+  const cap = (v) => Math.max(-260, Math.min(260, v));
+  await page.mouse.move(CENTRE[0], CENTRE[1]);
+  await page.keyboard.down('Shift');
+  await page.mouse.down();
+  await page.mouse.move(CENTRE[0] + cap(dx), CENTRE[1] + cap(dy), { steps: 12 });
+  await page.mouse.up();
+  await page.keyboard.up('Shift');
+  await settle(900);
+}
+const pondFraming = await framingOf(POND);
+console.log('pond framing', JSON.stringify(pondFraming));
+
+const beforePond = await page.evaluate(async (at) => {
+  const surface = await import('/src/world/surface.ts');
+  return {
+    surface: surface.ROLLING_SURFACE.sampleHeight(at.x, at.z),
+    props: window.__refworldScatter.positions().length,
+  };
+}, POND);
+console.log('before pond', JSON.stringify(beforePond));
+
+// One short stroke, wrapped in a history scope exactly as the Brush wraps a
+// real one — begin, dabs, the strokeend rebuild, then end. The rebuild has to
+// happen INSIDE the scope: `deriveWater` mutates the level layer (culling,
+// pinhole fills, levelling), and that tidying belongs in the entry's "after".
+const pond = await page.evaluate(async (at) => {
+  const p = window.__refworldPaint;
+  p.setPainting(true);
+  const brush = p.brush;
+  brush.setTool('pond');
+  brush.settings.radius = at.r;
+  brush.settings.strength = 1;
+  const history = brush.ctx.history;
+  history.begin('pond');
+  const t0 = performance.now();
+  // A little arc, the way a drag lands its dabs.
+  const dabs = 7;
+  for (let i = 0; i < dabs; i++) {
+    const t = i / (dabs - 1);
+    brush._stampAt({ x: at.x - 5 + t * 10, y: 0, z: at.z - 3 + t * 6 }, null);
+  }
+  const stampMs = performance.now() - t0;
+  const r0 = performance.now();
+  p.rebuild(); // deriveWater → setPaintedWater → water.setPainted → rebuildLandscape
+  const deriveMs = performance.now() - r0;
+  history.end();
+  return {
+    dabs,
+    stampMs,
+    deriveMs,
+    level: p.waterAt(at.x, at.z),
+    shore: p.shoreAt(at.x, at.z),
+    bodies: p.bodies(),
+    tool: brush.tool,
+  };
+}, POND);
+console.log('pond', JSON.stringify(pond));
+
+await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+await page.screenshot({ path: join(HERE, 'paint-smoke-pond.png') });
+
+const wet = await page.evaluate(async (at) => {
+  const surface = await import('/src/world/surface.ts');
+  const p = window.__refworldPaint;
+  const scene = p.brush.ctx.scene;
+  const group = scene.getObjectByName('painted-water');
+  const colliders = window.__refworldColliders();
+  let nearest = null;
+  for (const c of colliders) {
+    const d = Math.hypot(c.x - at.x, c.z - at.z);
+    if (!nearest || d < nearest.d) nearest = { d, r: c.r, hard: c.hard };
+  }
+  // Reeds are flat ink marks, so `scatter.positions()` never lists them (it
+  // is props only, by design). They ride an InstancedMesh named `reeds (n)`;
+  // the translation of each instance is elements 12/14 of its matrix.
+  const reeds = [];
+  scene.traverse((o) => {
+    if (!o.name.startsWith('reeds (') || !o.instanceMatrix) return;
+    const m = o.instanceMatrix.array;
+    for (let i = 0; i < o.count; i++) reeds.push([m[i * 16 + 12], m[i * 16 + 14]]);
+  });
+  const props = window.__refworldScatter.positions();
+  return {
+    surface: surface.ROLLING_SURFACE.sampleHeight(at.x, at.z),
+    group: Boolean(group),
+    children: group ? group.children.map((c) => c.name) : [],
+    nearestCollider: nearest,
+    reeds: reeds.length,
+    // "on the shore" is the distance field read directly: |shore| small is
+    // "within a few units of the waterline", inside or out.
+    reedsOnShore: reeds.filter(([x, z]) => Math.abs(p.shoreAt(x, z)) <= 3).length,
+    propsInWater: props.filter((q) => p.shoreAt(q.x, q.z) > 0).length,
+    props: props.length,
+  };
+}, POND);
+console.log('wet', JSON.stringify(wet));
+
+// …and one undo takes the whole pond back: the layer, the field, the meshes,
+// the reeds and the basin.
+const drained = await page.evaluate(async (at) => {
+  const p = window.__refworldPaint;
+  const history = p.brush.ctx.history;
+  const ok = history.canUndo() ? history.undo() : false;
+  const r0 = performance.now();
+  p.rebuild();
+  const rebuildMs = performance.now() - r0;
+  const surface = await import('/src/world/surface.ts');
+  const group = p.brush.ctx.scene.getObjectByName('painted-water');
+  return {
+    undoRan: ok,
+    rebuildMs,
+    bodies: p.bodies(),
+    children: group ? group.children.length : -1,
+    level: p.waterAt(at.x, at.z),
+    surface: surface.ROLLING_SURFACE.sampleHeight(at.x, at.z),
+  };
+}, POND);
+console.log('drained', JSON.stringify(drained));
+
+const DRY = -1000;
 const checks = [
   ['painted map holds ~6 u at (60, 0)', painted.painted >= 6],
   ['surface rose', after.surface > before.surface + 1],
@@ -233,6 +383,22 @@ const checks = [
   ['a stroke undoes back to where it started', undone.paintedAside > 0 && undone.afterUndo === 0],
   ['the tool strip goes when painting does', cleared.stripGone],
   ['clearing the map restores the authored height', cleared.surface === before.surface],
+  // ── the pond ──
+  ['the level layer holds a real level at (-60, 30)', Number.isFinite(pond.level) && pond.level !== DRY],
+  ['one painted body came out of the stroke', pond.bodies >= 1],
+  ['(-60, 30) is inside the painted shore', pond.shore > 0],
+  ['the surface reads exactly the pond level', Math.abs(wet.surface - pond.level) < 1e-6],
+  ['the basin is sunk under the plain it was cut from', wet.surface < beforePond.surface - 0.5],
+  ['the renderer drew the fill and the shore', wet.group && wet.children.includes('painted-water-0') && wet.children.includes('painted-shore-0')],
+  [
+    'a hard collider blocks the middle of the pond',
+    Boolean(wet.nearestCollider && wet.nearestCollider.hard && wet.nearestCollider.d <= 3),
+  ],
+  ['reeds line the painted shore', wet.reedsOnShore >= 1],
+  ['no prop is left standing in the water', wet.propsInWater === 0],
+  ['undo drains the pond', drained.undoRan && drained.bodies === 0 && drained.level === DRY],
+  ['undo empties the painted group', drained.children === 0],
+  ['undo puts the ground back', Math.abs(drained.surface - beforePond.surface) < 1e-6],
 ];
 let failed = 0;
 for (const [name, ok] of checks) {
@@ -243,6 +409,12 @@ console.log(
   `surface ${before.surface.toFixed(3)} -> ${after.surface.toFixed(3)} u; ` +
     `vertex ${before.vertex.toFixed(3)} -> ${after.vertex.toFixed(3)} u; ` +
     `painted map ${JSON.stringify(after.range)}`,
+);
+console.log(
+  `pond: ${pond.dabs} dabs in ${pond.stampMs.toFixed(1)} ms; ` +
+    `derive + landscape rebuild ${pond.deriveMs.toFixed(0)} ms, undo's ${drained.rebuildMs.toFixed(0)} ms; ` +
+    `level ${pond.level.toFixed(3)} u, shore ${pond.shore.toFixed(2)} u, ` +
+    `${wet.reedsOnShore}/${wet.reeds} reeds on it, ${wet.props} props left standing`,
 );
 
 await browser.close();

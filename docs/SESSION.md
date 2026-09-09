@@ -74,7 +74,7 @@ the log, so the log is always schedulable.
 | `retire` | `id`, `cause` | a creature left. `cause` is `population` (the guard), `operator`, `replaced` (same drawer sent a new drawing), `cleared` (clear-all / reset) |
 | `emote` | `id`, `emote`, `source` | an emote played. `source` is `phone` \| `key` \| `panel` |
 | `drive` | `id`, `ax`, `az`, `mag` | somebody steered a creature. `ax`/`az` are the ground-space direction under the camera at that moment, `mag` how hard. `mag: 0` (with no `ax`/`az`) is the release — the hand came off the stick. Thinned, never per frame — see below |
-| `paint` | `tool`, `x`, `z`, `r`, `strength`, `hardness?`, `mode?`, `seed?`, `flattenTo?` | one dab of the terrain brush (dev). `tool` is `raise` \| `lower` \| `flatten` \| `smooth`; `x`/`z`/`r` are world units, the same space `egg` uses; `mode` is what the dab actually did (a tool erases with ctrl, smooths with alt); `seed` is the dab's own rim. `{ tool: 'clear' }` — the map was thrown away — carries no geometry |
+| `paint` | `tool`, `x`, `z`, `r`, `strength`, `hardness?`, `mode?`, `seed?`, `flattenTo?`, `level?` | one dab of the terrain brush (dev). `tool` is `raise` \| `lower` \| `flatten` \| `smooth` on the height layer or `pond` \| `drain` on the water one; `x`/`z`/`r` are world units, the same space `egg` uses; `mode` is what the dab actually did (a tool erases with ctrl, smooths with alt); `seed` is the dab's own rim; `level` is the water tools' absolute surface height, so a replayed pond lays the plane the stroke chose rather than re-reading a bank that has since moved (absent on a drain). `{ tool: 'clear' }` — the map was thrown away — carries no geometry |
 | `keep` | `id`, `action`, `source` | somebody kept their creature: `action` is `photo` \| `model` \| `link`, `source` is `phone`. Informational — nothing in the world changed — and in the log because "somebody wanted to take this home" is what a session is judged on afterwards |
 | `operator` | `action`, `id`, `on?` | a moderation tap: `approve`, `discard`, `remove`, `block`, `unblock`, or `hold` (with `on` carrying the new hold-arrivals state). Bulk taps record one event per drawer, not one for the batch |
 | `world` | `field`, `value`, `kind?` | a world control an operator moved: `weather`, `timeOfDay`, `intensity`, `wind`, `density`, `kindDensity`/`kindScale` (with `kind`), `landscape` (`1` reveals the authored map, `0` returns the world to the flat plain it opens on), `terrain` (with `kind` — `elevation`, `tierStep` or `relief`), `grain`, `background`, `objectHue`/`objectSaturation`, `ink*`, `wanderSpeed` |
@@ -100,7 +100,10 @@ per-frame dump wearing an event's clothes:
   the brush, not by the display. The four rim-shape settings (`edgeNoise`,
   `edgeScale`, `spatter`, `aspect`) are *not* recorded per dab — they are brush
   state, identical across a stroke, and a replay reads them off the brush it is
-  stamping through.
+  stamping through. A water dab is the one that carries something a replay could
+  not work out for itself: `level`, the plane the stroke filled to. It is chosen
+  once, from the bank around the stroke's first dab, and by replay time that bank
+  may have been painted over.
 
 Both still hold the rule the format is built on: an idle world records nothing,
 and nothing in the file is a per-frame sample of anything.

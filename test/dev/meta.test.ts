@@ -183,13 +183,15 @@ describe('the paint skill is wired the way the port plan asks', () => {
   const source = readFileSync(join(process.cwd(), 'src/dev/paint.ts'), 'utf8');
 
   it('installs the painted sampler on the landscape, and takes it off again', () => {
-    expect(source).toContain("import { setPaintedHeight } from '../world/landscape'");
+    expect(source).toMatch(/import \{[^}]*\bsetPaintedHeight\b[^}]*\} from '\.\.\/world\/landscape'/);
     expect(source).toContain('setPaintedHeight(paintedSampler(map))');
     expect(source).toContain('setPaintedHeight(null)');
   });
 
-  it('shares the paint layer buffer with the map rather than copying it', () => {
-    expect(source).toContain('createPaintedMap(PAINTED_RES, PAINTED_SIZE, layer.data as Float32Array)');
+  it('shares both paint layer buffers with the map rather than copying them', () => {
+    expect(source).toContain('createPaintedMap(');
+    expect(source).toContain('heightLayer.data as Float32Array');
+    expect(source).toContain('waterLayer.data as Float32Array');
     expect(source).toContain('worldSize: PAINTED_SIZE');
   });
 
@@ -199,16 +201,58 @@ describe('the paint skill is wired the way the port plan asks', () => {
     expect(source).toContain('handles.setSoloDrag?.(!on)');
   });
 
-  it('registers raise, lower, flatten and smooth on the height layer, hotkeys 1-4', () => {
-    // Each one is built through `recorded(id, …)` now — the helper that
+  it('registers the four height tools and the two water ones, hotkeys 1-6', () => {
+    // The height four are built through `recorded(id, …)` — the helper that
     // records the dab and then stamps it — so the id is its first argument
-    // rather than a literal field.
+    // rather than a literal field. The water two carry an `onStamp` of their
+    // own (`stampWater`), so they stay literal descriptors.
     for (const id of ['raise', 'lower', 'flatten', 'smooth']) {
       expect(source, id).toContain(`recorded('${id}'`);
     }
-    expect(source).toContain("const TOOL_KEYS = ['1', '2', '3', '4'] as const;");
+    for (const id of ['pond', 'drain']) {
+      expect(source, id).toContain(`id: '${id}'`);
+    }
+    expect(source).toContain("const TOOL_KEYS = ['1', '2', '3', '4', '5', '6'] as const;");
     expect(source).toContain('layer: HEIGHT_LAYER');
+    expect(source).toContain('layer: WATER_LAYER');
     expect(source).toContain("altMode: 'smooth'");
+  });
+
+  // The water half of the port (plan step 4). Same reading as above: what a
+  // refactor could drop in silence is the CHAIN — a level layer that shares
+  // the map's buffer is worth nothing until it is derived, installed on the
+  // geography, handed to the renderer and rebuilt, and each of those four is
+  // a different module answering for a different part of the same pond.
+  it('derives the water and hands it to the geography, the renderer and the world', () => {
+    expect(source).toMatch(/import \{[^}]*\bsetPaintedWater\b[^}]*\} from '\.\.\/world\/landscape'/);
+    expect(source).toContain('const field = deriveWater(map);');
+    expect(source).toContain('setPaintedWater(field);');
+    expect(source).toContain('handles.setPaintedWater(field);');
+    expect(source).toContain('handles.rebuildLandscape();');
+    // …and gives all of it back on teardown.
+    expect(source).toContain('setPaintedWater(null);');
+    expect(source).toContain('handles.setPaintedWater(null);');
+  });
+
+  it('asserts the two DRY sentinels are the same number', () => {
+    expect(source).toContain('if (WATER_DRY !== DRY)');
+  });
+
+  it('a pond stroke is one plane, at the authored basin drop under the bank', () => {
+    expect(source).toContain('TERRAIN.basinDrop * handles.terrain().elevation');
+    expect(source).toContain('bankHeight(handles.sampleHeight');
+    // An extension of a body already painted keeps that body's own level.
+    expect(source).toContain('field.level(hit.x, hit.z)');
+    // [D] spatter off: `deriveWater` would cull the droplets texel by texel.
+    expect(source).toContain('const shape: EdgeShape = { spatter: 0 };');
+  });
+
+  it('rebuilds from a dirty rect, so an undo reaches the world too', () => {
+    const sweep = source.slice(source.indexOf('handles.onFrame(() => {'));
+    expect(sweep.slice(0, 1400)).toContain('if (waterLayer.dirtyRect)');
+    expect(sweep.slice(0, 1400)).toContain('if (heightLayer.dirtyRect) rebuildSoon();');
+    // …and before `commitAll`, which is what clears those rects.
+    expect(sweep.indexOf('dirtyRect')).toBeLessThan(sweep.indexOf('layers.commitAll()'));
   });
 
   it('throttles the rebuild during a stroke and always rebuilds on strokeend', () => {
@@ -232,5 +276,17 @@ describe('the paint skill is wired the way the port plan asks', () => {
     // The clear, and the replay seam the world's driver reaches for.
     expect(source).toContain("tool: 'clear'");
     expect(source).toContain('applyPaint');
+  });
+
+  it('records a water dab with the plane it filled to, and replays it', () => {
+    // A pond dab's level is chosen from the bank around the stroke's first
+    // dab, and by replay time that bank may have been painted over — so the
+    // number rides in the event rather than being re-derived.
+    expect(source).toContain('recordStamp(record, op, drain ? undefined : (strokeLevel ?? undefined))');
+    // …and a replayed dab lays it, through the same `stampWater` a live one
+    // uses, without recording itself a second time.
+    expect(source).toContain('strokeLevel = event.level ?? null;');
+    expect(source).toContain('stampWater(op, { x: event.x, y: 0, z: event.z, u, v }, drain, null);');
+    expect(source).toContain('strokeLevel = held;');
   });
 });
