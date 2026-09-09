@@ -33,6 +33,7 @@ import {
   roomForWorld,
   type EmoteName,
 } from './net/protocol';
+import { readKeepId } from './phone/keeplink';
 import {
   DRIVE_INTERVAL_MS,
   DRIVE_STALE_MS,
@@ -265,6 +266,28 @@ function main(): void {
    * the shared world is the whole point of having added to it, and until
    * now it was the one thing the people who built it could not look at.
    */
+  /*
+   * A KEEP LINK goes straight to the device (src/phone/keepsake.ts).
+   *
+   * Somebody following one is asking for one creature, not for the world
+   * and not for a drawing pad. So it is routed before anything else here,
+   * and on EVERY device rather than only a handheld: a link that opened a
+   * creature on a phone and a landscape of strangers on a laptop would be
+   * two different links wearing one address.
+   *
+   * The room travels with it because the companion needs one to emote
+   * over, and in a named world it is derived rather than remembered — so
+   * a link that has been sitting in somebody's messages for a month still
+   * arrives in the right room.
+   */
+  const keepLinkId = readKeepId(params);
+  if (keepLinkId !== null && publicWorld.length > 0) {
+    location.replace(
+      `/phone.html?room=${room}&world=${encodeURIComponent(publicWorld)}&keep=${encodeURIComponent(keepLinkId)}`,
+    );
+    return;
+  }
+
   const wantsWorldView = params.get('view') === 'world';
   const coarse = window.matchMedia('(pointer: coarse)').matches;
   const small = Math.min(window.innerWidth, window.innerHeight) < 620;
