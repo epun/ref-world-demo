@@ -33,7 +33,10 @@ import {
   roomForWorld,
   type EmoteName,
 } from './net/protocol';
+import { readKeepId } from './phone/keeplink';
 import {
+  DRIVE_INTERVAL_MS,
+  DRIVE_STALE_MS,
   HOST_HEARTBEAT_MS,
   POSE_INTERVAL_MS,
   ROLE_SETTLE_MS,
@@ -70,6 +73,13 @@ import { feedDrawingToStrokes } from './net/drawFeed';
 import type { StrokeList } from './shape/types';
 import { installJoinQr, QR_SIZE_CSS } from './ui/joinqr';
 import { installWorldMinimap } from './ui/minimap';
+import {
+  mountJoystick,
+  stickToWorld,
+  STICK_REST,
+  WORLD_REST,
+  type WorldVector,
+} from './world/joystick';
 import { residentsFrom } from './world/residents';
 import { start } from './world/scene';
 import { createTour } from './world/tour';
@@ -293,6 +303,28 @@ function main(): void {
    * the shared world is the whole point of having added to it, and until
    * now it was the one thing the people who built it could not look at.
    */
+  /*
+   * A KEEP LINK goes straight to the device (src/phone/keepsake.ts).
+   *
+   * Somebody following one is asking for one creature, not for the world
+   * and not for a drawing pad. So it is routed before anything else here,
+   * and on EVERY device rather than only a handheld: a link that opened a
+   * creature on a phone and a landscape of strangers on a laptop would be
+   * two different links wearing one address.
+   *
+   * The room travels with it because the companion needs one to emote
+   * over, and in a named world it is derived rather than remembered — so
+   * a link that has been sitting in somebody's messages for a month still
+   * arrives in the right room.
+   */
+  const keepLinkId = readKeepId(params);
+  if (keepLinkId !== null && isPublic) {
+    location.replace(
+      `/phone.html?room=${room}&world=${encodeURIComponent(worldName)}&keep=${encodeURIComponent(keepLinkId)}`,
+    );
+    return;
+  }
+
   const wantsWorldView = params.get('view') === 'world';
   const coarse = window.matchMedia('(pointer: coarse)').matches;
   const small = Math.min(window.innerWidth, window.innerHeight) < 620;
@@ -1162,6 +1194,35 @@ function main(): void {
   });
 
   /*
+   * The stick, between the device and the map (user ask, 2026-09-08).
+   *
+   * Only on a handset looking at the world, and only for somebody who has
+   * a creature: the corners already follow that rule — the device stands
+   * where the join code was once you have drawn — and a stick that steers
+   * nothing would be the one control here that does not mean anything.
+   *
+   * It holds the raw SCREEN vector and nothing else. Mapping it onto the
+   * ground happens in `worldDrive` below, on read, because the camera
+   * orbits continuously: a direction fixed when the thumb landed stops
+   * agreeing with the picture while the thumb is still down, and the
+   * creature curves away from the way it is being asked to go.
+   */
+  let stickVec = STICK_REST;
+  const stick =
+    tray?.middle && myDrawerId.length > 0
+      ? mountJoystick({
+          onChange: (v) => {
+            stickVec = v;
+          },
+        })
+      : null;
+  if (stick && tray?.middle) tray.middle.appendChild(stick.el);
+
+  /** The stick as a direction on the ground, under the camera right now. */
+  const worldDrive = (): WorldVector =>
+    stick ? stickToWorld(stickVec, world.cameraRig.azimuth) : WORLD_REST;
+
+  /*
    * What the qr encodes.
    *
    * In a NAMED world: the world's own link, the same one that gets shared
@@ -1456,6 +1517,16 @@ function main(): void {
     let rosterSentAt = 0;
     /** Rosters the host has told us about, so a pose frame can be trusted. */
     const knownRosters = new Map<number, string[]>();
+    /**
+     * When each steered creature was last heard from, on the host.
+     *
+     * The release is one qos-0 packet, and the whole point of qos 0 is that
+     * it may not arrive. With nothing watching, a dropped release leaves a
+     * creature walking in a straight line for as long as the world is open,
+     * while the person who was steering it has pocketed their phone. So a
+     * drive EXPIRES.
+     */
+    const driveHeard = new Map<string, number>();
 
     /*
      * Subscribe on CONNECT, not just once now.
@@ -1489,6 +1560,29 @@ function main(): void {
         claims.set(msg.id, Date.now());
         return;
       }
+
+      /*
+       * A DRIVE travels the other way (src/net/worldsync.ts).
+       *
+       * Every other message on this topic is the host describing the
+       * world; this one is a viewer asking for something in it. So it is
+       * handled before the claim bookkeeping below, and it deliberately
+       * does NOT count as a claim — a phone with a stick is not a
+       * candidate to simulate anything, and letting its id into the
+       * election would let a handset win it.
+       *
+       * Only the page that is simulating acts on it. On every other page
+       * this creature is placed by the host's poses, so a locally applied
+       * drive would be overwritten within a frame or two and, worse, would
+       * look right for exactly that long.
+       */
+      if (msg.t === 'drive') {
+        if (!hosting) return;
+        driveHeard.set(msg.who, Date.now());
+        creatures.drive(msg.who, msg.mag > 0 ? { x: msg.x, z: msg.z, mag: msg.mag } : null);
+        return;
+      }
+
       // Anything else is the host describing the world. Hearing it is also
       // proof that page is alive, so it counts as a claim — otherwise a
       // host that is busy publishing poses could be voted out for not
@@ -1581,6 +1675,75 @@ function main(): void {
         { qos: 0 },
       );
     }, POSE_INTERVAL_MS);
+
+    /*
+     * Let go of anything nobody is still asking for.
+     *
+     * The dropped-release backstop. A stick that is genuinely held repeats
+     * at DRIVE_HZ, so a creature whose last intent is older than
+     * DRIVE_STALE_MS has either been released or lost its phone — and both
+     * of those mean the same thing: hand it back to its own agent.
+     */
+    window.setInterval(() => {
+      if (!hosting) {
+        driveHeard.clear();
+        return;
+      }
+      const now = Date.now();
+      for (const [who, at] of driveHeard) {
+        if (now - at <= DRIVE_STALE_MS) continue;
+        driveHeard.delete(who);
+        creatures.drive(who, null);
+      }
+    }, DRIVE_STALE_MS);
+
+    /*
+     * This handset's own stick, going out.
+     *
+     * On a timer rather than on every pointermove: a thumb generates
+     * events at the display's rate and most of them say almost the same
+     * thing, which is a lot of packets for a public broker to carry in
+     * order to keep saying "still pushing left".
+     *
+     * A HOST sends nothing and applies its own stick directly — there is
+     * nobody to ask. Everyone else publishes, including the frame that
+     * says the stick is back at rest, which is what normally ends a drive.
+     * The expiry above is only the backstop for when that packet is lost.
+     *
+     * Not armed at all without a stick, which is every projection and
+     * every desktop that opened the link.
+     */
+    if (stick && myDrawerId.length > 0) {
+      let lastDriveSent = 0;
+      let lastDriveMag = 0;
+      window.setInterval(() => {
+        const v = worldDrive();
+        if (hosting) {
+          creatures.drive(myDrawerId, v.mag > 0 ? v : null);
+          return;
+        }
+        const now = Date.now();
+        const holding = v.mag > 0;
+        // Repeat while held, so the host's expiry never fires under a live
+        // thumb; send the release once, then fall silent.
+        if (!holding && lastDriveMag === 0) return;
+        if (holding && now - lastDriveSent < DRIVE_INTERVAL_MS) return;
+        lastDriveSent = now;
+        lastDriveMag = v.mag;
+        client.publish?.(
+          syncTopic,
+          JSON.stringify({
+            t: 'drive',
+            id: me,
+            who: myDrawerId,
+            x: Number(v.x.toFixed(3)),
+            z: Number(v.z.toFixed(3)),
+            mag: Number(v.mag.toFixed(3)),
+          }),
+          { qos: 0 },
+        );
+      }, DRIVE_INTERVAL_MS);
+    }
 
     // Only the host speaks to the handsets. Every open viewer used to, so
     // two laptops on the live link meant phones receiving two interleaved

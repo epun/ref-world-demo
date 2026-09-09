@@ -846,3 +846,125 @@ describe('standing on the ground — heights come from the Surface seam', () => 
     manager.clearAll();
   });
 });
+
+describe('drive — a creature under somebody’s thumb', () => {
+  /**
+   * The stick states an intent; the world decides what happens. So these
+   * assert that the intent gets through AND that nothing else was bypassed
+   * to make it get through — a driven creature is the creature, moving,
+   * not a cursor wearing its shape (src/world/joystick.ts).
+   */
+
+  function driving() {
+    const world = stubWorld([]);
+    const manager = createCreatureManager(world, { autoHatch: false });
+    manager.spawn('mine', circleBlob, { hatchMs: 60_000, grown: true });
+    return manager;
+  }
+
+  const run = (manager: ReturnType<typeof createCreatureManager>, frames: number) => {
+    for (let f = 0; f < frames; f++) manager.update(16, 1000 + f * 16);
+  };
+
+  it('walks the way it is pushed', () => {
+    const manager = driving();
+    const from = manager.poses()[0]!;
+    manager.drive('mine', { x: 1, z: 0, mag: 1 });
+    run(manager, 60);
+    const to = manager.poses()[0]!;
+
+    // A full second at the creature's own speed: it has to have gone
+    // somewhere, and it has to have gone the way it was asked.
+    const dx = to.x - from.x;
+    const dz = to.z - from.z;
+    expect(Math.hypot(dx, dz)).toBeGreaterThan(0.5);
+    expect(dx).toBeGreaterThan(Math.abs(dz));
+    manager.clearAll();
+  });
+
+  it('gives the creature back to its own agent when the thumb lifts', () => {
+    const manager = driving();
+    manager.drive('mine', { x: 1, z: 0, mag: 1 });
+    run(manager, 30);
+    expect(manager.driven()).toEqual(['mine']);
+
+    // Thirty more frames of being pushed, to measure what obeying looks
+    // like — the agent is free to idle, so an absolute distance would be
+    // asserting the creature's mood rather than the release.
+    const beforeRelease = manager.poses()[0]!;
+    run(manager, 30);
+    const obeying = manager.poses()[0]!;
+    const drivenX = obeying.x - beforeRelease.x;
+
+    manager.drive('mine', null);
+    expect(manager.driven()).toEqual([]);
+
+    const a = manager.poses()[0]!;
+    run(manager, 30);
+    const b = manager.poses()[0]!;
+    // It must stop MARCHING. A leaked drive is a creature that keeps going
+    // in the pushed direction at the pushed speed with nobody's thumb on
+    // it, which is precisely what this compares against.
+    expect(Number.isFinite(b.x)).toBe(true);
+    expect(b.x - a.x).toBeLessThan(drivenX * 0.9);
+    manager.clearAll();
+  });
+
+  it('treats a zero-strength drive as letting go', () => {
+    // The release normally arrives as a rest frame rather than a null, so
+    // the two have to mean the same thing.
+    const manager = driving();
+    manager.drive('mine', { x: 1, z: 0, mag: 0 });
+    expect(manager.driven()).toEqual([]);
+    manager.clearAll();
+  });
+
+  it('turns toward the push instead of snapping to it', () => {
+    const manager = driving();
+    manager.drive('mine', { x: 1, z: 0, mag: 1 });
+    run(manager, 40);
+    const facing = manager.poses()[0]!.heading;
+
+    // Reverse the stick between one frame and the next, as a thumb can.
+    manager.drive('mine', { x: -1, z: 0, mag: 1 });
+    manager.update(16, 2000);
+    const afterOneFrame = manager.poses()[0]!.heading;
+    const turned = Math.abs(
+      Math.atan2(Math.sin(afterOneFrame - facing), Math.cos(afterOneFrame - facing)),
+    );
+    // It moved, but nowhere near the half turn it was asked for: a 180°
+    // spin in 16ms is a hard cut in orientation, which the motion law
+    // forbids whether or not a person asked for it.
+    expect(turned).toBeGreaterThan(0);
+    expect(turned).toBeLessThan(Math.PI / 3);
+    manager.clearAll();
+  });
+
+  it('still collides — the person is not driving through a rock', () => {
+    // The intent replaces the agent's velocity and nothing else. If drive
+    // wrote positions instead, this is the test that would catch it.
+    const rock: Collider = { x: 14, z: -6, r: 1.6, hard: true };
+    const world = stubWorld([rock]);
+    const manager = createCreatureManager(world, { autoHatch: false });
+    manager.spawn('mine', circleBlob, { hatchMs: 60_000, grown: true });
+    const start = manager.poses()[0]!;
+
+    // Push straight at the rock, for long enough to be well past it.
+    const toRock = { x: rock.x - start.x, z: rock.z - start.z };
+    const len = Math.hypot(toRock.x, toRock.z);
+    manager.drive('mine', { x: toRock.x / len, z: toRock.z / len, mag: 1 });
+    run(manager, 240);
+
+    const end = manager.poses()[0]!;
+    const gap = Math.hypot(end.x - rock.x, end.z - rock.z);
+    expect(gap).toBeGreaterThan(rock.r);
+    manager.clearAll();
+  });
+
+  it('says so when there is nothing there to steer', () => {
+    const manager = driving();
+    expect(manager.drive('mine', { x: 1, z: 0, mag: 1 })).toBe(true);
+    expect(manager.drive('nobody', { x: 1, z: 0, mag: 1 })).toBe(false);
+    manager.clearAll();
+  });
+});

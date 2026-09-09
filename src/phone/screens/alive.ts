@@ -57,6 +57,7 @@ import { createLighting } from '../../world/lighting';
 import { createKeyRow, type KeyRowSpec } from '../device';
 import { PHONE_EMOTE_KEYS } from '../emotes';
 import { createSpin, type SpinHandle, type SpinState } from '../spin';
+import { mountKeepUi, type KeepUiHandle } from '../keepui';
 import { CORE_SHARE, wellElement, type Screen, type StageSlots } from '../states';
 
 // ── The phone's emote set (DEVICE §2) ───────────────────────────────────────
@@ -112,6 +113,16 @@ export interface AliveScreenOptions {
    */
   initialSpin?: SpinState;
   onEmote(emote: EmoteName): void;
+  /**
+   * The world this creature lives in, when there is a shared one.
+   *
+   * Only used to decide whether a KEEP LINK is offered: a link resolves by
+   * asking a world's store for an id, so an installation handset — whose
+   * world is a projection in the same room and nothing else — has no link
+   * that would still work tomorrow. The picture and the model need no
+   * world and are offered either way.
+   */
+  world?: string | null;
 }
 
 export interface AliveScreenHandle extends Screen {
@@ -271,6 +282,8 @@ export function mountAliveScreen(
 
   const nameLine = document.createElement('div');
   nameLine.className = 'alive-name';
+  /** The name as last set by the world, for the keepsake's filename. */
+  let currentName: string | null = null;
 
   const tap = (emote: EmoteName): void => {
     // Both, in this order: the person's own creature reacts in their hand
@@ -306,8 +319,35 @@ export function mountAliveScreen(
     },
     ...(options.initialSpin ? { initial: options.initialSpin } : {}),
   });
-  // The corner stays EMPTY (user ruling — no minimap on mobile for now).
-  // Empty is a state of a slot, never a removal.
+  /*
+   * The corner, which has been empty since the minimap left the phone.
+   *
+   * It holds the KEEP mark now (user ask, 2026-09-08: people should be
+   * able to save their creature). The slot kept its box through that whole
+   * time precisely so something arriving in it would be a mount rather
+   * than a relayout — this is that mount, and nothing else on the screen
+   * moves to make room.
+   *
+   * Only with an identity. Every way of keeping a creature is addressed by
+   * the id the world spawned it under: the filename carries it, the link
+   * IS it, and the exports rebuild from it so what gets saved is the same
+   * creature and not a lookalike. The local same-device flow has no id and
+   * gets no corner, which is the same rule the rest of this screen follows.
+   */
+  let keep: KeepUiHandle | null = null;
+  if (options.identity !== undefined) {
+    keep = mountKeepUi({
+      strokes: options.strokes,
+      identity: options.identity,
+      // Read on demand, never captured: the name arrives from the world
+      // after this screen has mounted (setName below), so a value copied
+      // here would be the placeholder forever.
+      name: () => currentName,
+      world: options.world ?? null,
+    });
+    slots.corner.appendChild(keep.mark);
+    field.appendChild(keep.row);
+  }
 
   // ── Portrait: the local deterministic pipeline (PLAN §6.3) ────────────────
   let renderer: WebGLRenderer | null = null;
@@ -543,7 +583,10 @@ export function mountAliveScreen(
       // mount, not a rewire.
     },
     setName(name: string): void {
-      nameLine.textContent = name.toLowerCase();
+      // Lowercase once, here, and remembered — the filename a keepsake is
+      // saved under is the same name the person is reading on the brow.
+      currentName = name.toLowerCase();
+      nameLine.textContent = currentName;
     },
     spin(): SpinState {
       return spin.state();
@@ -556,6 +599,7 @@ export function mountAliveScreen(
       character?.dispose();
       ink?.dispose();
       renderer?.dispose();
+      keep?.destroy();
       field.remove();
       nameLine.remove();
       keys.el.remove();

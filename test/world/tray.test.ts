@@ -129,6 +129,37 @@ describe('the tray layout', () => {
   });
 });
 
+describe('the middle cell — where the stick goes', () => {
+  const src = () => readFileSync(join(process.cwd(), 'src/world/tray.ts'), 'utf8');
+
+  it('is a real cell, not an anonymous spacer', () => {
+    // It used to be `document.createElement('div')` inline in both
+    // branches — a spacer nothing could ever be put into. The stick has to
+    // land between the device and the map (user ask, 2026-09-08), so the
+    // middle needs a name and has to come back out of the mount.
+    expect(src()).toMatch(/tray\.append\(device, middle, right\)/);
+    expect(src()).toMatch(/tray\.append\(left, middle, right\)/);
+    expect(src()).not.toMatch(/tray\.append\([^)]*createElement\('div'\)/);
+  });
+
+  it('centres its contents and stays a hole through to the world when empty', () => {
+    expect(src()).toMatch(/\.tray-middle \{[^}]*justify-self: center/);
+    // The cell itself must never eat a pointer, or an empty middle would
+    // block dragging the camera across the bottom of the screen.
+    expect(src()).toMatch(/\.tray-middle \{[^}]*pointer-events: none/);
+    expect(src()).toMatch(/\.tray-middle > \* \{ pointer-events: auto/);
+  });
+
+  it('offers the cell only to somebody who has a creature to move', () => {
+    // Same rule the corner already follows — a stick that steers nothing
+    // is the one control here that would not mean anything. Handed out as
+    // null rather than as a hidden element, for the reason `showsJoinCode`
+    // exists: a caller that is merely asked not to use a cell still mounts
+    // into it, which is how the qr ended up inside a hidden slot.
+    expect(src()).toMatch(/middle: options\.hasCreature \? middle : null/);
+  });
+});
+
 describe('the way back to the world, on the companion', () => {
   it('sits inside the screen well, not pinned to the viewport', () => {
     // Fixed to the bottom of the viewport it landed under the case's own
