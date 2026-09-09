@@ -319,10 +319,14 @@ describe('the companion panel', () => {
     expect(src()).toMatch(/visibility 0s linear \$\{MOTION\.secondaryMs\}ms/);
   });
 
-  it('only listens to its own origin', () => {
+  it('only listens to its own origin, and only to messages it knows', () => {
     // The listener is on `window`; anything on the page can post to it.
     expect(src()).toMatch(/event\.origin !== window\.location\.origin/);
-    expect(src()).toMatch(/event\.data !== CLOSE_MESSAGE/);
+    // Two messages now — a close (the person leaving, frame kept) and a
+    // failure (a boot that threw, frame thrown away). Anything else falls
+    // off the end of the handler untouched.
+    expect(src()).toMatch(/event\.data === CLOSE_MESSAGE/);
+    expect(src()).toMatch(/event\.data === FAILED_MESSAGE/);
   });
 
   it('keeps the frame once built, so the second toggle costs nothing', () => {

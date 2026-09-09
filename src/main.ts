@@ -82,6 +82,7 @@ import {
   type WorldVector,
 } from './world/joystick';
 import { residentsFrom } from './world/residents';
+import { storeNote } from './world/storeline';
 import { start } from './world/scene';
 import { createTour } from './world/tour';
 
@@ -1041,12 +1042,25 @@ function main(): void {
       // seconds, and an arrival gets its egg and its hatch.
       const added = (await absorb(log, first)).length;
       if (added > 0) saveSession();
+      /*
+       * NOTHING IS ANNOUNCED ON ARRIVAL (user ask, 2026-09-09).
+       *
+       * The first pull used to say how many creatures had joined, or invite
+       * the first drawing. Both were chatter over a world that shows you the
+       * same thing by simply being there — the creatures arrive on screen,
+       * which is the announcement.
+       *
+       * ONE exception, and it is not chatter: a deployment with no store
+       * behind it. Every drawing sent to that world is dropped and the field
+       * stays empty however many people draw into it, and an empty world is
+       * exactly what a quiet one looks like. The api has always reported
+       * which it is (api/drawings.ts, `config.store`) and nobody read it;
+       * src/world/storeline.ts turns that into the one line worth saying,
+       * and says nothing at all on a world that is working.
+       */
       if (first) {
-        say(
-          added > 0
-            ? `${added} creature${added === 1 ? '' : 's'} joined ${worldName}`
-            : `${worldName} — draw the first new one`,
-        );
+        const note = storeNote(log.config, worldName);
+        if (note !== null) say(note);
       }
     };
 
