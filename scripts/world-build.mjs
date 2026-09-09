@@ -84,6 +84,11 @@ export function readWorlds(file) {
       {
         host: normalizeHost(config?.host),
         residents: sanitizeResidents(config?.residents),
+        // Does this world's deployment keep the dev surface (the ghost panel
+        // and everything behind __IS_DEV__)? Off unless the file says exactly
+        // `true`: a client's world is a place people visit, not a workbench,
+        // and only a world that is also its author's workbench opts in.
+        dev: config?.dev === true,
       },
     ]),
   );
@@ -117,7 +122,7 @@ export function resolveWorld(env = {}, worlds = {}) {
     productionHost ||
     configured?.host ||
     `ref-world-${name}.vercel.app`;
-  return { name, host, residents: configured?.residents ?? 'shipped' };
+  return { name, host, residents: configured?.residents ?? 'shipped', dev: configured?.dev === true };
 }
 
 // ── the html transform ───────────────────────────────────────────────────────

@@ -16,7 +16,7 @@
   },
   "dependencies": {
     "@upstash/redis": "^1.38.2",
-    "envpaint": "git+https://github.com/epun/envpaint.git#ae5c66af0e6ef26a0e3b6c45ebb5fa1dcf083152",
+    "envpaint": "file:vendor/envpaint-0.1.0.tgz",
     "three": "0.180.0"
   },
   "devDependencies": {

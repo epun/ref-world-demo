@@ -60,8 +60,12 @@ export default defineConfig({
   },
   define: {
     // isDev gates src/dev/ (Ghost Panel skills). Must be a static boolean so the
-    // demo build tree-shakes the entire dev surface out.
-    __IS_DEV__: JSON.stringify(process.env.NODE_ENV !== 'production'),
+    // demo build tree-shakes the entire dev surface out. A world whose
+    // worlds.json entry says `dev: true` keeps it in its own deployment —
+    // meridian is its author's workbench as well as a demo, and the painted
+    // terrain lives in the panel with no other way to be reached. The public
+    // world and every other client world stay stripped.
+    __IS_DEV__: JSON.stringify(process.env.NODE_ENV !== 'production' || world?.dev === true),
   },
   test: {
     include: ['test/**/*.test.ts'],
