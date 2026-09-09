@@ -68,6 +68,7 @@ import { MOTION, SURFACE, WORLD } from './taste/tokens';
 import { createPhoneLink } from './net/phoneLink';
 import { readSubmission } from './phone/identity';
 import { mountWorldTray } from './world/tray';
+import { createFollow } from './world/follow';
 import { createCompanionPanel } from './world/companionpanel';
 import { feedDrawingToStrokes } from './net/drawFeed';
 import type { StrokeList } from './shape/types';
@@ -1186,10 +1187,24 @@ function main(): void {
       })
     : null;
 
+  /*
+   * Does the camera ride this handset's own creature? (user ask, 2026-09-09)
+   *
+   * Only where there is one to ride: a projection frames the whole room and
+   * a handset that has not drawn has nothing of its own in there. The rule
+   * itself — on by default, the map's tap suspends it, the stick resumes it
+   * — is in src/world/follow.ts, with no scene in it, so it can be argued
+   * with in a test rather than in a demo.
+   */
+  const follow = createFollow({ enabled: Boolean(tray?.middle) && myDrawerId.length > 0 });
+
   installWorldMinimap({
     manager: creatures,
     cameraRig: world.cameraRig,
     scatter: world.scatter,
+    // A tap on the map is "show me over there". Let go of the creature
+    // until they ask for it back by walking.
+    onFocus: () => follow.suspend(),
     mount: tray ? tray.right : document.body,
   });
 
@@ -1213,6 +1228,10 @@ function main(): void {
       ? mountJoystick({
           onChange: (v) => {
             stickVec = v;
+            // Walking IS the ask to be followed again — the only way this
+            // view has of saying "come with me". Orbiting never does this:
+            // turning the camera around your creature is looking at it.
+            if (v.mag > 0) follow.resume();
           },
         })
       : null;
@@ -1277,6 +1296,25 @@ function main(): void {
 
   world.onFrame((dt, nowMs) => {
     creatures.update(dt, nowMs);
+    /*
+     * The handset camera goes where its creature goes.
+     *
+     * Retargeted every frame rather than on arrival: `frameAt` retargets a
+     * ζ≥1 spring that carries its own position and velocity across, so a
+     * target that moves a little each frame produces one continuous glide
+     * and never a step. A creature standing still hands the spring the same
+     * point over and over, it settles, and the camera is left resting on
+     * the ambient drift floor — which is the settle this taste asks for
+     * (TASTE §2.1), not a stop.
+     *
+     * It moves the LOOK TARGET only. Azimuth and elevation are untouched,
+     * so a one-finger drag keeps orbiting around the creature the whole
+     * time it is being followed, and a pinch keeps zooming.
+     */
+    if (follow.active()) {
+      const at = creatures.positionOf(myDrawerId);
+      if (at) world.cameraRig.frameAt(at);
+    }
     tour.update(dt, nowMs);
   });
 

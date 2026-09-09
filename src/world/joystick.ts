@@ -26,11 +26,13 @@
  * ── the mark ─────────────────────────────────────────────────────────────
  * A wavering ring and a smaller wavering ring inside it (TASTE §4: border
  * and icon, never a filled panel, never a card, never a shadow). The knob
- * is drawn, not filled with near-black — near-black belongs to characters
- * only, and a control that reads as dark as a creature would compete with
- * the thing it is steering. Both rings are wavy for the same reason every
- * other border here is: no engineered geometry, and a true circle is the
- * most engineered shape there is.
+ * carries the paper's light value inside its ink outline — a light shape in
+ * a dark line, which is how every form in this world is drawn, and the
+ * device's own body two corners away is the identical value. It is never
+ * near-black: that belongs to characters only, and a control as dark as a
+ * creature would compete with the thing it is steering. Both rings are wavy
+ * for the same reason every other border here is: no engineered geometry,
+ * and a true circle is the most engineered shape there is.
  */
 
 import { hash01 } from '../phone/seed';
@@ -221,14 +223,26 @@ function ensureStyle(): void {
 }
 .stick-ring,
 .stick-knob {
-  fill: none;
   stroke: ${WORLD.ink};
   stroke-linejoin: round;
   stroke-linecap: round;
   vector-effect: non-scaling-stroke;
 }
-.stick-ring { stroke-width: 1.25; }
-.stick-knob { stroke-width: 1.75; }
+/* The well stays a hole through to the world: it is a boundary, not a dish. */
+.stick-ring { fill: none; stroke-width: 1.25; }
+/*
+ * The knob is filled with the paper's light role — the same value the
+ * device shell's body carries two corners away (user ask, 2026-09-09:
+ * "fill in the center of the joystick with the same offwhite fill as the
+ * device"). It keeps its ink stroke, so it is still a light-filled shape
+ * held by a wobbly dark outline: the rule GENERATOR gives every form in
+ * this world, and the one the device itself is built to (docs/DEVICE.md
+ * §1d). Not a filled panel — TASTE §4 bans cards and
+ * surfaces under UI, and an icon mark that reads as paper is the opposite
+ * of chrome. Near-black is still nowhere near it: that belongs to the
+ * creature this thing steers.
+ */
+.stick-knob { fill: ${WORLD.light}; stroke-width: 1.75; }
 /* The knob follows the thumb directly while held — a transition here would
    put the control behind the finger, which reads as lag rather than as
    easing. It eases only on the way back to the middle, which IS a motion

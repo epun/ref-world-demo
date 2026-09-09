@@ -436,6 +436,20 @@ export interface CreatureManager {
    * the world minimap. `kind` is additive: egg until the hatch burst hands
    * the slot a character root, character after. */
   positions(): { x: number; z: number; r: number; kind: 'egg' | 'character' }[];
+  /**
+   * Where ONE creature is standing right now, by the id it was spawned
+   * under — the handset's drawer id.
+   *
+   * `positions()` is anonymous on purpose (the world view has no "self"),
+   * so a page that needs to find its own creature has nothing to match on.
+   * The handset camera does: it follows the creature belonging to the phone
+   * it is running on (src/world/follow.ts).
+   *
+   * Live from the root transform, egg or character — an egg is where the
+   * creature IS for its first minute, and a camera that waited for the
+   * hatch would open on an empty field. Null when nothing holds that id.
+   */
+  positionOf(id: string): Vector3 | null;
   count(): number;
   /** Is a slot with this id still live? The moderation gate uses it to
    * drop rows for creatures the population guard has already retired
@@ -925,6 +939,11 @@ export function createCreatureManager(
         }
       }
       return out;
+    },
+
+    positionOf(id) {
+      const slot = slots.get(id);
+      return slot ? worldPositionOf(slot) : null;
     },
 
     count: () => slots.size,

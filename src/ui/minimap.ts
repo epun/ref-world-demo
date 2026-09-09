@@ -206,6 +206,17 @@ export interface WorldMinimapOptions {
   scatter?: {
     positions(): { x: number; z: number }[];
   };
+  /**
+   * Somebody asked to look somewhere else.
+   *
+   * Called with the world point the tap landed on, alongside the reframe —
+   * not instead of it. The map still owns the camera move; this is only so
+   * a caller that is doing something else with the framing can stand down.
+   * On a handset that is the follow camera (src/world/follow.ts): a tap
+   * here means "show me over there", and a follow that dragged the frame
+   * straight back would make the tap do nothing at all.
+   */
+  onFocus?(x: number, z: number): void;
   mount: HTMLElement;
 }
 
@@ -462,6 +473,9 @@ export function installWorldMinimap(opts: WorldMinimapOptions): WorldMinimapHand
     // Clamp to the mapped region so a border click stays on the ground.
     const x = Math.max(-WORLD_MAP_EXTENT, Math.min(WORLD_MAP_EXTENT, at.x));
     const z = Math.max(-WORLD_MAP_EXTENT, Math.min(WORLD_MAP_EXTENT, at.z));
+    // Told BEFORE the reframe: whoever else is framing has to have let go
+    // by the time this slide starts, or it fights the first frame of it.
+    opts.onFocus?.(x, z);
     opts.cameraRig.frameAt(new Vector3(x, 0, z));
   };
   canvas.addEventListener('pointerdown', onPointerDown);

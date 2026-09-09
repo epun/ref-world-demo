@@ -14,7 +14,16 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { HOLD_MS, TRAY_EMOTES, pressMeans } from '../../src/world/tray';
+import {
+  HOLD_MS,
+  TRAY_COLUMNS,
+  TRAY_EMOTES,
+  TRAY_GAP_VW,
+  TRAY_PAD_VW,
+  middleCellCentre,
+  pressMeans,
+  trayCornerRoom,
+} from '../../src/world/tray';
 import { PHONE_EMOTES } from '../../src/phone/emotes';
 import { BUBBLE_EMOJI } from '../../src/character/bubble';
 import { EMOTE_NAMES } from '../../src/net/protocol';
@@ -111,9 +120,9 @@ describe('the tray layout', () => {
     // User ruling, 2026-08-25. The corner means one thing — "yours" —
     // whether that is a join code or your own device, which is what makes
     // them exchangeable rather than two things competing for the centre.
-    // The middle column is the spacer, so nothing sits over the world.
-    expect(src()).toMatch(/grid-template-columns:\s*auto 1fr auto/);
     expect(src()).toMatch(/\.tray-device \{[^}]*justify-self: start/);
+    expect(src()).toMatch(/\.tray-left \{ justify-self: start/);
+    expect(src()).toMatch(/\.tray-right \{ justify-self: end/);
   });
 
   it('lifts the emote ring by the device HEIGHT, never a picked number', () => {
@@ -148,6 +157,67 @@ describe('the middle cell — where the stick goes', () => {
     // block dragging the camera across the bottom of the screen.
     expect(src()).toMatch(/\.tray-middle \{[^}]*pointer-events: none/);
     expect(src()).toMatch(/\.tray-middle > \* \{ pointer-events: auto/);
+  });
+
+  it('sits on the middle of the SCREEN, whatever the corners weigh', () => {
+    // Measured in chromium at 390 x 844, both templates on the same live
+    // tray: `auto 1fr auto` resolved to `62px 273.438px 0px` and put the
+    // stick's centre at 225.99 against a half-viewport of 195 — 30.99px
+    // off, the user's report. The shipped template resolved to
+    // `124.812px 85.7969px 124.828px` and centre 194.99 — 0.01px off.
+    //
+    // `auto 1fr auto` centres the middle in the LEFTOVER, which is only the
+    // middle of the frame when the two corners are the same width. They
+    // never are. Even fr columns on both sides split the free space equally
+    // whatever is inside them, and the tray's gutters are equal, so the
+    // middle column lands on the viewport's centre by construction.
+    const at = (columns: 'auto 1fr auto' | typeof TRAY_COLUMNS) =>
+      middleCellCentre(
+        {
+          viewportW: 390,
+          padPx: (390 * TRAY_PAD_VW) / 100,
+          gapPx: (390 * TRAY_GAP_VW) / 100,
+          // Mocked corner widths, deliberately unequal — unequal corners
+          // are the whole condition the old template got wrong, and the
+          // new one has to be indifferent to.
+          leftW: 96,
+          rightW: 140,
+          middleW: 86,
+        },
+        columns,
+      );
+    expect(Math.abs(at(TRAY_COLUMNS) - 195)).toBeLessThan(1);
+    // ...and the template it replaced really was off, by half the
+    // difference the corners make. Pinned so the regression has a number.
+    expect(Math.abs(at('auto 1fr auto') - 195)).toBeGreaterThan(1);
+  });
+
+  it('declares that template in the sheet it ships', () => {
+    // The maths above models the css; this is what stops the two drifting.
+    expect(src()).toMatch(/grid-template-columns: \$\{TRAY_COLUMNS\}/);
+    expect(TRAY_COLUMNS).toBe('minmax(0, 1fr) auto minmax(0, 1fr)');
+    // minmax(0, ...) rather than a bare `1fr`: a bare fr floors at its
+    // content's min-content width, so a wide corner would shove the middle
+    // off centre again — the same bug wearing a different hat.
+    expect(TRAY_COLUMNS).not.toBe('1fr auto 1fr');
+    // The gutters are the two numbers the centring depends on, and they
+    // have to be the same on both sides.
+    expect(src()).toMatch(/padding: 0 \$\{TRAY_PAD_VW\}vw calc\(/);
+    expect(src()).toMatch(/gap: \$\{TRAY_GAP_VW\}vw/);
+  });
+
+  it('leaves the corners room at the narrowest phone anybody holds', () => {
+    // The reason this is a grid and not an absolutely positioned stick at
+    // left: 50%. Out of flow, nothing stops a corner growing underneath
+    // it; in the grid the corners can see the stick. At 320px the left
+    // column still clears the 62px device.
+    const room = trayCornerRoom({
+      viewportW: 320,
+      padPx: (320 * TRAY_PAD_VW) / 100,
+      gapPx: (320 * TRAY_GAP_VW) / 100,
+      middleW: 84, // STICK_MIN_PX — 22vw is below the floor at this width
+    });
+    expect(room).toBeGreaterThan(62);
   });
 
   it('offers the cell only to somebody who has a creature to move', () => {
@@ -224,7 +294,10 @@ describe('opening the companion', () => {
     const ring = /\.tray-emotes \{[\s\S]*?\n\}/.exec(trayFor())?.[0] ?? '';
     expect(ring).toMatch(/left: 4vw/);
     expect(ring).not.toMatch(/left: 50%/);
-    expect(trayFor()).toMatch(/padding: 0 4vw calc/);
+    // The tray's own gutter, which the ring shares. It reads from the
+    // constant now that the grid maths needs the same number.
+    expect(TRAY_PAD_VW).toBe(4);
+    expect(trayFor()).toMatch(/padding: 0 \$\{TRAY_PAD_VW\}vw calc/);
   });
 });
 

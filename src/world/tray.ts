@@ -113,6 +113,96 @@ const DEVICE_H_PX = (DEVICE_W_PX * DEVICE_VIEWBOX.height) / DEVICE_VIEWBOX.width
  */
 const RING_GAP_PX = 12;
 
+/**
+ * The tray's three columns.
+ *
+ * It used to be `auto 1fr auto`: the two corners took exactly what they
+ * needed and the middle took the leftover. That is the right template for a
+ * middle that is EMPTY — it is a spacer, and a spacer has no centre anyone
+ * can see. It is the wrong one the moment something stands in it, because
+ * the leftover is only centred in the viewport when the two corners are the
+ * same width, and here they are not even close: the device is 62px and the
+ * right column measures ZERO, because the minimap is `position: fixed` to
+ * its own corner and contributes nothing to the track it is mounted in.
+ * Chromium at 390px resolved that template to `62px 273.438px 0px` and put
+ * the stick's centre at 225.99 against a half-viewport of 195 — 31px right
+ * of centre, which is plainly visible under a thumb (user report,
+ * 2026-09-09).
+ *
+ * Even fr columns on both sides fix that by construction: `1fr` and `1fr`
+ * split the free space equally whatever is inside them, so the middle
+ * column lands on the middle of the CONTENT BOX — and the content box is
+ * centred in the viewport because the tray's left and right padding are the
+ * same 4vw. `minmax(0, ...)` rather than plain `1fr`, because a bare `1fr`
+ * floors at its content's min-content width and a wide corner would push
+ * the middle off centre again — which is the bug wearing a different hat.
+ * Same browser, same viewport: `124.812px 85.7969px 124.828px`, stick
+ * centre 194.99 against 195.
+ *
+ * The alternative — taking the middle out of flow at `left: 50%` with a
+ * translate — centres just as exactly and was rejected: an absolutely
+ * positioned stick is invisible to the layout, so nothing stops a corner
+ * expanding underneath it. In the grid the corners can SEE the stick, and the
+ * narrowest viewport anyone will hold this on still leaves room (see
+ * `middleCellCentre` and its test).
+ */
+export const TRAY_COLUMNS = 'minmax(0, 1fr) auto minmax(0, 1fr)';
+
+/** The tray's own gutter and column gap, as the css declares them. */
+export const TRAY_PAD_VW = 4;
+export const TRAY_GAP_VW = 3;
+
+export interface TrayMetrics {
+  viewportW: number;
+  /** Left and right gutter, px. Equal — that is what makes the maths work. */
+  padPx: number;
+  gapPx: number;
+  leftW: number;
+  rightW: number;
+  middleW: number;
+}
+
+/**
+ * Where the middle cell's centre lands, in viewport px.
+ *
+ * A model of the grid track algorithm for this tray's two candidate
+ * templates and nothing more general than that — the shipped css declares
+ * `TRAY_COLUMNS` and the test pins that it does, so the model and the sheet
+ * cannot drift apart silently. It exists because the thing that was wrong
+ * is arithmetic, and arithmetic can be checked in node; a browser is where
+ * it was confirmed, not where it can be defended against regression (this
+ * project keeps no jsdom, and jsdom would not lay out a grid anyway).
+ */
+export function middleCellCentre(
+  m: TrayMetrics,
+  columns: 'auto 1fr auto' | typeof TRAY_COLUMNS = TRAY_COLUMNS,
+): number {
+  const content = m.viewportW - m.padPx * 2;
+  if (columns === 'auto 1fr auto') {
+    // The corners take their own widths; the middle is what is left, and it
+    // is centred in THAT, not in the frame.
+    const free = content - m.leftW - m.rightW - m.gapPx * 2;
+    return m.padPx + m.leftW + m.gapPx + free / 2;
+  }
+  // Even fr on both sides: the corners are the same width whatever they
+  // hold, so the middle column is centred in the content box.
+  const side = (content - m.middleW - m.gapPx * 2) / 2;
+  return m.padPx + side + m.gapPx + m.middleW / 2;
+}
+
+/**
+ * Room left for one corner beside a centred middle, px.
+ *
+ * Negative means the corner has to overflow its column to fit, which on the
+ * left is straight under the stick. Nothing enforces this at runtime — it
+ * is here so the narrow-viewport question has an answer that is written
+ * down rather than eyeballed once.
+ */
+export function trayCornerRoom(m: Omit<TrayMetrics, 'leftW' | 'rightW'>): number {
+  const content = m.viewportW - m.padPx * 2;
+  return (content - m.middleW - m.gapPx * 2) / 2;
+}
+
 /** What a finished press meant. Pure, so the split is testable without a DOM. */
 export type PressResult = 'open-companion' | 'nothing';
 
@@ -208,13 +298,14 @@ function ensureStyle(): void {
   bottom: 0;
   z-index: 30;
   display: grid;
-  /* Two ends and the air between them: whatever is yours on the left,
-     where you are on the right. Nothing takes the middle — the middle is
-     the world. */
-  grid-template-columns: auto 1fr auto;
+  /* Two ends and the middle of the SCREEN between them: whatever is yours
+     on the left, where you are on the right, and — once there is something
+     to steer — the stick dead centre. Even fr on both sides is what makes
+     that last part true whatever the corners weigh (see TRAY_COLUMNS). */
+  grid-template-columns: ${TRAY_COLUMNS};
   align-items: end;
-  gap: 3vw;
-  padding: 0 4vw calc(env(safe-area-inset-bottom, 0px) + 3vw);
+  gap: ${TRAY_GAP_VW}vw;
+  padding: 0 ${TRAY_PAD_VW}vw calc(env(safe-area-inset-bottom, 0px) + ${TRAY_GAP_VW}vw);
   pointer-events: none;
 }
 .world-tray > * { pointer-events: auto; }
