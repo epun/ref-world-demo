@@ -9,7 +9,12 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { BehaviorAgent, MAX_SPEED, type AgentTick } from '../../src/behavior/agent';
+import {
+  BehaviorAgent,
+  MAX_SPEED,
+  type AgentHold,
+  type AgentTick,
+} from '../../src/behavior/agent';
 import type { Personality } from '../../src/behavior/personality';
 import { makeRand } from '../../src/behavior/states';
 import { Spring } from '../../src/motion/spring';
@@ -248,5 +253,99 @@ describe('BehaviorAgent', () => {
     }
     expect(prev).toBeLessThan(0.05);
     sim.agent.dispose();
+  });
+});
+
+describe('BehaviorAgent — held while somebody is steering', () => {
+  /**
+   * The hold (src/creatures/manager.ts, DRIVE_IDLE_MS): while a person has
+   * the stick, and for a moment after they let go, the agent contributes
+   * nothing. Pure here — no manager, no scene, just what the agent emits
+   * and what it remembers.
+   */
+
+  /** Step until the agent is walking somewhere of its own, so the hold has
+   * an actual thought to interrupt. */
+  function walking(): { agent: BehaviorAgent; sim: Sim } {
+    const sim: Sim = { agent: new BehaviorAgent(9182, ROAMER), x: 0, z: 0 };
+    for (let i = 0; i < 4000; i++) {
+      step(sim, i * DT, [], null);
+      if (sim.agent.currentState === 'wander' && sim.agent.currentTarget) break;
+    }
+    expect(sim.agent.currentState).toBe('wander');
+    expect(sim.agent.currentTarget).not.toBeNull();
+    return { agent: sim.agent, sim };
+  }
+
+  it('drops the target it had chosen, so nothing lurches back to it after', () => {
+    const { agent, sim } = walking();
+    const stale = agent.currentTarget!;
+    agent.update(DT, 0, { x: sim.x, z: sim.z }, [], null, null, { speed: 1.4, heading: 0.4 });
+    expect(agent.currentTarget).toBeNull();
+    // And the target really was somewhere else — otherwise this asserts
+    // nothing about lurching.
+    expect(Math.hypot(stale.x - sim.x, stale.z - sim.z)).toBeGreaterThan(1);
+    agent.dispose();
+  });
+
+  it('emits no steering of its own and does not advance its state', () => {
+    const { agent, sim } = walking();
+    const before = agent.currentState;
+    const hold: AgentHold = { speed: 0, heading: 0.75 };
+
+    // One frame of an actual push first, as the manager always does — the
+    // window is only ever opened by somebody steering.
+    agent.update(DT, 0, { x: sim.x, z: sim.z }, [], null, null, { speed: 1.5, heading: 0.75 });
+
+    // Ten seconds — longer than any state's drawn duration, so an agent
+    // whose machine was still running would certainly have moved on.
+    let last = Infinity;
+    for (let i = 0; i < 100; i++) {
+      const tick = agent.update(DT, i * DT, { x: sim.x, z: sim.z }, [], null, null, hold);
+      // Facing is the one it was handed: the agent turns it nowhere.
+      expect(tick.heading).toBeCloseTo(0.75, 12);
+      expect(tick.emote).toBeUndefined();
+      const speed = Math.hypot(tick.vx, tick.vz);
+      // A drift-stop, never a brake: monotone down to nothing.
+      expect(speed).toBeLessThanOrEqual(last + 1e-9);
+      last = speed;
+      expect(agent.currentState).toBe(before);
+      expect(agent.currentTarget).toBeNull();
+    }
+    expect(last).toBeLessThan(1e-3);
+    agent.dispose();
+  });
+
+  it('rides the speed the hand is asking for, so letting go starts from it', () => {
+    const { agent, sim } = walking();
+    const at = { x: sim.x, z: sim.z };
+    // Pushed hard for a moment...
+    for (let i = 0; i < 10; i++) {
+      agent.update(DT, i * DT, at, [], null, null, { speed: 1.7, heading: 0.2 });
+    }
+    // ...then the stick rests inside the window. The first frame of the
+    // release carries the speed the hand left it at, not a zero and not
+    // whatever the agent had been imagining underneath.
+    const first = agent.update(DT, 2000, at, [], null, null, { speed: 0, heading: 0.2 });
+    const speed = Math.hypot(first.vx, first.vz);
+    expect(speed).toBeGreaterThan(1.2);
+    expect(speed).toBeLessThan(1.7);
+    agent.dispose();
+  });
+
+  it('takes the world back when the hold is gone', () => {
+    const { agent, sim } = walking();
+    for (let i = 0; i < 30; i++) {
+      agent.update(DT, i * DT, { x: sim.x, z: sim.z }, [], null, null, { speed: 0, heading: 0 });
+    }
+    // Unheld again: it is living from where it stands — the first decision
+    // after a hold is a fresh one.
+    let moved = 0;
+    for (let i = 0; i < 600; i++) {
+      const tick = step(sim, 10_000 + i * DT, [], null);
+      moved = Math.max(moved, Math.hypot(tick.vx, tick.vz));
+    }
+    expect(moved).toBeGreaterThan(0);
+    agent.dispose();
   });
 });
