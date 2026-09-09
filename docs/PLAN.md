@@ -391,13 +391,16 @@ world-unit offsets over a square `size` units across, centred on the origin (512
 400 units, 0.78 u a texel). Bilinear between half-texel centres, exactly zero outside, fading
 to zero across the last half texel so the rim never draws itself as a square contour. Its
 array is deliberately **the same buffer** an `envpaint` paint layer stamps into, so a dab is
-visible to the next height sample with no copy and no sync step. `serializeMap` /
-`deserializeMap` are base64 float32, ready for the committed map the bake step will write.
+visible to the next height sample with no copy and no sync step. A second layer of the same
+shape rides alongside it — `water`, one absolute surface level a texel — for the reasons below.
+`serializeMap` / `deserializeMap` are base64 float32, ready for the committed map the bake step
+will write.
 
 **The skill.** `src/dev/paint.ts`, registered as `refworld.paint` and reached by a dynamic
 import inside `initDevPanel`, so envpaint lands in its own dev chunk and never in the demo
-build. Raise / lower / flatten / smooth on the height layer, hotkeys 1-4, EnvPaint's tool
-strip while painting is on, EnvPaint's edge-shape defaults (TASTE §2.5: no clean discs), and
+build. Raise / lower / flatten / smooth on the height layer and pond / drain on the water one,
+hotkeys 1-6, EnvPaint's tool strip while painting is on, EnvPaint's edge-shape defaults
+(TASTE §2.5: no clean discs), and
 ghost-panel's undo stack through EnvPaint's `History.attachUI`. Painting is off until a
 checkbox says otherwise: the world keeps its own pointer, and even with painting on shift+drag
 stays the world's pan. While a stroke owns the plain drag the world parks its own one-pointer
@@ -406,14 +409,71 @@ the other, so the world lets go rather than the tool shouting louder.
 
 After every batch of stamps the world re-cuts itself with `setTerrain({})` (ground → scatter →
 water), throttled to ~8 rebuilds a second because one rebuild measures ~250-330ms, with one
-guaranteed rebuild on `strokeend`.
+guaranteed rebuild on `strokeend`. The rebuild is asked for from the per-frame dirty-rect
+sweep rather than from the stroke events alone, so an **undo** reaches the world too: undo
+writes the recorded rect back into the layer and marks it dirty without emitting a stroke.
 
-**Deferred**, in the order the port plan takes them: painted **water** — level tools, connected
-components, outlines feeding `water.ts` (the one genuinely new piece: a painted lake has no
-blob to walk a shoreline round); painted **forest / mountain / clearing weights** for scatter;
-and **recording, saving and baking** — the `paint` session event per stamp, a "save map"
-button, and a committed `map.json` the deployment loads. `src/dev/paint.ts` carries one marked
-hook comment where the session event goes.
+**The water.** A second float layer, `water`, of exactly the same shape as the height one and
+sharing its buffer with `PaintedMap.water`: one **absolute surface level** per texel in world
+units, `DRY` (-1000) where there is none. `DRY` is duplicated on purpose — `painted.ts` imports
+no brush engine — and `paint.ts`, the one module that sees both, asserts the two are equal at
+startup. Two tools write it, through `envpaint/core`'s `writeLevelDisc` rather than a layer
+stamp (a level is a value, not an increment): **pond** (hotkey 5; ctrl/cmd-drag erases, which
+for water is a drain) and **drain** (hotkey 6). Spatter is forced off for both [D] — the rim
+keeps its edge noise so no pond is a clean disc, but the droplets spatter throws would be culled
+texel by texel a moment later, which reads as the brush fighting itself.
+
+A stroke fills to **one level**, chosen once and held for every dab: a body of water is a plane,
+and a level read fresh under each dab would tilt the sheet with the ground it crossed. Start
+inside water already painted and the stroke takes that body's own level, so widening a pond
+extends it instead of laying a second sheet against its bank. Start on dry land and it takes
+the mean untouched bank around the dab (`bankHeight`, so a stroke cannot ratchet its own level
+down over the basin it has just cut) minus `basinDrop × elevation` — which is exactly how an
+authored body picks its own level in `waterLevel`. The level itself is then absolute: no dial
+ever multiplies it again, for the same reason the painted height offset is not scaled.
+
+`deriveWater` (`src/world/painted-water.ts`, pure) turns the layer into geography. It labels the
+water's **8-connected** components, culls the ones under `MIN_BODY_TEXELS` back to `DRY` (a
+twelve-texel speck is spatter, not a lake that deserves a shoreline and reeds of its own), fills
+enclosed **4-connected** land components under `MIN_HOLE_TEXELS` with the water's level (a
+pinhole is a gap in the paint, not an island), levels every body to **one plane** — the lowest
+of the levels that ran together, because water finds the lower basin — and then builds an
+**exact** Euclidean distance field (Felzenszwalb–Huttenlocher, not a chamfer: the zero contour
+of this field is the shoreline every other system reads, and a chamfer's error is anisotropic
+enough to draw flat-sided diagonals). The rings come off that field by marching squares with one
+Chaikin pass, counter-clockwise, in the same convention as `waterOutline` / `islandOutline`. It
+**mutates** the level layer as it goes, which is the point: the layer somebody paints and the
+layer the world reads are one array, so the tidying has to be visible in the paint.
+
+The field is installed on the geography through `setPaintedWater` in `landscape.ts` — one hook,
+the same shape as `setPaintedHeight`, and in that module for the reason its header already
+gives: heights and **shorelines** come from one place, or they drift apart by a fraction of a
+unit between the ground, the physics and the reeds. `terrainHeight` cuts the basin from the
+field with the **authored basin's maths verbatim**, `-shore` standing in for the distance
+outside a wobbled radius: the interior comes out exactly the level, `basinRim` holds the first
+units of bank at the waterline, and the land climbs out over `shoreRamp`. One pass over the
+whole field rather than one per body, because the field measures the *nearest* shore. Like the
+painted height offset it is a person's own hand and **not gated by the mode**: painted water
+exists in `'plain'` and `'landscape'` alike, which is what makes "open flat, paint a pond in
+front of the audience" work at all.
+
+From there everything downstream is the machinery the authored ponds already had. `water.ts`
+rebuilds `paintedGroup` on every `setPainted` — flat fills with the islands punched out as
+holes, drawn shore ribbons walking those very arrays so grey and ink coincide by construction,
+and ripple marks on the authored ripples' own material and `uTime`. Scatter's `place()` refuses
+water, so props inside the new shore go, and the reed walk lines `paintedShoreSamples()` as one
+more body. `waterColliders()` tiles hexes over each body's bounds and keeps the ones the
+distance field says are wet — an island falls out for free, because `shore` is negative on land
+inside a body. So a water stroke ends with the **landscape** rebuild (ground →
+`scatter.refreshLandscape()` → water levels), not the terrain one: a pond changes what grows
+where, while a height stroke only moves what is already standing. The **minimap** does not draw
+painted bodies yet — it still shows the authored map only.
+
+**Deferred**, in the order the port plan takes them: painted **forest / mountain / clearing
+weights** for scatter; and **recording, saving and baking** — the `paint` session event per
+stamp, a "save map" button, and a committed `map.json` the deployment loads (the level layer is
+already in `serializeMap`, and a map saved before water existed loads dry). `src/dev/paint.ts`
+carries one marked hook comment where the session event goes.
 
 ---
 

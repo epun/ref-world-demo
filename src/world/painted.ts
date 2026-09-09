@@ -29,8 +29,13 @@
  * contour line in the ink pass — a square one, which is the one shape TASTE
  * §2.5 will not have on screen.
  *
- * Water, region weights, clearing and the painted map's own baking are later
- * steps (envpaint docs/port-meridian.md §5 steps 4-6). This file is height.
+ * WATER rides alongside it in a second layer of the same shape: `water`, one
+ * absolute surface LEVEL per texel, `DRY` where there is none. It is a layer
+ * and not a body — what a level layer MEANS (components, shorelines, a signed
+ * distance field) is src/world/painted-water.ts's job, exactly as what a
+ * height offset means is landscape.ts's. Region weights, the clearing and the
+ * painted map's own baking are still later steps (envpaint
+ * docs/port-meridian.md §5 steps 5-6).
  */
 
 /** [D] Texels a side. 512 over 400 units is 0.78 u a texel — finer than the
@@ -45,6 +50,18 @@ export const PAINTED_RES = 512;
  */
 export const PAINTED_SIZE = 400;
 
+/**
+ * "No water in this texel" in the level layer.
+ *
+ * This MUST equal `DRY` exported by `envpaint/core` (src/core/WaterOps.js) —
+ * the level layer is that engine's buffer, shared texel for texel like the
+ * height one, so a value it writes to drain a texel has to read as dry here.
+ * The number is re-declared rather than imported for the reason the header
+ * gives (this module pulls in no brush engine), and src/dev/paint.ts asserts
+ * the two are equal at startup so the duplication cannot drift in silence.
+ */
+export const DRY = -1000;
+
 export interface PaintedMap {
   /** Texels a side. */
   res: number;
@@ -56,6 +73,13 @@ export interface PaintedMap {
    * when one is wired in; never copy it, or the two silently diverge.
    */
   height: Float32Array;
+  /**
+   * Absolute water surface level in world units, row-major, `res * res`
+   * floats, same indexing as `height` — `DRY` in every texel that holds no
+   * water. A level is absolute, never an offset: a painted body's surface is
+   * one plane at a height somebody chose, and no terrain dial scales it.
+   */
+  water: Float32Array;
 }
 
 /** The serialised form: the same numbers, base64, for a committed map.json. */
@@ -64,6 +88,9 @@ export interface PaintedMapJson {
   size: number;
   /** Base64 of the raw little-endian Float32 bytes. */
   height: string;
+  /** The level layer, same encoding. Optional: a map saved before water
+   * existed has none, and loads as an entirely dry one. */
+  water?: string;
 }
 
 /**
@@ -73,25 +100,37 @@ export interface PaintedMapJson {
  * own `data` — and allocates a zeroed one otherwise. It is adopted by
  * reference on purpose (see the header); a wrong-length array is a
  * programming error and throws rather than being quietly resized, because
- * the alternative is a map that samples garbage at one corner.
+ * the alternative is a map that samples garbage at one corner. `water` is
+ * adopted on exactly the same terms, from the level layer, and allocates
+ * filled with `DRY` — an unpainted map is dry, not flooded at height 0.
  */
 export function createPaintedMap(
   res: number = PAINTED_RES,
   size: number = PAINTED_SIZE,
   height?: Float32Array,
+  water?: Float32Array,
 ): PaintedMap {
   if (!Number.isInteger(res) || res < 2) throw new Error(`painted map: res must be >= 2, got ${res}`);
   if (!(size > 0)) throw new Error(`painted map: size must be positive, got ${size}`);
   if (height && height.length !== res * res) {
     throw new Error(`painted map: height must hold ${res * res} floats, got ${height.length}`);
   }
-  return { res, size, height: height ?? new Float32Array(res * res) };
+  if (water && water.length !== res * res) {
+    throw new Error(`painted map: water must hold ${res * res} floats, got ${water.length}`);
+  }
+  return {
+    res,
+    size,
+    height: height ?? new Float32Array(res * res),
+    water: water ?? new Float32Array(res * res).fill(DRY),
+  };
 }
 
-/** Every texel back to zero — the map, and with it the paint layer sharing
- * the buffer, is unpainted again. */
+/** Every texel back to unpainted — height to zero, water to `DRY` — and with
+ * it the paint layers sharing the buffers. */
 export function clearPaintedMap(map: PaintedMap): void {
   map.height.fill(0);
+  map.water.fill(DRY);
 }
 
 /**
@@ -197,19 +236,34 @@ function decodeBase64(text: string): Uint8Array {
  * mutating underneath.
  */
 export function serializeMap(map: PaintedMap): PaintedMapJson {
-  const bytes = new Uint8Array(map.height.buffer, map.height.byteOffset, map.height.byteLength);
-  return { res: map.res, size: map.size, height: encodeBase64(bytes) };
+  const height = new Uint8Array(map.height.buffer, map.height.byteOffset, map.height.byteLength);
+  const water = new Uint8Array(map.water.buffer, map.water.byteOffset, map.water.byteLength);
+  return {
+    res: map.res,
+    size: map.size,
+    height: encodeBase64(height),
+    water: encodeBase64(water),
+  };
 }
 
 /** The inverse. Throws on a payload whose byte count is not the resolution it
- * claims — a half-read map would sample plausible garbage. */
+ * claims — a half-read map would sample plausible garbage. A payload with no
+ * `water` at all is not half-read but OLD, and loads dry. */
 export function deserializeMap(o: PaintedMapJson): PaintedMap {
-  const bytes = decodeBase64(o.height);
   const floats = o.res * o.res;
-  if (bytes.length !== floats * 4) {
-    throw new Error(`painted map: expected ${floats * 4} bytes for res ${o.res}, got ${bytes.length}`);
-  }
-  const height = new Float32Array(floats);
-  new Uint8Array(height.buffer).set(bytes);
-  return createPaintedMap(o.res, o.size, height);
+  const layer = (text: string, which: string): Float32Array => {
+    const bytes = decodeBase64(text);
+    if (bytes.length !== floats * 4) {
+      const want = floats * 4;
+      throw new Error(
+        `painted map: expected ${want} ${which} bytes for res ${o.res}, got ${bytes.length}`,
+      );
+    }
+    const out = new Float32Array(floats);
+    new Uint8Array(out.buffer).set(bytes);
+    return out;
+  };
+  const height = layer(o.height, 'height');
+  const water = o.water === undefined ? undefined : layer(o.water, 'water');
+  return createPaintedMap(o.res, o.size, height, water);
 }

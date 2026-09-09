@@ -1356,6 +1356,12 @@ function main(): void {
           writeLandscapeParam(on);
         },
         landscape: () => world.landscape(),
+        // Painted water, to the renderer (src/world/water.ts): the fills, the
+        // drawn shorelines and the ripple marks of the bodies somebody paints.
+        // The GEOGRAPHY's copy is installed inside the paint skill itself
+        // (landscape.ts `setPaintedWater`), which is why only this half needs
+        // a handle — the world draws what the geography already answers for.
+        setPaintedWater: (field) => world.water.setPainted(field),
         // The paint skill draws on the ground with a plain drag, which is
         // the same gesture the view controls orbit with; the world lets go
         // of it while a stroke is live (src/world/scene.ts setSoloDrag).

@@ -45,7 +45,8 @@ import {
 import { WIND_OVERRIDE_MAX } from '../world/environment';
 import { WANDER_SPEED_DEFAULT } from '../creatures/manager';
 import { DEFAULT_KIND_DENSITY, SCATTER_SEED, SCATTER_STEP } from '../world/scatter';
-import { TERRAIN_LIMITS, terrainHeight } from '../world/landscape';
+import { TERRAIN_DEFAULTS, TERRAIN_LIMITS, terrainHeight } from '../world/landscape';
+import type { PaintedWaterField } from '../world/painted-water';
 import { ROLLING_SURFACE } from '../world/surface';
 import { GRAIN, MOTION, SURFACE } from '../taste/tokens';
 import { countByKind } from '../session';
@@ -157,6 +158,15 @@ export interface DevHandles {
   setLandscape?(on: boolean): void;
   /** …and reads it back, so the checkbox starts where the world is. */
   landscape?(): boolean;
+  /**
+   * Hand the painted water field to the RENDERER (`water.setPainted` —
+   * src/world/water.ts): the flat fills, the drawn shorelines and the ripple
+   * marks a painted body gets. The geography's own copy is installed inside
+   * the paint skill through `setPaintedWater` in landscape.ts; this handle is
+   * the drawing half, and it is here for the same reason `setTerrain` is —
+   * this module never imports src/world/scene.ts.
+   */
+  setPaintedWater?(field: PaintedWaterField | null): void;
   /**
    * Park the world's own one-pointer drag (`WorldHandles.setSoloDrag`), so a
    * dev tool that draws on the ground can own the same gesture instead of
@@ -1550,6 +1560,20 @@ export async function initDevPanel(
       // An empty partial moves no dial and rebuilds all three systems in
       // order — ground, then scatter, then water (src/world/scene.ts).
       rebuildTerrain: () => handles.setTerrain?.({}),
+      // …and the landscape mode RE-APPLIED unchanged is exactly the other
+      // rebuild: ground, `scatter.refreshLandscape()`, water levels. It is
+      // what a water stroke needs and a height stroke does not — a pond
+      // changes WHAT GROWS WHERE (`place()` refuses water, and the reed walk
+      // follows the new shore), so the placement has to be re-rolled, while a
+      // height stroke only moves what is already standing. Reading the mode
+      // back rather than remembering it keeps the switch where it belongs:
+      // the paint skill never decides whether the map is on.
+      rebuildLandscape: () => handles.setLandscape?.(handles.landscape?.() ?? false),
+      setPaintedWater: (field) => handles.setPaintedWater?.(field),
+      // The dials a painted pond measures its `basinDrop` against. Defaults
+      // when a world build wires no dial handle: they are the numbers such a
+      // build is standing on anyway.
+      terrain: () => handles.terrain?.() ?? TERRAIN_DEFAULTS,
       onFrame: handles.onFrame,
       ...(handles.setSoloDrag ? { setSoloDrag: handles.setSoloDrag } : {}),
       ...(handles.tour ? { tour: handles.tour } : {}),
