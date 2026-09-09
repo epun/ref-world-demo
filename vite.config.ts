@@ -20,8 +20,11 @@ import { applyWorldToHtml, readWorlds, resolveWorld } from './scripts/world-buil
  * index.html only. phone.html is the companion handset's page; it belongs
  * to whatever world its projection is in and has no card of its own.
  */
-function worldIdentity(root: string): Plugin {
-  const world = resolveWorld(process.env, readWorlds(resolve(root, 'worlds.json')));
+/** The world this build is for, or null for the public deployment — read
+ * once, because the html transform and the `__IS_DEV__` define both need it. */
+const WORLD = resolveWorld(process.env, readWorlds(resolve(__dirname, 'worlds.json')));
+
+function worldIdentity(world: ReturnType<typeof resolveWorld>): Plugin {
   if (world) {
     console.log(
       `ref-world: building "${world.name}" at ${world.host}, residents ${world.residents}`,
@@ -40,7 +43,7 @@ function worldIdentity(root: string): Plugin {
 }
 
 export default defineConfig({
-  plugins: [worldIdentity(__dirname)],
+  plugins: [worldIdentity(WORLD)],
   build: {
     rollupOptions: {
       input: {
@@ -65,7 +68,7 @@ export default defineConfig({
     // meridian is its author's workbench as well as a demo, and the painted
     // terrain lives in the panel with no other way to be reached. The public
     // world and every other client world stay stripped.
-    __IS_DEV__: JSON.stringify(process.env.NODE_ENV !== 'production' || world?.dev === true),
+    __IS_DEV__: JSON.stringify(process.env.NODE_ENV !== 'production' || WORLD?.dev === true),
   },
   test: {
     include: ['test/**/*.test.ts'],
