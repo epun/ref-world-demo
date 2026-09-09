@@ -135,13 +135,66 @@ phone's button set, not the protocol.
 map on mobile for now")*. The `corner` slot stays in the DOM and stays empty — empty
 is a state of a slot, never a removal.
 
+### Saving, on the paper beside the case **[D]**
+
+`src/phone/keepui.ts`. A **floppy disk** in the screen's top-right corner, **outside
+the device** *(user ask, 2026-09-09: "move the download button on mobile view when the
+device is shown to the top right corner outside of the device … it should look like a
+floppy disk icon and it should show a popover menu")*. It briefly lived in the `corner`
+slot, which is inside the well — a save control standing on the one object the screen
+is for. Out on the paper it is what it actually is: something the person does *with*
+the device.
+
+- It is fixed to the **screen** at the world tray's own gutters (`top: safe-area + 3vw`,
+  `right: 4vw`), thumb-sized at `clamp(40px, 11vw, 56px)`, and mounted on the **page**
+  — never in the stage, whose ambient drift transform would make `position: fixed`
+  resolve against it instead of the viewport.
+- The mark is drawn, not borrowed: three wavered rectangles — body, shutter, label
+  window — by the same generator the minimap border, the world link and the stick's
+  rings use. The label window is the one filled shape, in the shell's own paper-light.
+- Tapping it opens a **popover** under it, right-aligned: the title `save as`, a
+  hairline rule, then `photo` · `3d model` · `link`. Paper inside a wavered hairline,
+  rules between the rows, and nothing else — no card, no shadow, no tint (TASTE §4).
+  It slides in on `t.secondary`, closes on a tap outside, on escape, and after an
+  action; the tap that dismisses it is spent doing so and never reaches the drag that
+  turns the creature. The action key stays `picture` in code; only the word changed.
+- **The exports are built before the tap.** Web Share, the async clipboard and a
+  blob download are all gated on the tap's transient user activation, and the first
+  await that takes real time spends it — so the popover starts both renders when it
+  opens (and once at mount, on an idle callback) and the row hands the finished blob
+  to the phone with nothing awaited in front of it. A tap that arrives early says
+  `preparing` and delivers on the next one; late is not an option, because a delivery
+  that lands after the activation expires is a delivery that does not happen. This was
+  a user report — *"if I press those buttons on mobile they don't do anything for
+  saving"* — and it also needed the companion's iframe to be handed the two policies
+  explicitly (`allow="web-share; clipboard-write"`, `src/world/companionpanel.ts`):
+  same-origin does not grant them, since both default to the top document.
+
 **In the world view the same handset gets a tray instead** (`src/world/tray.ts`): the
 device miniature in the left corner, the minimap in the right, and — since 2026-09-09
 — the stick on the viewport's own centre line rather than centred in whatever the two
 corners leave over, its knob filled with the shell's own `#e9ebe9` inside its ink
 outline, while the camera rides that handset's creature (`src/world/follow.ts`) with
 orbit and pinch still entirely the person's; a tap on the minimap suspends the follow
-and the next push of the stick resumes it.
+and the next push of the stick resumes it. That map also carries **you**: your creature
+is the ordinary mark at 1.6x inside a `WORLD.light` knockout ring, drawn last over
+everyone *(user ask, 2026-09-09: "the mini map should show you where your character is
+in relation to the world")*. Unhatched it is the shell at that size, never a near-black
+dot — and there the SIZE is what distinguishes it, because a light ring on light paper
+has nothing to knock out of.
+
+**The stick owns the creature; the wander ai waits `DRIVE_IDLE_MS` after the last push
+before taking over again** *(user ask, 2026-09-09: "the automated character walk fights
+the user control … we don't enable the auto wander for the character unless it's been
+idle for 2 seconds")*. While a thumb is down — and for that window after it lifts — the
+behaviour agent is HELD on whichever page is simulating: it advances no state, chooses
+no wander target, and steers nowhere, so a pause between two pushes is not an opening
+for the creature to leave. Letting go inside the window is a drift-stop on the heading
+it was left on, never a brake and never a turn. `DRIVE_IDLE_MS` is `MOTION.primaryMs`
+(1823ms) **[D]** — the nearest beat on the token scale to the two seconds asked for;
+durations come from tokens, never literals. Physics is untouched throughout: a held
+creature is still pushed out of rocks and still parts from its neighbours.
+`CreatureManager.isDriven(id, nowMs)` is the readout.
 
 ### 2a. The sign state **[D]**
 

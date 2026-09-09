@@ -20,9 +20,22 @@
  *   map of it shows none;
  * - prop marks: sparse tiny WORLD.neutral dots, subsampled from the scatter
  *   so the map stays quiet (density is the design, TASTE §2.3);
- * - creatures: small CHARACTER.body dots — the world view has no "self",
- *   every creature is an inhabitant; eggs are WORLD.light circles with an
- *   ink hairline (unhatched reads lighter, like the shell);
+ * - creatures: small CHARACTER.body dots — on a projection every creature is
+ *   an inhabitant and they are all the same mark; eggs are WORLD.light
+ *   circles with an ink hairline (unhatched reads lighter, like the shell);
+ * - YOU, when this handset has a creature of its own (user ask, 2026-09-09:
+ *   *"the mini map should show you where your character is in relation to the
+ *   world"*): the same ink dot at 1.6x, inside a WORLD.light ring — drawn
+ *   LAST, over everyone. PLAN §7.1 asks for a distinct self mark and the
+ *   accent colour that would once have carried it is retired (TASTE §6), so
+ *   the distinction is carried in the LIGHT value instead: a ring KNOCKED OUT
+ *   of the disc — light middle, dark rim — which is what separates one
+ *   near-black dot from the near-black dots around it. Cut into the mark
+ *   rather than drawn around it, because light on the paper is a fifteenth
+ *   of a stop and light on near-black is the whole range. A ring is a border
+ *   mark (TASTE §4) — nothing new joins the mark set. An unhatched self is
+ *   the same thing one state earlier: the SHELL at 1.6x, never a near-black
+ *   dot, which would say it had already hatched;
  * - camera: a hairline diamond on the current look-target plus a subtle
  *   frustum wedge rotated by the rig azimuth, so panning and rotating stay
  *   legible on the map. Values are read live — the camera already springs,
@@ -108,6 +121,26 @@ export function partitionInhabitants(items: readonly Inhabitant[]): {
 }
 
 /**
+ * Which mark is yours, and whether it has hatched yet.
+ *
+ * The self reading is a world point — the creature manager's, read live —
+ * and the marks are drawn from the same frame's `positions()`, so the match
+ * is exact rather than a search: the tolerance is here only so that a
+ * position which travelled through a float round trip still recognises
+ * itself. Null when this view has no creature of its own (every projection)
+ * or when the id has no live slot (it was retired, or has not spawned yet),
+ * and the map draws exactly as it did before.
+ */
+export function selfMark(
+  at: { x: number; z: number } | null | undefined,
+  eggs: readonly Inhabitant[],
+): { x: number; z: number; egg: boolean } | null {
+  if (!at || !Number.isFinite(at.x) || !Number.isFinite(at.z)) return null;
+  const egg = eggs.some((e) => Math.abs(e.x - at.x) < 1e-3 && Math.abs(e.z - at.z) < 1e-3);
+  return { x: at.x, z: at.z, egg };
+}
+
+/**
  * The camera's ground look-target from its pose: intersect the view ray with
  * the y=0 plane. Pure — the rig's internal target spring stays private, and
  * this reads the same point the frame actually looks at (drift included).
@@ -150,6 +183,37 @@ const PROP_STRIDE = 5;
 const MAP_SEED = 129.4;
 /** Half-angle of the frustum wedge, radians — a hint, not a measurement. */
 const WEDGE_HALF_ANGLE = 0.42;
+
+/** The ordinary creature and egg marks, at map scale 1. */
+const CREATURE_DOT_R = 2.2;
+const EGG_DOT_R = 2.6;
+/**
+ * Yours: the same mark, half again as big. Bigger than that and it stops
+ * being one of the inhabitants and starts being a cursor.
+ *
+ * It scales the EGG too, not only the dot. The knockout ring is what
+ * separates a near-black dot from the near-black dots around it, and on an
+ * egg there is nothing for it to knock out of: `WORLD.light` on
+ * `SURFACE.ground` is a fifteenth of a stop, invisible at 1.5px (measured
+ * on the shipped paper). So while the creature is still a shell the SIZE
+ * carries the distinction and the ring rides along, and the rule stays one
+ * rule — yours is the ordinary mark at SELF_SCALE, inside a light ring.
+ */
+const SELF_SCALE = 1.6;
+/**
+ * The knockout ring, as fractions of the mark it is cut into.
+ *
+ * INSIDE the mark, not around it — which is what a knockout is, and here
+ * it is also the only thing that works. `WORLD.light` against
+ * `SURFACE.ground` is a fifteenth of a stop: a light ring drawn on the
+ * paper OUTSIDE the dot is invisible (measured on the shipped paper, at
+ * both map sizes). Against `CHARACTER.body` it is the full range. So the
+ * ring is carved out of the near-black disc — a light middle inside a dark
+ * rim — and it scales with the mark rather than being a picked px, so it
+ * survives the smallest inset the map clamps to.
+ */
+const SELF_RING_RADIUS = 0.56;
+const SELF_RING_WIDTH = 0.4;
 
 const STYLE_ID = 'world-minimap-style';
 
@@ -217,6 +281,15 @@ export interface WorldMinimapOptions {
    * straight back would make the tap do nothing at all.
    */
   onFocus?(x: number, z: number): void;
+  /**
+   * Where YOUR creature is, if this view has one.
+   *
+   * Read live, per frame, exactly like the camera indicator: the creature
+   * is already walking on its own springs and a smoothed copy here would
+   * only lag behind the dot it is meant to be a ring around. A projection
+   * passes nothing and the map is unchanged — a wall has no self.
+   */
+  self?(): { x: number; z: number } | null;
   mount: HTMLElement;
 }
 
@@ -360,7 +433,7 @@ export function installWorldMinimap(opts: WorldMinimapOptions): WorldMinimapHand
     for (const egg of eggs) {
       const at = worldToMap(egg.x, egg.z, WORLD_MAP_EXTENT, frame);
       ctx.beginPath();
-      ctx.arc(at.px, at.py, 2.6 * scale, 0, Math.PI * 2);
+      ctx.arc(at.px, at.py, EGG_DOT_R * scale, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
     }
@@ -370,7 +443,7 @@ export function installWorldMinimap(opts: WorldMinimapOptions): WorldMinimapHand
     for (const c of characters) {
       const at = worldToMap(c.x, c.z, WORLD_MAP_EXTENT, frame);
       ctx.beginPath();
-      ctx.arc(at.px, at.py, 2.2 * scale, 0, Math.PI * 2);
+      ctx.arc(at.px, at.py, CREATURE_DOT_R * scale, 0, Math.PI * 2);
       ctx.fill();
     }
 
@@ -411,6 +484,42 @@ export function installWorldMinimap(opts: WorldMinimapOptions): WorldMinimapHand
       ctx.lineTo(at.px, at.py + d);
       ctx.lineTo(at.px - d, at.py);
       ctx.closePath();
+      ctx.stroke();
+    }
+
+    // You. Last, over every other mark including the camera's — the whole
+    // question this answers is "where am I in all that", and a mark that
+    // can be covered by the thing it is being located against does not
+    // answer it. Still inside the clip: it is a mark on the map, not a
+    // label over it.
+    const mine = selfMark(opts.self?.(), eggs);
+    if (mine) {
+      const at = worldToMap(mine.x, mine.z, WORLD_MAP_EXTENT, frame);
+      // Your OWN mark, whichever one you are — the same shape as everybody
+      // else's, at SELF_SCALE, redrawn over the ordinary one it replaces.
+      const inner = (mine.egg ? EGG_DOT_R : CREATURE_DOT_R) * SELF_SCALE;
+      ctx.beginPath();
+      ctx.arc(at.px, at.py, inner * scale, 0, Math.PI * 2);
+      if (mine.egg) {
+        // Still a shell: light fill, ink hairline. A near-black dot here
+        // would say the creature had already hatched.
+        ctx.fillStyle = WORLD.light;
+        ctx.fill();
+        ctx.strokeStyle = WORLD.ink;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      } else {
+        ctx.fillStyle = CHARACTER.body;
+        ctx.fill();
+      }
+      // The ring, cut into the mark. On a shell it is light on light and
+      // says nothing — deliberately the same code path, because there the
+      // SIZE is already the whole distinction and a special case here
+      // would be a second rule for one transient state.
+      ctx.strokeStyle = WORLD.light;
+      ctx.lineWidth = inner * SELF_RING_WIDTH * scale;
+      ctx.beginPath();
+      ctx.arc(at.px, at.py, inner * SELF_RING_RADIUS * scale, 0, Math.PI * 2);
       ctx.stroke();
     }
 
