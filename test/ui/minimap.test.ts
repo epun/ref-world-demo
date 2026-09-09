@@ -27,11 +27,12 @@ import {
   installWorldMinimap,
   mapToWorld,
   partitionInhabitants,
+  selfMark,
   subsample,
   WORLD_MAP_EXTENT,
   type Inhabitant,
 } from '../../src/ui/minimap';
-import { SURFACE, WORLD } from '../../src/taste/tokens';
+import { CHARACTER, SURFACE, WORLD } from '../../src/taste/tokens';
 import {
   WATER_BODIES,
   islandOutline,
@@ -196,10 +197,16 @@ interface FillCall {
   points: [number, number][];
 }
 
+interface StrokeCall {
+  style: string;
+  width: number;
+  points: [number, number][];
+}
+
 /** A 2d context that records the paths it is asked to fill, in the
  * coordinates they were handed in (no transform is applied — the map's only
  * transform is its ambient drift, which is a translate). */
-function recordingCtx(fills: FillCall[]): CanvasRenderingContext2D {
+function recordingCtx(fills: FillCall[], strokes: StrokeCall[]): CanvasRenderingContext2D {
   let path: [number, number][] = [];
   const ctx = {
     fillStyle: '',
@@ -223,21 +230,33 @@ function recordingCtx(fills: FillCall[]): CanvasRenderingContext2D {
     quadraticCurveTo(_cx: number, _cy: number, x: number, y: number): void {
       path.push([x, y]);
     },
-    arc(x: number, y: number): void {
-      path.push([x, y]);
+    arc(x: number, y: number, r: number): void {
+      // The radius matters for the self ring — it is the only mark whose
+      // SIZE is the thing being asserted — so it rides along as a third
+      // component the fill/stroke assertions simply ignore.
+      path.push([x, y, r] as unknown as [number, number]);
     },
     closePath(): void {},
     fill(): void {
       fills.push({ style: String(ctx.fillStyle), points: [...path] });
     },
-    stroke(): void {},
+    stroke(): void {
+      strokes.push({
+        style: String(ctx.strokeStyle),
+        width: Number(ctx.lineWidth),
+        points: [...path],
+      });
+    },
   };
   return ctx as unknown as CanvasRenderingContext2D;
 }
 
 /** Enough DOM for installWorldMinimap: one canvas, a head to hang a style
  * off, a visibility flag, and a rAF that fires exactly once. */
-function stubDom(fills: FillCall[]): { draw: () => void; restore: () => void } {
+function stubDom(
+  fills: FillCall[],
+  strokes: StrokeCall[],
+): { draw: () => void; restore: () => void } {
   const canvas = {
     className: '',
     width: 0,
@@ -248,7 +267,7 @@ function stubDom(fills: FillCall[]): { draw: () => void; restore: () => void } {
     removeEventListener(): void {},
     remove(): void {},
     getBoundingClientRect: () => ({ width: 200, height: 200, left: 0, top: 0 }),
-    getContext: () => recordingCtx(fills),
+    getContext: () => recordingCtx(fills, strokes),
   };
   const frames: FrameRequestCallback[] = [];
   const globals = globalThis as Record<string, unknown>;
@@ -288,11 +307,14 @@ function stubDom(fills: FillCall[]): { draw: () => void; restore: () => void } {
 }
 
 /** One frame of the real map against the recording context. */
-function drawOnce(): FillCall[] {
+function drawOnce(
+  opts: { positions?: Inhabitant[]; self?: () => { x: number; z: number } | null } = {},
+): { fills: FillCall[]; strokes: StrokeCall[] } {
   const fills: FillCall[] = [];
-  const dom = stubDom(fills);
+  const strokes: StrokeCall[] = [];
+  const dom = stubDom(fills, strokes);
   const handle = installWorldMinimap({
-    manager: { positions: () => [] },
+    manager: { positions: () => opts.positions ?? [] },
     cameraRig: {
       azimuth: 0,
       frameAt: (): void => {},
@@ -302,16 +324,17 @@ function drawOnce(): FillCall[] {
       },
     },
     mount: { appendChild: (): void => {} } as unknown as HTMLElement,
+    ...(opts.self ? { self: opts.self } : {}),
   });
   dom.draw();
   handle.dispose();
   dom.restore();
-  return fills;
+  return { fills, strokes };
 }
 
 describe('the map draws an island in a lake', () => {
   it('fills the lake in the water value and the island back over it in ground', () => {
-    const fills = drawOnce();
+    const { fills } = drawOnce();
 
     const scale = mapMarkScale(200);
     const mapFrame: MapFrame = { w: 200, h: 200, inset: mapBorderInset(scale) + 5 * scale };
@@ -351,7 +374,7 @@ describe('the map of the plain world has no water on it', () => {
     setLandscapeMode('plain');
     let fills: FillCall[];
     try {
-      fills = drawOnce();
+      fills = drawOnce().fills;
     } finally {
       setLandscapeMode('landscape');
     }
@@ -367,8 +390,133 @@ describe('the map of the plain world has no water on it', () => {
     expect(fills.some((f) => f.style === SURFACE.ground)).toBe(true);
     // Checked against the mapped world, so this is a difference and not an
     // empty recorder.
-    expect(drawOnce().filter((f) => f.style === WORLD.neutralMid)).toHaveLength(
+    expect(drawOnce().fills.filter((f) => f.style === WORLD.neutralMid)).toHaveLength(
       WATER_BODIES.length,
     );
+  });
+});
+
+// ── you, on the map ──────────────────────────────────────────────────────────
+
+describe('selfMark', () => {
+  const eggs: Inhabitant[] = [{ x: 12, z: -4, r: 1, kind: 'egg' }];
+
+  it('is null when this view has no creature of its own', () => {
+    // Every projection. A wall has no self, and the map is unchanged.
+    expect(selfMark(null, eggs)).toBeNull();
+    expect(selfMark(undefined, eggs)).toBeNull();
+  });
+
+  it('reports a hatched creature as not an egg', () => {
+    expect(selfMark({ x: 40, z: 40 }, eggs)).toEqual({ x: 40, z: 40, egg: false });
+  });
+
+  it('recognises its own egg, so the ring goes round the shell', () => {
+    expect(selfMark({ x: 12, z: -4 }, eggs)?.egg).toBe(true);
+    // …through a float round trip, which is the only reason there is a
+    // tolerance at all.
+    expect(selfMark({ x: 12 + 1e-7, z: -4 - 1e-7 }, eggs)?.egg).toBe(true);
+  });
+
+  it('does not claim the egg somebody else left standing nearby', () => {
+    expect(selfMark({ x: 13, z: -4 }, eggs)?.egg).toBe(false);
+  });
+
+  it('refuses a position that is not a position', () => {
+    expect(selfMark({ x: Number.NaN, z: 0 }, eggs)).toBeNull();
+    expect(selfMark({ x: 0, z: Number.POSITIVE_INFINITY }, eggs)).toBeNull();
+  });
+});
+
+describe('the map draws where YOU are', () => {
+  const scale = mapMarkScale(200);
+  const mapFrame: MapFrame = { w: 200, h: 200, inset: mapBorderInset(scale) + 5 * scale };
+  const at = (x: number, z: number): { px: number; py: number } =>
+    worldToMap(x, z, WORLD_MAP_EXTENT, mapFrame);
+  /** The light-valued rings on the frame. The knockout ring is the ONLY
+   * thing on this map drawn in WORLD.light as a stroke — everything else
+   * light is a fill (the eggs) or the ground. */
+  const rings = (strokes: StrokeCall[]): StrokeCall[] =>
+    strokes.filter((s) => s.style === WORLD.light);
+
+  it('paints nothing extra when no self is given', () => {
+    // The projection's map, unchanged. This is the control for every
+    // assertion below.
+    const { strokes } = drawOnce({
+      positions: [{ x: 20, z: 20, r: 1, kind: 'character' }],
+    });
+    expect(rings(strokes)).toHaveLength(0);
+  });
+
+  it('rings your creature in the light value, over an ink dot', () => {
+    const mine = { x: 20, z: 20 };
+    const { fills, strokes } = drawOnce({
+      positions: [
+        { ...mine, r: 1, kind: 'character' },
+        { x: -60, z: 30, r: 1, kind: 'character' },
+      ],
+      self: () => mine,
+    });
+    const ring = rings(strokes);
+    expect(ring).toHaveLength(1);
+    const point = ring[0]!.points[0]! as unknown as [number, number, number];
+    const want = at(mine.x, mine.z);
+    expect(point[0]).toBeCloseTo(want.px, 6);
+    expect(point[1]).toBeCloseTo(want.py, 6);
+    // Sized from the mark it is cut into rather than a picked px, so it
+    // survives the smallest inset the map clamps to.
+    expect(ring[0]!.width).toBeCloseTo(2.2 * 1.6 * 0.4 * scale, 6);
+
+    // …over a bigger ink dot than the inhabitants around it. Two character
+    // dots were drawn; the last one on this point is yours.
+    const dots = fills.filter((f) => f.style === CHARACTER.body);
+    expect(dots.length).toBeGreaterThanOrEqual(3);
+    const self = dots[dots.length - 1]!.points[0]! as unknown as [number, number, number];
+    const other = dots[0]!.points[0]! as unknown as [number, number, number];
+    expect(self[0]).toBeCloseTo(want.px, 6);
+    expect(self[2] / other[2]).toBeCloseTo(1.6, 6);
+    // KNOCKED OUT of the disc, not drawn around it: a light ring on the
+    // paper outside the dot is invisible — WORLD.light against
+    // SURFACE.ground is a fifteenth of a stop — and against CHARACTER.body
+    // it is the whole range. So it has to be inside the mark.
+    expect(point[2]).toBeLessThan(self[2]);
+    // …and it leaves a dark rim outside it rather than eating the mark.
+    expect(point[2] + ring[0]!.width / 2).toBeLessThan(self[2]);
+  });
+
+  it('draws your EGG as a bigger SHELL, never as a creature', () => {
+    const mine = { x: -40, z: 12 };
+    const { fills, strokes } = drawOnce({
+      positions: [{ ...mine, r: 1, kind: 'egg' }],
+      self: () => mine,
+    });
+    expect(rings(strokes)).toHaveLength(1);
+    // No near-black dot anywhere: a creature mark on the shell would say
+    // it had already hatched.
+    expect(fills.filter((f) => f.style === CHARACTER.body)).toHaveLength(0);
+    // The shell is redrawn over the ordinary one at 1.6x. It has to be the
+    // size that carries this, because a light ring on light paper carries
+    // nothing: WORLD.light on SURFACE.ground is invisible at a hairline
+    // and a half, which is exactly what the first build of it looked like.
+    const shells = fills.filter((f) => f.style === WORLD.light);
+    expect(shells).toHaveLength(2);
+    const ordinary = shells[0]!.points[0]! as unknown as [number, number, number];
+    const self = shells[1]!.points[0]! as unknown as [number, number, number];
+    expect(self[2] / ordinary[2]).toBeCloseTo(1.6, 6);
+  });
+
+  it('draws you LAST, after every other mark', () => {
+    const mine = { x: 0, z: 0 };
+    const { strokes } = drawOnce({
+      positions: [{ ...mine, r: 1, kind: 'character' }],
+      self: () => mine,
+    });
+    // The border is stroked after the clip is released, and the ring is
+    // inside it — so the ring is the last mark ON the map, and the frame
+    // is still the last thing drawn.
+    const ringIndex = strokes.findIndex((s) => s.style === WORLD.light);
+    const inkStrokes = strokes.filter((s) => s.style === WORLD.ink);
+    expect(ringIndex).toBeGreaterThan(strokes.indexOf(inkStrokes[0]!));
+    expect(strokes.indexOf(inkStrokes[inkStrokes.length - 1]!)).toBeGreaterThan(ringIndex);
   });
 });

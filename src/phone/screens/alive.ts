@@ -48,7 +48,7 @@
 import { Box3, Color, OrthographicCamera, Scene, Vector3, WebGLRenderer } from 'three';
 import { BUBBLE_EMOJI } from '../../character/bubble';
 import { CHARACTER_HEIGHT, createCharacter, type Character } from '../../character/character';
-import type { EmoteName, PoseMsg, RosterMsg } from '../../net/protocol';
+import type { EmoteName, KeepAction, PoseMsg, RosterMsg } from '../../net/protocol';
 import type { StrokeList } from '../../shape/types';
 import { SURFACE, WORLD } from '../../taste/tokens';
 import { GrainPass } from '../../world/grain';
@@ -113,6 +113,14 @@ export interface AliveScreenOptions {
    */
   initialSpin?: SpinState;
   onEmote(emote: EmoteName): void;
+  /**
+   * Somebody kept their creature, and it worked — a photo, a 3d model, or a
+   * link (src/phone/keepui.ts). Told to the world so the session log has it
+   * (docs/SESSION.md §keep); the save itself is finished by the time this
+   * fires and nothing here can fail it. A save that FAILED is not a save and
+   * is not reported.
+   */
+  onKeep?(action: KeepAction): void;
   /**
    * The world this creature lives in, when there is a shared one.
    *
@@ -320,19 +328,25 @@ export function mountAliveScreen(
     ...(options.initialSpin ? { initial: options.initialSpin } : {}),
   });
   /*
-   * The corner, which has been empty since the minimap left the phone.
+   * SAVING — on the paper, not on the screen (user ask, 2026-09-09:
+   * *"move the download button on mobile view when the device is shown to
+   * the top right corner outside of the device"*).
    *
-   * It holds the KEEP mark now (user ask, 2026-09-08: people should be
-   * able to save their creature). The slot kept its box through that whole
-   * time precisely so something arriving in it would be a mount rather
-   * than a relayout — this is that mount, and nothing else on the screen
-   * moves to make room.
+   * It used to hold the `corner` slot, which is inside the well: a save
+   * control standing on the one object the screen is for. Outside the case
+   * it is what it actually is — something the person does with the device
+   * — so keepui mounts it on the PAGE and places itself against the
+   * screen's own top-right corner. Not into a slot and not into `field`:
+   * both sit under the stage, the stage carries the ambient drift
+   * transform, and a `position: fixed` child of a transformed box is fixed
+   * to that box instead of to the viewport. The corner slot goes back to
+   * being empty, which is a state of a slot and never a removal.
    *
    * Only with an identity. Every way of keeping a creature is addressed by
    * the id the world spawned it under: the filename carries it, the link
    * IS it, and the exports rebuild from it so what gets saved is the same
    * creature and not a lookalike. The local same-device flow has no id and
-   * gets no corner, which is the same rule the rest of this screen follows.
+   * gets no mark, which is the same rule the rest of this screen follows.
    */
   let keep: KeepUiHandle | null = null;
   if (options.identity !== undefined) {
@@ -344,9 +358,15 @@ export function mountAliveScreen(
       // here would be the placeholder forever.
       name: () => currentName,
       world: options.world ?? null,
+      mount: document.body,
+      // keepui's own key for the first row is `picture`, older than the
+      // label the person reads; the wire and the log carry the label
+      // (src/net/protocol.ts KeepAction), so the map happens here — the one
+      // seam that knows both vocabularies.
+      onResult: (action, ok) => {
+        if (ok) options.onKeep?.(action === 'picture' ? 'photo' : action);
+      },
     });
-    slots.corner.appendChild(keep.mark);
-    field.appendChild(keep.row);
   }
 
   // ── Portrait: the local deterministic pipeline (PLAN §6.3) ────────────────

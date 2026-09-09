@@ -202,7 +202,14 @@ describe('the paint skill is wired the way the port plan asks', () => {
   });
 
   it('registers the four height tools and the two water ones, hotkeys 1-6', () => {
-    for (const id of ['raise', 'lower', 'flatten', 'smooth', 'pond', 'drain']) {
+    // The height four are built through `recorded(id, …)` — the helper that
+    // records the dab and then stamps it — so the id is its first argument
+    // rather than a literal field. The water two carry an `onStamp` of their
+    // own (`stampWater`), so they stay literal descriptors.
+    for (const id of ['raise', 'lower', 'flatten', 'smooth']) {
+      expect(source, id).toContain(`recorded('${id}'`);
+    }
+    for (const id of ['pond', 'drain']) {
       expect(source, id).toContain(`id: '${id}'`);
     }
     expect(source).toContain("const TOOL_KEYS = ['1', '2', '3', '4', '5', '6'] as const;");
@@ -257,8 +264,29 @@ describe('the paint skill is wired the way the port plan asks', () => {
     expect(end.slice(0, 400)).toContain('rebuildNow()');
   });
 
-  it('leaves a marked hook where the session paint event goes (plan step 6)', () => {
+  it('records one session event per dab, on the stamp and not on the stroke', () => {
+    // Plan step 6, wired (docs/SESSION.md §paint). It has to hang off the
+    // per-dab `onStamp`: the Brush emits `stroke` once per BATCH of dabs and
+    // hands it no op, so a stroke-level hook could not say where anything
+    // landed.
     expect(source).toContain('session hook');
-    expect(source).toContain("k: 'paint'");
+    expect(source).toContain('const recordStamp = (');
+    expect(source).toContain('handles.session?.paint(');
+    expect(source).toContain('onStamp: (_ctx: unknown, op: StampOp): void => {');
+    // The clear, and the replay seam the world's driver reaches for.
+    expect(source).toContain("tool: 'clear'");
+    expect(source).toContain('applyPaint');
+  });
+
+  it('records a water dab with the plane it filled to, and replays it', () => {
+    // A pond dab's level is chosen from the bank around the stroke's first
+    // dab, and by replay time that bank may have been painted over — so the
+    // number rides in the event rather than being re-derived.
+    expect(source).toContain('recordStamp(record, op, drain ? undefined : (strokeLevel ?? undefined))');
+    // …and a replayed dab lays it, through the same `stampWater` a live one
+    // uses, without recording itself a second time.
+    expect(source).toContain('strokeLevel = event.level ?? null;');
+    expect(source).toContain('stampWater(op, { x: event.x, y: 0, z: event.z, u, v }, drain, null);');
+    expect(source).toContain('strokeLevel = held;');
   });
 });

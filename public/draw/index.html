@@ -597,6 +597,22 @@
       primaryMs: 1823,
       ambientMs: 3646,
     };
+    /**
+     * The keepalive body budget, and how many bytes a payload actually is.
+     *
+     * 64kb is the spec's allowance for every keepalive request a document
+     * has in flight; we stay under it with room to spare rather than at it,
+     * because being one byte over means the request is not sent at all.
+     *
+     * Declared UP HERE, with the other constants, rather than beside the one
+     * call that reads it: everything below runs from a callback, and a
+     * `const` used before its declaration is a ReferenceError this project
+     * has already shipped once (test/phone/tdz.test.ts).
+     */
+    const KEEPALIVE_MAX_BYTES = 56000;
+    function payloadBytes(text) {
+      try { return new TextEncoder().encode(text).length; } catch (e) { return text.length * 2; }
+    }
     // The stagger the satellites run on is derived from the same scale, never
     // invented (PHONE-STAGE §3) — it lives in css as `--stagger`, because
     // nothing in this script schedules a satellite by hand any more.
@@ -852,6 +868,76 @@
     function goToCompanion() {
       location.replace(companionUrl());
     }
+    /**
+     * THE HANDSET HEALS THE STORE (src/phone/heal.ts has the whole argument;
+     * this is the same rule, written out again because a page in `public/`
+     * imports nothing — keep the two in step).
+     *
+     * A drawing sent before the world had a store, or whose durable POST was
+     * cancelled on the way out, lives on in this handset's localStorage and
+     * nowhere else. In a NAMED world nothing repairs that: the epoch is
+     * `w-<world>` forever, so the record never goes stale, so this pad hands
+     * the person to their companion and the companion shows them a creature
+     * that stands nowhere on the map (user report, 2026-09-09).
+     *
+     * So before leaving, ask the world what it has. Only a readable log that
+     * does NOT list this handset's id is a reason to post; every other
+     * answer — an unreachable store, an unreadable body, a 409 saying this
+     * device is already claimed — means leave everything alone. The local
+     * record is never touched and the pad is never freed by a failure.
+     *
+     * Silent: no toast, no status, nothing. It is a database being tidied.
+     */
+    function storeHasDrawing(body, id) {
+      if (!id) return 'unreadable';
+      if (typeof body !== 'object' || body === null || Array.isArray(body)) return 'unreadable';
+      if (body.schema !== 'refworld.session' || !Array.isArray(body.events)) return 'unreadable';
+      for (var i = 0; i < body.events.length; i++) {
+        var e = body.events[i];
+        if (e && e.k === 'drawing' && e.id === id) return 'yes';
+      }
+      return 'no';
+    }
+    var healing = false;
+    /**
+     * Heal, then `then()`.
+     *
+     * It WAITS, which nothing else on this page's way out does. The pad is
+     * already frozen by the time this runs and both pages paint the same
+     * paper (PHONE-STAGE §4.1), so there is nothing on screen for the wait
+     * to spoil — and the alternative is worse, because `location.replace`
+     * cancels every request this document still has in flight. The wait is
+     * capped at one MOTION.primaryMs: a store that slow is healed from the
+     * companion instead, which is the same call on a page that stays put.
+     */
+    function healThenGo(then) {
+      // A second call — a bfcache restore, a tab coming back — must still
+      // hand the person over. Only the WRITE is once; the navigation is
+      // this function's job every time it is asked.
+      if (healing) { then(); return; }
+      healing = true;
+      var rec = storedSubmission();
+      if (!WORLD || !rec || !rec.id || !rec.strokes || !rec.strokes.length) { then(); return; }
+      var left = false;
+      var go = function () { if (!left) { left = true; then(); } };
+      setTimeout(go, MOTION.primaryMs);
+      var endpoint = '/api/drawings?world=' + encodeURIComponent(WORLD);
+      fetch(endpoint, { cache: 'no-store' })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (body) {
+          if (storeHasDrawing(body, rec.id) !== 'no') return null;
+          var payload = JSON.stringify({ id: rec.id, name: rec.name || '', strokes: rec.strokes });
+          var options = {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: payload,
+          };
+          // Same reason as the send's own post: this document is about to go.
+          if (payloadBytes(payload) <= KEEPALIVE_MAX_BYTES) options.keepalive = true;
+          return fetch(endpoint, options);
+        })
+        .then(go, go);
+    }
     function enforceSingleDrawing() {
       // A recovery link is EXPECTED to arrive on a handset that already drew
       // — that is the whole point of it. Let recoverFromLink() do its work
@@ -865,7 +951,7 @@
       if (send) send.disabled = true;
       const clear = document.getElementById('clear');
       if (clear) clear.disabled = true;
-      goToCompanion();
+      healThenGo(goToCompanion);
       return true;
     }
     enforceSingleDrawing();
@@ -1206,11 +1292,37 @@
       // slow or failing api must not hold up the hand-off. A rejection is
       // recorded for the notice below rather than thrown.
       if (WORLD) {
-        fetch('/api/drawings?world=' + encodeURIComponent(WORLD), {
+        /*
+         * KEEPALIVE, because this page is about to leave.
+         *
+         * The seam navigates var(--t-secondary) after the send, and a
+         * navigation cancels every request the outgoing document still has
+         * in flight. A cold serverless function plus a store write is
+         * routinely slower than that, so on a phone the durable copy was
+         * being ABORTED on its way out — measured as net::ERR_ABORTED —
+         * while mqtt carried the drawing to whatever projection happened to
+         * be open and nothing was kept anywhere. The person then opened the
+         * world view, which reads the store, and their creature was not in
+         * it (user report, 2026-09-09).
+         *
+         * `keepalive` is the one thing that outlives the document. It is
+         * still fire and forget: nothing waits on the answer, the hand-off
+         * is unchanged, and the request simply finishes without us.
+         */
+        var payload = JSON.stringify({ id: msg.id, name: userName || '', strokes: msg.strokes });
+        var options = {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ id: msg.id, name: userName || '', strokes: msg.strokes }),
-        }).then(function (r) {
+          body: payload,
+        };
+        /*
+         * The flag has a body budget (64kb across every keepalive request in
+         * flight) and a browser REFUSES the request outright when it is
+         * exceeded. A very long drawing is therefore sent the ordinary way
+         * instead: a race we might lose beats a request that is never made.
+         */
+        if (payloadBytes(payload) <= KEEPALIVE_MAX_BYTES) options.keepalive = true;
+        fetch('/api/drawings?world=' + encodeURIComponent(WORLD), options).then(function (r) {
           if (r.status === 409) showToast('you already have a creature in this world');
         }).catch(function () { /* offline — mqtt already carried it */ });
       }

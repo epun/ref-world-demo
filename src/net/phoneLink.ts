@@ -16,6 +16,7 @@
  *
  *   phone → world, on `drawto3d/v1/{room}`
  *     { id, type: "emote", from: "<drawer id>", emote: "happy", ts }
+ *     { id, type: "keep",  from: "<drawer id>", action: "photo", ts }
  *     { id, type: "hello", from: "<drawer id>", ts }
  *
  *   world → phones, on `drawto3d/v1/{room}/up`
@@ -33,7 +34,7 @@
  * lets its drawers in again).
  */
 
-import type { EmoteName } from './protocol.js';
+import type { EmoteName, KeepAction } from './protocol.js';
 
 /** Topic prefix — the vendored kit's, so we share the room with drawings. */
 const TOPIC_PREFIX = 'drawto3d/v1/';
@@ -62,6 +63,16 @@ export interface Verdict {
 export interface PhoneLink {
   /** Tap an emote — it plays on this drawer's creature in the world. */
   send(emote: EmoteName): void;
+  /**
+   * Tell the world somebody kept their creature (docs/SESSION.md §keep).
+   *
+   * Nothing waits on it and nothing comes back: the file is already saved
+   * or the link already copied by the time this is called, and a save is
+   * never made to wait on the wire. With no link at all (`createPhoneLink`
+   * returned null — no mqtt on the page) the caller's optional chain drops
+   * it and the save is exactly as saved as it was.
+   */
+  keep(action: KeepAction): void;
   /** Announce this handset so the world answers with its verdict + epoch.
    * Sent on join; the answer arrives on the downlink. */
   hello(): void;
@@ -210,6 +221,9 @@ export function createPhoneLink(
     send(emote: EmoteName): void {
       publish({ type: 'emote', emote });
     },
+    keep(action: KeepAction): void {
+      publish({ type: 'keep', action });
+    },
     hello(): void {
       publish({ type: 'hello' });
     },
@@ -322,6 +336,24 @@ export function readHello(msg: unknown): { from: string } | null {
   const from = rec['from'];
   if (typeof from !== 'string' || from.length === 0) return null;
   return { from };
+}
+
+/**
+ * Parse an inbound feed message as a keep, or null if it is not one. Pure —
+ * the world's ingest routes with this, exactly as it does with an emote.
+ */
+export function readKeepMessage(
+  msg: unknown,
+  isKeepAction: (v: string) => boolean,
+): { from: string; action: KeepAction } | null {
+  if (typeof msg !== 'object' || msg === null) return null;
+  const rec = msg as Record<string, unknown>;
+  if (rec['type'] !== 'keep') return null;
+  const from = rec['from'];
+  const action = rec['action'];
+  if (typeof from !== 'string' || from.length === 0) return null;
+  if (typeof action !== 'string' || !isKeepAction(action)) return null;
+  return { from, action: action as KeepAction };
 }
 
 /** Parse an inbound feed message as an emote, or null if it is not one.

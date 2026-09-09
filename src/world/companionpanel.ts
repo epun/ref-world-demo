@@ -33,6 +33,19 @@ import { MOTION, SURFACE } from '../taste/tokens';
 /** What the framed companion says when it wants to be dismissed. */
 export const CLOSE_MESSAGE = 'refworld:companion-close';
 
+/**
+ * What the framed companion says when it could not boot at all.
+ *
+ * Distinct from a close on purpose. A close is the person leaving, and the
+ * frame is kept — that is the whole point of the panel. A failure is a
+ * document with nothing in it, and the panel over the world is the worst
+ * place for one: it is full screen and opaque, and its only exit is the
+ * world link, which is mounted by the boot that just failed. Somebody who
+ * tapped the device got a blank case with "nothing shown or any way to
+ * refresh or go back" (user report, 2026-09-09).
+ */
+export const FAILED_MESSAGE = 'refworld:companion-failed';
+
 const STYLE_ID = 'companion-panel-style';
 
 function ensureStyle(): void {
@@ -118,7 +131,21 @@ export function createCompanionPanel(
     const el = document.createElement('iframe');
     el.className = 'companion-panel';
     el.setAttribute('title', 'your creature');
-    // Same origin, so the companion can talk back. Nothing else is granted.
+    /*
+     * Two policies, delegated explicitly (user report, 2026-09-09: the save
+     * rows *"don't do anything"*).
+     *
+     * Web Share and the async clipboard are permission-policy features, and
+     * a frame is not granted them by being same-origin: the default
+     * allowlist for `web-share` is `self`, which means the TOP document,
+     * not any frame inside it. So the companion's save control — the only
+     * thing on either surface that hands a file or a link to the phone —
+     * was calling `share` and `writeText` in a frame that had been denied
+     * both, and every save silently did nothing. Nothing else is granted;
+     * this is the smallest allowlist that lets a save leave the device.
+     */
+    el.setAttribute('allow', 'web-share; clipboard-write');
+    // Same origin, so the companion can talk back.
     el.src = options.href;
     root.appendChild(el);
     frame = el;
@@ -126,11 +153,23 @@ export function createCompanionPanel(
   };
 
   const onMessage = (event: MessageEvent): void => {
-    // Same-origin only, and only the one thing we listen for. The frame is
+    // Same-origin only, and only the two things we listen for. The frame is
     // ours, but the listener is on `window` and anything can post to it.
     if (event.origin !== window.location.origin) return;
-    if (event.data !== CLOSE_MESSAGE) return;
-    close();
+    if (event.data === CLOSE_MESSAGE) {
+      close();
+      return;
+    }
+    if (event.data === FAILED_MESSAGE) {
+      // The companion could not boot. It leaves the same way it arrived —
+      // one slide, on the settle curve, nothing cut — and then it is thrown
+      // away rather than kept: a dead document reopened is dead again, and
+      // building a fresh one is the only retry a person has from in here.
+      close();
+      const dead = frame;
+      frame = null;
+      window.setTimeout(() => dead?.remove(), MOTION.secondaryMs);
+    }
   };
   window.addEventListener('message', onMessage);
 

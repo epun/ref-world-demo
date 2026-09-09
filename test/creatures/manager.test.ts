@@ -19,15 +19,17 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Mesh, Scene, Vector3 } from 'three';
 import type { Group, Object3D } from 'three';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { createCharacter } from '../../src/character/character';
 import {
+  DRIVE_IDLE_MS,
   MAX_POPULATION,
   chooseEviction,
   createCreatureManager,
   measureBodyRadius,
   spawnSpot,
 } from '../../src/creatures/manager';
+import { BehaviorAgent } from '../../src/behavior/agent';
 import { generatedName } from '../../src/creatures/naming';
 import { MOTION } from '../../src/taste/tokens';
 import { EGG_RADIUS } from '../../src/egg/egg';
@@ -965,6 +967,172 @@ describe('drive — a creature under somebody’s thumb', () => {
     const manager = driving();
     expect(manager.drive('mine', { x: 1, z: 0, mag: 1 })).toBe(true);
     expect(manager.drive('nobody', { x: 1, z: 0, mag: 1 })).toBe(false);
+    manager.clearAll();
+  });
+});
+
+describe('drive hold — the stick owns the creature, the wander ai waits', () => {
+  /**
+   * The fight (user ask, 2026-09-09: *"the automated character walk fights
+   * the user control"*): the agent used to keep choosing and turning under
+   * a person's thumb, so every pause between two pushes was the creature
+   * setting off somewhere nobody had asked for. The hold stands the agent
+   * down while a hand is on it and for DRIVE_IDLE_MS after the last push.
+   */
+
+  function held() {
+    const manager = createCreatureManager(stubWorld([]), { autoHatch: false });
+    manager.spawn('mine', circleBlob, { hatchMs: 60_000, grown: true });
+    return manager;
+  }
+
+  /** A clock the test owns: the manager compares the window against the
+   * `nowMs` it is stepped with, so the test can walk it deliberately. */
+  function clock(manager: ReturnType<typeof createCreatureManager>, start = 10_000) {
+    let now = start;
+    return {
+      get now() {
+        return now;
+      },
+      run(ms: number, dt = 16) {
+        for (let t = 0; t < ms; t += dt) {
+          now += dt;
+          manager.update(dt, now);
+        }
+      },
+    };
+  }
+
+  it('stands the agent down while the stick is down', () => {
+    const manager = held();
+    const spy = vi.spyOn(BehaviorAgent.prototype, 'update');
+    const c = clock(manager);
+    manager.drive('mine', { x: 1, z: 0, mag: 1 });
+    c.run(320);
+    expect(spy.mock.calls.length).toBeGreaterThan(10);
+    // Every single step of the agent was a held one.
+    for (const call of spy.mock.calls) expect(call[6]).not.toBeNull();
+    expect(manager.isDriven('mine', c.now)).toBe(true);
+    spy.mockRestore();
+    manager.clearAll();
+  });
+
+  it('keeps holding for DRIVE_IDLE_MS after the thumb lifts, then hands back', () => {
+    const manager = held();
+    const c = clock(manager);
+    manager.drive('mine', { x: 1, z: 0, mag: 1 });
+    c.run(320);
+    manager.drive('mine', null);
+    // The stick is at rest but the window is open: still nobody else's.
+    expect(manager.driven()).toEqual([]);
+
+    const spy = vi.spyOn(BehaviorAgent.prototype, 'update');
+    c.run(DRIVE_IDLE_MS - 400);
+    expect(manager.isDriven('mine', c.now)).toBe(true);
+    for (const call of spy.mock.calls) expect(call[6]).not.toBeNull();
+
+    spy.mockClear();
+    c.run(800);
+    expect(manager.isDriven('mine', c.now)).toBe(false);
+    // The last steps are the agent's own again — it has the creature back.
+    const last = spy.mock.calls[spy.mock.calls.length - 1]!;
+    expect(last[6]).toBeNull();
+    spy.mockRestore();
+    manager.clearAll();
+  });
+
+  it('a zero-strength drive neither starts nor extends the hold', () => {
+    const manager = held();
+    const c = clock(manager);
+    const spy = vi.spyOn(BehaviorAgent.prototype, 'update');
+
+    // Nothing but rest frames: the creature was never steered, so the agent
+    // never stops living.
+    manager.drive('mine', { x: 1, z: 0, mag: 0 });
+    c.run(320);
+    expect(manager.isDriven('mine', c.now)).toBe(false);
+    for (const call of spy.mock.calls) expect(call[6]).toBeNull();
+
+    // And a rest frame arriving late in an open window does not push its
+    // end back — a window measured from letting go would never close.
+    manager.drive('mine', { x: 1, z: 0, mag: 1 });
+    c.run(160);
+    const lastPush = c.now;
+    manager.drive('mine', { x: 1, z: 0, mag: 0 });
+    c.run(DRIVE_IDLE_MS - 400);
+    expect(manager.isDriven('mine', c.now)).toBe(true);
+    c.run(800);
+    expect(c.now - lastPush).toBeGreaterThan(DRIVE_IDLE_MS);
+    expect(manager.isDriven('mine', c.now)).toBe(false);
+    spy.mockRestore();
+    manager.clearAll();
+  });
+
+  it('lets go as a drift-stop on the heading it was left on — no turn, no brake', () => {
+    const manager = held();
+    const c = clock(manager);
+    manager.drive('mine', { x: 1, z: 0, mag: 1 });
+    c.run(800);
+    manager.drive('mine', null);
+
+    const facing = manager.poses()[0]!.heading;
+    let previous = manager.poses()[0]!;
+    let step = Infinity;
+    let travelled = 0;
+    for (let t = 0; t < DRIVE_IDLE_MS - 200; t += 16) {
+      c.run(16);
+      const at = manager.poses()[0]!;
+      const d = Math.hypot(at.x - previous.x, at.z - previous.z);
+      // Slowing every frame, never a cut to zero and never a new push.
+      expect(d).toBeLessThanOrEqual(step + 1e-6);
+      // And never a turn: the creature it hands back is the one that was
+      // left facing this way.
+      expect(at.heading).toBeCloseTo(facing, 6);
+      step = d;
+      travelled += d;
+      previous = at;
+    }
+    // It coasted to a stop rather than stopping dead, and it is standing
+    // still by the time the window closes.
+    expect(travelled).toBeGreaterThan(0.05);
+    // A frame of the push moved it ~0.027; the last frame of the coast is
+    // under a twentieth of that. Not zero — nothing here fully arrests.
+    expect(step).toBeLessThan(0.0015);
+    expect(step).toBeGreaterThan(0);
+    manager.clearAll();
+  });
+
+  it('still resolves colliders while the hold runs', () => {
+    // The hold is about intent, not about walking through rocks.
+    const rock: Collider = { x: 9, z: 4, r: 1.8, hard: true };
+    const manager = createCreatureManager(stubWorld([rock]), { autoHatch: false });
+    manager.spawn('mine', circleBlob, { hatchMs: 60_000, grown: true });
+    const c = clock(manager);
+    const start = manager.poses()[0]!;
+    const toRock = { x: rock.x - start.x, z: rock.z - start.z };
+    const len = Math.hypot(toRock.x, toRock.z);
+
+    // Pushed straight into the rock, then released against it: the coast
+    // out of the release is still travelling at it.
+    manager.drive('mine', { x: toRock.x / len, z: toRock.z / len, mag: 1 });
+    for (let t = 0; t < 4000; t += 16) {
+      c.run(16);
+      const at = manager.poses()[0]!;
+      expect(Math.hypot(at.x - rock.x, at.z - rock.z)).toBeGreaterThan(rock.r);
+    }
+    manager.drive('mine', null);
+    for (let t = 0; t < DRIVE_IDLE_MS; t += 16) {
+      c.run(16);
+      const at = manager.poses()[0]!;
+      expect(Math.hypot(at.x - rock.x, at.z - rock.z)).toBeGreaterThan(rock.r);
+    }
+    expect(manager.isDriven('mine', c.now)).toBe(false);
+    manager.clearAll();
+  });
+
+  it('says nothing is held for a creature that was never there', () => {
+    const manager = held();
+    expect(manager.isDriven('nobody', 10_000)).toBe(false);
     manager.clearAll();
   });
 });

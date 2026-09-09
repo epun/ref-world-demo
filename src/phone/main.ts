@@ -27,8 +27,10 @@ import {
   writeSubmission,
 } from './identity';
 import { createSession } from './session';
+import { healStore } from './heal';
 import { mountWorldLink } from './worldlink';
 import { readKeepId } from './keeplink';
+import { FAILED_MESSAGE } from '../world/companionpanel';
 import { readSessionLog } from '../session/events';
 import { SPIN_REST, type SpinState } from './spin';
 import {
@@ -431,6 +433,12 @@ async function boot(): Promise<void> {
           session.sendEmote(emote);
           uplink?.send(emote);
         },
+        // A save, told to the world so the session log records it
+        // (docs/SESSION.md §keep). One-way and unawaited: the file is
+        // already on the handset by now, and with no uplink — an
+        // installation phone, a page with no mqtt — the optional chain
+        // drops it. A save is never made to wait on the wire.
+        onKeep: (action) => uplink?.keep(action),
       });
       if (lastPose) handle.setPose(lastPose);
       if (lastRoster) handle.setRoster(lastRoster);
@@ -481,6 +489,31 @@ async function boot(): Promise<void> {
   // drawing itself already reached the world over mqtt from the draw page
   // — this only drives the LOCAL session, so no duplicate egg.
   if (strokes.length > 0) session.sendDrawing(strokes);
+
+  /*
+   * OFFER THE DRAWING BACK TO THE STORE, if the store does not have it.
+   *
+   * This is the page a handset with a creature lands on — the pad bounces
+   * straight here — so it is where the repair belongs (src/phone/heal.ts
+   * has the whole argument). In a named world nothing else can perform it:
+   * the epoch never changes, so the record never goes stale, so a drawing
+   * the store lost is restored on this screen forever and stands nowhere on
+   * the map (user report, 2026-09-09).
+   *
+   * Not awaited and never spoken about. Every failure means leave
+   * everything alone, and the world's own poll is additive, so a healed
+   * drawing simply arrives on the next tick.
+   */
+  if (publicWorld.length > 0 && room.length > 0) {
+    const mineNow = readSubmission(room);
+    if (mineNow) {
+      void healStore(publicWorld, {
+        id: mineNow.id,
+        name: mineNow.name,
+        strokes: mineNow.strokes,
+      });
+    }
+  }
 
   // ── what the world says back ─────────────────────────────────────────────
   const drawAgain = (): void => {
@@ -642,4 +675,28 @@ async function boot(): Promise<void> {
   });
 }
 
-void boot();
+/**
+ * A boot that throws leaves the case standing with nothing in it.
+ *
+ * On its own page that is a blank screen with an address bar — bad, but
+ * escapable. Inside the world's companion panel it is a full-screen frame
+ * with no way out at all: the exit is the world link, and the boot that
+ * just failed is what mounts it. That is exactly what a TDZ on the restore
+ * path did (test/phone/tdz.test.ts) and exactly what the person on the
+ * other end saw — a blank device and no way to refresh or go back.
+ *
+ * So a failure asks the panel to leave, and the world comes back. Nothing
+ * here is catching ordinary trouble: createSession and loadKept both
+ * swallow their own, so a rejection at this level is a fault in the code
+ * and is reported as one.
+ */
+void boot().catch((err: unknown) => {
+  console.error('the companion could not boot', err);
+  try {
+    if (window.parent !== window) {
+      window.parent.postMessage(FAILED_MESSAGE, window.location.origin);
+    }
+  } catch {
+    // A cross-origin parent is not our panel, and owes us nothing.
+  }
+});

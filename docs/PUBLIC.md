@@ -156,6 +156,36 @@ A person who clears their site data can draw again. That is a courtesy
 rail, not an access control, and it should not be described as one. Making
 it real would mean accounts, and accounts would cost more than the problem.
 
+### the handset heals the store
+
+Those two halves can disagree, and in a named world nothing repairs it on
+its own: the world's epoch is `w-<world>` forever, so a handset's record
+never goes stale, so the pad refuses a second drawing and the companion
+restores a creature the store has never had — *"it shows in the mobile view,
+but it does not load in the map view"* (user report, 2026-09-09). A drawing
+sent before the kv integration was connected (503), or whose durable POST
+was cancelled by the hand-off navigation, is missing from the world forever
+while the phone that made it still shows it.
+
+So the handset offers it back. On the pad's already-drew path and again on
+the companion, a named world is asked for its log; only if that log is
+readable **and does not carry this handset's id** is the same drawing
+posted again — same id, same wire strokes, the ordinary endpoint, the
+ordinary screen, the ordinary device claim. The world's poll is additive, so
+it arrives on the next tick.
+
+Every other answer means leave everything alone: an unreachable or
+unreadable store is **not** a store that lost the drawing, and `409` is the
+store saying it already has this device under a record of its own —
+including one a moderator has refused, which a re-post must never undo. The
+local record is never deleted and the pad is never freed by a failure. It is
+silent end to end; a database being tidied is not news for the person
+holding the phone.
+
+`src/phone/heal.ts` is the rule; `public/draw/index.html` carries the same
+one written out again, because a page in `public/` imports nothing. Keep the
+two in step — `test/phone/heal.test.ts` pins both.
+
 ## moderation
 
 The automatic screen (`src/moderation/screen.ts`) runs **on the server as

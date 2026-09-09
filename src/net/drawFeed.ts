@@ -12,13 +12,17 @@
  */
 
 import type { Stroke, StrokeList } from '../shape/types.js';
-import { EMOTE_NAMES, type EmoteName } from './protocol.js';
-import { readEmoteMessage, readHello } from './phoneLink.js';
+import { EMOTE_NAMES, KEEP_ACTIONS, type EmoteName, type KeepAction } from './protocol.js';
+import { readEmoteMessage, readHello, readKeepMessage } from './phoneLink.js';
 import type { DrawFeed, DrawFeedOptions, FeedDrawing, FeedStroke } from './vendor/draw-feed.js';
 
 const EMOTE_SET = new Set<string>(EMOTE_NAMES);
 /** Guard for the wire: only the protocol's own emote names pass. */
 export const isEmoteName = (v: string): boolean => EMOTE_SET.has(v);
+
+const KEEP_SET = new Set<string>(KEEP_ACTIONS);
+/** The same guard for a keep: only the three things a person can save. */
+export const isKeepAction = (v: string): boolean => KEEP_SET.has(v);
 
 /** Their width unit → fraction of canvas (matches vendor strokesToCanvas). */
 const WIDTH_REFERENCE_PX = 320;
@@ -102,6 +106,10 @@ export interface WorldFeedOptions {
    * spawned that creature under (src/net/phoneLink.ts). Optional — the
    * same-device flow never sees one. */
   onEmote?(e: { from: string; emote: EmoteName }): void;
+  /** A phone saved its creature — a photo, a model or a link. Nothing in the
+   * world changes; the world hears it so the session log has it
+   * (docs/SESSION.md §keep). Optional, like the emote above. */
+  onKeep?(e: { from: string; action: KeepAction }): void;
   /** A phone announced itself. The world answers on the down topic with
    * that drawer's verdict and its own session id, which is how a phone
    * learns its drawing was refused, or that this world never knew it. */
@@ -125,12 +133,18 @@ export async function connectWorldFeed(opts: WorldFeedOptions): Promise<DrawFeed
       room: opts.room,
       throttleMs: 350, // pace floods so spawns never spike the render loop
       onDrawing: (d) => {
-        // One topic, two message shapes: a drawing carries strokes, an
-        // emote carries { type: 'emote' }. Route before normalizing, since
-        // an emote has no strokes and would otherwise be dropped as junk.
+        // One topic, several message shapes: a drawing carries strokes, and
+        // everything else carries a `type`. Route before normalizing, since
+        // none of the others has strokes and each would otherwise be dropped
+        // as junk.
         const emote = readEmoteMessage(d, isEmoteName);
         if (emote) {
           opts.onEmote?.(emote);
+          return;
+        }
+        const keep = readKeepMessage(d, isKeepAction);
+        if (keep) {
+          opts.onKeep?.(keep);
           return;
         }
         const hello = readHello(d);

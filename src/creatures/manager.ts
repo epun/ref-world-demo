@@ -15,7 +15,13 @@
 
 import { Group, Mesh, Vector3 } from 'three';
 import type { Object3D } from 'three';
-import { BehaviorAgent, MAX_SPEED, type AgentPeer, type AgentProp } from '../behavior/agent';
+import {
+  BehaviorAgent,
+  MAX_SPEED,
+  type AgentHold,
+  type AgentPeer,
+  type AgentProp,
+} from '../behavior/agent';
 import { personalityFromChoice, type PersonalityChoice } from '../behavior/personality';
 import { projectOutOfHard } from '../behavior/steering';
 import { createCharacter, type Character } from '../character/character';
@@ -65,6 +71,26 @@ export const DRIVE_SPEED = MAX_SPEED;
  * not a network.
  */
 export const DRIVE_TURN_TAU_MS = 90;
+
+/**
+ * How long the stick keeps the creature after the last push. **[D]**
+ *
+ * The wander ai and a person's thumb were both steering at once, so a
+ * creature under the stick kept trying to leave for somewhere the agent had
+ * picked (user ask, 2026-09-09: *"the automated character walk fights the
+ * user control … we don't enable the auto wander for the character unless
+ * it's been idle for 2 seconds"*). While this window is open the agent is
+ * held: it chooses nothing and steers nowhere, and the hand is the only
+ * thing moving the creature.
+ *
+ * The ask was two seconds; the value is `MOTION.primaryMs` (1823ms), the
+ * nearest beat on the token scale — durations come from tokens, never
+ * literals, and a hand-picked 2000 here would be a second clock running
+ * beside the world's own. The difference is under a fifth of a second and
+ * the window's edge is not a moment anybody watches: it is the point at
+ * which a creature nobody is touching starts living again.
+ */
+export const DRIVE_IDLE_MS = MOTION.primaryMs;
 
 /** Practical demo guard, not a design cap (see header). */
 export const MAX_POPULATION = 96;
@@ -329,6 +355,16 @@ interface Slot {
    * creature moves like itself rather than like a cursor.
    */
   drive: { x: number; z: number; mag: number } | null;
+  /**
+   * When a non-zero drive was last seen on this creature, on the update
+   * loop's clock. Stamped per frame while the stick is down; null until
+   * somebody has steered it at all.
+   *
+   * The agent is HELD until DRIVE_IDLE_MS past this, which is what keeps
+   * the wander ai from taking the creature back the instant a thumb pauses
+   * — including the pause between two pushes of the same gesture.
+   */
+  drivenAtMs: number | null;
 }
 
 export interface SpawnOptions {
@@ -481,6 +517,12 @@ export interface CreatureManager {
   drive(id: string, vec: { x: number; z: number; mag: number } | null): boolean;
   /** Ids currently being steered. */
   driven(): string[];
+  /**
+   * Is the stick still holding this creature — thumb down, or down within
+   * the last DRIVE_IDLE_MS? While this is true its agent is stood down and
+   * nothing wanders it away from where it was left.
+   */
+  isDriven(id: string, nowMs: number): boolean;
   /** Live slots as the population guard sees them (see chooseEviction). */
   evictable(): { id: string; order: number; resident: boolean; phase: string }[];
   /** Live creature ids, in a stable order — the roster a host publishes. */
@@ -834,6 +876,7 @@ export function createCreatureManager(
         order: orderCounter++,
         resident: opts.resident === true,
         drive: null,
+        drivenAtMs: null,
       };
       slots.set(id, slot);
 
@@ -1110,14 +1153,6 @@ export function createCreatureManager(
                 id: other.id,
               });
             }
-            const out = slot.agent.update(
-              dt,
-              nowMs,
-              { x: root.position.x, z: root.position.z },
-              peers,
-              props,
-              colliderGrid,
-            );
             /*
              * A PERSON IS STEERING THIS ONE (src/world/joystick.ts).
              *
@@ -1128,14 +1163,50 @@ export function createCreatureManager(
              * creature moves like itself, not like a cursor — which is why
              * this is a velocity substitution and not a position write.
              *
-             * The agent still RUNS. Its timers, its wander target and its
-             * pose keep advancing under the person's hand, so letting go
-             * hands back to a creature that has been living the whole time
-             * rather than one resuming a thought from a minute ago.
+             * And the agent STANDS DOWN while somebody is steering, for
+             * DRIVE_IDLE_MS past the last push (user ask, 2026-09-09: *"the
+             * automated character walk fights the user control"*). It used
+             * to keep running underneath — advancing its state, picking
+             * wander targets, turning toward them — so the instant a thumb
+             * paused between two pushes the creature set off for somewhere
+             * nobody had asked it to go, and the person spent the whole
+             * gesture arguing with it.
+             *
+             * The hold is about INTENT only. Physics is untouched: the body
+             * below still enters the substepped resolve, is still pushed
+             * out of trunks, and neighbours still part around it. Its
+             * timers are paused rather than fast-forwarded and its stale
+             * target is dropped, so when the window closes it resumes from
+             * where it is actually standing (src/behavior/agent.ts,
+             * `AgentHold`).
              */
             const driven = slot.drive && slot.drive.mag > 0 ? slot.drive : null;
-            let vx = driven ? driven.x * DRIVE_SPEED * wanderSpeedMult : out.vx;
-            let vz = driven ? driven.z * DRIVE_SPEED * wanderSpeedMult : out.vz;
+            // Stamped from the loop's own clock, never `performance.now()`:
+            // the window is compared against the same `nowMs` every other
+            // timer here uses.
+            if (driven) slot.drivenAtMs = nowMs;
+            const held =
+              slot.drivenAtMs !== null && nowMs - slot.drivenAtMs < DRIVE_IDLE_MS;
+            const driveVx = driven ? driven.x * DRIVE_SPEED * wanderSpeedMult : 0;
+            const driveVz = driven ? driven.z * DRIVE_SPEED * wanderSpeedMult : 0;
+            // What the hand is asking for, and where the creature is really
+            // pointing: the held agent rides both rather than its own idea
+            // of them, so the release is a drift-stop from the real speed
+            // at the real facing.
+            const hold: AgentHold | null = held
+              ? { speed: Math.hypot(driveVx, driveVz), heading: root.rotation.y }
+              : null;
+            const out = slot.agent.update(
+              dt,
+              nowMs,
+              { x: root.position.x, z: root.position.z },
+              peers,
+              props,
+              colliderGrid,
+              hold,
+            );
+            let vx = driven ? driveVx : out.vx;
+            let vz = driven ? driveVz : out.vz;
             const bodyR = slot.bodyR > 0 ? slot.bodyR : slot.character.radius;
             const near = gatherNear(root.position.x, root.position.z, bodyR);
 
@@ -1198,9 +1269,15 @@ export function createCreatureManager(
               // reads as a bug in the expression rather than a pose.
               slot.character.setExpression('neutral');
               slot.pose = null;
-            } else if (!driven && out.pose !== slot.pose) {
+            } else if (!held && out.pose !== slot.pose) {
               // Posture → expression through the character's public surface:
               // sleep closes the eyes; leaving it drifts them back open.
+              //
+              // Gated on the whole HOLD, not just on a live thumb: the
+              // agent's posture is frozen under a hand, and re-applying it
+              // the instant the stick rested would shut the eyes of a
+              // creature still coasting across the field. It gets its
+              // posture back when it gets its life back.
               if (out.pose === 'sleep') slot.character.setExpression('sleepy');
               else if (slot.pose === 'sleep') slot.character.setExpression('neutral');
               slot.pose = out.pose;
@@ -1385,7 +1462,13 @@ export function createCreatureManager(
      * Only the page that is SIMULATING acts on this. On a viewer the
      * creature is placed by the host's poses and a local drive would be
      * overwritten within a frame or two — which is why the intent is
-     * published rather than applied (src/net/worldsync.ts).
+     * published rather than applied (src/net/worldsync.ts). Both routes in
+     * — this page's own stick and a handset's drive over the wire — land
+     * here, so the hold below is stamped once, wherever the hand is.
+     *
+     * A rest frame (`null`, or `mag: 0`) neither starts nor extends the
+     * hold: it is somebody letting go, and the window measured from it
+     * would never close.
      */
     drive(id: string, vec: { x: number; z: number; mag: number } | null): boolean {
       const slot = slots.get(id);
@@ -1399,6 +1482,24 @@ export function createCreatureManager(
       const out: string[] = [];
       for (const slot of slots.values()) if (slot.drive) out.push(slot.id);
       return out;
+    },
+
+    /**
+     * Is the stick still holding this one?
+     *
+     * True with a thumb down, and true for DRIVE_IDLE_MS after the last
+     * push — which is the whole window in which the agent is stood down.
+     * `driven()` answers the narrower question (is a stick down RIGHT NOW);
+     * this one answers the question the creature's behaviour turns on.
+     *
+     * A live drive counts whatever the clock says, so a drive that arrived
+     * between two frames reads as held before the loop has stamped it.
+     */
+    isDriven(id: string, nowMs: number): boolean {
+      const slot = slots.get(id);
+      if (!slot) return false;
+      if (slot.drive) return true;
+      return slot.drivenAtMs !== null && nowMs - slot.drivenAtMs < DRIVE_IDLE_MS;
     },
 
     clearFollow(): void {

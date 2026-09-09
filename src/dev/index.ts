@@ -844,6 +844,9 @@ export async function initDevPanel(
             `drawings ${counts['drawing'] ?? 0}`,
             `hatches ${counts['hatch'] ?? 0}`,
             `emotes ${counts['emote'] ?? 0}`,
+            `drives ${counts['drive'] ?? 0}`,
+            `paint ${counts['paint'] ?? 0}`,
+            `keeps ${counts['keep'] ?? 0}`,
             `operator ${counts['operator'] ?? 0}`,
             ...(recorder.overflowed() ? ['log full — later events dropped'] : []),
           ].join(' · '),
@@ -1577,6 +1580,10 @@ export async function initDevPanel(
       onFrame: handles.onFrame,
       ...(handles.setSoloDrag ? { setSoloDrag: handles.setSoloDrag } : {}),
       ...(handles.tour ? { tour: handles.tour } : {}),
+      // Sculpting is an action somebody took, so it goes in the record
+      // (docs/SESSION.md §paint). The skill takes the recorder narrowed to
+      // its one method and paints unrecorded without it.
+      ...(handles.session ? { session: handles.session } : {}),
     });
   }
 

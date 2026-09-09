@@ -82,6 +82,7 @@ import {
   type WorldVector,
 } from './world/joystick';
 import { residentsFrom } from './world/residents';
+import { storeNote } from './world/storeline';
 import { start } from './world/scene';
 import { createTour } from './world/tour';
 
@@ -485,6 +486,27 @@ function main(): void {
   // the panel. Read-only handles to what the panel already exposes.
   (window as Window & { __refworldModeration?: unknown }).__refworldModeration = gate;
 
+  /**
+   * STEERING, and the record of it (docs/SESSION.md §drive).
+   *
+   * The one seam every drive goes through on the page that simulates —
+   * this handset's own stick, a viewer's intent arriving over the wire, and
+   * the expiry that lets go for a phone that stopped talking. Same argument
+   * as the gate: a route that steered a creature without passing here would
+   * be a hand on the world that the log never saw, and there would be no way
+   * to tell from the recording that anybody touched it.
+   *
+   * The recorder does the thinning (quantised heading and magnitude, one
+   * event per creature per MOTION.tertiaryMs, the release exempt and
+   * recorded once), so this stays a straight pass-through and no caller has
+   * to know how often is too often.
+   */
+  const applyDrive = (id: string, vec: WorldVector | null): void => {
+    const push = vec && vec.mag > 0 ? vec : null;
+    creatures.drive(id, push);
+    session.drive(id, push);
+  };
+
   // ── replay (src/session/replay.ts) ────────────────────────────────────────
   // The driver side of a recorded session: the pure replay walks the log and
   // calls these, so a log recorded on one machine re-drives this world with
@@ -507,6 +529,25 @@ function main(): void {
       }
     },
     remove: (id) => creatures.clear(id),
+    // Steering, replayed. NOT through applyDrive: that seam records, and a
+    // replay re-driving the log back into the log would grow it every time
+    // it was watched.
+    drive: (id, vec) => {
+      creatures.drive(id, vec);
+    },
+    /*
+     * A dab of terrain, replayed.
+     *
+     * Only when the paint skill is mounted — the brush is dev-gated and
+     * arrives by dynamic import, so a demo build has nowhere to put a
+     * stamp and the events pass through unread. Same rule as the world
+     * controls below: what this page cannot drive is skipped, never faked.
+     */
+    paint: (event) => {
+      const probe = (window as Window & { __refworldPaint?: { applyPaint?(e: unknown): void } })
+        .__refworldPaint;
+      probe?.applyPaint?.(event);
+    },
     // The operator state a replayed world should stand in: hold mode and the
     // block list. Removals are driven by replay itself, above.
     operator: (action, id, on) => {
@@ -1041,12 +1082,25 @@ function main(): void {
       // seconds, and an arrival gets its egg and its hatch.
       const added = (await absorb(log, first)).length;
       if (added > 0) saveSession();
+      /*
+       * NOTHING IS ANNOUNCED ON ARRIVAL (user ask, 2026-09-09).
+       *
+       * The first pull used to say how many creatures had joined, or invite
+       * the first drawing. Both were chatter over a world that shows you the
+       * same thing by simply being there — the creatures arrive on screen,
+       * which is the announcement.
+       *
+       * ONE exception, and it is not chatter: a deployment with no store
+       * behind it. Every drawing sent to that world is dropped and the field
+       * stays empty however many people draw into it, and an empty world is
+       * exactly what a quiet one looks like. The api has always reported
+       * which it is (api/drawings.ts, `config.store`) and nobody read it;
+       * src/world/storeline.ts turns that into the one line worth saying,
+       * and says nothing at all on a world that is working.
+       */
       if (first) {
-        say(
-          added > 0
-            ? `${added} creature${added === 1 ? '' : 's'} joined ${worldName}`
-            : `${worldName} — draw the first new one`,
-        );
+        const note = storeNote(log.config, worldName);
+        if (note !== null) say(note);
       }
     };
 
@@ -1205,6 +1259,20 @@ function main(): void {
     // A tap on the map is "show me over there". Let go of the creature
     // until they ask for it back by walking.
     onFocus: () => follow.suspend(),
+    /*
+     * Where YOU are (user ask, 2026-09-09: *"the mini map should show you
+     * where your character is in relation to the world"*).
+     *
+     * The same condition as the stick and the follow camera: a handset,
+     * with a creature of its own. A projection passes nothing — a wall
+     * has no self — and the map draws exactly as it always did.
+     *
+     * A function, not a point: the creature walks, and the map reads it
+     * per frame off the manager rather than being told about it.
+     */
+    ...(tray?.middle && myDrawerId.length > 0
+      ? { self: (): { x: number; z: number } | null => creatures.positionOf(myDrawerId) }
+      : {}),
     mount: tray ? tray.right : document.body,
   });
 
@@ -1508,6 +1576,18 @@ function main(): void {
     onEmote: ({ from, emote }) => {
       creatures.emote(from, emote);
     },
+    /*
+     * A phone saved its creature (docs/SESSION.md §keep).
+     *
+     * Nothing happens in the world — the save already happened on the
+     * handset — and that is exactly why it has to be recorded: "somebody
+     * wanted to take this home" is what a session is judged on afterwards,
+     * and no other event says it. Recorded on the page that SIMULATES, like
+     * a drive, so a room with two screens open does not log it twice.
+     */
+    onKeep: ({ from, action }) => {
+      if (isHostNow()) session.keep(from, action, 'phone');
+    },
     // A phone announced itself: answer with what happened to its drawing,
     // and with this world's session so a handset from a previous world
     // learns its creature is gone.
@@ -1623,7 +1703,10 @@ function main(): void {
       if (msg.t === 'drive') {
         if (!hosting) return;
         driveHeard.set(msg.who, Date.now());
-        creatures.drive(msg.who, msg.mag > 0 ? { x: msg.x, z: msg.z, mag: msg.mag } : null);
+        // Through applyDrive, so the intent is recorded where it is
+        // APPLIED — on the one page that simulates — rather than on each
+        // viewer that happens to overhear the packet.
+        applyDrive(msg.who, { x: msg.x, z: msg.z, mag: msg.mag });
         return;
       }
 
@@ -1737,7 +1820,10 @@ function main(): void {
       for (const [who, at] of driveHeard) {
         if (now - at <= DRIVE_STALE_MS) continue;
         driveHeard.delete(who);
-        creatures.drive(who, null);
+        // A release the log has to carry as much as a deliberate one: the
+        // creature stops here, and a replay that never let go would walk it
+        // into the sea.
+        applyDrive(who, null);
       }
     }, DRIVE_STALE_MS);
 
@@ -1763,7 +1849,7 @@ function main(): void {
       window.setInterval(() => {
         const v = worldDrive();
         if (hosting) {
-          creatures.drive(myDrawerId, v.mag > 0 ? v : null);
+          applyDrive(myDrawerId, v);
           return;
         }
         const now = Date.now();

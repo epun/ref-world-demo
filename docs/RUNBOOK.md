@@ -62,6 +62,11 @@ Give it ten seconds. If it has not come back:
    originally drawn into, because nobody remembers the old code. Have the
    projection open on that room first.
 
+In a **public world** (`?world=`) there is a second self-heal that needs
+nobody either: a handset whose drawing is missing from the store posts it
+back, on the pad and again on the companion, and the world's poll picks it up
+within twenty seconds (docs/PUBLIC.md §the handset heals the store).
+
 Do **not** press *replay a session log*. A replay re-runs a session at the pace
 it was recorded — on an hour-long log the world sits empty for an hour and
 looks broken. *Restore* is the recovery button. (docs/SESSION.md §4a.)
