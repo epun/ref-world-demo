@@ -25,6 +25,12 @@
  * and fixed (it does not ride the scatter seed), so there is no rebuild path —
  * only `update`, which advances the ripples' ambient drift.
  *
+ * THE LANDSCAPE MODE (src/world/landscape.ts) is a visibility switch here and
+ * nothing more: the meshes are built from the authored bodies whatever the
+ * mode, and the plain world simply does not draw them. Toggling the map on
+ * therefore costs one boolean rather than a second build of every shoreline,
+ * which is what makes it safe to flip in front of an audience.
+ *
  * VALUE [D]: the fill is WORLD.neutralMid, one measured step below the paper.
  * The reference's water is a flat tone rather than a gradient, and neutralMid
  * is a palette grey, so the toon quantize snaps it to itself instead of
@@ -55,7 +61,8 @@ import {
   RIPPLE_MARGIN,
   WATER_BODIES,
   islandOutline,
-  isWater,
+  isAuthoredWater,
+  landscapeMode,
   rippleSpots,
   waterLevel,
   waterOutline,
@@ -265,7 +272,10 @@ function ribbonGeometry(
     const mx = (a[0] + b[0]) / 2 + segNx[i]! * towardWater * SHORE_PROBE;
     const mz = (a[1] + b[1]) / 2 + segNz[i]! * towardWater * SHORE_PROBE;
     // Guard: no water on the wet side means this is not a shoreline at all.
-    if (!isWater(mx, mz)) continue;
+    // The AUTHORED geography, not the live query: these ribbons are built
+    // once, and they are built even when the world is opening plain and the
+    // whole group is hidden.
+    if (!isAuthoredWater(mx, mz)) continue;
     // The pen lifts.
     if (hash(seed + i * 1.37 + 3.1) < 1 / SHORE_BREAK_ONE_IN) continue;
     const j = (i + 1) % n;
@@ -371,6 +381,11 @@ export interface Water {
    */
   fills(): [number, number][][];
   /**
+   * Show or hide the whole water group — the landscape mode's switch
+   * (WorldHandles.setLandscape). The meshes stay built either way.
+   */
+  setVisible(on: boolean): void;
+  /**
    * Re-seat every sheet on its body's `waterLevel` as it now stands — for
    * when the live terrain dials have moved (landscape's `setTerrainParams`,
    * driven by WorldHandles.setTerrain).
@@ -389,6 +404,9 @@ export interface Water {
 export function createWater(): Water {
   const group = new Group();
   group.name = 'water';
+  // The plain field has no water in it. Read at creation, so a world that
+  // opens plain never flashes its lakes on the first frame.
+  group.visible = landscapeMode() === 'landscape';
 
   const geometries: BufferGeometry[] = [];
   const materials: MeshBasicMaterial[] = [];
@@ -548,6 +566,9 @@ export function createWater(): Water {
       rippleUniforms.uTime.value = nowMs / 1000;
     },
     fills: (): [number, number][][] => outlines.map((poly) => poly.map((p) => [p[0], p[1]])),
+    setVisible: (on: boolean): void => {
+      group.visible = on;
+    },
     refreshLevels: (): void => {
       for (const sheet of sheets) sheet.mesh.position.y = waterLevel(sheet.body) + sheet.lift;
       const attr = rippleGeometry.getAttribute('position') as BufferAttribute;

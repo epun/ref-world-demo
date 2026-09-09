@@ -190,6 +190,14 @@ sleep · play · explore`
 
 ### Terrain
 
+**The map ships hidden.** The world opens in `landscapeMode() === 'plain'` — an open field of
+scattered props on flat paper, no features and no height, the world exactly as it was before
+this section existed — and everything below arrives when the ghost panel's `landscape` folder
+switches it on, or when the link carries `?landscape=1` (2026-09-09, user ask: the environment
+gets sculpted live in front of an audience, so the room has to be able to start from nothing).
+The mode gates the queries, never the authored data, so `'landscape'` gives the map below back
+bit for bit.
+
 The map (`src/world/landscape.ts`, PURE — no Three.js, no DOM, no clocks, no `Math.random`)
 has grown since the layout above was first drawn, and it now has height. Scatter covers
 ±160, creatures roam within 100, the camera pans to ±200, and the minimap reads ±175 [D] — far
@@ -214,7 +222,8 @@ at the field's gradient.
 **Three live dials** (2026-09-03, user ask — *"there is a lot of elevation change. I want to
 be able to adjust the amount of elevation change there is in the map and their spacing in
 proximity to each other"*) sit over that authored geography as multipliers, in the ghost
-panel's `refworld.environment` folder: **elevation** (0–2) scales every vertical — noise
+panel's `refworld.landscape` folder, under the map switch itself: **elevation** (0–2) scales
+every vertical — noise
 amplitudes, region shelves, basin drop, island rise; **tier spacing** (0.6–4) is the
 tread-to-tread rise of the terrace; **relief spread** (0.5–2.5) scales every horizontal —
 noise wavelengths, shelf ramps, shore ramp, island ramp — so a bigger number lays the same

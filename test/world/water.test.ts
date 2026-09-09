@@ -7,9 +7,14 @@
  * that every vertex the pass emits is actually over water, that a lake's fill
  * has its island punched out of it and both shores drawn, that the marks come
  * from tokens and nothing else, and that the surface never fully arrests.
+ *
+ * THE MODE. The world SHIPS plain (src/world/landscape.ts `LandscapeMode`)
+ * and the water is hidden in it, so everything measuring the drawn geography
+ * runs in the landscape mode. The last block flips back and pins the switch
+ * itself: built either way, shown only in one.
  */
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { Color, DoubleSide, Mesh, MeshBasicMaterial, type BufferAttribute } from 'three';
 import { SURFACE, WORLD } from '../../src/taste/tokens';
 import {
@@ -20,7 +25,9 @@ import {
   WATER_BODIES,
   islandOutline,
   isWater,
+  landscapeMode,
   rippleSpots,
+  setLandscapeMode,
   setTerrainParams,
   terrainHeight,
   waterLevel,
@@ -35,6 +42,9 @@ import {
   WATER_LIFT,
   createWater,
 } from '../../src/world/water';
+
+beforeAll(() => setLandscapeMode('landscape'));
+afterAll(() => setLandscapeMode('plain'));
 
 /** The scatter's ticks sit here — everything water must stay under it. */
 const TICK_LIFT = 0.015;
@@ -576,6 +586,82 @@ describe('water — refreshLevels follows the terrain dials', () => {
       setTerrainParams(TERRAIN_DEFAULTS);
       water.refreshLevels();
       expect(heights()).toEqual(before);
+    } finally {
+      water.dispose();
+    }
+  });
+});
+
+describe('water — the landscape mode is a visibility switch', () => {
+  /** Build a water pass with the mode set to `mode`, then put the file's
+   * mode back — createWater reads it once, at creation. */
+  function builtIn(mode: 'plain' | 'landscape'): ReturnType<typeof createWater> {
+    setLandscapeMode(mode);
+    try {
+      return createWater();
+    } finally {
+      setLandscapeMode('landscape');
+    }
+  }
+
+  it('starts hidden when the world opens plain', () => {
+    const water = builtIn('plain');
+    try {
+      expect(water.group.visible).toBe(false);
+    } finally {
+      water.dispose();
+    }
+  });
+
+  it('starts visible when the world opens on the map', () => {
+    expect(landscapeMode()).toBe('landscape');
+    const water = createWater();
+    try {
+      expect(water.group.visible).toBe(true);
+    } finally {
+      water.dispose();
+    }
+  });
+
+  it('builds the whole geography even when it opens hidden', () => {
+    // The point of hiding rather than not building: revealing the map is one
+    // boolean, not a second build of every shoreline. So a pass built in the
+    // plain mode has to carry exactly what the visible one carries.
+    const hidden = builtIn('plain');
+    const shown = createWater();
+    try {
+      const names = (w: ReturnType<typeof createWater>): string[] =>
+        w.group.children.map((c) => c.name).sort();
+      expect(names(hidden)).toEqual(names(shown));
+      expect(hidden.fills()).toEqual(shown.fills());
+      const count = (w: ReturnType<typeof createWater>): number =>
+        ((w.group.getObjectByName('ripples') as Mesh).geometry.getAttribute(
+          'position',
+        ) as BufferAttribute).count;
+      expect(count(hidden)).toBe(count(shown));
+      expect(count(hidden)).toBeGreaterThan(0);
+      // The drawn shores too: their guard reads the AUTHORED geography, not
+      // the live one, so a pass built plain is not a set of empty ribbons.
+      const shore = (w: ReturnType<typeof createWater>): number =>
+        ((w.group.getObjectByName('shore-lake-0') as Mesh).geometry.getAttribute(
+          'position',
+        ) as BufferAttribute).count;
+      expect(shore(hidden)).toBe(shore(shown));
+      expect(shore(hidden)).toBeGreaterThan(0);
+    } finally {
+      hidden.dispose();
+      shown.dispose();
+    }
+  });
+
+  it('flips with setVisible, both ways', () => {
+    const water = builtIn('plain');
+    try {
+      expect(water.group.visible).toBe(false);
+      water.setVisible(true);
+      expect(water.group.visible).toBe(true);
+      water.setVisible(false);
+      expect(water.group.visible).toBe(false);
     } finally {
       water.dispose();
     }

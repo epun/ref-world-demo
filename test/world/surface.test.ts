@@ -6,11 +6,17 @@
  * landscape's terrain (not a copy of it that could drift), that
  * FLAT_SURFACE is the y = 0 world it replaced, and that both hand back
  * fresh, unit-length normals.
+ *
+ * THE MODE. ROLLING_SURFACE is only rolling in the landscape mode — the world
+ * ships plain (src/world/landscape.ts) — so this file switches the map on and
+ * puts it back. The plain case is at the bottom: with no map under it the
+ * rolling surface IS the flat one, which is the whole point of the seam.
  */
 
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   isWater,
+  setLandscapeMode,
   terrainHeight,
   terrainNormal,
   WATER_BODIES,
@@ -22,6 +28,9 @@ const PROBES: [number, number][] = [];
 for (let i = 0; i < 200; i++) {
   PROBES.push([-110 + ((i * 137) % 220), -110 + ((i * 61) % 220)]);
 }
+
+beforeAll(() => setLandscapeMode('landscape'));
+afterAll(() => setLandscapeMode('plain'));
 
 describe('surface — the rolling world', () => {
   it('is the landscape terrain, sample for sample', () => {
@@ -90,6 +99,25 @@ describe('surface — both implement the same seam', () => {
         // normal the 0.6 slope bound allows.
         expect(n.y, name).toBeGreaterThan(0.8);
       }
+    }
+  });
+});
+
+describe('surface — the rolling world with no map under it', () => {
+  it('is the flat world, sample for sample, in the plain mode', () => {
+    setLandscapeMode('plain');
+    try {
+      for (const [x, z] of PROBES) {
+        expect(ROLLING_SURFACE.sampleHeight(x, z)).toBe(FLAT_SURFACE.sampleHeight(x, z));
+        expect(ROLLING_SURFACE.normalAt(x, z)).toEqual(FLAT_SURFACE.normalAt(x, z));
+      }
+      // Including over the authored lake: nothing sinks, because there is no
+      // basin to sink into.
+      for (const body of WATER_BODIES) {
+        expect(ROLLING_SURFACE.sampleHeight(body.x, body.z), body.kind).toBe(0);
+      }
+    } finally {
+      setLandscapeMode('landscape');
     }
   });
 });

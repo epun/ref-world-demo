@@ -42,11 +42,11 @@ import {
 import type { Collider } from '../physics/colliders';
 import { MOTION, SURFACE, WORLD } from '../taste/tokens';
 import {
+  activeWaterBodies,
   isWater,
   sampleLandscape,
   shoreSamples,
   waterColliders,
-  WATER_BODIES,
   type LandscapeSample,
 } from './landscape';
 import {
@@ -583,10 +583,15 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
   // rather than the iso grid: every pond gets a fringe, and the fringe
   // follows the drawn waterline instead of a lattice near it. Deterministic
   // in (sample index, body index) through the same cellHash family.
+  //
+  // `activeWaterBodies()` and not the authored list: in the plain mode there
+  // is no water anywhere, so there is no shoreline to line and this whole
+  // pass places nothing.
   const reedKeep = REED_SHORE_KEEP * density * userMult('reed');
+  const bodies = activeWaterBodies();
   if (reedKeep > 0) {
-    for (let b = 0; b < WATER_BODIES.length; b++) {
-      const samples = shoreSamples(WATER_BODIES[b]!);
+    for (let b = 0; b < bodies.length; b++) {
+      const samples = shoreSamples(bodies[b]!);
       for (let i = 0; i < samples.length; i++) {
         if (cellHash(i, b, REED_SALT) >= reedKeep) continue;
         const s = samples[i]!;
@@ -1100,6 +1105,19 @@ export interface Scatter {
    * hillside — not a different one.
    */
   refreshTerrain(): void;
+  /**
+   * Re-roll the placement for the landscape mode as it now stands
+   * (landscape's `setLandscapeMode`, driven by WorldHandles.setLandscape) and
+   * rebuild on it.
+   *
+   * Unlike `refreshTerrain`, this DOES re-roll: the mode decides which kinds
+   * roll where, whether the mountain pre-pass runs at all, and where the
+   * water cut-out falls — so the placement itself is a different one. From
+   * the same seed: switching the map on and off again gives back the
+   * identical world, and the water colliders come and go with it (the
+   * rebuild bumps `collidersVersion`).
+   */
+  refreshLandscape(): void;
   /** Per-kind density multiplier, layered on the global one. Independent per
    * kind: changing one kind never moves another kind's placements. */
   setKindDensity(kind: ScatterKind, mult: number): void;
@@ -1676,6 +1694,13 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
       // No `replace()`: the terrain moved, the placement did not. rebuild()
       // re-samples surface.sampleHeight for every instance and re-takes each
       // stamp's height and normal.
+      rebuild();
+    },
+    refreshLandscape(): void {
+      // `replace()` HERE, unlike refreshTerrain: the map decides what grows
+      // where, so the placement really is a different one — same seed, same
+      // rules, a different country under them.
+      replace();
       rebuild();
     },
     setKindDensity(kind: ScatterKind, mult: number): void {

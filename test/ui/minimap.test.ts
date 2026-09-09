@@ -6,9 +6,14 @@
  *
  * …and one drawn test, against a recording 2d context: what the map puts on
  * the paper for the lake. That one is not a helper — it is the picture.
+ *
+ * THE MODE. The map draws water only where the world has water: the room
+ * opens on a flat plain (src/world/landscape.ts `LandscapeMode`) and the
+ * geography is revealed live. So the drawn tests run with the map on, and the
+ * last one runs with it off and pins the empty paper.
  */
 
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Vector3 } from 'three';
 import {
   mapBorderInset,
@@ -27,7 +32,15 @@ import {
   type Inhabitant,
 } from '../../src/ui/minimap';
 import { SURFACE, WORLD } from '../../src/taste/tokens';
-import { WATER_BODIES, islandOutline, waterOutline } from '../../src/world/landscape';
+import {
+  WATER_BODIES,
+  islandOutline,
+  setLandscapeMode,
+  waterOutline,
+} from '../../src/world/landscape';
+
+beforeAll(() => setLandscapeMode('landscape'));
+afterAll(() => setLandscapeMode('plain'));
 
 const frame: MapFrame = { w: 200, h: 200, inset: 14 };
 
@@ -274,25 +287,31 @@ function stubDom(fills: FillCall[]): { draw: () => void; restore: () => void } {
   };
 }
 
+/** One frame of the real map against the recording context. */
+function drawOnce(): FillCall[] {
+  const fills: FillCall[] = [];
+  const dom = stubDom(fills);
+  const handle = installWorldMinimap({
+    manager: { positions: () => [] },
+    cameraRig: {
+      azimuth: 0,
+      frameAt: (): void => {},
+      camera: {
+        position: { x: 0, y: 40, z: 40 },
+        getWorldDirection: (t: Vector3): Vector3 => t.set(0, -1, -1).normalize(),
+      },
+    },
+    mount: { appendChild: (): void => {} } as unknown as HTMLElement,
+  });
+  dom.draw();
+  handle.dispose();
+  dom.restore();
+  return fills;
+}
+
 describe('the map draws an island in a lake', () => {
   it('fills the lake in the water value and the island back over it in ground', () => {
-    const fills: FillCall[] = [];
-    const dom = stubDom(fills);
-    const handle = installWorldMinimap({
-      manager: { positions: () => [] },
-      cameraRig: {
-        azimuth: 0,
-        frameAt: (): void => {},
-        camera: {
-          position: { x: 0, y: 40, z: 40 },
-          getWorldDirection: (t: Vector3): Vector3 => t.set(0, -1, -1).normalize(),
-        },
-      },
-      mount: { appendChild: (): void => {} } as unknown as HTMLElement,
-    });
-    dom.draw();
-    handle.dispose();
-    dom.restore();
+    const fills = drawOnce();
 
     const scale = mapMarkScale(200);
     const mapFrame: MapFrame = { w: 200, h: 200, inset: mapBorderInset(scale) + 5 * scale };
@@ -324,5 +343,32 @@ describe('the map draws an island in a lake', () => {
     expect(island).toHaveLength(1);
     // Drawn AFTER the water it stands in.
     expect(fills.indexOf(island[0]!)).toBeGreaterThan(fills.indexOf(water[0]!));
+  });
+});
+
+describe('the map of the plain world has no water on it', () => {
+  it('draws no water fill and no island when the map is switched off', () => {
+    setLandscapeMode('plain');
+    let fills: FillCall[];
+    try {
+      fills = drawOnce();
+    } finally {
+      setLandscapeMode('landscape');
+    }
+    // The one filled shape on the map is the water (TASTE §4 — the mark set
+    // is icon + ruleLine + border), so a plain world leaves the paper alone.
+    expect(fills.filter((f) => f.style === WORLD.neutralMid)).toHaveLength(0);
+    const lake = WATER_BODIES[0]!;
+    const island = islandOutline(lake)!;
+    for (const f of fills) {
+      expect(f.points.length, 'an outline slipped onto the plain map').not.toBe(island.length);
+    }
+    // …and it really is the same map otherwise: the field is still drawn.
+    expect(fills.some((f) => f.style === SURFACE.ground)).toBe(true);
+    // Checked against the mapped world, so this is a difference and not an
+    // empty recorder.
+    expect(drawOnce().filter((f) => f.style === WORLD.neutralMid)).toHaveLength(
+      WATER_BODIES.length,
+    );
   });
 });

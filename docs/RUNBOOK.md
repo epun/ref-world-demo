@@ -23,6 +23,16 @@ One page. Read it before the demo, not during.
 - `t` toggles the camera tour. `d` opens the local draw overlay.
 - `shift+d` is the ghost panel. It has the moderation list, the session
   readout, and the recovery buttons.
+- **The world opens flat** — an open field of scattered props on flat paper,
+  no forest, no lake, no hills. That is the starting point to sculpt from.
+- To reveal the map: `shift+d` → `landscape` → tick **landscape**. The forest,
+  the range, the lake and its island, the ponds and every foot of elevation
+  come in together. The three dials under it — **elevation**, **tier spacing**,
+  **relief spread** — then shape it live; each one re-cuts the ground, so give
+  a drag half a second to settle.
+- To open a link already revealed, put `?landscape=1` on it. The deployed
+  build has no panel until somebody presses `shift+d`, so this is how a world
+  that is meant to show its geography from the first frame gets it.
 
 ## if the projection dies
 

@@ -48,6 +48,13 @@ export const DEV_SKILLS_META: readonly DevSkillMeta[] = [
       'environment variables in the right-hand panel — scatter density, grain amplitude, and the ink pass (edge threshold, line width, wobble, hatch strength).',
   },
   {
+    id: 'refworld.landscape',
+    name: 'landscape',
+    category: 'refworld',
+    description:
+      'the authored map behind a switch — the world opens as a flat plain and this reveals the forest, the range, the lake and its island, plus the three terrain dials (elevation, tier spacing, relief spread) for sculpting it live.',
+  },
+  {
     id: 'refworld.weather',
     name: 'weather',
     category: 'refworld',

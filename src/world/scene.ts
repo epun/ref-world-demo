@@ -16,7 +16,13 @@ import { InkPass } from './ink';
 import { createLighting } from './lighting';
 import { createScatter, type Scatter } from './scatter';
 import { FlatShadows } from './shadows';
-import { setTerrainParams, terrainParams, type TerrainParams } from './landscape';
+import {
+  landscapeMode,
+  setLandscapeMode,
+  setTerrainParams,
+  terrainParams,
+  type TerrainParams,
+} from './landscape';
 import { ROLLING_SURFACE, type Surface } from './surface';
 import { createWater, type Water } from './water';
 
@@ -84,6 +90,31 @@ export interface WorldHandles {
   setTerrain(next: Partial<TerrainParams>): void;
   /** The dials the world is currently shaped by. */
   terrain(): TerrainParams;
+  /**
+   * Show or hide the authored map (src/world/landscape.ts `LandscapeMode`).
+   *
+   * The world OPENS plain — a flat field of scattered props on flat paper,
+   * the way it looked before the map existed — and this is the switch that
+   * brings the geography in: the forest, the range, the lake and its island,
+   * the ponds, the reeds and every foot of elevation under them (2026-09-09,
+   * user ask: the environment gets sculpted live in front of an audience, so
+   * the room has to be able to start from nothing).
+   *
+   * Four systems have to be told, in this order — the ground re-displaces its
+   * field, the scatter RE-ROLLS its placement (unlike a terrain dial: the map
+   * decides which kinds grow where, so the world under the new mode is a
+   * different placement from the same seed), the water re-seats its sheets on
+   * their new levels, and then it shows or hides them.
+   *
+   * Creatures, eggs and their shadow stamps re-sample the Surface every frame,
+   * so they settle onto the new ground on their own — with the same one
+   * exception as `setTerrain`: an egg's `baseY` is fixed when it is placed, so
+   * an egg already incubating stays at the height the ground had under it
+   * until it hatches.
+   */
+  setLandscape(on: boolean): void;
+  /** True when the authored map is the world on screen. */
+  landscape(): boolean;
   /** Register per-frame work (entity drift, gaits, …). Runs before render. */
   onFrame(callback: FrameCallback): void;
   /**
@@ -300,6 +331,16 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
       water.refreshLevels();
     },
     terrain: (): TerrainParams => terrainParams(),
+    setLandscape: (on: boolean): void => {
+      setLandscapeMode(on ? 'landscape' : 'plain');
+      ground.rebuild();
+      scatter.refreshLandscape();
+      // The levels move with the mode — a basin sits under the plain's zero —
+      // so the sheets are re-seated before they are shown.
+      water.refreshLevels();
+      water.setVisible(on);
+    },
+    landscape: (): boolean => landscapeMode() === 'landscape',
     onFrame: (callback: FrameCallback): void => {
       frameCallbacks.push(callback);
     },

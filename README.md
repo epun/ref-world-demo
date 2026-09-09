@@ -32,8 +32,10 @@ Many phones, one world. Game feel is modeled on the Chao from *Sonic Adventure*:
 an egg, waddle around, emote at you.
 
 The world itself has real geography to wander through: a forest, an open plain, a mountain
-range, small ponds, and a lake with an island reached by a land bridge — all on terraced
-ground that rises and sinks in tiers, not a flat plane.
+range, small ponds, and a lake with an island standing in open water — all on terraced ground
+that rises and sinks in tiers, not a flat plane. It ships **behind a toggle**: the world opens
+as the flat field it started life as, and the map (with three dials over its elevation) is
+switched on live from the ghost panel, for sculpting the environment in front of a room.
 
 ## How a drawing becomes a character
 

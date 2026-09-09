@@ -16,6 +16,7 @@ describe('dev skill metadata', () => {
     for (const required of [
       'refworld.demo',
       'refworld.environment',
+      'refworld.landscape',
       'refworld.character',
       'refworld.taste',
       'refworld.weather',
@@ -59,13 +60,46 @@ describe('dev skill metadata', () => {
   });
 });
 
-describe('the environment folder carries the terrain dials', () => {
+describe('the landscape folder carries the map switch and the terrain dials', () => {
   // The panel needs a DOM to mount, so — like the ground/scene seam tests —
   // this reads the source. What it pins is the wiring the user asked for
   // (2026-09-03: adjust the amount of elevation and the spacing of the
-  // tiers), plus the two things easy to drop: the debounce in front of a
-  // ~300ms rebuild, and the session record so a replay re-applies the dial.
+  // tiers; 2026-09-09: ship the flat plain and put the map behind a toggle
+  // to sculpt live), plus the two things easy to drop: the debounce in front
+  // of a ~300ms rebuild, and the session record so a replay re-applies it.
   const source = readFileSync(join(process.cwd(), 'src/dev/index.ts'), 'utf8');
+
+  it('is a skill of its own, declared right after environment', () => {
+    const ids = DEV_SKILLS_META.map((m) => m.id);
+    expect(ids).toContain('refworld.landscape');
+    expect(ids.indexOf('refworld.landscape')).toBe(ids.indexOf('refworld.environment') + 1);
+    expect(source).toContain("metaOf('refworld.landscape')");
+    expect(source).toContain("panelUi.addFolder('landscape')");
+  });
+
+  it('opens with the map switch, reading and writing the world handle', () => {
+    expect(source).toContain("folder.addCheckbox('landscape', {");
+    // Starts where the world is, never at a literal.
+    expect(source).toContain('value: readLandscape?.() ?? false');
+    expect(source).toContain('setLandscape(on)');
+    // …and it is recorded, so a replay re-applies it (docs/SESSION.md).
+    expect(source).toContain("session?.world('landscape', on ? 1 : 0)");
+  });
+
+  it('holds the terrain dials in the same folder, under the switch', () => {
+    // They belong with the map they shape: the switch reveals the geography,
+    // these three sculpt it. Order matters — the checkbox is first.
+    const folder = source.slice(source.indexOf("panelUi.addFolder('landscape')"));
+    expect(folder.indexOf("addCheckbox('landscape'")).toBeLessThan(
+      folder.indexOf("addSlider('elevation'"),
+    );
+    // …and they left the environment folder behind them.
+    const environment = source.slice(
+      source.indexOf("panelUi.addFolder('environment')"),
+      source.indexOf("panelUi.addFolder('landscape')"),
+    );
+    expect(environment).not.toContain("addSlider('elevation'");
+  });
 
   it('adds elevation, tier spacing and relief spread, at the module limits', () => {
     for (const label of ["'elevation'", "'tier spacing'", "'relief spread'"]) {
@@ -93,6 +127,32 @@ describe('the environment folder carries the terrain dials', () => {
     const main = readFileSync(join(process.cwd(), 'src/main.ts'), 'utf8');
     expect(main).toContain("field === 'terrain'");
     expect(main).toContain('world.setTerrain({ [kind]: value })');
+  });
+
+  it('and main.ts reads the mode off the address and writes it back', () => {
+    // The panel tree-shakes out of the demo build, so `?landscape=1` is the
+    // only way to open a deployed link on the map — and the toggle writes the
+    // parameter back, so a reload during a demo keeps what was built up.
+    const main = readFileSync(join(process.cwd(), 'src/main.ts'), 'utf8');
+    expect(main).toContain("params.get('landscape')");
+    expect(main).toContain("landscapeParam === '1' || landscapeParam === 'on'");
+    expect(main).toContain('if (wantsLandscape) world.setLandscape(true);');
+    expect(main).toContain("params.set('landscape', '1')");
+    expect(main).toContain("params.delete('landscape')");
+    expect(main).toContain('history.replaceState(null, ');
+    // …and it is applied before anything is spawned into the world.
+    expect(main.indexOf('if (wantsLandscape) world.setLandscape(true);')).toBeLessThan(
+      main.indexOf('const creatures = createCreatureManager('),
+    );
+    // The panel handle drives both.
+    expect(main).toContain('writeLandscapeParam(on)');
+    expect(main).toContain('landscape: () => world.landscape()');
+  });
+
+  it('and main.ts replays the mode as a world event', () => {
+    const main = readFileSync(join(process.cwd(), 'src/main.ts'), 'utf8');
+    expect(main).toContain("field === 'landscape'");
+    expect(main).toContain('world.setLandscape(value === 1 || value === true)');
   });
 
   it('keeps the shipped defaults inside their own limits', () => {
