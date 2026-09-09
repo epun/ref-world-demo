@@ -6,8 +6,8 @@
  * is the one way a person adds to it. The brush engine is EnvPaint's,
  * imported through its portable entry points (`envpaint/core` for the
  * layers, the brush and the undo stack, `envpaint/ui` for the tool strip) —
- * see envpaint docs/port-meridian.md, of which this file is step 3, height
- * tools only.
+ * see envpaint docs/port-meridian.md, of which this file is steps 3 and 4:
+ * the height tools, and water.
  *
  * WHY THIS FILE IS THE ONLY ONE THAT KNOWS ABOUT ENVPAINT: a stamp writes
  * into a plain float array, and src/world/painted.ts hands that same array's
@@ -23,36 +23,101 @@
  * has to re-displace, the scatter re-seat and the water re-level, which is
  * exactly `WorldHandles.setTerrain({})`.
  *
- * WHAT IS NOT HERE YET (envpaint docs/port-meridian.md §5): water levels and
- * basins (step 4), forest / mountain / clearing weights (step 5), and — of
- * step 6 — "save map" and the build-time bake. The `paint` SESSION EVENT of
- * that step is now wired: one event per dab, through each tool's `onStamp`
- * (docs/SESSION.md §paint), plus one for the tap that clears the map. There
- * is no "save map" action to record; when there is one, it records here.
+ * HOW A WATER STROKE FLOWS, and why it ends somewhere else than a height
+ * one. The pond tool writes an absolute surface LEVEL into a second layer
+ * whose buffer is `PaintedMap.water`, exactly as the height tools write the
+ * first. That layer is a field of numbers and nothing more: what it MEANS —
+ * where one body ends and the next begins, where its shoreline runs — is
+ * src/world/painted-water.ts's `deriveWater`, and it is re-derived after
+ * every change. The result goes three places in one breath:
+ *
+ *   layer → deriveWater(map) → setPaintedWater(field)   (the geography: the
+ *                                                        basin, the reeds'
+ *                                                        shore, the colliders)
+ *                            → water.setPainted(field)  (the drawing: fill,
+ *                                                        ink shoreline, ripples)
+ *                            → rebuildLandscape()
+ *
+ * …and the rebuild is the LANDSCAPE one (ground → scatter.refreshLandscape →
+ * water levels), not the terrain one a height stroke ends with [D]. A height
+ * stroke moves ground that things already stand on, and re-seating them is
+ * `refreshTerrain`. A pond changes WHAT GROWS WHERE: `place()` refuses water,
+ * so every tree inside the new shore has to go, and the reed walk has a new
+ * shoreline to line. That is a re-roll of the placement, which is exactly
+ * what `refreshLandscape` is — and `setLandscape(landscape())`, the mode
+ * re-applied unchanged, is the handle that does all three in order.
+ *
+ * EVERY DAB IS RECORDED. The `paint` session event of step 6 is wired: one
+ * event per dab, through each tool's `onStamp` (docs/SESSION.md §paint),
+ * plus one for the tap that clears the map. A water dab carries its stroke's
+ * LEVEL as well [D] — a replay must lay the same plane, and re-deriving one
+ * from `bankHeight` at replay time would read a bank that later strokes may
+ * have moved. `PaintProbe.applyPaint` is the seam a replay comes back
+ * through, and a replayed water dab travels the same layer → derive →
+ * rebuild path a live one does.
+ *
+ * WHAT IS NOT HERE YET (envpaint docs/port-meridian.md §5): forest /
+ * mountain / clearing weights (step 5), and — of step 6 — "save map" and the
+ * build-time bake. There is no "save map" action to record; when there is
+ * one, it records here.
  */
 
 import type { Camera, Object3D, Scene, WebGLRenderer } from 'three';
 import { Raycaster, Vector2, Vector3 } from 'three';
 import type { GhostFolder, GhostPanelUi } from 'ghost-panel';
-import type { BrushHit, StampMode, StampOp, Tool } from 'envpaint/core';
-import { Brush, History, PaintLayer, PaintLayers } from 'envpaint/core';
+import type { BrushHit, EdgeShape, StampMode, StampOp, Tool } from 'envpaint/core';
+import {
+  bankHeight,
+  Brush,
+  History,
+  PaintLayer,
+  PaintLayers,
+  writeLevelDisc,
+  DRY as WATER_DRY,
+} from 'envpaint/core';
 import { createToolStrip, type ToolStrip } from 'envpaint/ui';
 import { SURFACE } from '../taste/tokens';
-import { setPaintedHeight } from '../world/landscape';
+import { paintedWater, setPaintedHeight, setPaintedWater, TERRAIN } from '../world/landscape';
 import {
   clearPaintedMap,
   createPaintedMap,
   paintedRange,
   paintedSampler,
   sampleHeight,
+  DRY,
   PAINTED_RES,
   PAINTED_SIZE,
 } from '../world/painted';
+import { deriveWater, type PaintedWaterField } from '../world/painted-water';
 import type { PaintEvent, SessionRecorder } from '../session';
 import type { DevSkillMeta } from './skills-meta';
 
-/** The one layer this step paints: a terrain offset in world units. */
+/** The terrain offset in world units — the layer the height tools write. */
 const HEIGHT_LAYER = 'height';
+
+/** The absolute water surface level in world units, `DRY` where none — the
+ * layer the pond and drain tools write. Its buffer is `PaintedMap.water`. */
+const WATER_LAYER = 'water';
+
+/**
+ * The ground reference `writeLevelDisc` measures its depth cap against: a
+ * full-length field of zeros, allocated once.
+ *
+ * [D] It is not a depth reference at all here, and the zeros are not a lie
+ * about the terrain. `writeLevelDisc` caps each texel's level at `ground[i] +
+ * maxDepth * (…)`; with the default `maxDepth = Infinity` that cap is `0 +
+ * Infinity` and can never bind, so the level a stroke writes is exactly the
+ * one it asked for. The array still has to EXIST and be full length, because
+ * an out-of-range read would make the cap `undefined + Infinity` — NaN — and
+ * `target < NaN` is false, so every texel would silently keep its old value
+ * and the brush would appear to paint nothing at all.
+ *
+ * The basin under a painted pond is not cut here in the first place: the
+ * geography cuts it from the level, on the fly, with the authored shore-ramp
+ * maths (src/world/landscape.ts `terrainHeight`). This module writes a
+ * waterline; the ground answers for it.
+ */
+const FLAT_GROUND = new Float32Array(PAINTED_RES * PAINTED_RES);
 
 /**
  * [D] Brush radius range in world units, 0.5–40.
@@ -86,8 +151,8 @@ const RADIUS_DEFAULT = 12;
  */
 const REBUILD_MIN_MS = 125;
 
-/** Hotkeys 1-4, in strip order. */
-const TOOL_KEYS = ['1', '2', '3', '4'] as const;
+/** Hotkeys 1-6, in strip order. */
+const TOOL_KEYS = ['1', '2', '3', '4', '5', '6'] as const;
 
 /** What the paint skill needs from the world. Structural, like every other
  * handle in src/dev/, so this module never imports src/world/scene.ts. */
@@ -101,6 +166,20 @@ export interface PaintHandles {
   sampleHeight(x: number, z: number): number;
   /** Rebuild ground → scatter → water: `WorldHandles.setTerrain({})`. */
   rebuildTerrain(): void;
+  /**
+   * Re-cut the world for a placement that has CHANGED, not just moved:
+   * ground → `scatter.refreshLandscape()` → water levels. What a water stroke
+   * ends with, for the reason the header gives — a pond decides what grows
+   * where, and re-seating the existing trees is not enough.
+   */
+  rebuildLandscape(): void;
+  /** Hand the painted water field to the renderer (`water.setPainted`). The
+   * geography gets its own copy through `setPaintedWater` in landscape.ts;
+   * this is the drawing half. */
+  setPaintedWater(field: PaintedWaterField | null): void;
+  /** The terrain dials in force (`WorldHandles.terrain()`). A pond chooses
+   * its level with `basinDrop` at the dials the painter is looking at. */
+  terrain(): { elevation: number; tierStep: number; relief: number };
   /** Register per-frame work (the undo stack's dirty-rect sweep). */
   onFrame(callback: (dt: number, nowMs: number) => void): void;
   /** Park the world's own one-pointer drag while a stroke owns the pointer
@@ -130,6 +209,15 @@ export interface PaintProbe {
   sampleAt(x: number, z: number): number;
   /** Lowest and highest painted offset in the map. */
   range(): { min: number; max: number };
+  /** The painted LEVEL in the texel covering a world point — the layer as it
+   * stands, `DRY` where nothing is painted. Not bilinear: this is the array,
+   * for a smoke that wants to know what the brush wrote. */
+  waterAt(x: number, z: number): number;
+  /** Signed distance to the nearest painted shore of the INSTALLED field,
+   * positive in water; `-Infinity` when no field is installed. */
+  shoreAt(x: number, z: number): number;
+  /** How many painted bodies the world is currently holding. */
+  bodies(): number;
   /** Force the world to re-cut itself now. */
   rebuild(): void;
   /**
@@ -197,9 +285,19 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
    * teardown — the panel can remove a skill and put the world back. */
   const disposers: (() => void)[] = [];
 
-  // ── the map, and the layer that shares its buffer ─────────────────────────
+  // The one duplicated constant in the port, checked where the duplication
+  // is: src/world/painted.ts re-declares `DRY` rather than importing it, so
+  // that the pure world code pulls in no brush engine, and this module — the
+  // only one that sees both — is where the two are made to agree. A drift
+  // would be silent everywhere else: the level layer is EnvPaint's buffer, so
+  // a texel it drained would read as a surface 1000 units under the map.
+  if (WATER_DRY !== DRY) {
+    throw new Error(`painted water: envpaint DRY is ${WATER_DRY}, the world's is ${DRY}`);
+  }
+
+  // ── the map, and the two layers that share its buffers ────────────────────
   const layers = new PaintLayers();
-  const layer = layers.add(
+  const heightLayer = layers.add(
     new PaintLayer(HEIGHT_LAYER, {
       channels: 1,
       float: true,
@@ -207,7 +305,23 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
       res: PAINTED_RES,
     }),
   );
-  const map = createPaintedMap(PAINTED_RES, PAINTED_SIZE, layer.data as Float32Array);
+  // Same shape, same resolution, one channel of absolute world height — and
+  // `initial: DRY`, so an unpainted map is DRY everywhere rather than flooded
+  // at height 0 (the layer fills itself at construction).
+  const waterLayer = layers.add(
+    new PaintLayer(WATER_LAYER, {
+      channels: 1,
+      float: true,
+      initial: DRY,
+      res: PAINTED_RES,
+    }),
+  );
+  const map = createPaintedMap(
+    PAINTED_RES,
+    PAINTED_SIZE,
+    heightLayer.data as Float32Array,
+    waterLayer.data as Float32Array,
+  );
   // From here on the world's heights carry whatever is in that array. With an
   // unpainted map that is the authored world exactly (test/world/painted.test.ts).
   setPaintedHeight(paintedSampler(map));
@@ -234,6 +348,24 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
     u: x / PAINTED_SIZE + 0.5,
     v: z / PAINTED_SIZE + 0.5,
   });
+
+  /**
+   * The painted LEVEL in the texel covering (x, z), `DRY` off the map.
+   *
+   * NEAREST, not bilinear, and deliberately so: there is no such thing as
+   * "half a water level". Between a wet texel and a dry one a bilinear read
+   * would return some number 500 units under the map, which is neither a
+   * surface nor a sentinel. What is continuous across a shoreline is the
+   * distance field (`PaintedWaterField.shore`), and that is what the world
+   * reads; this is the array, for the probe.
+   */
+  const levelAt = (x: number, z: number): number => {
+    const { u, v } = uvOf(x, z);
+    if (u < 0 || u >= 1 || v < 0 || v >= 1) return DRY;
+    const tx = Math.min(PAINTED_RES - 1, Math.floor(u * PAINTED_RES));
+    const ty = Math.min(PAINTED_RES - 1, Math.floor(v * PAINTED_RES));
+    return map.water[ty * PAINTED_RES + tx] ?? DRY;
+  };
 
   /**
    * Pointer → ground hit, by raycast against the displaced field itself
@@ -312,10 +444,10 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
   };
 
   // ── tools ─────────────────────────────────────────────────────────────────
-  // All four write the one height layer. The edge shape is EnvPaint's own
-  // default (SHAPE_DEFAULTS: edgeNoise 0.35, edgeScale 3, spatter 0.25) and
-  // stays that way — TASTE §2.5 has no clean discs on this map, and a brush
-  // whose rim is a circle draws one every stamp.
+  // Four on the height layer, two on the water one. The edge shape is
+  // EnvPaint's own default (SHAPE_DEFAULTS: edgeNoise 0.35, edgeScale 3,
+  // spatter 0.25) and stays that way — TASTE §2.5 has no clean discs on this
+  // map, and a brush whose rim is a circle draws one every stamp.
   //
   // `flatten` carries an onStamp [D]: the engine's flatten pulls a texel
   // toward `op.flattenTo`, which the Brush does not set, so it would default
@@ -340,13 +472,19 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
    * randomises its own rim, and a replayed stroke with a different rim is a
    * different stroke.
    *
+   * `level` is the water tools' one extra field [D]: a pond dab fills to a
+   * plane the stroke chose from the bank around its first dab, and by the
+   * time a log is replayed that bank may have been painted over. Recording
+   * the number is four bytes a dab against a pond that comes back at the
+   * wrong height.
+   *
    * NOT recorded: the four rim-shape settings (edgeNoise, edgeScale,
    * spatter, aspect). They are brush state, identical across every dab of a
    * stroke, and a replay reads them off the brush it is stamping through
    * (`applyPaint` below) — four numbers a dab, thousands of dabs, to say
    * the same thing the panel already says.
    */
-  const recordStamp = (tool: string, op: StampOp): void => {
+  const recordStamp = (tool: string, op: StampOp, level?: number): void => {
     handles.session?.paint({
       tool,
       x: (op.u - 0.5) * PAINTED_SIZE,
@@ -357,20 +495,124 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
       ...(op.mode === undefined ? {} : { mode: op.mode }),
       ...(op.seed === undefined ? {} : { seed: op.seed }),
       ...(op.mode === 'flatten' ? { flattenTo } : {}),
+      ...(level === undefined ? {} : { level }),
     });
   };
 
-  /** A tool that records its dab and then stamps it. `flatten` also carries
-   * the target the stroke is levelling toward — see the note below. */
+  /** A height tool that records its dab and then stamps it. `flatten` also
+   * carries the target the stroke is levelling toward — see the note above.
+   * The layer is on the descriptor rather than added at registration,
+   * because the water tools below write a different one. */
   const recorded = (id: string, rest: Omit<Tool, 'id' | 'label' | 'onStamp'>): Tool => ({
+    layer: HEIGHT_LAYER,
     ...rest,
     id,
     label: id,
     onStamp: (_ctx: unknown, op: StampOp): void => {
       recordStamp(id, op);
-      layer.stamp(op.mode === 'flatten' ? { ...op, flattenTo } : op);
+      heightLayer.stamp(op.mode === 'flatten' ? { ...op, flattenTo } : op);
     },
   });
+
+  /**
+   * The surface height every dab of the CURRENT pond stroke fills to, or null
+   * between strokes.
+   *
+   * One number a stroke, never one a dab: a body of water is a PLANE (the
+   * contract's third convention), and a level read fresh under each dab would
+   * paint a sheet that tilts with the ground it crossed. `deriveWater` would
+   * level it back to the lowest dab afterwards, so the visible result of
+   * getting this wrong is a pond that quietly sinks as you draw it.
+   */
+  let strokeLevel: number | null = null;
+
+  /**
+   * The level a pond stroke starting at `hit` fills to.
+   *
+   * Two cases, and they are the same rule. Start INSIDE water that is already
+   * painted and the stroke is an extension of that body, so it takes the
+   * body's own plane — otherwise widening a pond by a brush width would paint
+   * a second, higher sheet against its bank and `deriveWater` would merge the
+   * two down to the lower one, undoing the older body's level.
+   *
+   * Start on dry land and the stroke chooses its level the way an AUTHORED
+   * body chooses its own (`waterLevel` in landscape.ts): the ground it stands
+   * on, `basinDrop` under it. The ground is `bankHeight`'s mean over a ring at
+   * the brush radius rather than the single sample under the pointer — the
+   * ring is untouched bank, and a stroke that has already cut a basin under
+   * itself would otherwise ratchet its own level down dab after dab. And
+   * `basinDrop` rides the `elevation` dial because the AUTHORED drop does:
+   * somebody painting a pond next to the lake wants it to sit as deep as the
+   * lake does at the dials in front of them. The level itself is then
+   * absolute — no dial ever multiplies it again.
+   */
+  const strokeLevelAt = (hit: BrushHit): number => {
+    const field = paintedWater();
+    if (field && field.shore(hit.x, hit.z) > 0) return field.level(hit.x, hit.z);
+    return (
+      bankHeight(handles.sampleHeight, hit.x, hit.z, brush.settings.radius) -
+      TERRAIN.basinDrop * handles.terrain().elevation
+    );
+  };
+
+  /**
+   * One dab of water: fill to the stroke's level, or drain to `DRY`.
+   *
+   * [D] `spatter: 0`, alone among the shape fields — the rim keeps its edge
+   * noise, so no painted pond is a clean disc (TASTE §2.5), but the droplets
+   * spatter throws are culled texel by texel by `deriveWater` (they land under
+   * `MIN_BODY_TEXELS` and go straight back to `DRY`). A brush whose specks
+   * vanish the instant the stroke is derived reads as the tool fighting
+   * itself; better not to throw them.
+   *
+   * [D] The level is read here, at the first dab, and not on `strokestart`:
+   * the Brush stamps once and THEN emits `strokestart` (envpaint
+   * src/core/Brush.js `pointerdown`), so a level chosen in that handler would
+   * miss the dab that opened the pond — and the last stroke's level would
+   * write it instead.
+   *
+   * `record` is the tool id to log the dab under, or null on a REPLAY: a
+   * replayed dab is already in the log it came out of, and recording it
+   * again would double every stroke each time a session was played back.
+   */
+  const stampWater = (
+    op: StampOp,
+    hit: BrushHit,
+    drain: boolean,
+    record: string | null,
+  ): void => {
+    if (!drain && strokeLevel === null) strokeLevel = strokeLevelAt(hit);
+    // After the level is chosen, so the event carries the plane this dab
+    // actually filled to. A drain has no level to carry.
+    if (record !== null) recordStamp(record, op, drain ? undefined : (strokeLevel ?? undefined));
+    // The dab's own edge shape, field by field rather than spread [D]: under
+    // `exactOptionalPropertyTypes` an explicit `undefined` is not the same as
+    // an absent key, and `makeFalloff` reads absent keys as its own defaults
+    // (edgeScale 3, aspect 1, seed 0) — writing `undefined` through would be
+    // a type error over a shape the engine already knows how to complete.
+    const shape: EdgeShape = { spatter: 0 };
+    if (op.edgeNoise !== undefined) shape.edgeNoise = op.edgeNoise;
+    if (op.edgeScale !== undefined) shape.edgeScale = op.edgeScale;
+    if (op.aspect !== undefined) shape.aspect = op.aspect;
+    if (op.seed !== undefined) shape.seed = op.seed;
+    if (op.dir !== undefined) shape.dir = op.dir;
+    const rect = writeLevelDisc({
+      level: waterLayer.data as Float32Array,
+      ground: FLAT_GROUND,
+      res: PAINTED_RES,
+      u: op.u,
+      v: op.v,
+      radius: op.radius,
+      ...(op.hardness === undefined ? {} : { hardness: op.hardness }),
+      op: drain ? 'drain' : 'fill',
+      target: strokeLevel ?? 0,
+      shape,
+    });
+    // `writeLevelDisc` writes the array directly rather than going through
+    // `layer.stamp`, so nothing has marked it: the rect it returns is what
+    // tells the undo sweep and the rebuild below that water moved.
+    if (rect) waterLayer.markDirtyRect(rect.x0, rect.y0, rect.x1, rect.y1);
+  };
 
   const tools: Tool[] = [
     recorded('raise', { key: TOOL_KEYS[0], mode: 'raise', eraseMode: 'lower' }),
@@ -382,15 +624,46 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
       eraseMode: 'smooth',
     }),
     recorded('smooth', { key: TOOL_KEYS[3], mode: 'smooth', eraseMode: 'smooth' }),
+    {
+      // `mode: 'set'` because a level is a value and not an increment — the
+      // engine's stamp modes are for byte layers, and this tool writes the
+      // layer itself through `writeLevelDisc` anyway. Ctrl/cmd-drag erases,
+      // which for water is a drain: the modifier means the same thing on
+      // every tool in the strip.
+      id: 'pond',
+      label: 'pond',
+      key: TOOL_KEYS[4],
+      layer: WATER_LAYER,
+      mode: 'set',
+      eraseMode: 'erase',
+      onStamp: (_ctx: unknown, op: StampOp, hit: BrushHit): void => {
+        stampWater(op, hit, op.mode === 'erase', 'pond');
+      },
+    },
+    {
+      id: 'drain',
+      label: 'drain',
+      key: TOOL_KEYS[5],
+      layer: WATER_LAYER,
+      mode: 'erase',
+      eraseMode: 'erase',
+      onStamp: (_ctx: unknown, op: StampOp, hit: BrushHit): void => {
+        stampWater(op, hit, true, 'drain');
+      },
+    },
   ];
   for (const tool of tools) {
-    brush.registerTool({ ...tool, layer: HEIGHT_LAYER, color: SURFACE.ink });
+    brush.registerTool({ color: SURFACE.ink, ...tool });
   }
   brush.setTool('raise');
 
   // ── the rebuild, throttled ────────────────────────────────────────────────
   let lastRebuildMs = 0;
   let pendingRebuild = 0;
+  /** Set by the per-frame sweep when the water layer moved, cleared by the
+   * derive that answers for it. A flag and not a read of `dirtyRect`, because
+   * `commitAll` clears that rect on the frame it was set. */
+  let waterDirty = false;
 
   const rebuildNow = (): void => {
     if (pendingRebuild) {
@@ -398,7 +671,27 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
       pendingRebuild = 0;
     }
     lastRebuildMs = performance.now();
-    handles.rebuildTerrain();
+    if (waterDirty || waterLayer.dirtyRect) {
+      waterDirty = false;
+      // The whole water path in four lines: what the layer means, then the
+      // geography, then the drawing, then the world.
+      //
+      // `deriveWater` MUTATES `map.water` — it culls spatter back to `DRY`,
+      // fills pinholes, and levels every texel of a body to that body's own
+      // plane. That is deliberate (the layer a person paints and the layer the
+      // world reads are one array, so the tidying has to be visible in the
+      // paint), and it is safe for undo: History took its "before" of the
+      // stroke's rect when the stroke began, and takes its "after" AFTER this
+      // runs — the Brush emits `strokeend`, which rebuilds, and only then
+      // calls `history.end()`. So an undo puts back the paint as it was, and
+      // the derive that follows the undo tidies it again from there.
+      const field = deriveWater(map);
+      setPaintedWater(field);
+      handles.setPaintedWater(field);
+      handles.rebuildLandscape();
+    } else {
+      handles.rebuildTerrain();
+    }
     refreshReadout();
   };
 
@@ -430,6 +723,8 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
     rebuildSoon();
   });
   brush.on('strokeend', () => {
+    // The next pond stroke picks its own level (see `strokeLevel`).
+    strokeLevel = null;
     // Always one final rebuild, whatever the throttle was doing: what is on
     // screen when the pointer lifts is what is in the map.
     rebuildNow();
@@ -437,12 +732,26 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
 
   // History wants each layer's dirty rect before anything clears it, and
   // `commitAll` is what clears it — so the sweep and the commit ride together
-  // on the world's frame, exactly as EnvPaint's own app runs them. Both are
-  // no-ops on a frame where nothing was painted.
+  // on the world's frame, exactly as EnvPaint's own app runs them. All of it
+  // is a no-op on a frame where nothing was painted.
   handles.onFrame(() => {
     for (const l of layers.all()) {
       if (l.dirtyRect) history.noteDirty(l, l.dirtyRect);
     }
+    // A dirty rect is the ONE signal that says the layers changed, whoever
+    // changed them — and that is why the rebuild is asked for here rather
+    // than only from the brush's own stroke events. An UNDO writes the
+    // recorded rect straight back into `layer.data` and calls
+    // `markDirtyRect` (envpaint src/core/History.js), emitting no stroke at
+    // all; before this, an undone height stroke stayed on screen until the
+    // next stroke happened to rebuild over it. Both layers are read, so both
+    // are fixed, and water carries a flag as well because it needs a derive
+    // and not just a re-cut.
+    if (waterLayer.dirtyRect) {
+      waterDirty = true;
+      rebuildSoon();
+    }
+    if (heightLayer.dirtyRect) rebuildSoon();
     layers.commitAll();
   });
 
@@ -453,7 +762,7 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
   // lies. NOTE: `envpaint/ui` does not export the stylesheet that carries its
   // `.ep-strip` rules (they live in a module outside the package's exports
   // map), so the strip renders with ghost-panel's plain toolbar chrome and
-  // the four height modes share EnvPaint's fallback icon — reported upstream.
+  // all six modes share EnvPaint's fallback icon — reported upstream.
   let strip: ToolStrip | null = null;
   const mountStrip = (): void => {
     if (strip) return;
@@ -470,8 +779,8 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
   // the Brush binds its tool hotkeys on window as well, so with painting on
   // one press would do both. This capture-phase listener runs before either
   // — window is the outermost node, and neither of them captures — so while
-  // painting is on it selects the tool and swallows the key. 5-7 still emote,
-  // and every other brush hotkey ([ ] x) is left alone.
+  // painting is on 1-6 select a tool and swallow the key. 7 still emotes, and
+  // every other brush hotkey ([ ] x) is left alone.
   const onKeyCapture = (event: KeyboardEvent): void => {
     if (!painting || event.repeat) return;
     if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
@@ -512,12 +821,23 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
   const folder = panelUi.addFolder('paint');
   const refreshReadout = (): void => {
     const { min, max } = paintedRange(map);
+    const count = paintedWater()?.bodies.length ?? 0;
+    // The bodies the WORLD is holding, not the texels the layer holds: what
+    // the panel should say is how many sheets of water came out of the last
+    // derive, spatter culled and pinholes filled.
+    const water =
+      count === 0 ? 'no painted water' : `${count} painted ${count === 1 ? 'body' : 'bodies'}`;
+    const height =
+      min === 0 && max === 0
+        ? 'no painted height'
+        : `painted height ${min.toFixed(2)} to ${max.toFixed(2)} u`;
+    const nothing = min === 0 && max === 0 && count === 0;
     folder
       .get('paint-range')
       ?.setText?.(
-        min === 0 && max === 0
+        nothing
           ? 'nothing painted — the map is the authored one'
-          : `painted height ${min.toFixed(2)} to ${max.toFixed(2)} u over ${PAINTED_SIZE} u at ${PAINTED_RES} texels`,
+          : `${height} over ${PAINTED_SIZE} u at ${PAINTED_RES} texels · ${water}`,
       );
   };
 
@@ -572,12 +892,21 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
     id: 'paint-spatter',
     onChange: (v) => brush.setShape({ spatter: v }),
   });
-  /** Throw the map away. The rebuild is the caller's, so a clear arriving in
-   * the middle of a batch does not re-cut the ground on its own. */
+  /** Both layers: `clearPaintedMap` puts the height back to 0 and the level
+   * back to `DRY`, and the two rects are what tell the undo sweep and the
+   * texture upload that it happened. The button records the tap; a replay
+   * calls this straight, because the tap it is replaying is already logged.
+   * The REBUILD is the caller's, so a clear arriving in the middle of a
+   * synced batch does not re-cut the ground on its own — but the water flag
+   * is raised here, so whichever rebuild follows takes the water path and
+   * derives the field to null rather than leaving the last pond installed
+   * over an empty layer. */
   const clearMap = (): void => {
     clearPaintedMap(map);
-    layer.markDirtyRect(0, 0, PAINTED_RES - 1, PAINTED_RES - 1);
+    heightLayer.markDirtyRect(0, 0, PAINTED_RES - 1, PAINTED_RES - 1);
+    waterLayer.markDirtyRect(0, 0, PAINTED_RES - 1, PAINTED_RES - 1);
     history.clear();
+    waterDirty = true;
   };
   folder.addButton('clear map', () => {
     // An action, so it is in the record: without it a replay would keep
@@ -599,6 +928,16 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
    * event. The rim settings come off the brush as it stands (see
    * `recordStamp`); the recorded seed makes the rim itself the same.
    *
+   * A WATER dab goes through `stampWater`, so it travels the same road a
+   * live one does — dirty rect, derive, `rebuildLandscape` — rather than
+   * being written into the level array by a second code path that would
+   * have to be kept in step. It lays its RECORDED plane: `strokeLevel` is
+   * set from the event around the call and put back afterwards, so a
+   * replayed dab neither re-reads a bank that later strokes have moved nor
+   * disturbs a live stroke that happens to be in flight. A dab with no level
+   * — a drain, or a log written before the field existed — falls through to
+   * the bank rule, which is the best guess available.
+   *
    * Unrecorded on purpose: a replayed stamp does not push onto the undo
    * stack. Ctrl+z is for the hand that is painting, and a log playing back
    * is not one.
@@ -612,8 +951,7 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
     }
     if (event.x === undefined || event.z === undefined || event.r === undefined) return;
     const { u, v } = uvOf(event.x, event.z);
-    if (event.mode === 'flatten' && event.flattenTo !== undefined) flattenTo = event.flattenTo;
-    layer.stamp({
+    const op: StampOp = {
       u,
       v,
       radius: event.r / PAINTED_SIZE,
@@ -621,12 +959,23 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
       ...(event.hardness === undefined ? {} : { hardness: event.hardness }),
       ...(event.mode === undefined ? {} : { mode: event.mode as StampMode }),
       ...(event.seed === undefined ? {} : { seed: event.seed }),
-      ...(event.mode === 'flatten' ? { flattenTo } : {}),
       edgeNoise: brush.settings.edgeNoise,
       edgeScale: brush.settings.edgeScale,
       spatter: brush.settings.spatter,
       aspect: brush.settings.aspect,
-    });
+    };
+    if (event.tool === 'pond' || event.tool === 'drain') {
+      const held = strokeLevel;
+      strokeLevel = event.level ?? null;
+      // `mode` says what the dab did, so a ctrl-dragged pond replays as the
+      // drain it was; the tool id is the fallback for an event without one.
+      const drain = event.mode === 'erase' || event.tool === 'drain';
+      stampWater(op, { x: event.x, y: 0, z: event.z, u, v }, drain, null);
+      strokeLevel = held;
+      return;
+    }
+    if (event.mode === 'flatten' && event.flattenTo !== undefined) flattenTo = event.flattenTo;
+    heightLayer.stamp(event.mode === 'flatten' ? { ...op, flattenTo } : op);
   };
 
   const applyPaint = (event: PaintEvent): void => {
@@ -652,6 +1001,9 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
     },
     sampleAt: (x: number, z: number): number => sampleHeight(map, x, z),
     range: (): { min: number; max: number } => paintedRange(map),
+    waterAt: (x: number, z: number): number => levelAt(x, z),
+    shoreAt: (x: number, z: number): number => paintedWater()?.shore(x, z) ?? -Infinity,
+    bodies: (): number => paintedWater()?.bodies.length ?? 0,
     rebuild: rebuildNow,
   };
   const scope = window as Window & { __refworldPaint?: PaintProbe };
@@ -669,10 +1021,16 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
     dispose(): void {
       for (const fn of disposers.reverse()) fn();
       // The world goes back to the one it was authored as, and is re-cut so
-      // the mesh says so too.
+      // the mesh says so too. Both hands come off: the offset sampler, and
+      // the water field on the geography AND on the renderer.
       setPaintedHeight(null);
+      setPaintedWater(null);
+      handles.setPaintedWater(null);
       layers.dispose();
-      handles.rebuildTerrain();
+      // The LANDSCAPE rebuild, for the reason the header gives: the trees a
+      // pond displaced and the reeds it grew have to come back too, and
+      // re-seating what is standing would leave both where the water was.
+      handles.rebuildLandscape();
     },
   };
 }

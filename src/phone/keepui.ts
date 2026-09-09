@@ -47,6 +47,22 @@
  * `preparing` and delivers on the NEXT tap — late is not a thing this can
  * be, because a delivery that arrives after the activation expires is a
  * delivery that does not happen.
+ *
+ * The same rule caught two more of these, reported from a real handset on
+ * production (*"the save as photo isn't working for the character, or the
+ * 3d file, or link"*): the share sheet's REFUSAL used to be followed by a
+ * download on the activation the refusal had spent (keepsake.ts
+ * `deliver`), and the link went to the clipboard first, which a phone's
+ * companion frame refuses — so its fallback to the sheet ran on a spent
+ * activation too. Only one browser call gets the gesture. Every route here
+ * now makes its call in the tap, and whatever a second route can still do
+ * is a bonus rather than the plan.
+ *
+ * And NOTHING here is allowed to fail quietly. A build that cannot succeed
+ * says `try again` rather than `preparing` forever; a refused sheet says
+ * `try again`; a link neither route will take is put on screen to be
+ * copied by hand. A row that does nothing is the bug this file has now
+ * been fixed for twice.
  */
 
 import { MOTION, SURFACE, WORLD } from '../taste/tokens';
@@ -511,6 +527,19 @@ export function mountKeepUi(options: KeepUiOptions): KeepUiHandle {
   const ready = new Map<KeepFileAction, Blob>();
   const building = new Set<KeepFileAction>();
   /**
+   * Builds that came back with nothing.
+   *
+   * The difference between "not yet" and "not ever" is the whole of what a
+   * person sees here. A render that fails returns null exactly as a render
+   * that has not finished has nothing, so an unrecorded failure left the
+   * row saying `preparing` on every tap, forever — which is a lie and
+   * looks like a dead button (user report, 2026-09-09: the rows *"aren't
+   * working"*). A failure is remembered, said out loud as `try again`, and
+   * the tap that says it starts the build over — because "try again" has
+   * to mean something.
+   */
+  const unbuildable = new Set<KeepFileAction>();
+  /**
    * Start whatever is not built yet. Idempotent, and never re-run for a
    * file it already holds: the strokes and the identity are fixed for this
    * handle's whole life, so a blob built once is correct forever.
@@ -519,11 +548,13 @@ export function mountKeepUi(options: KeepUiOptions): KeepUiHandle {
     for (const action of ['picture', 'model'] as KeepFileAction[]) {
       if (!rows.has(action) || ready.has(action) || building.has(action)) continue;
       building.add(action);
+      unbuildable.delete(action);
       void build(action)
         .then((blob) => {
           if (blob) ready.set(action, blob);
+          else unbuildable.add(action);
         })
-        .catch(() => undefined)
+        .catch(() => unbuildable.add(action))
         .finally(() => building.delete(action));
     }
   };
@@ -582,8 +613,13 @@ export function mountKeepUi(options: KeepUiOptions): KeepUiHandle {
     if (busy.has(action)) return;
     const blob = ready.get(action);
     if (!blob) {
+      // `preparing` only while something is actually being prepared. A
+      // build that came back empty says so and starts over, so the row is
+      // never a button that answers the same non-answer forever.
+      const failed = unbuildable.has(action) && !building.has(action);
       prepare();
-      say(action, KEEP_PREPARING, false);
+      say(action, failed ? KEEP_FAILED : KEEP_PREPARING, false);
+      if (failed) options.onResult?.(action, false);
       return;
     }
     busy.add(action);
@@ -597,12 +633,25 @@ export function mountKeepUi(options: KeepUiOptions): KeepUiHandle {
   /**
    * The link row.
    *
-   * The clipboard first, and IN THE TAP. It used to try the share sheet
-   * first — right on a handset, where the sheet is how a link reaches the
-   * place somebody keeps things — but both of them are activation-gated
-   * and only one of them can be first. The clipboard is the one that works
-   * everywhere and needs no sheet, and the share sheet is still reached if
-   * it refuses.
+   * THE SHARE SHEET FIRST ON A HANDSET, the clipboard everywhere else.
+   *
+   * Both are gated on the tap's user activation and only one of them can
+   * be first, so the order is a real decision and it was wrong. It went
+   * clipboard-first, which is right on a desktop and wrong in a phone's
+   * companion frame: mobile safari refuses `clipboard.writeText` there, and
+   * by the time that rejection arrives the activation is spent, so the
+   * share sheet that should have caught it is refused too — the row did
+   * nothing at all (user report, 2026-09-09: *"or link"*). On a handset
+   * the sheet is also the better answer on its own merits: it is how a
+   * link reaches the place somebody actually keeps things, and a clipboard
+   * a person has to know to paste from is the fallback, not the point.
+   *
+   * So: a browser with `navigator.share` is a browser where the sheet is
+   * the first call, made in the tap. Anything else goes to the clipboard,
+   * in the tap. Whichever is second is reached only if the first refuses,
+   * and if both do, the url itself goes on screen to be copied by hand —
+   * which is a worse answer than either and still an answer, where doing
+   * nothing is not.
    *
    * A world is required: a link into a world that does not persist would
    * be a promise this cannot keep, so that row is not built at all.
@@ -616,25 +665,8 @@ export function mountKeepUi(options: KeepUiOptions): KeepUiHandle {
       share?: (data: { url?: string; title?: string }) => Promise<void>;
     };
 
-    /** The sheet, then — if there is no sheet either — the url itself. */
-    const shareOrReveal = (): void => {
-      if (typeof nav.share === 'function') {
-        nav.share({ url, title: options.name() ?? 'my creature' }).then(
-          () => settle('link', true),
-          (err: unknown) => {
-            // Cancelled is not failed: the person pressed cancel and knows
-            // what happened (keepsake.ts deliver()).
-            if (err instanceof Error && err.name === 'AbortError') settle('link', true);
-            else reveal();
-          },
-        );
-        return;
-      }
-      reveal();
-    };
-
-    /** Neither route is available. Put the url on screen rather than
-     * report a failure the person can do nothing about. */
+    /** Neither route took it. Put the url on screen rather than report a
+     * failure the person can do nothing about. */
     const reveal = (): void => {
       busy.delete('link');
       const row = rows.get('link');
@@ -646,20 +678,61 @@ export function mountKeepUi(options: KeepUiOptions): KeepUiHandle {
       options.onResult?.('link', false);
     };
 
-    const clipboard = navigator.clipboard as Clipboard | undefined;
-    if (clipboard && typeof clipboard.writeText === 'function') {
+    /** The clipboard, called synchronously. False when there is none. */
+    const toClipboard = (onRefusal: () => void): boolean => {
+      const clipboard = navigator.clipboard as Clipboard | undefined;
+      if (!clipboard || typeof clipboard.writeText !== 'function') return false;
       let written: Promise<void> | null = null;
       try {
         written = clipboard.writeText(url);
       } catch {
-        written = null;
+        return false;
       }
-      if (written) {
-        written.then(() => settle('link', true), shareOrReveal);
-        return;
+      if (!written) return false;
+      written.then(() => settle('link', true), onRefusal);
+      return true;
+    };
+
+    /** The sheet, called synchronously. False when there is none. */
+    const toShareSheet = (onRefusal: () => void): boolean => {
+      if (typeof nav.share !== 'function') return false;
+      let sharing: Promise<void> | null = null;
+      try {
+        sharing = nav.share({ url, title: options.name() ?? 'my creature' });
+      } catch {
+        return false;
       }
+      if (!sharing) return false;
+      sharing.then(
+        () => settle('link', true),
+        (err: unknown) => {
+          // Cancelled is not failed: the person pressed cancel and knows
+          // what happened (keepsake.ts deliver()).
+          if (err instanceof Error && err.name === 'AbortError') settle('link', true);
+          else onRefusal();
+        },
+      );
+      return true;
+    };
+
+    // The second route runs on a spent activation and will very likely be
+    // refused as well — it is tried because it sometimes is not, and the
+    // url on screen is what catches it when it is.
+    if (
+      toShareSheet(() => {
+        if (!toClipboard(reveal)) reveal();
+      })
+    ) {
+      return;
     }
-    shareOrReveal();
+    if (
+      toClipboard(() => {
+        if (!toShareSheet(reveal)) reveal();
+      })
+    ) {
+      return;
+    }
+    reveal();
   };
 
   // ── the rows ─────────────────────────────────────────────────────────────

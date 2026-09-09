@@ -177,6 +177,11 @@ function readPaintScene(rec: Record<string, unknown>, t: number): SceneEvent | n
   if (rec['seed'] !== undefined && seed === null) return null;
   const flattenTo = rec['flattenTo'] === undefined ? null : num(rec['flattenTo']);
   if (rec['flattenTo'] !== undefined && flattenTo === null) return null;
+  // A pond dab's plane (src/session/events.ts `level`): without it a synced
+  // or restored pond would fall through to the bank rule and lay a different
+  // sheet on every screen. Same clamp as the flatten target — it is a height.
+  const level = rec['level'] === undefined ? null : num(rec['level']);
+  if (rec['level'] !== undefined && level === null) return null;
   const mode = rec['mode'];
   if (mode !== undefined && (typeof mode !== 'string' || mode.length > MAX_LABEL)) return null;
 
@@ -192,6 +197,7 @@ function readPaintScene(rec: Record<string, unknown>, t: number): SceneEvent | n
     ...(mode === undefined ? {} : { mode: mode as string }),
     ...(seed === null ? {} : { seed }),
     ...(flattenTo === null ? {} : { flattenTo: clamp(flattenTo, -MAX_HEIGHT, MAX_HEIGHT) }),
+    ...(level === null ? {} : { level: clamp(level, -MAX_HEIGHT, MAX_HEIGHT) }),
   };
 }
 

@@ -141,6 +141,14 @@ describe('the door', () => {
     ).toBeNull();
   });
 
+  it('carries a pond dab\'s plane, clamped like a height', () => {
+    const pond = readSceneEvent(dab({ tool: 'pond', level: 3.5 })) as { level?: number };
+    expect(pond.level).toBe(3.5);
+    const deep = readSceneEvent(dab({ tool: 'pond', level: -1e9 })) as { level?: number };
+    expect(deep.level).toBe(-1000);
+    expect(readSceneEvent(dab({ tool: 'pond', level: 'wet' }))).toBeNull();
+  });
+
   it('refuses a world field that is not the ground', () => {
     expect(readSceneEvent({ k: 'world', t: 0, field: 'weather', value: 'rain' })).toBeNull();
   });
