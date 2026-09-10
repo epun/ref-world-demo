@@ -407,11 +407,21 @@ describe('the new motif geometry', () => {
     for (const f of marks.flower) {
       f.computeBoundingBox();
       const b = f.boundingBox!;
-      // 0.3-0.5 u tall.
-      expect(b.max.y).toBeGreaterThan(0.25);
-      expect(b.max.y).toBeLessThan(0.55);
-      expect(Math.max(b.max.x - b.min.x, b.max.z - b.min.z)).toBeLessThan(0.5);
+      // 0.8-1.1 u tall — doubled from 0.3-0.5 (2026-09-10, user report: the
+      // flowers were too small to read at the projection's framing), which
+      // puts a bloom's head clear of the tallest grass blade below.
+      expect(b.max.y).toBeGreaterThan(0.75);
+      expect(b.max.y).toBeLessThan(1.15);
+      expect(Math.max(b.max.x - b.min.x, b.max.z - b.min.z)).toBeLessThan(0.9);
     }
+    // …and a bloom really does stand above the grass it grows through.
+    const tallestBlade = Math.max(
+      ...marks.grass.map((g) => {
+        g.computeBoundingBox();
+        return g.boundingBox!.max.y;
+      }),
+    );
+    for (const f of marks.flower) expect(f.boundingBox!.max.y).toBeGreaterThan(tallestBlade);
     for (const variants of Object.values(marks)) for (const g of variants) g.dispose();
   });
 
