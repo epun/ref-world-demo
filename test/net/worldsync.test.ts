@@ -15,6 +15,7 @@ import {
   FOLLOW_TAU_MS,
   HOST_STALE_MS,
   POSE_INTERVAL_MS,
+  eggsOpenedByHost,
   electHost,
   followFraction,
   isForcedId,
@@ -113,10 +114,11 @@ describe('a frame of the world', () => {
 });
 
 describe('reading what arrived', () => {
-  it('accepts the three shapes', () => {
+  it('accepts the shapes the world speaks', () => {
     expect(readWorldSyncMessage({ t: 'host', id: 'a', at: 1 })).toEqual({ t: 'host', id: 'a', at: 1 });
     expect(readWorldSyncMessage({ t: 'roster', id: 'a', rev: 2, ids: ['x'] })?.t).toBe('roster');
     expect(readWorldSyncMessage({ t: 'poses', id: 'a', rev: 2, p: [1, 2, 3] })?.t).toBe('poses');
+    expect(readWorldSyncMessage({ t: 'hatch', id: 'a', who: 'x' })?.t).toBe('hatch');
   });
 
   it('rejects anything else, including half-right payloads', () => {
@@ -127,6 +129,169 @@ describe('reading what arrived', () => {
     expect(readWorldSyncMessage({ t: 'poses', id: 'a', rev: 1, p: [1, 'x', 3] })).toBeNull();
     expect(readWorldSyncMessage({ t: 'roster', id: 'a', rev: 1, ids: ['x', 2] })).toBeNull();
     expect(readWorldSyncMessage({ t: 'poses', rev: 1, p: [] })).toBeNull();
+  });
+});
+
+describe('the hatch message — the host opening a shell everywhere at once', () => {
+  /**
+   * User ask, 2026-09-10: *"in the demo let's pause the hatching until I
+   * press h on the keyboard"*. Every phone's world view is its own copy of
+   * the world page, so the press has to travel — and only from the one page
+   * that is simulating.
+   */
+
+  it('reads a well-formed hatch', () => {
+    expect(readWorldSyncMessage({ t: 'hatch', id: 'page1', who: 'creature1' })).toEqual({
+      t: 'hatch',
+      id: 'page1',
+      who: 'creature1',
+    });
+  });
+
+  it('keeps the page and the creature apart, like a drive does', () => {
+    const msg = readWorldSyncMessage({ t: 'hatch', id: 'page1', who: 'creature1' });
+    expect(msg?.id).toBe('page1');
+    expect(msg?.t === 'hatch' ? msg.who : null).toBe('creature1');
+  });
+
+  it('refuses a hatch that names no creature', () => {
+    // it comes off a public broker. "open something" is not a message.
+    expect(readWorldSyncMessage({ t: 'hatch', id: 'page1' })).toBeNull();
+    expect(readWorldSyncMessage({ t: 'hatch', id: 'page1', who: '' })).toBeNull();
+    expect(readWorldSyncMessage({ t: 'hatch', id: 'page1', who: 7 })).toBeNull();
+    expect(readWorldSyncMessage({ t: 'hatch', who: 'creature1' })).toBeNull();
+  });
+
+  it('carries nothing else, so there is nothing else to trust', () => {
+    const msg = readWorldSyncMessage({
+      t: 'hatch',
+      id: 'page1',
+      who: 'creature1',
+      cause: 'forced',
+      at: 12,
+    });
+    expect(msg).toEqual({ t: 'hatch', id: 'page1', who: 'creature1' });
+  });
+});
+
+describe("the roster's eggs — late joiners agreeing with the host", () => {
+  it('reads the standing eggs when the host sends them', () => {
+    expect(readWorldSyncMessage({ t: 'roster', id: 'a', rev: 1, ids: ['x'], eggs: ['y'] })).toEqual({
+      t: 'roster',
+      id: 'a',
+      rev: 1,
+      ids: ['x'],
+      eggs: ['y'],
+    });
+  });
+
+  it('keeps an empty list, which is a host saying "no eggs here"', () => {
+    const msg = readWorldSyncMessage({ t: 'roster', id: 'a', rev: 1, ids: ['x'], eggs: [] });
+    expect(msg?.t === 'roster' ? msg.eggs : null).toEqual([]);
+  });
+
+  it('leaves the field off when the sender never mentioned it', () => {
+    // absent and empty are different answers: empty opens a viewer's eggs,
+    // absent must change nothing at all.
+    const msg = readWorldSyncMessage({ t: 'roster', id: 'a', rev: 1, ids: ['x'] });
+    expect(msg?.t === 'roster' ? msg.eggs : 'missing').toBeUndefined();
+  });
+
+  it('refuses a malformed egg list rather than reading it as empty', () => {
+    // "no eggs" opens every egg the viewer is holding. that is not a thing
+    // to infer from a field that did not parse.
+    expect(readWorldSyncMessage({ t: 'roster', id: 'a', rev: 1, ids: [], eggs: ['x', 2] })).toBeNull();
+    expect(readWorldSyncMessage({ t: 'roster', id: 'a', rev: 1, ids: [], eggs: 'x' })).toBeNull();
+  });
+
+  it('opens my egg only when the host is showing it alive', () => {
+    // the whole reconciliation: an egg of mine that the host has standing
+    // up already had its shell come off, and i missed the moment.
+    expect(eggsOpenedByHost(['a', 'b'], ['a'], ['b'])).toEqual(['a']);
+  });
+
+  it('leaves an egg the host still calls an egg', () => {
+    expect(eggsOpenedByHost(['a', 'b'], [], ['a', 'b'])).toEqual([]);
+  });
+
+  it('leaves an egg the host has never heard of', () => {
+    // a drawing that reached this page and not that one. opening it would
+    // be this page inventing a hatch nobody called.
+    expect(eggsOpenedByHost(['c'], ['a'], ['b'])).toEqual([]);
+  });
+
+  it('changes nothing when the host said nothing about eggs', () => {
+    // silence is not permission — an old host publishing a roster must not
+    // break a room of shells open.
+    expect(eggsOpenedByHost(['a', 'b'], ['a', 'b'], undefined)).toEqual([]);
+  });
+
+  it('is empty when this page holds no eggs', () => {
+    expect(eggsOpenedByHost([], ['a'], [])).toEqual([]);
+  });
+});
+
+describe('a scene message (docs/SESSION.md §6)', () => {
+  const dab = { k: 'paint', t: 0, tool: 'raise', x: 1, z: 2, r: 3 };
+
+  it('carries the events it can read', () => {
+    const msg = readWorldSyncMessage({ t: 'scene', id: 'a', seq: 4, events: [dab] });
+    expect(msg).toEqual({ t: 'scene', id: 'a', seq: 4, events: [dab] });
+  });
+
+  it('drops the events it cannot, and keeps the rest', () => {
+    // A live world's ground arrives in pieces. Refusing the packet over one
+    // dent means a phone that never sees the landscape at all.
+    const msg = readWorldSyncMessage({
+      t: 'scene',
+      id: 'a',
+      seq: 0,
+      events: [dab, { k: 'paint', t: 0 }, { k: 'drawing', t: 0, id: 'x' }],
+    });
+    expect((msg as { events: unknown[] }).events).toHaveLength(1);
+  });
+
+  it('clamps what it does let through', () => {
+    const msg = readWorldSyncMessage({
+      t: 'scene',
+      id: 'a',
+      seq: 0,
+      events: [{ ...dab, r: 1e9 }],
+    }) as { events: { r: number }[] };
+    expect(msg.events[0]!.r).toBeLessThanOrEqual(200);
+  });
+
+  it('caps one packet', () => {
+    const many = Array.from({ length: 700 }, () => dab);
+    const msg = readWorldSyncMessage({ t: 'scene', id: 'a', seq: 0, events: many });
+    expect((msg as { events: unknown[] }).events).toHaveLength(500);
+  });
+
+  it('survives a missing seq and a missing list', () => {
+    expect(readWorldSyncMessage({ t: 'scene', id: 'a' })).toEqual({
+      t: 'scene',
+      id: 'a',
+      seq: 0,
+      events: [],
+    });
+  });
+
+  it('resets only on the exact word', () => {
+    // A truthy anything must not be able to wipe the world's map.
+    expect(
+      (readWorldSyncMessage({ t: 'scene', id: 'a', seq: 0, events: [], reset: true }) as {
+        reset?: true;
+      }).reset,
+    ).toBe(true);
+    expect(
+      (readWorldSyncMessage({ t: 'scene', id: 'a', seq: 0, events: [], reset: 1 }) as {
+        reset?: true;
+      }).reset,
+    ).toBeUndefined();
+  });
+
+  it('still needs a sender', () => {
+    expect(readWorldSyncMessage({ t: 'scene', seq: 0, events: [] })).toBeNull();
   });
 });
 

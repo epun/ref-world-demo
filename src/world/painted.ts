@@ -29,6 +29,13 @@
  * contour line in the ink pass — a square one, which is the one shape TASTE
  * §2.5 will not have on screen.
  *
+ * WATER rides alongside it in a second layer of the same shape: `water`, one
+ * absolute surface LEVEL per texel, `DRY` where there is none. It is a layer
+ * and not a body — what a level layer MEANS (components, shorelines, a signed
+ * distance field) is src/world/painted-water.ts's job, exactly as what a
+ * height offset means is landscape.ts's. Region weights, the clearing and the
+ * painted map's own baking are still later steps (envpaint
+ * docs/port-meridian.md §5 steps 5-6).
  * PLANTING (2026-09-09, user ask: "in the collection we should have brushes
  * for trees, rocks, grass, flowers, rivers, clouds, ponds, etc.") — the same
  * idea, one dimension over: seven weight layers, [0,1], that say how much of
@@ -59,6 +66,18 @@ export const PAINTED_RES = 512;
 export const PAINTED_SIZE = 400;
 
 /**
+ * "No water in this texel" in the level layer.
+ *
+ * This MUST equal `DRY` exported by `envpaint/core` (src/core/WaterOps.js) —
+ * the level layer is that engine's buffer, shared texel for texel like the
+ * height one, so a value it writes to drain a texel has to read as dry here.
+ * The number is re-declared rather than imported for the reason the header
+ * gives (this module pulls in no brush engine), and src/dev/paint.ts asserts
+ * the two are equal at startup so the duplication cannot drift in silence.
+ */
+export const DRY = -1000;
+
+/**
  * The planting brushes, in strip order. Each is one weight layer.
  *
  * `clearing` is the eraser of the set: it does not plant anything, it
@@ -66,7 +85,8 @@ export const PAINTED_SIZE = 400;
  * opens a glade in a forest without lowering a global density that would
  * thin the whole field.
  *
- * Water brushes (ponds, rivers) are deliberately absent — see the header.
+ * The water brushes (pond, drain) are NOT in this list: water is a LEVEL
+ * layer of its own with its own tools, not a weight (see `DRY` above).
  */
 export const PLANT_BRUSHES = [
   'grove',
@@ -110,6 +130,13 @@ export interface PaintedMap {
    * when one is wired in; never copy it, or the two silently diverge.
    */
   height: Float32Array;
+  /**
+   * Absolute water surface level in world units, row-major, `res * res`
+   * floats, same indexing as `height` — `DRY` in every texel that holds no
+   * water. A level is absolute, never an offset: a painted body's surface is
+   * one plane at a height somebody chose, and no terrain dial scales it.
+   */
+  water: Float32Array;
   /** Texels a side for every planting layer. */
   plantingRes: number;
   /**
@@ -126,6 +153,9 @@ export interface PaintedMapJson {
   size: number;
   /** Base64 of the raw little-endian Float32 bytes. */
   height: string;
+  /** The level layer, same encoding. Optional: a map saved before water
+   * existed has none, and loads as an entirely dry one. */
+  water?: string;
   /** Texels a side for the planting layers. Absent in a map written before
    * planting existed — such a map deserialises with empty layers. */
   plantingRes?: number;
@@ -141,12 +171,15 @@ export interface PaintedMapJson {
  * own `data` — and allocates a zeroed one otherwise. It is adopted by
  * reference on purpose (see the header); a wrong-length array is a
  * programming error and throws rather than being quietly resized, because
- * the alternative is a map that samples garbage at one corner.
+ * the alternative is a map that samples garbage at one corner. `water` is
+ * adopted on exactly the same terms, from the level layer, and allocates
+ * filled with `DRY` — an unpainted map is dry, not flooded at height 0.
  */
 export function createPaintedMap(
   res: number = PAINTED_RES,
   size: number = PAINTED_SIZE,
   height?: Float32Array,
+  water?: Float32Array,
   planting?: Partial<Record<PlantBrush, Float32Array>>,
   plantingRes: number = PLANTING_RES,
 ): PaintedMap {
@@ -155,13 +188,16 @@ export function createPaintedMap(
   if (height && height.length !== res * res) {
     throw new Error(`painted map: height must hold ${res * res} floats, got ${height.length}`);
   }
+  if (water && water.length !== res * res) {
+    throw new Error(`painted map: water must hold ${res * res} floats, got ${water.length}`);
+  }
   if (!Number.isInteger(plantingRes) || plantingRes < 2) {
     throw new Error(`painted map: plantingRes must be >= 2, got ${plantingRes}`);
   }
-  // Adopted by reference, exactly like `height` — the brush's own layer
-  // buffer, never a copy — and allocated zeroed for any brush not handed in,
-  // so an older caller that knows nothing about planting still gets a
-  // complete map back.
+  // Adopted by reference, exactly like `height` and `water` — the brush's own
+  // layer buffer, never a copy — and allocated zeroed for any brush not
+  // handed in, so an older caller that knows nothing about planting still
+  // gets a complete map back.
   const layers = {} as Record<PlantBrush, Float32Array>;
   for (const brush of PLANT_BRUSHES) {
     const given = planting?.[brush];
@@ -172,14 +208,22 @@ export function createPaintedMap(
     }
     layers[brush] = given ?? new Float32Array(plantingRes * plantingRes);
   }
-  return { res, size, height: height ?? new Float32Array(res * res), plantingRes, planting: layers };
+  return {
+    res,
+    size,
+    height: height ?? new Float32Array(res * res),
+    water: water ?? new Float32Array(res * res).fill(DRY),
+    plantingRes,
+    planting: layers,
+  };
 }
 
-/** Every texel back to zero — the map, and with it every paint layer sharing
- * a buffer with it, is unpainted again. Planting goes with the height: `clear
- * map` means the map, not half of it. */
+/** Every texel back to unpainted — height to zero, water to `DRY`, every
+ * planting weight to zero — and with it every paint layer sharing a buffer
+ * with the map. `clear map` means the map, not a third of it. */
 export function clearPaintedMap(map: PaintedMap): void {
   map.height.fill(0);
+  map.water.fill(DRY);
   for (const brush of PLANT_BRUSHES) map.planting[brush]?.fill(0);
 }
 
@@ -337,7 +381,8 @@ function decodeBase64(text: string): Uint8Array {
  * mutating underneath.
  */
 export function serializeMap(map: PaintedMap): PaintedMapJson {
-  const bytes = new Uint8Array(map.height.buffer, map.height.byteOffset, map.height.byteLength);
+  const height = new Uint8Array(map.height.buffer, map.height.byteOffset, map.height.byteLength);
+  const water = new Uint8Array(map.water.buffer, map.water.byteOffset, map.water.byteLength);
   const planting: Partial<Record<PlantBrush, string>> = {};
   for (const brush of PLANT_BRUSHES) {
     const data = map.planting[brush];
@@ -348,37 +393,41 @@ export function serializeMap(map: PaintedMap): PaintedMapJson {
   return {
     res: map.res,
     size: map.size,
-    height: encodeBase64(bytes),
+    height: encodeBase64(height),
+    water: encodeBase64(water),
     plantingRes: map.plantingRes,
     planting,
   };
 }
 
 /** The inverse. Throws on a payload whose byte count is not the resolution it
- * claims — a half-read map would sample plausible garbage. */
+ * claims — a half-read map would sample plausible garbage. A payload with no
+ * `water` at all is not half-read but OLD, and loads dry. */
 export function deserializeMap(o: PaintedMapJson): PaintedMap {
-  const bytes = decodeBase64(o.height);
   const floats = o.res * o.res;
-  if (bytes.length !== floats * 4) {
-    throw new Error(`painted map: expected ${floats * 4} bytes for res ${o.res}, got ${bytes.length}`);
-  }
-  const height = new Float32Array(floats);
-  new Uint8Array(height.buffer).set(bytes);
+  const layer = (text: string, which: string, count: number): Float32Array => {
+    const bytes = decodeBase64(text);
+    if (bytes.length !== count * 4) {
+      const want = count * 4;
+      throw new Error(
+        `painted map: expected ${want} ${which} bytes for res ${o.res}, got ${bytes.length}`,
+      );
+    }
+    const out = new Float32Array(count);
+    new Uint8Array(out.buffer).set(bytes);
+    return out;
+  };
+  const height = layer(o.height, 'height', floats);
+  const water = o.water === undefined ? undefined : layer(o.water, 'water', floats);
+  // Planting rides at its own resolution, and a brush nobody painted (or a
+  // map written before planting existed) simply has no entry.
   const plantingRes = o.plantingRes ?? PLANTING_RES;
   const plantFloats = plantingRes * plantingRes;
   const planting: Partial<Record<PlantBrush, Float32Array>> = {};
   for (const brush of PLANT_BRUSHES) {
     const b64 = o.planting?.[brush];
-    if (b64 === undefined) continue; // a brush nobody painted, or an older map
-    const raw = decodeBase64(b64);
-    if (raw.length !== plantFloats * 4) {
-      throw new Error(
-        `painted map: expected ${plantFloats * 4} bytes for planting '${brush}' at res ${plantingRes}, got ${raw.length}`,
-      );
-    }
-    const data = new Float32Array(plantFloats);
-    new Uint8Array(data.buffer).set(raw);
-    planting[brush] = data;
+    if (b64 === undefined) continue;
+    planting[brush] = layer(b64, `planting '${brush}'`, plantFloats);
   }
-  return createPaintedMap(o.res, o.size, height, planting, plantingRes);
+  return createPaintedMap(o.res, o.size, height, water, planting, plantingRes);
 }

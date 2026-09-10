@@ -43,6 +43,8 @@
  * wired in src/main.ts.
  */
 
+import { MAX_SCENE_BATCH, readSceneBatch, type SceneEvent } from '../session/scene';
+
 /** How often the host repeats its claim. */
 export const HOST_HEARTBEAT_MS = 2000;
 /** A claim older than this is from a page that has gone away. Three beats,
@@ -84,6 +86,50 @@ export interface RosterMessage {
   id: string;
   rev: number;
   ids: string[];
+  /**
+   * The ids still standing as EGGS on the host, when it says (2026-09-10).
+   *
+   * A `hatch` is a moment and travels once; a viewer that joined after it,
+   * or missed the packet on a qos-0 broker, would otherwise hold an egg
+   * forever under a world where that creature is walking about. So the
+   * roster the host already repeats every ROSTER_REPEAT_MS carries the
+   * standing eggs too, and a viewer reconciles against it — see
+   * `eggsOpenedByHost`.
+   *
+   * Optional because ABSENT and EMPTY mean different things. Empty is a
+   * host saying "no eggs here", which opens a viewer's; absent is a host
+   * that never mentions eggs at all, and hatching a viewer's clutch on the
+   * strength of a field that was never sent would open a room of them the
+   * instant one old page anywhere published a roster.
+   */
+  eggs?: string[];
+}
+
+/**
+ * The host opened one egg, and every screen opens it too (user ask,
+ * 2026-09-10: *"in the demo let's pause the hatching until I press h on the
+ * keyboard"*).
+ *
+ * Every phone's world view is its own copy of the world page, following the
+ * host's poses. Poses only place creatures that are already alive — a shell
+ * breaking is not a position, it is an event — so without this a viewer's
+ * egg either sat there while the projection's creature walked away from it,
+ * or opened on a local timer at some unrelated moment. Neither is one world.
+ *
+ * `who` is the CREATURE (the drawer id it was spawned under) and `id` is the
+ * page, kept apart for the same reason a drive keeps them apart.
+ *
+ * NOT a host claim: hearing one never enters its sender into the election —
+ * a page that can open eggs is not thereby a candidate to simulate. But it
+ * is only honoured FROM the host, exactly as a pose frame is: the hatch is
+ * the host's decision to make and nobody else's.
+ */
+export interface HatchMessage {
+  t: 'hatch';
+  /** The page that sent it. */
+  id: string;
+  /** The creature whose shell opened. */
+  who: string;
 }
 
 /** One frame of the world, packed. */
@@ -125,7 +171,45 @@ export interface DriveMessage {
   mag: number;
 }
 
-export type WorldSyncMessage = HostClaim | RosterMessage | PoseMessage | DriveMessage;
+/**
+ * A change to the SHARED SCENE — the landscape switch, a terrain dial, a dab
+ * of the brush (src/session/scene.ts, docs/SESSION.md §6).
+ *
+ * 2026-09-09, the demo plan: the operator sculpts the world live in front of
+ * the room, and every phone — each of which is running its own copy of this
+ * same page — has to see the ground change under its creature. Poses cannot
+ * carry that: they say where the cast is standing, not what it is standing
+ * on, and a viewer following poses over a flat plain has its creatures
+ * hovering above a world it never heard about.
+ *
+ * LIKE `drive`, THIS IS NOT A HOST CLAIM. It travels sideways rather than
+ * down: whoever moved the ground says so, and every page — host or viewer —
+ * applies it, because every page is drawing that ground for itself. Letting
+ * it into the election would make a phone with a brush a candidate to
+ * simulate the world.
+ *
+ * `seq` is the sender's own counter. Nothing depends on it today (the events
+ * are idempotent and the store is the tiebreak); it is here so a receiver
+ * that ever needs to notice a gap can, without a format change.
+ *
+ * `reset` is the whole scene thrown away — the panel's `reset scene`. It
+ * carries no events: there is nothing to describe about an empty map.
+ */
+export interface SceneMessage {
+  t: 'scene';
+  id: string;
+  seq: number;
+  events: SceneEvent[];
+  reset?: true;
+}
+
+export type WorldSyncMessage =
+  | HostClaim
+  | RosterMessage
+  | PoseMessage
+  | DriveMessage
+  | SceneMessage
+  | HatchMessage;
 
 /**
  * How often a held stick repeats its intent.
@@ -247,6 +331,36 @@ export function unpackPoses(p: readonly number[], roster: readonly string[]): Po
   return out;
 }
 
+/**
+ * Which of MY eggs has the host already opened?
+ *
+ * The late-joiner's half of the manual hatch. A `hatch` message is a moment
+ * and travels once, at qos 0; a page that opened after it — or blinked while
+ * it went past — holds an egg for a creature the rest of the room is
+ * watching walk around. The roster the host repeats anyway says which ids
+ * are alive and which are still eggs, so this is the whole reconciliation:
+ * an egg of mine that the host is showing ALIVE is one whose shell already
+ * came off, and the viewer plays the same hatch it would have played.
+ *
+ * Both conditions matter. Not-in-`eggs` on its own would also catch an id
+ * the host has never heard of — a drawing that reached this page and not
+ * that one — and opening that would be this page inventing a hatch nobody
+ * called. With `hostEggs` absent nothing is opened at all: that host is not
+ * describing eggs, and silence is not permission.
+ *
+ * Pure, allocation-light, and safe to call on every roster.
+ */
+export function eggsOpenedByHost(
+  mine: readonly string[],
+  hostLive: readonly string[],
+  hostEggs: readonly string[] | undefined,
+): string[] {
+  if (!hostEggs || mine.length === 0) return [];
+  const stillEggs = new Set(hostEggs);
+  const alive = new Set(hostLive);
+  return mine.filter((id) => alive.has(id) && !stillEggs.has(id));
+}
+
 /** Narrow an arbitrary parsed payload to a message we understand. */
 export function readWorldSyncMessage(value: unknown): WorldSyncMessage | null {
   if (typeof value !== 'object' || value === null) return null;
@@ -259,7 +373,19 @@ export function readWorldSyncMessage(value: unknown): WorldSyncMessage | null {
   if (rec['t'] === 'roster' && typeof rec['rev'] === 'number' && Array.isArray(rec['ids'])) {
     const ids = rec['ids'].filter((v): v is string => typeof v === 'string');
     if (ids.length !== rec['ids'].length) return null;
-    return { t: 'roster', id, rev: rec['rev'], ids };
+    // The standing eggs, when the sender mentions them at all. A malformed
+    // list is refused with the rest of the message rather than read as an
+    // empty one: "no eggs" opens every egg a viewer is holding, and that is
+    // not a thing to infer from a field that did not parse.
+    const raw = rec['eggs'];
+    if (raw === undefined) return { t: 'roster', id, rev: rec['rev'], ids };
+    if (!Array.isArray(raw)) return null;
+    const eggs = raw.filter((v): v is string => typeof v === 'string');
+    if (eggs.length !== raw.length) return null;
+    return { t: 'roster', id, rev: rec['rev'], ids, eggs };
+  }
+  if (rec['t'] === 'hatch' && typeof rec['who'] === 'string' && rec['who']) {
+    return { t: 'hatch', id, who: rec['who'] };
   }
   if (rec['t'] === 'drive' && typeof rec['who'] === 'string' && rec['who']) {
     const x = rec['x'];
@@ -277,6 +403,24 @@ export function readWorldSyncMessage(value: unknown): WorldSyncMessage | null {
       x: Math.max(-1, Math.min(1, x)),
       z: Math.max(-1, Math.min(1, z)),
       mag: Math.max(0, Math.min(1, mag)),
+    };
+  }
+  if (rec['t'] === 'scene') {
+    // Every event goes through the scene module's own door, which clamps
+    // (src/session/scene.ts). One bad event is DROPPED and the rest of the
+    // batch stands: this is a live world's ground arriving in pieces, and
+    // refusing the packet over one dent means a phone that never sees the
+    // landscape at all.
+    const seq = typeof rec['seq'] === 'number' && Number.isFinite(rec['seq']) ? rec['seq'] : 0;
+    const events = readSceneBatch(rec['events'], MAX_SCENE_BATCH);
+    return {
+      t: 'scene',
+      id,
+      seq,
+      events,
+      // Only the exact word. A truthy anything must not be able to wipe the
+      // world's map.
+      ...(rec['reset'] === true ? { reset: true as const } : {}),
     };
   }
   if (rec['t'] === 'poses' && typeof rec['rev'] === 'number' && Array.isArray(rec['p'])) {

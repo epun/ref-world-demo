@@ -19,15 +19,18 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  HATCH_MODES,
   RESIDENTS,
   applyWorldToHtml,
   normalizeHost,
   readWorlds,
   resolveWorld,
+  sanitizeHatch,
   sanitizeResidents,
   sanitizeWorldName,
 } from '../../scripts/world-build.mjs';
 import { residentsFrom } from '../../src/world/residents';
+import { hatchModeFrom, readHatchMode } from '../../src/world/hatchmode';
 
 const ROOT = resolve(__dirname, '..', '..');
 const INDEX = readFileSync(join(ROOT, 'index.html'), 'utf8');
@@ -45,6 +48,7 @@ describe('worlds.json — one entry per deployment', () => {
       expect(config.host).toBe(config.host.toLowerCase());
       expect(config.host).toContain('.');
       expect(RESIDENTS).toContain(config.residents);
+      expect(HATCH_MODES).toContain(config.hatch);
     }
   });
 
@@ -57,6 +61,8 @@ describe('worlds.json — one entry per deployment', () => {
     expect(WORLDS['meridian']).toEqual({
       host: 'ref-world-meridian.vercel.app',
       residents: 'none',
+      // the demo waits for the operator's `h` (user ask, 2026-09-10).
+      hatch: 'manual',
       dev: true,
     });
     // the public site is absent on purpose: it is the world without an
@@ -88,6 +94,7 @@ describe('resolveWorld — what world is this build for', () => {
       name: 'meridian',
       host: 'ref-world-meridian.vercel.app',
       residents: 'none',
+      hatch: 'manual',
       dev: true,
     });
   });
@@ -100,6 +107,7 @@ describe('resolveWorld — what world is this build for', () => {
       name: 'meridian',
       host: 'ref-world-meridian.vercel.app',
       residents: 'none',
+      hatch: 'manual',
       dev: true,
     });
   });
@@ -110,6 +118,9 @@ describe('resolveWorld — what world is this build for', () => {
       name: 'harbour',
       host: 'ref-world-harbour.vercel.app',
       residents: 'shipped',
+      // a world the file never heard of hatches on the clock, like the
+      // public link. only a world that ASKED to be paused is paused.
+      hatch: 'timer',
       dev: false,
     });
   });
@@ -182,6 +193,51 @@ describe('residents — only the word asked for empties a world', () => {
   });
 });
 
+describe('hatch — who opens the eggs, the clock or a person', () => {
+  it('reads the tag, and its absence', () => {
+    // the public build injects no tag at all, so absent has to mean timer:
+    // a link with nobody in front of it and eggs that never open is a
+    // person who drew something and got nothing back.
+    expect(hatchModeFrom('manual')).toBe('manual');
+    expect(hatchModeFrom(' MANUAL ')).toBe('manual');
+    expect(hatchModeFrom(null)).toBe('timer');
+    expect(hatchModeFrom('')).toBe('timer');
+    expect(hatchModeFrom('timer')).toBe('timer');
+  });
+
+  it('a typo hatches rather than pauses, on both sides of the build', () => {
+    // the opposite direction from residents, and for the same reason: the
+    // failure worth preventing is the silent one. a world stuck full of
+    // eggs looks broken and nothing on screen says why.
+    expect(hatchModeFrom('man')).toBe('timer');
+    expect(hatchModeFrom('paused')).toBe('timer');
+    expect(sanitizeHatch('man')).toBe('timer');
+    expect(sanitizeHatch(undefined)).toBe('timer');
+    expect(sanitizeHatch('manual')).toBe('manual');
+  });
+
+  it('the two sides agree about every value either can produce', () => {
+    for (const value of [...HATCH_MODES, 'nonsense', '']) {
+      expect(hatchModeFrom(value)).toBe(sanitizeHatch(value));
+    }
+  });
+
+  it('lets the address override the baked tag, both ways', () => {
+    // ?hatch= is for a preview or a rehearsal: looking at a paused world
+    // running on the clock, or pausing one that is not, without a deploy.
+    expect(readHatchMode('manual', null)).toBe('manual');
+    expect(readHatchMode('timer', 'manual')).toBe('timer');
+    expect(readHatchMode('manual', 'timer')).toBe('manual');
+  });
+
+  it('falls back to the tag when the address says nothing it understands', () => {
+    expect(readHatchMode(null, 'manual')).toBe('manual');
+    expect(readHatchMode('', 'manual')).toBe('manual');
+    expect(readHatchMode('sometimes', 'manual')).toBe('manual');
+    expect(readHatchMode(null, null)).toBe('timer');
+  });
+});
+
 describe('the html transform', () => {
   it('leaves the public build byte-identical', () => {
     // the property this whole design rests on: adding a client cannot
@@ -204,6 +260,36 @@ describe('the html transform', () => {
     expect(residentsFrom(/refworld:residents" content="([^"]*)"/.exec(out)?.[1] ?? null)).toBe(
       'none',
     );
+  });
+
+  it('tells a paused world to wait for the operator', () => {
+    const manual = applyWorldToHtml(INDEX, {
+      name: 'meridian',
+      host: 'ref-world-meridian.vercel.app',
+      residents: 'none',
+      hatch: 'manual',
+      dev: true,
+    });
+    expect(manual).toContain('<meta name="refworld:hatch" content="manual" />');
+    expect(hatchModeFrom(/refworld:hatch" content="([^"]*)"/.exec(manual)?.[1] ?? null)).toBe(
+      'manual',
+    );
+    // and no uppercase in it, like everything else a build injects.
+    expect(/refworld:hatch" content="([^"]*)"/.exec(manual)?.[1]).not.toMatch(/[A-Z]/);
+  });
+
+  it('says nothing about hatching for a world on the clock', () => {
+    // an absent tag is the default, so the public html keeps not mentioning
+    // a setting it does not have — `out` above asks for no hatch mode.
+    expect(out).not.toContain('refworld:hatch');
+    const timer = applyWorldToHtml(INDEX, {
+      name: 'harbour',
+      host: 'ref-world-harbour.vercel.app',
+      residents: 'shipped',
+      hatch: 'timer',
+      dev: false,
+    });
+    expect(timer).not.toContain('refworld:hatch');
   });
 
   it('says nothing about residents for a world that keeps them', () => {
@@ -286,7 +372,12 @@ describe('scripts/new-world.mjs — the worlds.json entry is the only file it wr
       const first = run(['harbour', '--file', file]);
       expect(first.status).toBe(0);
       expect(readWorlds(file)).toEqual({
-        harbour: { host: 'ref-world-harbour.vercel.app', residents: 'shipped', dev: false },
+        harbour: {
+          host: 'ref-world-harbour.vercel.app',
+          residents: 'shipped',
+          hatch: 'timer',
+          dev: false,
+        },
       });
       // the parts that are a dashboard rather than a file.
       expect(first.out).toContain('https://ref-world-harbour.vercel.app/');
@@ -298,7 +389,12 @@ describe('scripts/new-world.mjs — the worlds.json entry is the only file it wr
       // twice is once.
       expect(run(['harbour', '--file', file]).status).toBe(0);
       expect(readWorlds(file)).toEqual({
-        harbour: { host: 'ref-world-harbour.vercel.app', residents: 'shipped', dev: false },
+        harbour: {
+          host: 'ref-world-harbour.vercel.app',
+          residents: 'shipped',
+          hatch: 'timer',
+          dev: false,
+        },
       });
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -313,7 +409,7 @@ describe('scripts/new-world.mjs — the worlds.json entry is the only file it wr
       const { status, out } = run(['meridian', '--clean', '--host', 'meridian.example', '--file', file]);
       expect(status).toBe(0);
       expect(readWorlds(file)).toEqual({
-        meridian: { host: 'meridian.example', residents: 'none', dev: false },
+        meridian: { host: 'meridian.example', residents: 'none', hatch: 'timer', dev: false },
       });
       expect(out).toContain('none');
       expect(out).toContain('nothing to seed');

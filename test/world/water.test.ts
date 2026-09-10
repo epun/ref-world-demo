@@ -42,6 +42,7 @@ import {
   WATER_LIFT,
   createWater,
 } from '../../src/world/water';
+import type { PaintedBody, PaintedWaterField } from '../../src/world/painted-water';
 
 beforeAll(() => setLandscapeMode('landscape'));
 afterAll(() => setLandscapeMode('plain'));
@@ -665,5 +666,396 @@ describe('water — the landscape mode is a visibility switch', () => {
     } finally {
       water.dispose();
     }
+  });
+});
+
+// ── painted water ────────────────────────────────────────────────────────────
+//
+// A HAND-MADE field, never `deriveWater`: this file is about the drawing, and
+// a disc with an exact distance function pins every vertex to a number a
+// reader can check by hand. The rings follow the one convention the geography
+// uses — counter-clockwise in x/z, last point not repeated — and the level is
+// ABSOLUTE, which is the whole difference from an authored body.
+
+/** The painted disc: a body of radius 10 centred well clear of the map. */
+const DISC = { x: 60, z: 20, r: 10 };
+/** Points per painted ring — the density `deriveWater` traces a contour at. */
+const DISC_POINTS = 96;
+/** The island in the second variant. */
+const ISLAND_R = 3;
+/** The sheet's absolute surface height, and the salt its pen lifts hash off. */
+const PAINTED_LEVEL = -1.2;
+const PAINTED_SEED = 4242;
+
+/** A counter-clockwise circle in world x/z (positive signed area). */
+function disc(cx: number, cz: number, r: number, points: number): [number, number][] {
+  const out: [number, number][] = [];
+  for (let i = 0; i < points; i++) {
+    const t = (i / points) * Math.PI * 2;
+    out.push([cx + r * Math.cos(t), cz + r * Math.sin(t)]);
+  }
+  return out;
+}
+
+/** The disc as a field, optionally with one island punched out of its middle.
+ * `shore` is the exact signed distance to the nearest shoreline — positive in
+ * the water, negative on land, which is what the real field promises. */
+function discField(withIsland = false): PaintedWaterField {
+  const body: PaintedBody = {
+    id: 0,
+    level: PAINTED_LEVEL,
+    seed: PAINTED_SEED,
+    outline: disc(DISC.x, DISC.z, DISC.r, DISC_POINTS),
+    holes: withIsland ? [disc(DISC.x, DISC.z, ISLAND_R, DISC_POINTS)] : [],
+    bounds: {
+      x0: DISC.x - DISC.r,
+      z0: DISC.z - DISC.r,
+      x1: DISC.x + DISC.r,
+      z1: DISC.z + DISC.r,
+    },
+    texels: 314,
+  };
+  const shore = (x: number, z: number): number => {
+    const d = Math.hypot(x - DISC.x, z - DISC.z);
+    return withIsland ? Math.min(DISC.r - d, d - ISLAND_R) : DISC.r - d;
+  };
+  return { shore, level: (): number => PAINTED_LEVEL, bodies: [body] };
+}
+
+type Pass = ReturnType<typeof createWater>;
+
+/** A pass with the disc painted into it. The caller disposes. */
+function paintedWith(withIsland = false): Pass {
+  const water = createWater();
+  water.setPainted(discField(withIsland));
+  return water;
+}
+
+const paintedNamed = (water: Pass, name: string): Mesh => {
+  const found = water.paintedGroup.getObjectByName(name);
+  expect(found, name).toBeInstanceOf(Mesh);
+  return found as Mesh;
+};
+
+/** Worst distance from a ribbon's centerline to the nearest polygon point —
+ * the two paired vertices of every quad edge straddle one point exactly. */
+function ribbonDrift(mesh: Mesh, poly: readonly [number, number][]): number {
+  const attr = mesh.geometry.getAttribute('position') as BufferAttribute;
+  let worst = 0;
+  for (let q = 0; q < attr.count; q += 6) {
+    for (const [a, b] of [
+      [0, 1],
+      [2, 4],
+    ] as const) {
+      const mx = (attr.getX(q + a) + attr.getX(q + b)) / 2;
+      const mz = (attr.getZ(q + a) + attr.getZ(q + b)) / 2;
+      let nearest = Infinity;
+      for (const [x, z] of poly) {
+        const d = Math.hypot(x - mx, z - mz);
+        if (d < nearest) nearest = d;
+      }
+      if (nearest > worst) worst = nearest;
+    }
+  }
+  return worst;
+}
+
+describe('water — the painted group', () => {
+  it('is a named sibling of the authored group, empty until something is painted', () => {
+    const water = createWater();
+    try {
+      expect(water.paintedGroup.name).toBe('painted-water');
+      expect(water.paintedGroup.children).toHaveLength(0);
+      // A SIBLING, not a child: setVisible hides `group`, and painted water
+      // has to stand in the plain world exactly as painted height does.
+      expect(water.group.getObjectByName('painted-water')).toBeUndefined();
+      expect(water.paintedGroup).not.toBe(water.group);
+      expect(water.paintedGroup.parent).toBeNull();
+    } finally {
+      water.dispose();
+    }
+  });
+
+  it('empties for a null field and for a field with no bodies', () => {
+    const water = paintedWith();
+    try {
+      expect(water.paintedGroup.children.length).toBeGreaterThan(0);
+      water.setPainted(null);
+      expect(water.paintedGroup.children).toHaveLength(0);
+      water.setPainted(discField());
+      expect(water.paintedGroup.children.length).toBeGreaterThan(0);
+      const empty = discField();
+      water.setPainted({ shore: empty.shore, level: empty.level, bodies: [] });
+      expect(water.paintedGroup.children).toHaveLength(0);
+    } finally {
+      water.dispose();
+    }
+  });
+
+  it('replaces rather than accumulates, releasing the geometries it drops', () => {
+    // Called several times a second while a stroke is live, so a rebuild that
+    // piled up would be a leak with a frame counter on it.
+    const water = paintedWith();
+    try {
+      const before = (water.paintedGroup.children as Mesh[]).map((mesh) => mesh.geometry);
+      const names = water.paintedGroup.children.map((child) => child.name);
+      let released = 0;
+      for (const geometry of before) {
+        geometry.addEventListener('dispose', () => {
+          released++;
+        });
+      }
+      water.setPainted(discField());
+      expect(water.paintedGroup.children.map((child) => child.name)).toEqual(names);
+      expect(released).toBe(before.length);
+      for (const mesh of water.paintedGroup.children as Mesh[]) {
+        expect(before).not.toContain(mesh.geometry);
+      }
+    } finally {
+      water.dispose();
+    }
+  });
+
+  it('draws a plain body as one fill, one shore and one mark sheet', () => {
+    const water = paintedWith();
+    try {
+      expect(water.paintedGroup.children.map((child) => child.name)).toEqual([
+        'painted-water-0',
+        'painted-shore-0',
+        'painted-ripples',
+      ]);
+    } finally {
+      water.dispose();
+    }
+  });
+
+  it('adds a second ribbon for an island ring', () => {
+    const water = paintedWith(true);
+    try {
+      expect(water.paintedGroup.children.map((child) => child.name)).toEqual([
+        'painted-water-0',
+        'painted-shore-0',
+        'painted-shore-island-0-0',
+        'painted-ripples',
+      ]);
+    } finally {
+      water.dispose();
+    }
+  });
+});
+
+describe('water — painted water is drawn exactly like authored water', () => {
+  it('keeps every fill vertex in the water, and gives the sheet area', () => {
+    const water = paintedWith(true);
+    try {
+      const field = discField(true);
+      const fill = paintedNamed(water, 'painted-water-0');
+      for (const [x, z] of points(fill)) {
+        // Inside the water or on its shoreline — never out on the land.
+        expect(field.shore(x, z), `fill at ${x},${z}`).toBeGreaterThan(-0.01);
+      }
+      const index = fill.geometry.getIndex();
+      expect(index).not.toBeNull();
+      expect(index!.count / 3).toBeGreaterThan(0);
+    } finally {
+      water.dispose();
+    }
+  });
+
+  it('winds every painted fill triangle up, and faces every painted surface up', () => {
+    const water = paintedWith(true);
+    try {
+      const fill = paintedNamed(water, 'painted-water-0');
+      const attr = fill.geometry.getAttribute('position') as BufferAttribute;
+      const index = fill.geometry.getIndex()!;
+      let net = 0;
+      for (let i = 0; i < index.count; i += 3) {
+        const a = index.getX(i);
+        const b = index.getX(i + 1);
+        const c = index.getX(i + 2);
+        const ny =
+          (attr.getZ(b) - attr.getZ(a)) * (attr.getX(c) - attr.getX(a)) -
+          (attr.getX(b) - attr.getX(a)) * (attr.getZ(c) - attr.getZ(a));
+        net += ny;
+        if (Math.abs(ny) > 1e-4) expect(ny).toBeGreaterThan(0);
+      }
+      expect(net).toBeGreaterThan(0);
+      // The ink pass reads a normal target: a facing of its own would ring the
+      // painted body in a second contour beside its drawn shoreline.
+      for (const child of water.paintedGroup.children) {
+        const normal = (child as Mesh).geometry.getAttribute('normal') as BufferAttribute;
+        expect(normal, child.name).toBeDefined();
+        for (let i = 0; i < normal.count; i++) {
+          expect(normal.getY(i)).toBeCloseTo(1, 6);
+          expect(Math.abs(normal.getX(i))).toBeLessThan(1e-6);
+          expect(Math.abs(normal.getZ(i))).toBeLessThan(1e-6);
+        }
+      }
+    } finally {
+      water.dispose();
+    }
+  });
+
+  it('fills with the same double-sided mid grey the authored bodies use', () => {
+    const water = paintedWith();
+    try {
+      const material = paintedNamed(water, 'painted-water-0').material as MeshBasicMaterial;
+      expect(material).toBeInstanceOf(MeshBasicMaterial);
+      expect(material.color.equals(new Color(WORLD.neutralMid))).toBe(true);
+      expect(material.side).toBe(DoubleSide);
+      // Literally the authored fills' material: the water is ONE flat value,
+      // whether the map wrote it or a person painted it.
+      expect(material).toBe((water.group.getObjectByName('water-lake-0') as Mesh).material);
+    } finally {
+      water.dispose();
+    }
+  });
+
+  it('walks the pen along the outline it filled, and lifts it as often', () => {
+    const water = paintedWith();
+    try {
+      const outline = discField().bodies[0]!.outline;
+      const shore = paintedNamed(water, 'painted-shore-0');
+      // The centerline sits ON the ring — the same point to float32 rounding,
+      // far inside the pen's own width, so no paper shows between grey and ink.
+      expect(ribbonDrift(shore, outline)).toBeLessThan(1e-3);
+      // …and the stroke is broken, at the authored one-in-twelve rate: some
+      // segments are missing, most are not.
+      const quads = points(shore).length / 6;
+      expect(quads).toBeLessThan(DISC_POINTS);
+      expect(quads).toBeGreaterThan(DISC_POINTS * 0.8);
+    } finally {
+      water.dispose();
+    }
+  });
+
+  it('rides the island ring with the island ribbon, seeded apart from the shore', () => {
+    const water = paintedWith(true);
+    try {
+      const island = discField(true).bodies[0]!.holes[0]!;
+      const ribbon = paintedNamed(water, 'painted-shore-island-0-0');
+      expect(ribbonDrift(ribbon, island)).toBeLessThan(1e-3);
+      for (const [x, z] of points(ribbon)) {
+        // On the island's own ring, within half a mitered pen width of it.
+        const d = Math.hypot(x - DISC.x, z - DISC.z);
+        expect(Math.abs(d - ISLAND_R), `island shore at ${x},${z}`).toBeLessThan(0.25);
+      }
+      const quads = points(ribbon).length / 6;
+      expect(quads).toBeLessThan(DISC_POINTS);
+      expect(quads).toBeGreaterThan(DISC_POINTS * 0.8);
+      // The two rings are seeded apart, so the pen does not lift in the same
+      // places on both.
+      expect(quads).not.toBe(points(paintedNamed(water, 'painted-shore-0')).length / 6);
+    } finally {
+      water.dispose();
+    }
+  });
+
+  it('keeps every painted ripple vertex in open water, on the drift material', () => {
+    const water = paintedWith();
+    try {
+      const field = discField();
+      const ripples = paintedNamed(water, 'painted-ripples');
+      const attr = ripples.geometry.getAttribute('position') as BufferAttribute;
+      expect(attr.count).toBeGreaterThan(0);
+      for (const [x, z] of points(ripples)) {
+        expect(field.shore(x, z), `ripple at ${x},${z}`).toBeGreaterThan(0.5);
+      }
+      // Every mark baked at the body's own absolute level, since one buffer
+      // holds them all and the mesh itself cannot carry the lift.
+      for (let i = 0; i < attr.count; i++) {
+        expect(attr.getY(i), `ripple ${i}`).toBeCloseTo(PAINTED_LEVEL + RIPPLE_LIFT, 5);
+      }
+      expect(ripples.position.y).toBe(0);
+      // The authored sheet's own material, so the drift shader and its one
+      // uTime carry the painted marks too.
+      expect(ripples.material).toBe((water.group.getObjectByName('ripples') as Mesh).material);
+      const drift = ripples.geometry.getAttribute('aRipple') as BufferAttribute;
+      expect(drift).toBeDefined();
+      expect(drift.itemSize).toBe(3);
+      expect(drift.count).toBe(attr.count);
+    } finally {
+      water.dispose();
+    }
+  });
+
+  it('lifts each painted layer over the body\'s own absolute level', () => {
+    const water = paintedWith(true);
+    try {
+      expect(paintedNamed(water, 'painted-water-0').position.y).toBe(PAINTED_LEVEL + WATER_LIFT);
+      for (const name of ['painted-shore-0', 'painted-shore-island-0-0']) {
+        expect(paintedNamed(water, name).position.y, name).toBe(PAINTED_LEVEL + SHORE_LIFT);
+      }
+      const attr = paintedNamed(water, 'painted-ripples').geometry.getAttribute(
+        'position',
+      ) as BufferAttribute;
+      expect(attr.getY(0)).toBeCloseTo(PAINTED_LEVEL + RIPPLE_LIFT, 5);
+    } finally {
+      water.dispose();
+    }
+  });
+});
+
+describe('water — painted water answers to neither switch', () => {
+  afterEach(() => setTerrainParams(TERRAIN_DEFAULTS));
+
+  it('stays visible when the landscape switch hides the authored map', () => {
+    // A painted body is a person's own hand: it stands in the plain world,
+    // exactly as painted height does.
+    const water = paintedWith();
+    try {
+      water.setVisible(false);
+      expect(water.group.visible).toBe(false);
+      expect(water.paintedGroup.visible).toBe(true);
+      water.setVisible(true);
+      expect(water.group.visible).toBe(true);
+      expect(water.paintedGroup.visible).toBe(true);
+    } finally {
+      water.dispose();
+    }
+  });
+
+  it('leaves every painted sheet where it is when the terrain dials move', () => {
+    // A painted level is ABSOLUTE — a painted unit is a world unit — so the
+    // dials that re-seat the authored basins have nothing to say about it.
+    const water = paintedWith(true);
+    try {
+      const sheets = (water.paintedGroup.children as Mesh[]).filter(
+        (mesh) => mesh.name !== 'painted-ripples',
+      );
+      const before = sheets.map((mesh) => mesh.position.y);
+      const attr = paintedNamed(water, 'painted-ripples').geometry.getAttribute(
+        'position',
+      ) as BufferAttribute;
+      const bakedBefore = [...(attr.array as Float32Array)];
+
+      setTerrainParams({ elevation: 1.3 });
+      water.refreshLevels();
+      expect(sheets.map((mesh) => mesh.position.y)).toEqual(before);
+      expect([...(attr.array as Float32Array)]).toEqual(bakedBefore);
+
+      setTerrainParams(TERRAIN_DEFAULTS);
+      water.refreshLevels();
+      expect(sheets.map((mesh) => mesh.position.y)).toEqual(before);
+      expect([...(attr.array as Float32Array)]).toEqual(bakedBefore);
+    } finally {
+      water.dispose();
+    }
+  });
+
+  it('empties both groups on dispose', () => {
+    const water = paintedWith(true);
+    let released = 0;
+    for (const child of water.paintedGroup.children) {
+      (child as Mesh).geometry.addEventListener('dispose', () => {
+        released++;
+      });
+    }
+    const painted = water.paintedGroup.children.length;
+    expect(painted).toBeGreaterThan(0);
+    water.dispose();
+    expect(water.group.children).toHaveLength(0);
+    expect(water.paintedGroup.children).toHaveLength(0);
+    expect(released).toBe(painted);
   });
 });

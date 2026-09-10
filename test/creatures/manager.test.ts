@@ -352,6 +352,98 @@ describe('the outliner can see both phases', () => {
   });
 });
 
+describe('who is still an egg — the manual hatch, synced (user ask, 2026-09-10)', () => {
+  /**
+   * *"in the demo let's pause the hatching until I press h on the
+   * keyboard"*. Every phone's world view is its own copy of the world page,
+   * so the host has to be able to SAY which shells are still closed and a
+   * viewer has to be able to open one by id. Both of those are this
+   * manager's answers, and they are what src/net/worldsync.ts reconciles.
+   */
+
+  function eggWorld() {
+    const world = stubWorld([]);
+    const manager = createCreatureManager(world, { autoHatch: false, surface: FLAT_SURFACE });
+    manager.spawn('a', snowman, { hatchMs: 60_000 });
+    manager.spawn('b', circleBlob, { hatchMs: 60_000 });
+    return manager;
+  }
+
+  it('lists every standing egg, and nothing that is already alive', () => {
+    const manager = eggWorld();
+    expect(manager.eggIds().sort()).toEqual(['a', 'b']);
+    expect(manager.liveIds()).toEqual([]);
+    manager.clearAll();
+  });
+
+  it('a grown arrival was never an egg', () => {
+    // the store's first pull in a TIMER world stands its drawings up whole.
+    // nothing about them is waiting on anybody.
+    const world = stubWorld([]);
+    const manager = createCreatureManager(world, { autoHatch: false, surface: FLAT_SURFACE });
+    manager.spawn('grown', snowman, { hatchMs: 60_000, grown: true });
+    expect(manager.eggIds()).toEqual([]);
+    expect(manager.liveIds()).toEqual(['grown']);
+    manager.clearAll();
+  });
+
+  it('opens exactly the egg it is given, and leaves the other standing', () => {
+    // what a viewer does with a `hatch` off the wire: one id, one shell.
+    const manager = eggWorld();
+    manager.hatch('a');
+    expect(manager.eggIds()).toEqual(['b']);
+    let now = performance.now();
+    for (let i = 0; i < 200 && manager.liveIds().length < 1; i++) {
+      now += 50;
+      manager.update(50, now);
+    }
+    expect(manager.liveIds()).toEqual(['a']);
+    // and 'b' is still a shell nobody has called: the roster keeps saying so.
+    expect(manager.eggIds()).toEqual(['b']);
+    manager.clearAll();
+  });
+
+  it('drops an egg off the list the moment its shell starts coming off', () => {
+    // a slot that is BREAKING OPEN is on its way to alive: there is nothing
+    // left for a viewer to decide about it, and a host that still called it
+    // an egg would keep every other screen waiting on a hatch already run.
+    const manager = eggWorld();
+    manager.hatch('a');
+    expect(manager.eggIds()).toEqual(['b']);
+    manager.clearAll();
+  });
+
+  it('an id nobody holds is not a hatch', () => {
+    // it arrives over a public broker, and the drawings on two pages are
+    // not always the same set.
+    const manager = eggWorld();
+    manager.hatch('nobody');
+    expect(manager.eggIds().sort()).toEqual(['a', 'b']);
+    manager.clearAll();
+  });
+
+  it('tells the observer the same forced hatch a key press would', () => {
+    // the session log — and the broadcast that hangs off this seam — must
+    // not be able to tell a viewer's hatch apart from the operator's.
+    const hatched: { id: string; cause: string }[] = [];
+    const world = stubWorld([]);
+    const manager = createCreatureManager(world, {
+      autoHatch: false,
+      surface: FLAT_SURFACE,
+      observer: {
+        egg: () => {},
+        hatch: (id, cause) => hatched.push({ id, cause }),
+        retire: () => {},
+        emote: () => {},
+      },
+    });
+    manager.spawn('a', snowman, { hatchMs: 60_000 });
+    manager.hatch('a');
+    expect(hatched).toEqual([{ id: 'a', cause: 'forced' }]);
+    manager.clearAll();
+  });
+});
+
 describe('grown arrivals — a creature that is already here', () => {
   /**
    * The regression this file exists to prevent recurring.

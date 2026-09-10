@@ -74,7 +74,7 @@ the log, so the log is always schedulable.
 | `retire` | `id`, `cause` | a creature left. `cause` is `population` (the guard), `operator`, `replaced` (same drawer sent a new drawing), `cleared` (clear-all / reset) |
 | `emote` | `id`, `emote`, `source` | an emote played. `source` is `phone` \| `key` \| `panel` |
 | `drive` | `id`, `ax`, `az`, `mag` | somebody steered a creature. `ax`/`az` are the ground-space direction under the camera at that moment, `mag` how hard. `mag: 0` (with no `ax`/`az`) is the release — the hand came off the stick. Thinned, never per frame — see below |
-| `paint` | `tool`, `x`, `z`, `r`, `strength`, `hardness?`, `mode?`, `seed?`, `flattenTo?` | one dab of the terrain brush (dev). `tool` is `raise` \| `lower` \| `flatten` \| `smooth`; `x`/`z`/`r` are world units, the same space `egg` uses; `mode` is what the dab actually did (a tool erases with ctrl, smooths with alt); `seed` is the dab's own rim. `{ tool: 'clear' }` — the map was thrown away — carries no geometry |
+| `paint` | `tool`, `x`, `z`, `r`, `strength`, `hardness?`, `mode?`, `seed?`, `flattenTo?`, `level?` | one dab of the terrain brush (dev). `tool` is `raise` \| `lower` \| `flatten` \| `smooth` on the height layer or `pond` \| `drain` on the water one; `x`/`z`/`r` are world units, the same space `egg` uses; `mode` is what the dab actually did (a tool erases with ctrl, smooths with alt); `seed` is the dab's own rim; `level` is the water tools' absolute surface height, so a replayed pond lays the plane the stroke chose rather than re-reading a bank that has since moved (absent on a drain). `{ tool: 'clear' }` — the map was thrown away — carries no geometry |
 | `keep` | `id`, `action`, `source` | somebody kept their creature: `action` is `photo` \| `model` \| `link`, `source` is `phone`. Informational — nothing in the world changed — and in the log because "somebody wanted to take this home" is what a session is judged on afterwards |
 | `operator` | `action`, `id`, `on?` | a moderation tap: `approve`, `discard`, `remove`, `block`, `unblock`, or `hold` (with `on` carrying the new hold-arrivals state). Bulk taps record one event per drawer, not one for the batch |
 | `world` | `field`, `value`, `kind?` | a world control an operator moved: `weather`, `timeOfDay`, `intensity`, `wind`, `density`, `kindDensity`/`kindScale` (with `kind`), `landscape` (`1` reveals the authored map, `0` returns the world to the flat plain it opens on), `terrain` (with `kind` — `elevation`, `tierStep` or `relief`), `grain`, `background`, `objectHue`/`objectSaturation`, `ink*`, `wanderSpeed` |
@@ -100,7 +100,10 @@ per-frame dump wearing an event's clothes:
   the brush, not by the display. The four rim-shape settings (`edgeNoise`,
   `edgeScale`, `spatter`, `aspect`) are *not* recorded per dab — they are brush
   state, identical across a stroke, and a replay reads them off the brush it is
-  stamping through.
+  stamping through. A water dab is the one that carries something a replay could
+  not work out for itself: `level`, the plane the stroke filled to. It is chosen
+  once, from the bank around the stroke's first dab, and by replay time that bank
+  may have been painted over.
 
 Both still hold the rule the format is built on: an idle world records nothing,
 and nothing in the file is a per-frame sample of anything.
@@ -304,7 +307,148 @@ session — but even then the record is kept, so a recall can still ask for it.
 | `src/main.ts` → `connectWorldFeed({ onKeep })` | `keep`, on the host only, so a room with two screens open does not log it twice. The handset publishes `{ type: 'keep', from, action }` on the room's own topic (src/net/phoneLink.ts), the same transport an emote rides; with no link there is nothing sent and the save is exactly as saved |
 | `src/dev/paint.ts` → each tool's `onStamp`, and the `clear map` button | `paint` |
 | `src/dev/index.ts` panel handlers | `world` control changes |
+| `RecorderOptions.onEvent` → `src/main.ts` | nothing new. It is the TAP the scene layer hangs on (§6): every scene event already crosses the recorder, so what makes it reach the other screens hangs there rather than on each control — the same argument that put the autosave on the gate's observer rather than on the mqtt callback |
 
 Both observers are **structural** interfaces declared in the module they serve, so neither
 moderation nor the creature manager imports the session module. They stay leaves; the log is
 wired in at `src/main.ts`.
+
+---
+
+## 6. The scene — shared and stored
+
+> The demo plan, 2026-09-09: *"update the url without resetting the scene and
+> losing everyone's eggs… then I'll start painting and manipulating the
+> scene."* And every phone's "view world" is **this same page**, running its
+> own copy of `main.ts`.
+
+The drawings already survived both of those: they live in the store and come
+back grown (docs/PUBLIC.md). The world they stand in did not. The landscape
+switch, the three terrain dials and every dab of the brush lived in the page
+that made them — so a phone watching the world saw the flat plain it ships as,
+and a redeploy opened onto that plain under a population that had spent the
+evening somewhere else.
+
+**No second mechanism.** Those changes are already events in this log, and
+`replay.ts` already knows how to apply them. The scene layer ships that
+*subset* to the other pages and to the store, and every page applies a foreign
+one through the same driver. Nothing on the wire can move the ground in a way
+a recorded log could not.
+
+### which kinds
+
+`src/session/scene.ts` — pure, node-safe, imported by the browser, the wire
+and a serverless handler alike.
+
+| in the scene | not in the scene |
+|---|---|
+| `world` with `field: landscape` | `world` with `weather`, `timeOfDay`, `grain`, `background`, `ink*`, `density`, `wanderSpeed` … |
+| `world` with `field: terrain` (`kind` is `elevation` \| `tierStep` \| `relief`) | every other kind: `drawing`, `egg`, `hatch`, `drive`, `keep`, `operator` … |
+| `paint` — every dab, and `{ tool: 'clear' }` | |
+
+The line is **the ground, not the look**. Weather and paper are cheap to set
+per page and a room where one person's phone re-tints everybody else's is a
+worse room; what has to agree is the shape of the land people's creatures are
+standing on. The cast is not here either — it already travels, as drawings
+through the store and as poses over the sync topic.
+
+### the door
+
+`readSceneEvent` narrows an arbitrary parsed value and **clamps** it: terrain
+dials to `TERRAIN_LIMITS`, a dab's centre to the painted map's extent, its
+radius to 200 units, its amount to a stroke's worth. Same rule as
+`readWorldSyncMessage` does for a drive, for the same reason — this arrives
+over a public broker and out of a database, and the world should be unable to
+be handed a brush the size of the map, whatever sent it.
+
+A **batch** drops what will not read and keeps the rest, which is the one
+place this differs from `parseSessionLog`. A log is a file somebody hands you
+and can be refused outright; this is a live world's ground arriving in pieces,
+and losing one dab is a dent while refusing the batch is a phone that never
+sees the landscape at all.
+
+### compaction
+
+`compactScene` is what keeps a world that has been painted every day from
+becoming a megabyte on arrival. Two rules, neither of which reorders anything:
+
+- **a dial keeps only its last value.** `landscape`, and each terrain `kind`,
+  are settings rather than strokes: a drag is thirty events that all claim the
+  world ended up somewhere, and only the last one is true.
+- **a clear is a horizon.** Every dab before the last `tool: 'clear'` was
+  thrown away by the person who painted it, and the clear goes with them — a
+  page that never stamped anything has nothing to clear.
+
+Everything that survives keeps its order, because a flatten depends on the
+ground it is flattening and a landscape switch decides what a dab lands on.
+Past `MAX_SCENE_EVENTS` (20 000) the store compacts rather than trims: dropping
+the *oldest* events would drop the landscape switch and leave a world of dabs
+floating over a plain.
+
+### on the wire
+
+One more message on the world sync topic (`src/net/worldsync.ts`):
+
+```jsonc
+{ "t": "scene", "id": "<page>", "seq": 7, "events": [ /* ≤ 500 */ ] }
+{ "t": "scene", "id": "<page>", "seq": 8, "events": [], "reset": true }
+```
+
+Like `drive`, it travels **sideways**: it is not the host describing the
+world, so it does not count as a host claim and its sender never enters the
+election. Unlike `drive` it is acted on by **every** page rather than only the
+one simulating — the ground is the one thing each page draws for itself, and a
+viewer that ignored it would follow the host's poses over a plain that no
+longer exists.
+
+The outgoing side batches (`src/net/sceneoutbox.ts`): events collect for one
+`MOTION.tertiaryMs`, compact, and go out chunked at 500. A brush emits a
+recorded dab per stamp and a slider one per pointermove, so a straight publish
+would put hundreds of packets a second onto a free public broker — the same
+mistake the recorder refuses to make when it records, one layer out. A
+`pagehide` flushes, so the stroke somebody was in the middle of still lands.
+
+The **hatch** rides the same topic (2026-09-10): in a manual world the host
+publishes `{ "t": "hatch", "id": "<page>", "who": "<creature>" }` as each
+shell opens and every viewer plays the same sequence, and the roster it
+already repeats carries `eggs` — the ids still standing as eggs on the host
+— so a screen that joined after the moment reconciles against a state
+instead of waiting for a moment that has gone. Like `drive` it is not a host
+claim; unlike `scene` it is honoured only FROM the host, because the hatch is
+the host's decision (docs/PUBLIC.md §the map, `hatch`).
+
+### in the store
+
+`refworld:<world>:scene`, a list, oldest first, behind `/api/scene`
+(docs/PUBLIC.md §the scene). Reading is open — the scene is what everyone in
+the world is already looking at, and a phone has to read it before it can draw
+the ground under its creature. Writing is the moderator's, gated on the same
+shared secret as `/api/moderate` and 404 without it. The projection gets that
+secret from `?mod=` once and strips it out of the address immediately: the url
+on the projection is the one people photograph off the wall.
+
+### what is and is not recorded
+
+- **Made here** — an operator's own switch, dial or dab: recorded (it always
+  was), and now also broadcast and stored. That is the whole of the wiring:
+  `RecorderOptions.onEvent` fires on the one seam every one of them already
+  crossed.
+- **Arrived from another page** — applied everywhere, and *additionally
+  recorded on the page that simulates*, so a downloaded log plays back the
+  world the room actually watched rather than the half this screen made. The
+  guard flag around that write is what stops it going straight back out and
+  round the room forever.
+- **Loaded from the store on arrival** — applied, **never recorded**. It is
+  history: it happened before this page opened. Writing it into this session's
+  log would re-broadcast a world back at the room and make every viewer's
+  download a copy of everyone else's. Exactly the rule the grown drawings
+  follow.
+
+A stored scene is laid down fifty stamps at a time with a yield between
+slices, and one ground re-cut per slice rather than per dab
+(`PaintProbe.applyPaintBatch`) — a re-cut is ~300ms, and a phone that froze
+for the length of somebody else's afternoon of painting is a broken page, not
+a slow one. Dabs that arrive before the brush does — the paint skill is a
+dynamic import behind the panel — wait for `refworld:paint-ready` rather than
+being dropped, so painting shows up on a handset whose owner never opens the
+panel.

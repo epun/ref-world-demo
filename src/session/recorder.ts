@@ -97,6 +97,22 @@ export interface RecorderOptions {
   coalesceMs?: number;
   /** Rate cap on `drive`, per creature — see DEFAULT_DRIVE_MIN_GAP_MS. */
   driveMinGapMs?: number;
+  /**
+   * Called for every event that lands in the log — appended, or REWRITTEN by
+   * the one coalescing path in `world()`, in which case it is handed the
+   * rewritten event rather than a second one. Never called for an event the
+   * limit refused: an event that is not in the log did not happen.
+   *
+   * The tap the SCENE layer hangs on (src/session/scene.ts, src/main.ts):
+   * a landscape switch, a terrain dial or a dab of the brush has to reach
+   * every other page and the store, and this is the one seam every one of
+   * them already passes through — the same argument that put the autosave on
+   * the gate's observer rather than on the mqtt callback.
+   *
+   * Purely observational: the recorder does not read what it returns and its
+   * behaviour is identical with and without it.
+   */
+  onEvent?(event: SessionEvent): void;
 }
 
 /** What a drawing event needs, minus the offset the recorder stamps. */
@@ -173,6 +189,7 @@ export function createSessionRecorder(opts: RecorderOptions): SessionRecorder {
       return;
     }
     events.push(event);
+    opts.onEvent?.(event);
   }
 
   return {
@@ -277,6 +294,10 @@ export function createSessionRecorder(opts: RecorderOptions): SessionRecorder {
         // one event, not one per pointermove.
         previous.value = value;
         previous.t = t;
+        // The observer hears the REWRITTEN event, not a second one: what is
+        // in the log is one sample, and a scene layer downstream has to be
+        // told the value that is actually there.
+        opts.onEvent?.(previous);
         return;
       }
       push({ k: 'world', t, field, value, ...(kind === undefined ? {} : { kind }) });

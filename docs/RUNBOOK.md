@@ -19,6 +19,15 @@ One page. Read it before the demo, not during.
 ## during
 
 - `h` hatches every waiting egg, staggered.
+- **In a manual world nothing hatches until you press it** (`hatch: manual` in
+  worlds.json — meridian is one). Eggs arrive and stand there, on the
+  projection and on every phone looking at the world, until `h`. The press
+  travels: each phone's world view is its own copy of this page, so the hatch
+  goes out over the world sync topic and every screen opens the same shell at
+  the same moment. A phone that joins after a hatch catches up on the next
+  roster, two seconds at the outside — nobody has to press anything twice.
+  A world on `hatch: timer` (the default, and the public link) is unchanged:
+  eggs open on their own seven seconds in, and `h` still opens them early.
 - `shift+R` is recovery (below). It always reports on screen.
 - `t` toggles the camera tour. `d` opens the local draw overlay.
 - `shift+d` is the ghost panel. It has the moderation list, the session
@@ -33,6 +42,38 @@ One page. Read it before the demo, not during.
 - To open a link already revealed, put `?landscape=1` on it. The deployed
   build has no panel until somebody presses `shift+d`, so this is how a world
   that is meant to show its geography from the first frame gets it.
+
+## sculpting live
+
+The world opens flat and the operator builds it in front of the room. Every
+phone in the room is looking at **this same page**, so what gets sculpted has
+to reach them — and it has to survive the redeploy that happens between the
+rehearsal and the night.
+
+1. **Open the projection as `?host=1&mod=<MODERATOR_SECRET>`** (plus `?world=`
+   if you are on the public site rather than the world's own deployment). The
+   secret is taken off the address the moment the page loads and kept on that
+   machine, so the url you then hand round is clean. Without it you can still
+   sculpt and everyone still sees it — it just is not kept.
+2. Sculpt: `shift+d` → `landscape` → tick **landscape**, move the three dials,
+   then `paint` → tick **painting** and drag on the ground.
+3. Under the dials, the **`scene`** line says what is happening to all of it:
+   `scene · 412 events · stored`. Anything else is worth reading —
+   `not stored (no secret)` means step 1 was skipped,
+   `not stored (404: wrong secret)` means it was wrong, and
+   `no store on this deployment` means this world has no database behind it.
+4. Phones follow on their own. There is nothing to press on a handset and
+   nothing to open — a phone that never opens the panel still gets the map,
+   the dials and every stroke.
+5. **`reset scene`**, the button under that line, throws the whole scene away
+   — here, on every other screen, and in the store. It is the only thing that
+   does; a reload does not.
+
+**What a redeploy keeps.** The drawings come back grown, as they always did,
+and the scene is restored from the store on load — the map, the dials and the
+strokes, in the order they were made. Nobody presses anything. What a redeploy
+does *not* keep is a scene made on a page that had no secret: it was shared
+with the room and never written down.
 
 ## if the projection dies
 

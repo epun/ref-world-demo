@@ -96,7 +96,7 @@ describe('the planting layers', () => {
 
   it('adopts handed-in buffers by reference, never copying them', () => {
     const grove = new Float32Array(PLANTING_RES * PLANTING_RES);
-    const map = createPaintedMap(undefined, undefined, undefined, { grove });
+    const map = createPaintedMap(undefined, undefined, undefined, undefined, { grove });
     expect(map.planting.grove).toBe(grove);
     // The coupling the whole design rests on: a stamp into the layer's own
     // buffer is visible to the next sample with nothing in between.
@@ -106,7 +106,7 @@ describe('the planting layers', () => {
 
   it('throws on a planting buffer of the wrong length', () => {
     expect(() =>
-      createPaintedMap(undefined, undefined, undefined, { grass: new Float32Array(9) }),
+      createPaintedMap(undefined, undefined, undefined, undefined, { grass: new Float32Array(9) }),
     ).toThrow(/grass/);
   });
 

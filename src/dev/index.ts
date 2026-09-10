@@ -13,7 +13,10 @@
  * `ui.bindToggleKey('D', { shift: true })`. The world's plain-`d` draw
  * overlay key ignores shifted presses (src/main.ts) so the two never fight.
  *
- * The skills, one folder each: `demo` (presentation controls), `moderation`
+ * The skills, one folder each — except `landscape`, which carries two: the
+ * map's own controls and, under them, the `scene` readout for what is being
+ * shared and stored of that sculpting (docs/SESSION.md §6). They are: `demo`
+ * (presentation controls), `moderation`
  * (the operator layer), `session` (the recorded log), `environment` (scatter,
  * grain, ink and the terrain dials), `weather`, `paint` (sculpt the terrain
  * by hand — PLAN §7), `character` (emotes) and `taste` (the §7 gates). The
@@ -45,7 +48,8 @@ import {
 import { WIND_OVERRIDE_MAX } from '../world/environment';
 import { WANDER_SPEED_DEFAULT } from '../creatures/manager';
 import { DEFAULT_KIND_DENSITY, SCATTER_SEED, SCATTER_STEP } from '../world/scatter';
-import { TERRAIN_LIMITS, terrainHeight } from '../world/landscape';
+import { TERRAIN_DEFAULTS, TERRAIN_LIMITS, terrainHeight } from '../world/landscape';
+import type { PaintedWaterField } from '../world/painted-water';
 import { ROLLING_SURFACE } from '../world/surface';
 import { GRAIN, MOTION, SURFACE } from '../taste/tokens';
 import { countByKind } from '../session';
@@ -164,6 +168,15 @@ export interface DevHandles {
   /** …and reads it back, so the checkbox starts where the world is. */
   landscape?(): boolean;
   /**
+   * Hand the painted water field to the RENDERER (`water.setPainted` —
+   * src/world/water.ts): the flat fills, the drawn shorelines and the ripple
+   * marks a painted body gets. The geography's own copy is installed inside
+   * the paint skill through `setPaintedWater` in landscape.ts; this handle is
+   * the drawing half, and it is here for the same reason `setTerrain` is —
+   * this module never imports src/world/scene.ts.
+   */
+  setPaintedWater?(field: PaintedWaterField | null): void;
+  /**
    * Park the world's own one-pointer drag (`WorldHandles.setSoloDrag`), so a
    * dev tool that draws on the ground can own the same gesture instead of
    * orbiting the camera underneath itself. Only the paint skill uses it, and
@@ -198,10 +211,51 @@ export interface DevHandles {
   /** Restore the fullest autosaved log from a PREVIOUS epoch on this
    * machine — the `r` key's own path. Returns how many came back. */
   restoreLastSession?(): number;
+  /**
+   * The shared scene (src/session/scene.ts, docs/SESSION.md §6). Only a
+   * public world has one — an installation room is one projection and there
+   * is nobody to agree with — so without this the folder says so rather than
+   * offering a reset that resets nothing.
+   */
+  sceneSync?: DevSceneApi;
+}
+
+/** The panel's half of the scene layer (src/main.ts owns the other half). */
+export interface DevSceneApi {
+  /** One lowercase line for the readout: how much scene, and whether it is
+   * being kept. */
+  status(): string;
+  /** Throw the scene away — here, on the wire, and in the store. */
+  reset(): void;
+  /**
+   * The panel hands back the controls a FOREIGN scene change has to move.
+   *
+   * A landscape switch arriving from another page changes this world through
+   * the replay driver, which knows nothing about widgets — so without this
+   * the checkbox on a second screen would say `off` under a world that is
+   * plainly showing its map. Setting a ghost-panel control's value does not
+   * fire its `onChange` (node_modules/ghost-panel/controls.js), so reflecting
+   * a change cannot loop back out onto the wire.
+   */
+  bind(controls: DevSceneControls): void;
+}
+
+export interface DevSceneControls {
+  landscape(on: boolean): void;
+  /** `elevation` | `tierStep` | `relief`; anything else is ignored. */
+  terrain(kind: string, value: number): void;
+  status(line: string): void;
 }
 
 /** Offscreen readback resolution for the pixel gates. */
 const READBACK_SIZE = 256;
+
+/** Which slider each terrain dial is, so a remote change can move it. */
+const TERRAIN_CONTROL_IDS: Readonly<Record<string, string>> = {
+  elevation: 'terrain-elevation',
+  tierStep: 'terrain-tier-step',
+  relief: 'terrain-relief',
+};
 
 /**
  * [D] Trailing debounce on the terrain dials, ms — see the sliders.
@@ -1364,9 +1418,45 @@ export async function initDevPanel(
       if (!setLandscape && !handles.setTerrain) {
         folder.addInfo('no landscape handles were provided', 'landscape-empty');
       }
+
+      // ── the scene, shared and stored (docs/SESSION.md §6) ───────────────
+      // Right under the controls that make it, because it is the readout for
+      // exactly those controls: what the operator has just switched, dialled
+      // and painted is on its way to every phone in the room and into
+      // `refworld:<world>:scene`, and this is the only place that says so.
+      // A live demo where the sculpting silently reaches nobody looks
+      // identical to one where it reaches everybody.
+      const sceneSync = handles.sceneSync;
+      const sceneFolder = panelUi.addFolder('scene');
+      if (!sceneSync) {
+        sceneFolder.addInfo('this world keeps no shared scene — open it with ?world=', 'scene-readout');
+      } else {
+        sceneFolder.addInfo('', 'scene-readout');
+        sceneFolder.addButton('reset scene', () => sceneSync.reset());
+        const line = (text: string): void => {
+          sceneFolder.get('scene-readout')?.setText?.(text);
+        };
+        sceneSync.bind({
+          landscape: (on) => {
+            folder.get('landscape-mode')?.setValue?.(on);
+          },
+          terrain: (kind, value) => {
+            const id = TERRAIN_CONTROL_IDS[kind];
+            if (id) folder.get(id)?.setValue?.(value);
+            // The height readout under the dials is NOT refreshed here: it
+            // walks the map to build its line and belongs to the hand on the
+            // slider. The dials themselves say where the world is standing.
+          },
+          status: line,
+        });
+        line(sceneSync.status());
+      }
       return { folder };
     },
-    teardown: (panelUi) => panelUi.panel.removeFolder('landscape'),
+    teardown: (panelUi) => {
+      panelUi.panel.removeFolder('landscape');
+      panelUi.panel.removeFolder('scene');
+    },
   });
 
   // ── refworld.weather — environment/weather controls (defensive) ───────────
@@ -1559,8 +1649,24 @@ export async function initDevPanel(
       // An empty partial moves no dial and rebuilds all three systems in
       // order — ground, then scatter, then water (src/world/scene.ts).
       rebuildTerrain: () => handles.setTerrain?.({}),
-      // …and the cheap half, for a stroke that plants rather than sculpts.
+      // …and the cheap half, for a stroke that plants rather than sculpts:
+      // a planting stroke moves no vertex and no water level, so it re-rolls
+      // the scatter and nothing else.
       ...(handles.refreshScatter ? { rebuildScatter: handles.refreshScatter } : {}),
+      // …and the landscape mode RE-APPLIED unchanged is exactly the other
+      // rebuild: ground, `scatter.refreshLandscape()`, water levels. It is
+      // what a water stroke needs and a height stroke does not — a pond
+      // changes WHAT GROWS WHERE (`place()` refuses water, and the reed walk
+      // follows the new shore), so the placement has to be re-rolled, while a
+      // height stroke only moves what is already standing. Reading the mode
+      // back rather than remembering it keeps the switch where it belongs:
+      // the paint skill never decides whether the map is on.
+      rebuildLandscape: () => handles.setLandscape?.(handles.landscape?.() ?? false),
+      setPaintedWater: (field) => handles.setPaintedWater?.(field),
+      // The dials a painted pond measures its `basinDrop` against. Defaults
+      // when a world build wires no dial handle: they are the numbers such a
+      // build is standing on anyway.
+      terrain: () => handles.terrain?.() ?? TERRAIN_DEFAULTS,
       onFrame: handles.onFrame,
       ...(handles.setSoloDrag ? { setSoloDrag: handles.setSoloDrag } : {}),
       ...(handles.tour ? { tour: handles.tour } : {}),

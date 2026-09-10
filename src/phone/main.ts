@@ -582,6 +582,22 @@ async function boot(): Promise<void> {
     told = true;
     showGuidelineNotice(drawAgain);
   });
+  /*
+   * What this world does about eggs (user ask, 2026-09-10).
+   *
+   * The wait screen's countdown is a forecast the handset draws off a
+   * number, and until now that number was this page's own guess. In a
+   * manual world the guess is wrong in the worst possible direction: it
+   * runs down to zero, says "hatching", and nothing happens, because the
+   * only thing that opens an egg there is somebody pressing `h` in the
+   * room. So the world says what it does, and `0` — no clock here — takes
+   * the forecast away rather than leaving one that lies. The shell keeps
+   * its ambient life either way; only the promise goes.
+   */
+  uplink?.onWorldHatchMs((ms) => {
+    hatchInMs = ms > 0 ? ms : null;
+    waitHandle?.setHatchIn(hatchInMs);
+  });
   uplink?.onWorldEpoch((worldEpoch) => {
     lastWorldEpoch = worldEpoch;
     if (room.length === 0 || told) return;

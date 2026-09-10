@@ -41,6 +41,7 @@ import {
   POSE_INTERVAL_MS,
   ROLE_SETTLE_MS,
   ROSTER_REPEAT_MS,
+  eggsOpenedByHost,
   electHost,
   makeHostId,
   packPoses,
@@ -49,19 +50,28 @@ import {
   unpackPoses,
 } from './net/worldsync';
 import {
+  MAX_SCENE_EVENTS,
   createSessionRecorder,
   expectedCreatures,
+  isSceneEvent,
   parseSessionLog,
+  readSceneBatch,
   readSessionLog,
   recordCreatures,
   recordGate,
   replayNow,
   replaySession,
   type DrawingSource,
+  type PaintEvent,
   type ReplayDriver,
   type ReplayHandle,
+  type SceneEvent,
   type SessionLog,
 } from './session';
+import { createSceneOutbox, type SceneOutbox } from './net/sceneoutbox';
+import type { SceneMessage } from './net/worldsync';
+import type { DevSceneApi, DevSceneControls } from './dev';
+import { TERRAIN_DEFAULTS } from './world/landscape';
 import { MAX_POPULATION, WANDER_SPEED_DEFAULT } from './creatures/manager';
 import { mountDrawScreen } from './draw/ui';
 import { MOTION, SURFACE, WORLD } from './taste/tokens';
@@ -82,6 +92,7 @@ import {
   type WorldVector,
 } from './world/joystick';
 import { residentsFrom } from './world/residents';
+import { readHatchMode } from './world/hatchmode';
 import { storeNote } from './world/storeline';
 import { start } from './world/scene';
 import { createTour } from './world/tour';
@@ -279,6 +290,34 @@ function main(): void {
   const residents = residentsFrom(
     document.querySelector<HTMLMetaElement>('meta[name="refworld:residents"]')?.content ?? null,
   );
+  /**
+   * And who opens the eggs here — the clock, or the person at the keyboard
+   * (user ask, 2026-09-10: *"in the demo let's pause the hatching until I
+   * press h on the keyboard"*).
+   *
+   * Read once, here, beside the world's own name and for the same reason:
+   * everything downstream — the manager's timer, what the roster carries,
+   * what a first pull spawns, what the handsets are told about a countdown
+   * — has to be answering the same question. `?hatch=manual|timer` on the
+   * address overrides the baked tag, for a preview or a rehearsal without a
+   * deploy. See src/world/hatchmode.ts.
+   */
+  const hatchMode = readHatchMode(
+    params.get('hatch'),
+    document.querySelector<HTMLMetaElement>('meta[name="refworld:hatch"]')?.content ?? null,
+  );
+  /**
+   * What the handsets are told about that (src/net/phoneLink.ts).
+   *
+   * The wait screen draws a countdown off a number, and a countdown that
+   * runs out while the egg sits there is the page telling somebody
+   * something untrue about their own creature. `0` says there is no clock
+   * here, and the forecast goes rather than lying.
+   *
+   * Only a named world says anything. An installation handset's flow is
+   * the one this project shipped with and is not this ask's to change.
+   */
+  const phoneHatchMs = isPublic ? (hatchMode === 'timer' ? PUBLIC_HATCH_MS : 0) : undefined;
 
   /*
    * A named world always meets in the same room; only an unnamed one mints
@@ -345,6 +384,45 @@ function main(): void {
     history.replaceState(null, '', `${location.pathname}?${params}${location.hash}`);
   }
 
+  /**
+   * The operator's secret, taken off the address once and kept on the device.
+   *
+   * 2026-09-09, the demo plan: the operator opens the projection, sculpts the
+   * world in front of the room, and what they sculpt has to be KEPT — which
+   * means writing to `/api/scene`, which is the moderator's endpoint
+   * (docs/PUBLIC.md §the scene). A projection has no login and nowhere to
+   * type, so it arrives as `?mod=<secret>`.
+   *
+   * And leaves again immediately. The url on the projection is the url people
+   * photograph off the wall and the one an operator copies to send round; a
+   * share link carrying the secret would hand the room's whole world to
+   * whoever read it over somebody's shoulder. So it is stored, stripped from
+   * the address with `replaceState`, and never printed — not in a readout,
+   * not in an error, not in the `scene` line, which says only whether writing
+   * worked.
+   */
+  const MODERATOR_KEY = 'refworld:moderator';
+  const readModeratorSecret = (): string => {
+    const given = params.get('mod') ?? '';
+    if (given) {
+      try {
+        localStorage.setItem(MODERATOR_KEY, given);
+      } catch {
+        // A browser with storage off still gets this session's secret — it
+        // is in the closure below either way.
+      }
+      params.delete('mod');
+      history.replaceState(null, '', `${location.pathname}?${params}${location.hash}`);
+      return given;
+    }
+    try {
+      return localStorage.getItem(MODERATOR_KEY) ?? '';
+    } catch {
+      return '';
+    }
+  };
+  const moderatorSecret = readModeratorSecret();
+
   // ── the landscape mode ────────────────────────────────────────────────────
   /*
    * The world OPENS PLAIN (src/world/landscape.ts): a flat field of scattered
@@ -404,6 +482,20 @@ function main(): void {
   // verdicts, operator taps — at ms offsets from now, and nothing per frame,
   // because generation is deterministic in (strokes, id) and replay re-derives
   // the rest. Only the panel button that downloads it is dev-gated.
+  /**
+   * Are we APPLYING a scene change from somewhere else right now?
+   *
+   * The scene layer both records and broadcasts through the same seam, so a
+   * remote change written into this page's log would go straight back out
+   * again and round the room forever. This says "this one came from
+   * outside" and is held for exactly the synchronous call that records it
+   * (see `recordScene`) — never across an await, or the operator's own
+   * strokes during a load would be swallowed with it.
+   */
+  let applyingScene = false;
+  /** Set below, and only in a public world — see the scene section. */
+  let sceneOutbox: SceneOutbox | null = null;
+
   const session = createSessionRecorder({
     epoch,
     room,
@@ -425,6 +517,22 @@ function main(): void {
       worldScale: 1,
     },
     now: () => performance.now(),
+    /**
+     * THE SCENE LAYER'S ONE TAP (docs/SESSION.md §6).
+     *
+     * Every landscape switch, terrain dial and dab of the brush already
+     * passes through the recorder — the log has been the canonical record of
+     * them since the panel was wired. So the thing that makes them reach the
+     * other screens hangs HERE, on the seam they all already cross, rather
+     * than on each control: a sculpting route that did not reach the room
+     * would be a hand on the world nobody else saw, which is the same
+     * argument that put the autosave on the gate's observer.
+     */
+    onEvent: (event) => {
+      if (applyingScene) return;
+      if (!isSceneEvent(event)) return;
+      sceneOutbox?.push(event);
+    },
   });
 
   // The world calls the hatch, so the world announces it: the handset plays
@@ -435,14 +543,48 @@ function main(): void {
   // and the whole clutch opens together, which is the moment everybody came
   // for. On a link there is no operator and nobody to wait for, and an egg
   // that never hatches is a person who drew something and got nothing.
+  //
+  // UNLESS the world says otherwise (user ask, 2026-09-10: *"in the demo
+  // let's pause the hatching until I press h on the keyboard"*). A world
+  // with somebody standing in front of it is a room again, link or not:
+  // `hatch: manual` in worlds.json takes the clock away and hands the
+  // moment back to the operator (src/world/hatchmode.ts).
+  /**
+   * Send one hatch to every other screen. Wired by `startWorldSync`.
+   *
+   * NOT queued while there is no socket, unlike a scene batch. A hatch is a
+   * moment: publishing a backlog of them the instant a broker came back
+   * would break a clutch of shells open at once, seconds after the room
+   * watched them open, which is a worse lie than the one it fixes. The
+   * late-joiner's copy comes from the roster's `eggs` instead — a state,
+   * which is the right shape for catching up (src/net/worldsync.ts).
+   */
+  let publishHatch: (who: string) => void = () => {};
+
   const recorder = recordCreatures(session);
   const creatures = createCreatureManager(world, {
-    autoHatch: isPublic,
+    autoHatch: isPublic && hatchMode === 'timer',
     observer: {
       ...recorder,
+      /**
+       * A shell opened HERE — and every other screen has to open it too.
+       *
+       * The one seam every hatch crosses, whichever opened it: the `h` key,
+       * `shift+h`, the panel's button, the egg's own timer. So the two
+       * things a hatch owes the rest of the world hang here rather than on
+       * each of those — the same argument as the gate's autosave.
+       *
+       * Both are the HOST's to send. A viewer only ever hatches because it
+       * was told to (see startWorldSync), and a viewer that answered back
+       * would tell the drawer's phone twice and put the hatch round the
+       * room again forever.
+       */
       hatch(id, cause) {
         recorder.hatch(id, cause);
-        feed?.publishToPhones({ type: 'hatched', to: id, epoch });
+        if (isHostNow()) {
+          feed?.publishToPhones({ type: 'hatched', to: id, epoch });
+          publishHatch(id);
+        }
         saveSession();
       },
     },
@@ -941,6 +1083,294 @@ function main(): void {
    * clears the world, which would be a strange thing to do to a room every
    * twenty seconds.
    */
+  // ── the scene: shared and stored (docs/SESSION.md §6) ─────────────────────
+  /*
+   * 2026-09-09, the demo plan: *"update the url without resetting the scene
+   * and losing everyone's eggs… then I'll start painting and manipulating the
+   * scene"* — and every phone in the room is looking at THIS SAME PAGE, each
+   * running its own copy of it.
+   *
+   * The drawings already survived both of those. The world they stand in did
+   * not: the landscape switch, the three terrain dials and every dab of the
+   * brush lived in the page that made them, so a phone watching the world saw
+   * the flat plain the world ships as, and a redeploy threw the evening's
+   * sculpting away while the creatures came back grown.
+   *
+   * NO SECOND MECHANISM. Those changes are already session events with a
+   * replay driver that applies them; this ships that same subset over the
+   * sync topic and into `refworld:<world>:scene`, and every page applies a
+   * foreign one through the SAME driver. Nothing here can move the ground in
+   * a way a recorded log could not.
+   */
+
+  /** The world's own scene endpoint. */
+  const sceneEndpoint = `/api/scene?world=${encodeURIComponent(worldName)}`;
+
+  /**
+   * [D] Dabs stamped between yields when a stored scene is being laid down.
+   *
+   * Same argument as `absorb` below, for the other expensive thing a page
+   * does on arrival: a batch of stamps is cheap but the ground re-cut that
+   * follows one is ~300ms, and a phone that froze for the length of somebody
+   * else's afternoon of painting is a broken page, not a slow one. Fifty at a
+   * time reads as the terrain rising in increments, which is a better landing
+   * than a blank world that suddenly has hills.
+   */
+  const SCENE_STAMPS_PER_FRAME = 50;
+
+  /** Publish on the sync topic. Set by `startWorldSync` once it has a client
+   * and an id; anything sent before then waits here rather than being lost —
+   * a stroke made in the first second of a demo is still a stroke. */
+  let publishScene: ((message: Omit<SceneMessage, 'id'>) => void) | null = null;
+  const sceneBacklog: Omit<SceneMessage, 'id'>[] = [];
+  const sendScene = (message: Omit<SceneMessage, 'id'>): void => {
+    if (publishScene) publishScene(message);
+    else sceneBacklog.push(message);
+  };
+
+  let sceneSeq = 0;
+  let sceneCount = 0;
+  /** What the store said last, in the words the readout uses. */
+  let sceneStored = 'not stored (no secret)';
+  /** The panel's widgets, once it has mounted and handed them over. */
+  let sceneControls: DevSceneControls | null = null;
+
+  const sceneStatus = (): string =>
+    `scene · ${sceneCount} event${sceneCount === 1 ? '' : 's'} · ${sceneStored}`;
+  const refreshScene = (): void => sceneControls?.status(sceneStatus());
+
+  /** The brush, if this build has one mounted. Reached by name, never by
+   * import: src/dev/ tree-shakes out of the demo build, and a page with no
+   * brush skips the dabs rather than faking them (same rule as
+   * `replayDriver.paint`). */
+  type PaintProbeLike = {
+    applyPaint?(event: PaintEvent): void;
+    applyPaintBatch?(events: readonly PaintEvent[]): void;
+  };
+  const paintProbe = (): PaintProbeLike | undefined =>
+    (window as Window & { __refworldPaint?: PaintProbeLike }).__refworldPaint;
+
+  /** Dabs that arrived before the brush did — the paint skill is a dynamic
+   * import behind the panel, so on every page there is a second or two where
+   * a stored dab has nowhere to land. */
+  let paintPending: PaintEvent[] = [];
+
+  const applyPaintSlices = async (events: readonly PaintEvent[]): Promise<void> => {
+    const probe = paintProbe();
+    if (!probe) {
+      paintPending.push(...events);
+      return;
+    }
+    for (let i = 0; i < events.length; i += SCENE_STAMPS_PER_FRAME) {
+      const slice = events.slice(i, i + SCENE_STAMPS_PER_FRAME);
+      // One re-cut per slice, not per dab: `applyPaint` rebuilds on the
+      // stroke throttle, which a tight loop of stamps clears every time
+      // (src/dev/paint.ts `applyPaintBatch`).
+      if (probe.applyPaintBatch) probe.applyPaintBatch(slice);
+      else for (const event of slice) probe.applyPaint?.(event);
+      if (i + SCENE_STAMPS_PER_FRAME < events.length) {
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+      }
+    }
+  };
+
+  /** The brush turned up: lay down whatever was waiting for it. The event is
+   * dispatched by src/dev/paint.ts (`PAINT_READY_EVENT`), named here as a
+   * string for the same reason the probe is — this file must not import the
+   * dev surface. */
+  window.addEventListener('refworld:paint-ready', () => {
+    if (paintPending.length === 0) return;
+    const queued = paintPending;
+    paintPending = [];
+    void applyPaintSlices(queued);
+  });
+
+  /** Move the panel's own widgets to match a change this page did not make.
+   * Setting a ghost-panel control's value does not fire its `onChange`, so
+   * this cannot loop back onto the wire. */
+  const reflectScene = (event: SceneEvent): void => {
+    if (event.k !== 'world' || !sceneControls) return;
+    if (event.field === 'landscape') {
+      sceneControls.landscape(event.value === 1 || event.value === true);
+      return;
+    }
+    if (event.field === 'terrain' && typeof event.value === 'number' && event.kind) {
+      sceneControls.terrain(event.kind, event.value);
+    }
+  };
+
+  /** Apply a run of scene events IN ORDER — a flatten depends on the ground
+   * it is flattening, and a landscape switch decides what a dab lands on, so
+   * the paint runs are batched but never floated past a world event. */
+  const applySceneEvents = async (events: readonly SceneEvent[]): Promise<void> => {
+    let run: PaintEvent[] = [];
+    for (const event of events) {
+      if (event.k === 'paint') {
+        run.push(event);
+        continue;
+      }
+      if (run.length > 0) {
+        await applyPaintSlices(run);
+        run = [];
+      }
+      replayDriver.world?.(event.field, event.value, event.kind);
+      reflectScene(event);
+    }
+    if (run.length > 0) await applyPaintSlices(run);
+  };
+
+  /**
+   * Write one event from elsewhere into THIS page's log.
+   *
+   * Only on the page that simulates, so a room with two screens open does not
+   * log the room's sculpting twice — the same rule `keep` follows. The guard
+   * is what stops the recorder's tap sending it straight back out.
+   */
+  const recordScene = (event: SceneEvent): void => {
+    applyingScene = true;
+    try {
+      if (event.k === 'world') session.world(event.field, event.value, event.kind);
+      else session.paint(event);
+    } finally {
+      applyingScene = false;
+    }
+  };
+
+  /** Put this page's ground back to the world as it ships. The local half of
+   * a reset, so a `reset` off the wire and the panel's own button do exactly
+   * the same thing. */
+  const clearSceneHere = (): void => {
+    world.setLandscape(false);
+    writeLandscapeParam(false);
+    world.setTerrain({ ...TERRAIN_DEFAULTS });
+    paintPending = [];
+    const probe = paintProbe();
+    const cleared: PaintEvent = { k: 'paint', t: 0, tool: 'clear' };
+    if (probe?.applyPaintBatch) probe.applyPaintBatch([cleared]);
+    else probe?.applyPaint?.(cleared);
+    sceneControls?.landscape(false);
+    sceneControls?.terrain('elevation', TERRAIN_DEFAULTS.elevation);
+    sceneControls?.terrain('tierStep', TERRAIN_DEFAULTS.tierStep);
+    sceneControls?.terrain('relief', TERRAIN_DEFAULTS.relief);
+  };
+
+  /** A scene message off the sync topic. Acted on by every page, host or
+   * viewer — this is the ground each of them is drawing for itself. */
+  const receiveScene = (message: { events: SceneEvent[]; reset?: true }): void => {
+    if (message.reset === true) {
+      clearSceneHere();
+      sceneCount = 0;
+      refreshScene();
+      return;
+    }
+    if (message.events.length === 0) return;
+    // The log on the page that simulates carries the WHOLE room's sculpting,
+    // so a downloaded session plays back the world people actually watched
+    // rather than only the half this screen made.
+    if (isHostNow()) for (const event of message.events) recordScene(event);
+    sceneCount += message.events.length;
+    refreshScene();
+    void applySceneEvents(message.events);
+  };
+
+  /**
+   * Keep a batch. Fire-and-forget, and deliberately AFTER the broadcast: the
+   * room seeing the ground move is the thing that must not wait on a
+   * database, and a store that is missing or refusing costs the readout a
+   * line, never the demo a stroke.
+   */
+  const storeScene = async (body: { events?: SceneEvent[]; reset?: true }): Promise<void> => {
+    if (!moderatorSecret) {
+      sceneStored = 'not stored (no secret)';
+      refreshScene();
+      return;
+    }
+    try {
+      const res = await fetch(sceneEndpoint, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-moderator': moderatorSecret },
+        body: JSON.stringify(body),
+        // The last flush of a demo happens as the page is going away.
+        keepalive: true,
+      });
+      sceneStored = res.ok
+        ? 'stored'
+        : res.status === 404
+          ? 'not stored (404: wrong secret)'
+          : res.status === 503
+            ? 'no store on this deployment'
+            : `not stored (${res.status})`;
+    } catch {
+      sceneStored = 'not stored (unreachable)';
+    }
+    refreshScene();
+  };
+
+  /**
+   * The scene this world already has, ONCE, on arrival.
+   *
+   * Not recorded. It is history — it happened before this page opened — and
+   * writing it into this session's log would both re-broadcast a world back
+   * at the room and make every viewer's download a copy of everyone else's.
+   * Exactly the rule the grown drawings follow.
+   */
+  const loadScene = async (): Promise<void> => {
+    let events: SceneEvent[] = [];
+    try {
+      const res = await fetch(sceneEndpoint, { cache: 'no-store' });
+      if (!res.ok) throw new Error(String(res.status));
+      const body = (await res.json()) as { events?: unknown; store?: unknown };
+      // The stored list may be far longer than one wire batch — that cap is
+      // about what a broker will carry, not about what a world may have.
+      events = readSceneBatch(body.events, MAX_SCENE_EVENTS);
+      if (body.store === 'none') sceneStored = 'no store on this deployment';
+    } catch {
+      // A world with no scene, or a store that cannot be reached, is a world
+      // that opens on the plain. That is what it opens on anyway.
+      return;
+    }
+    sceneCount = events.length;
+    refreshScene();
+    await applySceneEvents(events);
+  };
+
+  if (isPublic) {
+    sceneOutbox = createSceneOutbox({
+      // From the tokens, never a literal: one tertiary beat is the shortest
+      // interval this project treats as a movement anybody perceives, so it
+      // is also the shortest at which "the ground changed" is worth a packet.
+      delayMs: MOTION.tertiaryMs,
+      send: (batch) => {
+        sendScene({ t: 'scene', seq: sceneSeq++, events: batch });
+        sceneCount += batch.length;
+        refreshScene();
+        void storeScene({ events: batch });
+      },
+    });
+    // The stroke somebody was in the middle of when they closed the laptop.
+    window.addEventListener('pagehide', () => sceneOutbox?.flush());
+    void loadScene();
+  }
+
+  /** The panel's half of all this (src/dev/index.ts `scene` folder). Only in
+   * a public world: an installation room is one projection with nobody to
+   * agree with, and a reset button that reset nothing would be a control that
+   * lies. */
+  const sceneSync: DevSceneApi = {
+    status: sceneStatus,
+    reset: () => {
+      clearSceneHere();
+      sceneCount = 0;
+      refreshScene();
+      sendScene({ t: 'scene', seq: sceneSeq++, events: [], reset: true });
+      void storeScene({ reset: true });
+    },
+    bind: (controls) => {
+      sceneControls = controls;
+      refreshScene();
+    },
+  };
+
   if (isPublic) {
     const endpoint = `/api/drawings?world=${encodeURIComponent(worldName)}`;
 
@@ -1080,7 +1510,15 @@ function main(): void {
       // there before this page opened, so it is grown like the seed. Every
       // pull after it is news: somebody drew that in the last twenty
       // seconds, and an arrival gets its egg and its hatch.
-      const added = (await absorb(log, first)).length;
+      //
+      // EXCEPT in a manual world, where nothing has hatched yet by
+      // definition (user ask, 2026-09-10). There the store's contents are
+      // eggs waiting on the operator, and standing them up grown would be
+      // this page deciding the moment `h` exists to decide — on the
+      // projection, and on every phone whose world view pulled the same
+      // list. They spawn as eggs; the host's roster then says which of them
+      // it has already opened, and this page opens exactly those.
+      const added = (await absorb(log, first && hatchMode === 'timer')).length;
       if (added > 0) saveSession();
       /*
        * NOTHING IS ANNOUNCED ON ARRIVAL (user ask, 2026-09-09).
@@ -1427,6 +1865,12 @@ function main(): void {
           writeLandscapeParam(on);
         },
         landscape: () => world.landscape(),
+        // Painted water, to the renderer (src/world/water.ts): the fills, the
+        // drawn shorelines and the ripple marks of the bodies somebody paints.
+        // The GEOGRAPHY's copy is installed inside the paint skill itself
+        // (landscape.ts `setPaintedWater`), which is why only this half needs
+        // a handle — the world draws what the geography already answers for.
+        setPaintedWater: (field) => world.water.setPainted(field),
         // The paint skill draws on the ground with a plain drag, which is
         // the same gesture the view controls orbit with; the world lets go
         // of it while a stroke is live (src/world/scene.ts setSoloDrag).
@@ -1445,6 +1889,9 @@ function main(): void {
         session,
         replaySession: (json) => sessionApi.replay(json) !== null,
         restoreSession: (json) => sessionApi.restore(json),
+        // The shared scene's readout and its reset (docs/SESSION.md §6).
+        // Only where there is one — see `sceneSync`.
+        ...(isPublic ? { sceneSync } : {}),
         restoreLastSession: () => {
           const n = restoreLastSession();
           if (n > 0) saveSession();
@@ -1556,7 +2003,7 @@ function main(): void {
     // again, because a retained message lives on the broker and a new one
     // has never heard of this world.
     onStatus: (state) => {
-      if (state === 'on' && isHostNow()) announceEpochRetained(feed, epoch);
+      if (state === 'on' && isHostNow()) announceEpochRetained(feed, epoch, phoneHatchMs);
     },
     onDrawing: (d) => {
       const entry = gate.offer({ ...d, hatchMs: HATCH_TIMER_MS, source: 'phone' });
@@ -1591,7 +2038,12 @@ function main(): void {
     onHello: ({ from }) => {
       const seen = gate.log().find((e) => e.id === from);
       if (seen && seen.disposition !== 'admitted') tellPhone(from, seen);
-      else if (isHostNow()) feed?.publishToPhones({ type: 'world', epoch });
+      else if (isHostNow())
+        feed?.publishToPhones({
+          type: 'world',
+          epoch,
+          ...(phoneHatchMs === undefined ? {} : { hatchMs: phoneHatchMs }),
+        });
     },
   }).then((handle) => {
     feed = handle;
@@ -1600,7 +2052,7 @@ function main(): void {
     // that wakes an hour from now — so a phone holding a drawing from a
     // previous session re-homes it without anyone pressing anything
     // (src/phone/main.ts, docs/SESSION.md §4a).
-    if (isHostNow()) announceEpochRetained(handle, epoch);
+    if (isHostNow()) announceEpochRetained(handle, epoch, phoneHatchMs);
     startWorldSync(handle);
   });
 
@@ -1630,9 +2082,44 @@ function main(): void {
 
     const syncTopic = `${handle.topic}/world`;
     const me = makeHostId(params.get('host') === '1');
+    /*
+     * The scene layer gets its transport (docs/SESSION.md §6).
+     *
+     * It exists long before this does — a person can switch the landscape on
+     * in the first second — so batches queue in `sceneBacklog` until here and
+     * then go out in order. The page's own id is stamped on at this end
+     * rather than carried through the outbox, because the id is a property of
+     * the socket, not of the sculpting.
+     */
+    publishScene = (message): void => {
+      client.publish?.(syncTopic, JSON.stringify({ ...message, id: me }), { qos: 0 });
+    };
+    for (const queued of sceneBacklog.splice(0)) publishScene(queued);
+    /*
+     * And the hatch gets its transport (docs/SESSION.md §6).
+     *
+     * Straight out on the same topic through the same client the poses use,
+     * because it is the same thing: the host describing its world. The
+     * manager's observer is what calls this, so no route into a hatch has
+     * to remember to broadcast one.
+     */
+    publishHatch = (who: string): void => {
+      client.publish?.(syncTopic, JSON.stringify({ t: 'hatch', id: me, who }), { qos: 0 });
+    };
     /** Every claim heard, by id. Pruned, so it cannot grow unbounded. */
     const claims = new Map<string, number>();
     let hosting = true;
+    /**
+     * Who this page currently believes is simulating.
+     *
+     * Only a hatch reads it. Poses and rosters get their "is this the host"
+     * check for free — they are handled after the claim bookkeeping and
+     * behind `if (hosting) return`, so on a viewer the loser of an election
+     * is simply the page that also stopped publishing them. A hatch is
+     * handled BEFORE that (it must not enter its sender into the election),
+     * so it has to ask the question itself.
+     */
+    let hostId = me;
     let rosterRev = 0;
     let roster: string[] = [];
     let rosterSentAt = 0;
@@ -1707,6 +2194,46 @@ function main(): void {
         return;
       }
 
+      /*
+       * A SCENE change travels sideways too (docs/SESSION.md §6).
+       *
+       * Handled here, next to `drive` and before the claim bookkeeping, for
+       * the same two reasons: it is not the host describing the world, so it
+       * must not put its sender into the election; and unlike a drive it is
+       * acted on by EVERY page rather than only the one simulating — the
+       * ground is the one thing each page is drawing for itself, so a viewer
+       * that ignored it would follow the host's poses over a plain that no
+       * longer exists.
+       */
+      if (msg.t === 'scene') {
+        receiveScene(msg);
+        return;
+      }
+
+      /*
+       * A HATCH, from the page that is simulating (2026-09-10).
+       *
+       * Handled here, beside `drive` and `scene`, so hearing one never
+       * enters its sender into the election — a page that can open an egg
+       * is not thereby a candidate to simulate the world. But unlike those
+       * two it is honoured ONLY from the host: the hatch is the host's
+       * decision, and a viewer that took one from any id on the topic would
+       * hand the moment to whoever spoke last.
+       *
+       * The host itself ignores it. Its own eggs open through the manager,
+       * and a hatch coming back at the page that sent it is either an echo
+       * or another page reaching into this world's decisions.
+       *
+       * `creatures.hatch(who)` is the manager's ordinary forced hatch — the
+       * same staggered sequence, the same shell, the same recorded event.
+       * Nothing about a viewer's hatch is a different animation.
+       */
+      if (msg.t === 'hatch') {
+        if (hosting || msg.id !== hostId) return;
+        creatures.hatch(msg.who);
+        return;
+      }
+
       // Anything else is the host describing the world. Hearing it is also
       // proof that page is alive, so it counts as a claim — otherwise a
       // host that is busy publishing poses could be voted out for not
@@ -1719,6 +2246,25 @@ function main(): void {
 
       if (msg.t === 'roster') {
         knownRosters.set(msg.rev, msg.ids);
+        /*
+         * Agree with the host about the eggs, too (2026-09-10).
+         *
+         * A `hatch` travels once, at qos 0, and a page that opened after it
+         * never heard it at all. Without this a viewer holds an egg for a
+         * creature the rest of the room is watching walk about — and in a
+         * manual world, where the first pull spawns everything as eggs,
+         * that is every late joiner's whole screen.
+         *
+         * State rather than a replayed moment: the roster already says
+         * which ids are alive and now says which are still eggs, so a
+         * viewer only has to open the ones the host has already opened.
+         * Anything the host still calls an egg stays an egg — including in
+         * a timer world, where this simply makes a viewer's clock agree
+         * with the host's instead of running beside it.
+         */
+        for (const id of eggsOpenedByHost(creatures.eggIds(), msg.ids, msg.eggs)) {
+          creatures.hatch(id);
+        }
         // Two is enough to cover a pose frame that crosses a roster change.
         if (knownRosters.size > 2) {
           const oldest = Math.min(...knownRosters.keys());
@@ -1747,7 +2293,8 @@ function main(): void {
     const settleRole = (): void => {
       const now = Date.now();
       pruneClaims(claims, now);
-      const shouldHost = electHost(me, claims, now) === me;
+      hostId = electHost(me, claims, now);
+      const shouldHost = hostId === me;
       if (shouldHost === hosting) return;
       hosting = shouldHost;
       // A viewer runs no agents: its creatures are placed by the host's
@@ -1788,7 +2335,18 @@ function main(): void {
         rosterSentAt = now;
         client.publish?.(
           syncTopic,
-          JSON.stringify({ t: 'roster', id: me, rev: rosterRev, ids: roster }),
+          // The standing eggs ride with it: a viewer that missed a `hatch`
+          // — or was not open when it went past — reconciles against this
+          // rather than waiting for a moment that has already happened.
+          // Always sent, empty included: absent means "this host does not
+          // talk about eggs" and a viewer changes nothing on it.
+          JSON.stringify({
+            t: 'roster',
+            id: me,
+            rev: rosterRev,
+            ids: roster,
+            eggs: creatures.eggIds(),
+          }),
           { qos: 0 },
         );
       }

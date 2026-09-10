@@ -57,6 +57,12 @@ export interface WorldHandles {
    * Built once from the authored geography (src/world/landscape.ts) — the
    * seed re-rolls props, never the map. Only the live terrain dials move it,
    * and only in y (setTerrain below).
+   *
+   * PLUS the bodies a person paints, which are the other way round: rebuilt
+   * on demand by the dev paint skill (src/dev/paint.ts) through
+   * `water.setPainted`, into `water.paintedGroup` — a second group added to
+   * the scene beside the authored one, and one the landscape switch never
+   * hides. Their levels are absolute, so no terrain dial moves them.
    */
   water: Water;
   /** Ink pass tuning surface for the dev panel. */
@@ -192,7 +198,17 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
   // and the creature shadows — so a creature walking the shore still casts
   // across it.
   const water = createWater();
-  scene.add(ground.group, water.group, lighting.group, shadows.group, scatter.group);
+  // `water.paintedGroup` is a SIBLING of `water.group` on purpose: the
+  // landscape mode hides the authored water by hiding that group, and painted
+  // water has to stand in the plain world (src/world/water.ts `paintedGroup`).
+  scene.add(
+    ground.group,
+    water.group,
+    water.paintedGroup,
+    lighting.group,
+    shadows.group,
+    scatter.group,
+  );
 
   // Time-of-day + weather. All its setters glide through ζ≥1 springs; the
   // per-frame update pushes sun direction, light balance, exposure, fog and

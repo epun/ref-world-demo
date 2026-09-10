@@ -468,54 +468,103 @@ describe('a tap hands the file to the phone inside the tap', () => {
   });
 });
 
-describe('the link goes to the clipboard, in the tap', () => {
-  const clipboardStub = (
-    onWrite: (url: string) => Promise<void>,
-  ): Record<string, unknown> => ({
-    clipboard: { writeText: onWrite },
-  });
+describe('the link, and the order the two routes are tried in', () => {
+  const url = 'https://ref.test/?world=public&keep=d3f2a1';
 
-  it('writes the keep url synchronously and says copied', async () => {
+  it('takes the SHARE SHEET first where there is one — a handset', () => {
+    // Both are gated on the tap's activation and only one can be first.
+    // Clipboard-first is right on a desktop and wrong in a phone's
+    // companion frame: safari refuses `writeText` there, and by the time
+    // that rejection lands the activation is spent, so the sheet that
+    // should have caught it is refused too and the row does nothing.
+    const shared: { url?: string }[] = [];
     const written: string[] = [];
-    const ui = mount(
-      clipboardStub((url) => {
-        written.push(url);
+    const ui = mount({
+      share: (data: { url?: string }) => {
+        shared.push(data);
         return Promise.resolve();
-      }),
-    );
+      },
+      clipboard: {
+        writeText: (u: string) => {
+          written.push(u);
+          return Promise.resolve();
+        },
+      },
+    });
     ui.handle.setOpen(true);
     ui.click('link');
-    // Synchronously — same rule as the share sheet.
-    expect(written).toEqual(['https://ref.test/?world=public&keep=d3f2a1']);
+    // Synchronously, in the tap — same rule as the file rows.
+    expect(shared).toEqual([{ url, title: 'wonder' }]);
+    // …and the clipboard is not also written: one tap, one route.
+    expect(written).toEqual([]);
+  });
+
+  it('takes the clipboard where there is no sheet — a desktop', async () => {
+    const written: string[] = [];
+    const ui = mount({
+      clipboard: {
+        writeText: (u: string) => {
+          written.push(u);
+          return Promise.resolve();
+        },
+      },
+    });
+    ui.handle.setOpen(true);
+    ui.click('link');
+    expect(written).toEqual([url]);
     await flush();
     expect(ui.label('link')).toBe(KEEP_DONE.link);
   });
 
-  it('falls back to the share sheet when the clipboard refuses', async () => {
-    const shared: { url?: string }[] = [];
+  it('catches a refused sheet with the clipboard', async () => {
+    const written: string[] = [];
     const ui = mount({
-      clipboard: { writeText: () => Promise.reject(new Error('denied')) },
-      share: (data: { url?: string }) => {
-        shared.push(data);
-        return Promise.resolve();
+      share: () => Promise.reject(new Error('denied')),
+      clipboard: {
+        writeText: (u: string) => {
+          written.push(u);
+          return Promise.resolve();
+        },
       },
     });
     ui.handle.setOpen(true);
     ui.click('link');
     await flush();
-    expect(shared[0]?.url).toBe('https://ref.test/?world=public&keep=d3f2a1');
+    expect(written).toEqual([url]);
     expect(ui.label('link')).toBe(KEEP_DONE.link);
   });
 
-  it('reveals the url to be copied by hand when neither route exists', async () => {
+  it('treats a cancelled sheet as done, not as failed', async () => {
+    const abort = Object.assign(new Error('cancelled'), { name: 'AbortError' });
+    const ui = mount({ share: () => Promise.reject(abort) });
+    ui.handle.setOpen(true);
+    ui.click('link');
+    await flush();
+    // The person pressed cancel. They know what happened, and falling
+    // through would hand them something they just declined.
+    expect(ui.label('link')).toBe(KEEP_DONE.link);
+  });
+
+  it('reveals the url to be copied by hand when BOTH routes refuse', async () => {
+    const ui = mount({
+      share: () => Promise.reject(new Error('denied')),
+      clipboard: { writeText: () => Promise.reject(new Error('denied')) },
+    });
+    ui.handle.setOpen(true);
+    ui.click('link');
+    await flush();
+    // Not `try again`: there is nothing left to try. The url itself is the
+    // answer, on screen, selectable — and never nothing at all.
+    expect(ui.label('link')).toBe(url);
+    expect(src()).toMatch(/user-select: text/);
+  });
+
+  it('reveals it when there is no route at all', async () => {
     const ui = mount({});
     ui.handle.setOpen(true);
     ui.click('link');
     await flush();
-    // Not `try again`: there is nothing to try. The url itself is the
-    // answer, on screen, selectable.
-    expect(ui.label('link')).toBe('https://ref.test/?world=public&keep=d3f2a1');
-    expect(src()).toMatch(/user-select: text/);
+    expect(ui.label('link')).toBe(url);
   });
 
   it('is not offered at all without a shared world', () => {
@@ -524,6 +573,35 @@ describe('the link goes to the clipboard, in the tap', () => {
     const ui = mount({}, { world: null });
     const rows = (ui.handle.menu as unknown as El).find('keep-row');
     expect(rows).toHaveLength(2);
+  });
+});
+
+describe('a file that cannot be built says so', () => {
+  it('never answers `preparing` forever', async () => {
+    // A render that fails returns null exactly as a render that has not
+    // finished has nothing. Unrecorded, that left the row saying
+    // `preparing` on every tap for the life of the screen — a lie, and it
+    // looks like a dead button.
+    const results: [KeepAction, boolean][] = [];
+    const ui = mount(
+      {},
+      {
+        build: () => Promise.resolve(null),
+        onResult: (action, ok) => results.push([action, ok]),
+      },
+    );
+    ui.handle.setOpen(true);
+    await flush();
+    ui.click('picture');
+    expect(ui.label('picture')).toBe(KEEP_FAILED);
+    expect(results).toEqual([['picture', false]]);
+  });
+
+  it('says `preparing` while it really is preparing', () => {
+    const ui = mount({}, { build: () => new Promise<Blob | null>(() => {}) });
+    ui.handle.setOpen(true);
+    ui.click('picture');
+    expect(ui.label('picture')).toBe(KEEP_PREPARING);
   });
 });
 

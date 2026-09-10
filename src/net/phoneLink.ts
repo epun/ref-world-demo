@@ -21,7 +21,7 @@
  *
  *   world → phones, on `drawto3d/v1/{room}/up`
  *     { type: "verdict", to: "<drawer id>", disposition, reason, epoch }
- *     { type: "world", epoch: "<world session>" }
+ *     { type: "world", epoch: "<world session>", hatchMs?: 7000 }
  *
  * `id` MUST be unique per message: the vendored feed de-dupes by `id`, so a
  * stable one would silently swallow every message after the first. The
@@ -81,6 +81,19 @@ export interface PhoneLink {
   /** The running world's session id, whenever it announces one. */
   onWorldEpoch(handler: (epoch: string) => void): void;
   /**
+   * How long an egg stands in this world before it opens by itself.
+   *
+   * `0` means nothing opens on a clock here — a manual world waiting on the
+   * operator's `h` (docs/PUBLIC.md §the worlds.json hatch key). The handset
+   * draws the egg's forecast off this, so without it a phone in a paused
+   * world counts down to a hatch that is not coming, which is the page
+   * telling somebody something untrue about their own creature.
+   *
+   * Only worlds that say anything call this. A world that says nothing
+   * leaves the handset exactly as it was.
+   */
+  onWorldHatchMs(handler: (ms: number) => void): void;
+  /**
    * The world opened THIS drawer's egg.
    *
    * Without it the handset hatches on its own local timer and the two run
@@ -133,6 +146,7 @@ export function createPhoneLink(
   const hatchedHandlers: (() => void)[] = [];
   const recallHandlers: (() => void)[] = [];
   const epochHandlers: ((epoch: string) => void)[] = [];
+  const hatchMsHandlers: ((ms: number) => void)[] = [];
   // The world answers a hello within a round trip, while the phone is still
   // mounting its screens (a webgl screen easily takes longer than the
   // answer takes to arrive). An answer that lands before anyone is
@@ -143,6 +157,9 @@ export function createPhoneLink(
   let heldHatched = false;
   let heldRecall = false;
   let heldEpoch: string | null = null;
+  /** Held like the epoch: the world announces retained, so this can land
+   * before the screen that reads it exists. */
+  let heldHatchMs: number | null = null;
 
   try {
     client = mqtt.connect(deps.broker ?? BROKER, {
@@ -198,6 +215,11 @@ export function createPhoneLink(
       if (epoch !== null) {
         if (epochHandlers.length === 0) heldEpoch = epoch;
         else for (const h of epochHandlers) h(epoch);
+      }
+      const hatchMs = readWorldHatchMs(msg);
+      if (hatchMs !== null) {
+        if (hatchMsHandlers.length === 0) heldHatchMs = hatchMs;
+        else for (const h of hatchMsHandlers) h(hatchMs);
       }
       if (readRecall(msg)) {
         // Held like the rest: a recall that arrives before this screen has
@@ -277,6 +299,14 @@ export function createPhoneLink(
         handler(held);
       }
     },
+    onWorldHatchMs(handler): void {
+      hatchMsHandlers.push(handler);
+      if (heldHatchMs !== null) {
+        const held = heldHatchMs;
+        heldHatchMs = null;
+        handler(held);
+      }
+    },
     dispose(): void {
       try {
         client?.end(true);
@@ -286,6 +316,7 @@ export function createPhoneLink(
       client = null;
       verdictHandlers.length = 0;
       epochHandlers.length = 0;
+      hatchMsHandlers.length = 0;
     },
   };
 }
@@ -326,6 +357,26 @@ export function readWorldEpoch(msg: unknown): string | null {
   if (typeof epoch !== 'string' || epoch.length === 0) return null;
   if (rec['type'] !== 'world' && rec['type'] !== 'verdict') return null;
   return epoch;
+}
+
+/**
+ * The egg delay a world announces, or null when it says nothing about one.
+ *
+ * `0` is a real answer and means "nothing opens on a clock here" — it is
+ * the manual world telling the handset not to draw a forecast. Which is why
+ * this is read as "present and finite" rather than as a truthy number: the
+ * one value that matters most would be the one thrown away.
+ *
+ * Only off a `world` message. A verdict carries the epoch as a side effect
+ * of being about a drawing; the hatch clock is the world describing itself.
+ */
+export function readWorldHatchMs(msg: unknown): number | null {
+  if (typeof msg !== 'object' || msg === null) return null;
+  const rec = msg as Record<string, unknown>;
+  if (rec['type'] !== 'world') return null;
+  const ms = rec['hatchMs'];
+  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) return null;
+  return ms;
 }
 
 /** A hello from a phone, or null — the world answers these. Pure. */
