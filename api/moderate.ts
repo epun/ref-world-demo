@@ -23,6 +23,7 @@ import {
   isModerator,
   readConfig,
   readDrawings,
+  resetWorld,
   setDisposition,
   worldKey,
   writeConfig,
@@ -83,6 +84,26 @@ export default async function handler(
     typeof req.body === 'string'
       ? (JSON.parse(req.body) as Record<string, unknown>)
       : ((req.body ?? {}) as Record<string, unknown>);
+  /*
+   * `{"reset": true}` — start the world over (api/_store.ts `resetWorld`).
+   *
+   * 2026-09-09/10, the demo plan: *"if we reset the url we should also
+   * reset the characters that are within that room"* … *"let's clear out
+   * any existing characters right now so we start clean"*. Refusing the
+   * rehearsal creatures one at a time does NOT do this: a refusal releases
+   * the device slot and every handset heals its drawing back in on its next
+   * visit, which is exactly the behaviour that keeps a real session alive
+   * through a redeploy. The world steps to a new generation instead.
+   *
+   * Read before the switches below, and matched on `=== true` only, so
+   * nothing that merely mentions `reset` can trip it.
+   */
+  if (body['reset'] === true) {
+    const out = await resetWorld(world);
+    res.status(200).json({ world, generation: out.generation, cleared: out.cleared });
+    return;
+  }
+
   // Two shapes of POST: one rules on a drawing, one sets the world's own
   // switches. Both are the moderator's, so they share the gate above.
   if (body['closed'] !== undefined || body['ipPerHour'] !== undefined) {

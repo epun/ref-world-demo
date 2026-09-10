@@ -176,7 +176,10 @@ describe('the pad heals too — it is the page a returning handset lands on', ()
 
   it('asks the store before it hands the person over', () => {
     expect(pad).toMatch(/function healThenGo/);
-    expect(pad).toMatch(/healThenGo\(goToCompanion\)/);
+    // Two answers, not one: hand over, or — when the world has been reset
+    // since this drawing was admitted — hand the pad back instead of
+    // healing a creature into the world that just cleared it (2026-09-09).
+    expect(pad).toMatch(/healThenGo\(goToCompanion, stepDownToPad\)/);
     // The old unconditional hand-off is gone from that path.
     expect(pad).not.toMatch(/if \(clear\) clear\.disabled = true;\s*goToCompanion\(\);/);
   });

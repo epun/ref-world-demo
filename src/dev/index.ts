@@ -222,6 +222,16 @@ export interface DevSceneApi {
   /** Throw the scene away — here, on the wire, and in the store. */
   reset(): void;
   /**
+   * Start the world over: the drawings, the device claims and the scene go,
+   * and the world steps to a new generation (api/_store.ts `resetWorld`).
+   *
+   * Separate from `reset` on purpose. Resetting the scene is a ground the
+   * operator can rebuild in front of the room; resetting the world takes
+   * away everybody's creature and cannot be undone, which is why the panel
+   * asks twice before calling it.
+   */
+  resetWorld(): void;
+  /**
    * The panel hands back the controls a FOREIGN scene change has to move.
    *
    * A landscape switch arriving from another page changes this world through
@@ -1430,6 +1440,34 @@ export async function initDevPanel(
         const line = (text: string): void => {
           sceneFolder.get('scene-readout')?.setText?.(text);
         };
+        /*
+         * `reset world` — the population, not the ground (user ask,
+         * 2026-09-09/10: *"if we reset the URL we should also reset the
+         * characters that are within that room"* … *"let's clear out any
+         * existing characters right now so we start clean"*).
+         *
+         * IT ASKS TWICE. A reset on one stray click is the worst moment
+         * this demo has: every creature in the room gone, mid-session, with
+         * nothing that brings them back. The confirmation is the readout
+         * line rather than a dialog — the world brief's mark set is icon +
+         * rule + border and a modal is none of those — and it lapses after
+         * one MOTION.primaryMs, the same beat a toast dwells for, so a tap
+         * remembered from a minute ago can never be the second one.
+         */
+        let armedUntil = 0;
+        sceneFolder.addButton('reset world', () => {
+          const now = Date.now();
+          if (now > armedUntil) {
+            armedUntil = now + MOTION.primaryMs;
+            line('tap again to reset the world');
+            window.setTimeout(() => {
+              if (Date.now() > armedUntil) line(sceneSync.status());
+            }, MOTION.primaryMs);
+            return;
+          }
+          armedUntil = 0;
+          sceneSync.resetWorld();
+        });
         sceneSync.bind({
           landscape: (on) => {
             folder.get('landscape-mode')?.setValue?.(on);

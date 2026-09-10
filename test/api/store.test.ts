@@ -20,6 +20,7 @@ import {
   isModerator,
   readDrawings,
   readScene,
+  resetWorld,
   worldKey,
 } from '../../api/_store';
 
@@ -112,5 +113,20 @@ describe('with no store configured', () => {
     await expect(
       appendScene('public', [{ k: 'paint', t: 0, tool: 'raise', x: 0, z: 0, r: 4 }]),
     ).resolves.toEqual({ ok: false, count: 0, reason: 'no store configured' });
+  });
+
+  it('a world reset is a no-op that says so (user ask, 2026-09-09)', async () => {
+    // The reset deletes drawings, device claims and the scene and counts the
+    // generation up. With no store there is nothing to delete and nowhere to
+    // count, and the one thing it must NOT do is throw — the panel's button
+    // and the curl recipe both reach this on a deployment with no kv, and a
+    // reset that appeared to work would be the worst possible lie to tell
+    // somebody clearing a room before an audience arrives.
+    await expect(resetWorld('public')).resolves.toEqual({
+      ok: false,
+      generation: 0,
+      cleared: 0,
+      reason: 'no store configured',
+    });
   });
 });
