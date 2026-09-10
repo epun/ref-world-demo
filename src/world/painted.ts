@@ -112,6 +112,29 @@ export const PLANT_BRUSHES = [
 ] as const;
 export type PlantBrush = (typeof PLANT_BRUSHES)[number];
 
+/**
+ * One placed ink mark that is NOT a scatter roll — somebody stamped it here
+ * (2026-09-10, user ask: *"i want to match the brushes for env paint
+ * exactly"*, the waterfall tool).
+ *
+ * A weight layer says "more of this family around here" and the roll decides
+ * where; a waterfall is a single mark at one spot, facing one way, so it is a
+ * LIST and not a layer. It rides on the painted map because the map is the
+ * one object a projection restores.
+ *
+ * `yaw` is the mark's y rotation, already in the scatter's own convention
+ * (local +x is the way the water falls), recorded at stamp time from the
+ * terrain gradient so a replay faces it the same way on ground that has
+ * since moved. `seed` picks the variant and its hand-wobble.
+ */
+export interface PaintedMark {
+  kind: 'waterfall';
+  x: number;
+  z: number;
+  seed: number;
+  yaw: number;
+}
+
 /** One weight per brush at a point, each in [0,1]. */
 export type PlantingWeights = Record<PlantBrush, number>;
 
@@ -158,6 +181,12 @@ export interface PaintedMap {
    * is visible to the next placement roll with nothing in between.
    */
   planting: Record<PlantBrush, Float32Array>;
+  /**
+   * Placed ink marks, in the order they were stamped. Not a layer: see
+   * `PaintedMark`. Mutated in place (the array is the one the brush appends
+   * to and the one the world reads), like every buffer above it.
+   */
+  marks: PaintedMark[];
 }
 
 /** The serialised form: the same numbers, base64, for a committed map.json. */
@@ -175,6 +204,9 @@ export interface PaintedMapJson {
   /** Base64 per brush, same encoding as `height`. A missing brush is an
    * unpainted one. */
   planting?: Partial<Record<PlantBrush, string>>;
+  /** Placed marks, plain json. Absent in a map written before marks existed —
+   * such a map loads with none, which is what it had. */
+  marks?: PaintedMark[];
 }
 
 /**
@@ -195,6 +227,7 @@ export function createPaintedMap(
   water?: Float32Array,
   planting?: Partial<Record<PlantBrush, Float32Array>>,
   plantingRes: number = PLANTING_RES,
+  marks?: PaintedMark[],
 ): PaintedMap {
   if (!Number.isInteger(res) || res < 2) throw new Error(`painted map: res must be >= 2, got ${res}`);
   if (!(size > 0)) throw new Error(`painted map: size must be positive, got ${size}`);
@@ -228,6 +261,9 @@ export function createPaintedMap(
     water: water ?? new Float32Array(res * res).fill(DRY),
     plantingRes,
     planting: layers,
+    // Adopted by reference like every buffer above, and a fresh empty list
+    // otherwise: an unpainted map has no marks on it.
+    marks: marks ?? [],
   };
 }
 
@@ -238,6 +274,8 @@ export function clearPaintedMap(map: PaintedMap): void {
   map.height.fill(0);
   map.water.fill(DRY);
   for (const brush of PLANT_BRUSHES) map.planting[brush]?.fill(0);
+  // In place, not a new array: the list is shared exactly as the buffers are.
+  map.marks.length = 0;
 }
 
 /**
@@ -410,6 +448,9 @@ export function serializeMap(map: PaintedMap): PaintedMapJson {
     water: encodeBase64(water),
     plantingRes: map.plantingRes,
     planting,
+    // Copied one level deep, for the reason the header gives: the caller may
+    // hold this while painting continues.
+    marks: map.marks.map((m) => ({ ...m })),
   };
 }
 
@@ -442,5 +483,19 @@ export function deserializeMap(o: PaintedMapJson): PaintedMap {
     if (b64 === undefined) continue;
     planting[brush] = layer(b64, `planting '${brush}'`, plantFloats);
   }
-  return createPaintedMap(o.res, o.size, height, water, planting, plantingRes);
+  // Marks are read defensively rather than trusted: this payload may come out
+  // of a store a moderator writes, and a mark with no place is not a mark.
+  const marks: PaintedMark[] = [];
+  for (const m of o.marks ?? []) {
+    if (!m || m.kind !== 'waterfall') continue;
+    if (!Number.isFinite(m.x) || !Number.isFinite(m.z)) continue;
+    marks.push({
+      kind: 'waterfall',
+      x: m.x,
+      z: m.z,
+      seed: Number.isFinite(m.seed) ? m.seed : 0,
+      yaw: Number.isFinite(m.yaw) ? m.yaw : 0,
+    });
+  }
+  return createPaintedMap(o.res, o.size, height, water, planting, plantingRes, marks);
 }

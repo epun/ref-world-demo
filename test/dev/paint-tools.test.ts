@@ -26,6 +26,7 @@ import {
   TOOL_KEYS,
   WATER_LAYER,
   WATER_TOOL_ID,
+  WATER_TOOL_IDS,
   RADIUS_DEFAULT,
   RADIUS_MAX,
   RADIUS_MIN,
@@ -173,9 +174,23 @@ describe("EnvPaint's own strip", () => {
 
   it('routes every tool it can paint with, and refuses the rest', () => {
     for (const id of STRIP_TOOL_IDS) {
-      if (isComingTool(id)) expect(layerForTool(id), id).toBeNull();
+      // `waterfall` paints, but into no LAYER: it appends a mark to the
+      // painted map (src/world/waterfall-marks.ts), so `layerForTool` refuses
+      // it exactly as it refuses a tool that is not built yet. That is the
+      // right answer — a replayed waterfall dab must never sculpt anything.
+      if (isComingTool(id) || id === 'waterfall') expect(layerForTool(id), id).toBeNull();
       else expect(layerForTool(id), id).not.toBeNull();
     }
+  });
+
+  it('sends both water tools to the level layer', () => {
+    // 2026-09-10, user ask: *"i want to match the brushes for env paint
+    // exactly"*. The river is the pond's own machinery with a level that can
+    // only fall, so it writes the pond's own layer.
+    for (const id of WATER_TOOL_IDS) expect(layerForTool(id), id).toBe(WATER_LAYER);
+    expect(isPlantTool('river')).toBe(false);
+    expect(isComingTool('river')).toBe(false);
+    expect(isComingTool('waterfall')).toBe(false);
   });
 });
 

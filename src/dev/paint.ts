@@ -127,6 +127,7 @@ import {
   PAINTED_SIZE,
   PLANT_BRUSHES,
   PLANTING_RES,
+  type PaintedMark,
   type PlantBrush,
 } from '../world/painted';
 import {
@@ -147,6 +148,13 @@ import {
   WATER_LAYER,
 } from './paint-tools';
 import { deriveWater, type PaintedWaterField } from '../world/painted-water';
+import { ROLLING_SURFACE } from '../world/surface';
+import {
+  nearestWaterfall,
+  setWaterfallMarks,
+  waterfallSeed,
+  waterfallYaw,
+} from '../world/waterfall-marks';
 import type { PaintEvent, SessionRecorder } from '../session';
 import type { DevSkillMeta } from './skills-meta';
 
@@ -215,6 +223,56 @@ const STRENGTH_DEFAULT = 0.28;
  * know nothing about this number.
  */
 const PLANT_STRENGTH_SCALE = 7;
+
+// ── the river (2026-09-10, user ask: "i want to match the brushes for env
+// paint exactly") ───────────────────────────────────────────────────────────
+//
+// EnvPaint's river carves a channel and carries a strictly non-rising level
+// down it. Both halves are reused here as they stand — a `lower` dab on the
+// height layer and a `writeLevelDisc` fill on the level one — and the one
+// piece that is this world's own is the TERRACING below.
+//
+// WHY A RIVER IS A CHAIN OF POOLS [D]. `deriveWater` levels every texel of one
+// connected body to that body's own plane, lowest wins (painted-water.ts §4),
+// because in this world a body of water IS a plane. A continuous ribbon of
+// water from a hill to a valley is one connected body, so a descending sheet
+// painted as one ribbon would be flattened to its lowest dab and the ground
+// would cut a canyon the length of the stroke. So where the running level has
+// fallen far enough to be a real step, the stroke drains a short RISER across
+// itself: the run above it and the run below it are two bodies, each its own
+// plane, and the river descends in pools the way water in a plane-surfaced
+// world has to. The riser is also exactly where a waterfall mark belongs.
+
+/** [D] Fraction of the brush strength a river dab carves with — a channel
+ * appears over a stroke, not under one dab. */
+const RIVER_CARVE_STRENGTH = 0.45;
+/** [D] Soft-edged carve: a channel with a hard rim is a trench. */
+const RIVER_CARVE_HARDNESS = 0.2;
+/** [D] The carve is narrower than the water, so the sheet reaches its banks. */
+const RIVER_CARVE_RADIUS = 0.9;
+/** [D] Bank ring, in brush radii — EnvPaint's own 1.6, and for its reason: a
+ * ring inside the channel the stroke has already cut would ratchet the level
+ * down dab after dab. */
+const RIVER_BANK_RING = 1.6;
+/** [D] Drop that earns a riser, world units. Under it the stroke stays one
+ * pool; a step smaller than this reads as noise in the sheet. */
+const RIVER_STEP = 0.9;
+/** [D] Shortest a pool may run before the next riser, in brush radii. A pool
+ * under `MIN_BODY_TEXELS` is culled as spatter, so a stroke down a cliff
+ * without this would derive to nothing at all. */
+const RIVER_MIN_RUN_RADII = 2.5;
+/** [D] How wide a riser drains, in brush radii. Wider than the dab it
+ * replaces, or the pools either side of it stay 8-connected and merge. */
+const RIVER_RISER_RADII = 1.7;
+/** [D] Steepest the running level may fall, world units per world unit of
+ * stroke. The bank is read through the terrain the painted basin has already
+ * cut, so without a gradient bound a stroke reads its own new water level as
+ * the bank and digs itself downward for as long as the pointer moves. */
+const RIVER_MAX_SLOPE = 0.3;
+
+/** [D] Most waterfall marks one map may hold. A mark is a stamp, not a
+ * stroke, so this is a guard against a held key rather than a budget. */
+const MAX_MARKS = 500;
 
 /**
  * The `.ep-strip` rules, inlined.
@@ -400,6 +458,8 @@ export interface PaintProbe {
   shoreAt(x: number, z: number): number;
   /** How many painted bodies the world is currently holding. */
   bodies(): number;
+  /** The painted marks on the map, in the order they were stamped. */
+  marks(): readonly PaintedMark[];
   /** Force the world to re-cut itself now. */
   rebuild(): void;
   /**
@@ -525,6 +585,11 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
   // ones. All zero until somebody paints, which is the shipped world exactly
   // (test/world/scatter-planting.test.ts).
   setPaintedPlanting(plantingSampler(map));
+  // …and the painted MARKS, read by the scatter's rebuild through the same
+  // kind of module-level seam the painted water field uses. The array is the
+  // map's own, so appending to it is visible to the next rebuild with nothing
+  // in between — exactly as a stamp is visible to the next height sample.
+  setWaterfallMarks(map.marks);
   // …and the one planting layer the GROUND reads as well. Its buffer is the
   // map's like every other, so this is handed over once and never again: the
   // frame's `commitAll` uploads whatever the brush has written into it.
@@ -944,6 +1009,194 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
   };
 
   /**
+   * ── the river ────────────────────────────────────────────────────────────
+   *
+   * The pond's machinery, with a level that can only fall. Per dab: carve a
+   * little channel into the height layer, then fill to the pool this stretch
+   * of the stroke belongs to (see the RIVER_ constants for why a river is a
+   * chain of pools rather than one sheet).
+   */
+  /** The running minimum: the lowest level this stroke has been entitled to
+   * anywhere along its run. `strokeLevel` is the plane the CURRENT pool fills
+   * to, and it follows this one down a riser at a time. */
+  let riverLevel = 0;
+  /** Where the last riser was cut (or the stroke began), and how far the
+   * current pool has run since — a pool shorter than `MIN_BODY_TEXELS` is
+   * culled as spatter, so a riser waits for its pool to be worth deriving. */
+  let riverRun = 0;
+  /** The previous dab's ground position, for the gradient bound. */
+  let riverLast: { x: number; z: number } | null = null;
+
+  /** Put the river's stroke state back — called with `strokeLevel` on
+   * `strokeend` and before a replayed dab borrows the same fields. */
+  const resetRiver = (): void => {
+    riverLevel = 0;
+    riverRun = 0;
+    riverLast = null;
+  };
+
+  /** The channel: a `lower` dab on the height layer, recorded as the `sculpt`
+   * dab it is so a replay carves through the path that already exists rather
+   * than through a second one that would have to be kept in step. */
+  const carveRiver = (op: StampOp): void => {
+    const carve: StampOp = {
+      ...op,
+      radius: op.radius * RIVER_CARVE_RADIUS,
+      mode: 'lower' as StampMode,
+      strength: (op.strength ?? STRENGTH_DEFAULT) * RIVER_CARVE_STRENGTH,
+      hardness: RIVER_CARVE_HARDNESS,
+    };
+    recordStamp('sculpt', carve);
+    stampInto('sculpt', carve);
+    terrainDirty = true;
+  };
+
+  /**
+   * Where this dab's water goes: on with the pool, or a riser between two.
+   *
+   * The rule, in order. A dab inside water somebody ELSE painted takes that
+   * body's plane — a river reaching a pond joins it rather than laying a
+   * second sheet against its bank. Otherwise the level is the bank around the
+   * dab, `basinDrop` under it (the pond's own rule, `strokeLevelAt`), taken as
+   * a RUNNING MINIMUM so the sheet can only ever fall, and bounded by
+   * `RIVER_MAX_SLOPE` per unit travelled so it cannot chase the basin it has
+   * just cut downward.
+   */
+  const riverStep = (hit: BrushHit): 'fill' | 'riser' => {
+    const field = paintedWater();
+    const wet = field && field.shore(hit.x, hit.z) > 0 ? field.level(hit.x, hit.z) : null;
+    const bank =
+      bankHeight(handles.sampleHeight, hit.x, hit.z, brush.settings.radius * RIVER_BANK_RING) -
+      TERRAIN.basinDrop * handles.terrain().elevation;
+    const step = riverLast ? Math.hypot(hit.x - riverLast.x, hit.z - riverLast.z) : 0;
+    riverLast = { x: hit.x, z: hit.z };
+    riverRun += step;
+    if (strokeLevel === null) {
+      strokeLevel = wet ?? bank;
+      riverLevel = strokeLevel;
+      riverRun = 0;
+      return 'fill';
+    }
+    // A body at a level this stroke is not already laying: somebody else's
+    // water. The comparison is against the CURRENT pool because by now the
+    // stroke's own pools have been derived into bodies too, and a river that
+    // joined itself could never descend again.
+    if (wet !== null && Math.abs(wet - strokeLevel) > 1e-6) {
+      strokeLevel = wet;
+      riverLevel = wet;
+      riverRun = 0;
+      return 'fill';
+    }
+    riverLevel = Math.max(riverLevel - RIVER_MAX_SLOPE * step, Math.min(riverLevel, bank));
+    if (strokeLevel - riverLevel >= RIVER_STEP && riverRun >= brush.settings.radius * RIVER_MIN_RUN_RADII) {
+      strokeLevel = riverLevel;
+      riverRun = 0;
+      return 'riser';
+    }
+    return 'fill';
+  };
+
+  const riverTool: Tool = {
+    id: 'river',
+    label: 'river',
+    ...(keyFor('river') === undefined ? {} : { key: keyFor('river') as string }),
+    layer: WATER_LAYER,
+    mode: 'set',
+    eraseMode: 'erase',
+    onStamp: (_ctx: unknown, op: StampOp, hit: BrushHit): void => {
+      // Shift inverts here exactly as it does on the pond: a filled dab
+      // becomes a drained one and the event says so.
+      const drain = shiftHeld ? op.mode !== 'erase' : op.mode === 'erase';
+      if (drain) {
+        stampWater({ ...op, mode: 'erase' as StampMode }, hit, true, 'river');
+        return;
+      }
+      carveRiver(op);
+      if (riverStep(hit) === 'riser') {
+        // The riser is a DRAIN, recorded as one: it is what separates the pool
+        // above from the pool below, and a replay has to cut it in the same
+        // place at the same width or the two would merge back into one plane.
+        stampWater(
+          { ...op, radius: op.radius * RIVER_RISER_RADII, mode: 'erase' as StampMode },
+          hit,
+          true,
+          'river',
+        );
+        return;
+      }
+      stampWater(op, hit, false, 'river');
+    },
+  };
+
+  /**
+   * ── the waterfall ────────────────────────────────────────────────────────
+   *
+   * Not a layer at all: one ink MARK appended to the painted map, drawn
+   * through the instanced mark path the grass tufts and reeds already ride
+   * (src/world/waterfall-marks.ts). Shift or the eraser removes the nearest
+   * mark under the brush.
+   *
+   * ONE MARK A STROKE. A waterfall is a stamp, not a stroke — the pointer
+   * moving is a person aiming it, not a person painting more of them — so
+   * the dabs after the first are ignored until the pointer lifts.
+   */
+  let waterfallPlaced = false;
+
+  /** The marks moved: hand the world the list again and ask for the scatter
+   * re-roll that draws them. Nothing else in the map changed, so this is the
+   * scatter-only rebuild and not the landscape one. */
+  const marksChanged = (): void => {
+    setWaterfallMarks(map.marks);
+    plantingDirty = true;
+  };
+
+  const addMark = (mark: PaintedMark): void => {
+    if (map.marks.length >= MAX_MARKS) return;
+    map.marks.push(mark);
+    marksChanged();
+  };
+
+  const removeMark = (x: number, z: number, r: number): boolean => {
+    const i = nearestWaterfall(map.marks, x, z, r);
+    if (i < 0) return false;
+    map.marks.splice(i, 1);
+    marksChanged();
+    return true;
+  };
+
+  const waterfallTool: Tool = {
+    id: 'waterfall',
+    label: 'waterfall',
+    ...(keyFor('waterfall') === undefined ? {} : { key: keyFor('waterfall') as string }),
+    mode: 'set',
+    eraseMode: 'erase',
+    onStamp: (_ctx: unknown, op: StampOp, _hit: BrushHit): void => {
+      const erase = shiftHeld ? op.mode !== 'erase' : op.mode === 'erase';
+      // From the OP and not from the hit, so the number that is recorded is
+      // the number the mark is placed at — a replay arrives through the same
+      // uv round trip and has to land on the same seed.
+      const x = (op.u - 0.5) * PAINTED_SIZE;
+      const z = (op.v - 0.5) * PAINTED_SIZE;
+      const r = op.radius * PAINTED_SIZE;
+      if (erase) {
+        if (removeMark(x, z, r)) {
+          handles.session?.paint({ tool: 'waterfall', x, z, r, mode: 'erase' });
+        }
+        return;
+      }
+      if (waterfallPlaced) return;
+      waterfallPlaced = true;
+      const seed = op.seed ?? waterfallSeed(x, z);
+      // Down the local gradient, read through the Surface seam and nowhere
+      // else (PLAN §7.2), and RECORDED — by the time a log replays, the
+      // ground the facing came off may have been sculpted away.
+      const yaw = waterfallYaw(ROLLING_SURFACE, x, z);
+      addMark({ kind: 'waterfall', x, z, seed, yaw });
+      handles.session?.paint({ tool: 'waterfall', x, z, r, seed, yaw });
+    },
+  };
+
+  /**
    * A tool that is in the strip but has nothing behind it yet: it holds its
    * place, its icon and its key, and it paints nothing. Its button is
    * disabled at mount (`mountStrip`), so it cannot be selected either — the
@@ -988,6 +1241,8 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
       });
     }
     if (id === 'pond') return pondTool;
+    if (id === 'river') return riverTool;
+    if (id === 'waterfall') return waterfallTool;
     return plantTool(id as PlantBrush);
   };
   const tools: Tool[] = STRIP_TOOL_IDS.map(toolFor);
@@ -1080,7 +1335,11 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
    * re-ROLLING it — and the trees the brush just planted never appear.
    */
   const noteTool = (): void => {
-    if (isPlantTool(brush.tool ?? '')) plantingDirty = true;
+    const tool = brush.tool ?? '';
+    // A waterfall stamp moves no vertex and no water level — it appends a
+    // mark — so it re-rolls the scatter and nothing else, exactly as a
+    // planting dab does. (Its own dabs raise the flag too; this is the burst.)
+    if (isPlantTool(tool) || tool === 'waterfall') plantingDirty = true;
     else terrainDirty = true;
   };
 
@@ -1100,6 +1359,8 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
   brush.on('strokeend', () => {
     // The next pond stroke picks its own level (see `strokeLevel`).
     strokeLevel = null;
+    resetRiver();
+    waterfallPlaced = false;
     // Always one final rebuild, whatever the throttle was doing: what is on
     // screen when the pointer lifts is what is in the map.
     noteTool();
@@ -1508,7 +1769,23 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
       spatter: brush.settings.spatter,
       aspect: brush.settings.aspect,
     };
-    if (tool === 'pond') {
+    if (tool === 'waterfall') {
+      // A mark, not a dab: no layer is written and nothing is derived. The
+      // recorded seed and facing are used as they stand, and only a log old
+      // enough to carry neither falls back to the place and the gradient.
+      if (mode === 'erase') removeMark(event.x, event.z, event.r);
+      else {
+        addMark({
+          kind: 'waterfall',
+          x: event.x,
+          z: event.z,
+          seed: event.seed ?? waterfallSeed(event.x, event.z),
+          yaw: event.yaw ?? waterfallYaw(ROLLING_SURFACE, event.x, event.z),
+        });
+      }
+      return;
+    }
+    if (tool === 'pond' || tool === 'river') {
       const held = strokeLevel;
       strokeLevel = event.level ?? null;
       // `mode` says what the dab did, so a ctrl-dragged pond replays as the
@@ -1558,6 +1835,7 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
     waterAt: (x: number, z: number): number => levelAt(x, z),
     shoreAt: (x: number, z: number): number => paintedWater()?.shore(x, z) ?? -Infinity,
     bodies: (): number => paintedWater()?.bodies.length ?? 0,
+    marks: (): readonly PaintedMark[] => map.marks,
     rebuild: rebuildNow,
   };
   const scope = window as Window & { __refworldPaint?: PaintProbe };
@@ -1582,6 +1860,7 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
       handles.setPaintedPath?.(null);
       setPaintedWater(null);
       handles.setPaintedWater(null);
+      setWaterfallMarks(null);
       layers.dispose();
       // The LANDSCAPE rebuild, for the reason the header gives: the trees a
       // pond displaced and the reeds it grew have to come back too, and

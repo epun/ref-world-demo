@@ -181,6 +181,47 @@ describe('painted map — sampling', () => {
 });
 
 describe('painted map — serialisation', () => {
+  it('carries the painted marks, and loads an older map with none', () => {
+    // 2026-09-10, user ask: *"i want to match the brushes for env paint
+    // exactly"* — the waterfall tool. A mark is not a layer: it is a place, a
+    // facing and a seed, and it rides the map because the map is the one
+    // object a projection restores. A map written before marks existed has to
+    // load exactly as it did, or every committed map breaks the day the
+    // feature lands — the same rule the level layer got.
+    const map = createPaintedMap(32, 400);
+    expect(map.marks).toEqual([]);
+    map.marks.push({ kind: 'waterfall', x: 12.5, z: -30.25, seed: 41, yaw: 1.25 });
+    const back = deserializeMap(serializeMap(map));
+    expect(back.marks).toEqual(map.marks);
+    // …and it is a COPY: the caller may hold the json while painting goes on.
+    expect(serializeMap(map).marks?.[0]).not.toBe(map.marks[0]);
+
+    const older = serializeMap(map);
+    delete older.marks;
+    expect(deserializeMap(older).marks).toEqual([]);
+
+    // A mark with no place is not a mark. This payload comes out of a store a
+    // moderator writes, so the door is here as well as in src/session/scene.ts.
+    const bad = serializeMap(map);
+    bad.marks = [
+      { kind: 'waterfall', x: Number.NaN, z: 0, seed: 1, yaw: 0 },
+      { kind: 'waterfall', x: 1, z: 2, seed: Number.NaN, yaw: Number.NaN },
+    ];
+    expect(deserializeMap(bad).marks).toEqual([
+      { kind: 'waterfall', x: 1, z: 2, seed: 0, yaw: 0 },
+    ]);
+  });
+
+  it('clears the marks with the rest of the map', () => {
+    const map = createPaintedMap(32, 400);
+    map.marks.push({ kind: 'waterfall', x: 1, z: 1, seed: 2, yaw: 0 });
+    const held = map.marks;
+    clearPaintedMap(map);
+    // In place, like every buffer: whoever is holding the list still is.
+    expect(map.marks).toBe(held);
+    expect(map.marks).toEqual([]);
+  });
+
   it('round-trips every texel exactly', () => {
     const map = createPaintedMap(32, 400);
     for (let i = 0; i < map.height.length; i++) {
