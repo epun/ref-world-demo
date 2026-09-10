@@ -493,10 +493,10 @@ audience, so what a brush puts down must be **deterministic from the painted dat
 painted layers → identical placements on every device, no `Math.random`, no clock.
 
 **The layers.** `src/world/painted.ts` gains `planting`: one `Float32Array` per brush
-(`grove`, `rocks`, `grass`, `flowers`, `clouds`, `cottages`, `clearing`), weights in [0,1],
+(`grass`, `flowers`, `trees`, `rocks`, `clouds`, `mask`), weights in [0,1],
 `PLANTING_RES` 256 over the same 400 units — 1.56 u a texel **[D]**, finer than the 6 u
 scatter step so a stroke's edge falls between cells, and a quarter of the height map's memory
-because there are seven of them. Same sampler recipe as `height`: bilinear between half-texel
+because there are six of them. Same sampler recipe as `height`: bilinear between half-texel
 centres, exactly 0 outside, fading over the last half texel. Same buffer-sharing rule: the
 arrays **are** the brush's paint layers'. `serializeMap` / `deserializeMap` carry them, and a
 map written before planting existed still loads.
@@ -512,16 +512,16 @@ painted pass** over the same cells, on its own salt family, in which every kind 
 independently and no kind claims the cell from another:
 
 ```
-base'(kind) = base(kind) * (1 - planting.clearing)          // the clearing suppresses
+base'(kind) = base(kind) * (1 - planting.mask)              // the mask suppresses
 paint(kind) = Σ_brush planting[brush] * PAINT_SEED[brush][kind] * user
 ```
 
 The separation is the whole guarantee. The base loop stops at its first hit, so if the painted
-weight rode inside it a grove could out-roll a rock in a cell the rock already held and the
+weight rode inside it a stand could out-roll a rock in a cell the rock already held and the
 rock would **vanish** — painting would read as reshuffling the world rather than adding to it.
 The painted pass is skipped entirely on an unpainted cell, which is every cell of the shipped
-world. `PAINT_SEED` is the mix per brush (a grove is mostly one crown build plus conifers,
-undergrowth and tick texture); `clearing` names no kind.
+world. `PAINT_SEED` is the mix per brush (a `trees` stand is mostly one crown build plus
+conifers, undergrowth and tick texture); `mask` names no kind.
 
 **Rebuild cost.** A planting stroke moves no vertex, so it rebuilds the **scatter only** —
 `WorldHandles.refreshScatter` (re-roll + re-instance) rather than `setTerrain({})` (re-displace
@@ -532,14 +532,58 @@ burst owes the full rebuild.
 
 **The brushes.** One tool per brush on the existing Brush, stamping `add` and erasing with
 ctrl (weights clamped to [0,1] over the layer's dirty rect — the layers are float and
-unclamped by construction). No new hotkeys: 1–4 stay the height tools, 5–7 stay emotes, the
-strip selects the brushes. `[` / `]` step the radius through **this** world's 0.5–40 range
-(EnvPaint's own handler clamps at 12 and would stop responding over most of the field), and
-**shift inverts** every tool — raise ↔ lower, add ↔ erase, smooth and flatten unchanged. The
-inversion is applied before the session event is written, so a replayed or synced dab lands the
-same result without knowing about a modifier. Shift was the camera escape; it moved to
-**space+drag**, the **secondary button** and **two fingers** (the last was always true — the
-world's pinch path ignores `setSoloDrag`).
+unclamped by construction), at `strengthScale` **7**: a planting dab writes a WEIGHT that
+`PAINT_SEED` then multiplies by ~0.3, so at the engine's own scale a whole pass asked for a 4%
+chance per cell and planted nothing (2026-09-10, user report: *"the brush tools aren't
+working"*). `[` / `]` step the radius through **this** world's 0.5–40 range (EnvPaint's own
+handler clamps at 12 and would stop responding over most of the field) and the brush opens at
+**radius 3 u, strength 0.28** — EnvPaint's own numbers. **Shift inverts** every tool — raise ↔
+lower, add ↔ erase, fill ↔ drain, smooth and flatten unchanged — applied before the session
+event is written, so a replayed or synced dab lands the same result without knowing about a
+modifier. Shift was the camera escape; it moved to **space+drag**, the **secondary button**
+and **two fingers** (the last was always true — the world's pinch path ignores `setSoloDrag`).
+
+**The strip** is EnvPaint's, exactly (2026-09-10, user ask: *"i want to match the brushes for
+env paint exactly"*) — same ids, same order, same groups, same hotkeys, and EnvPaint's own
+`toolIcon` glyphs, which resolve because the ids match. `src/dev/paint-tools.ts` owns the
+tables; `src/dev/paint.ts` registers them in that order and the `.ep-strip` rules are inlined
+there because `envpaint/ui` does not export its stylesheet.
+
+| tool | key | group | writes | state |
+|---|---|---|---|---|
+| sculpt | `0` | ground | `height` (raise; shift/ctrl lower, alt smooth) | shipped |
+| mask | `9` | ground | `mask` weight — suppresses the world's own seeding | shipped |
+| path | `8` | ground | dirt trail in the ground marks | coming |
+| grass | `1` | paint | `grass` weight | shipped |
+| comb | `2` | paint | lean direction for grass | coming |
+| flowers | `w` | paint | `flowers` weight | shipped |
+| pond | `3` | paint | `water` level (shift/eraser drains) | shipped |
+| river | `4` | paint | a level carried downhill along the stroke | coming |
+| waterfall | `5` | paint | an ink mark where a level falls | coming |
+| trees | `6` | paint | `trees` weight | shipped |
+| rocks | `7` | paint | `rocks` weight | shipped |
+| fire | `f` | paint | flame marks and scorch | coming |
+| clouds | `c` | paint | `clouds` weight | shipped |
+| eraser | — | end | toggles the current tool's opposite (what shift holds) | shipped |
+| home | — | end | slides the camera to the default view (`CameraRig.resetView`) | shipped |
+
+A tool that is *coming* sits in its place holding its key, disabled, tooltip `coming`:
+the strip is the picture of the whole kit and a gap in it would be a different kit.
+`layerForTool` refuses its id exactly as it refuses any id it does not know.
+
+While painting is **on**, a capture-phase handler swallows the strip's keys before the emotes
+and before EnvPaint's own window binding; with painting **off** it returns on its first line
+and 1–7 emote as they always did (§6.3). Keys the strip does not claim are never swallowed.
+
+**Renames, and the scenes written before them.** `raise` → `sculpt`, `grove` → `trees`,
+`clearing` → `mask`; `lower`, `flatten` and `smooth` left the strip (flatten entirely, the
+other two are modes of `sculpt`), `drain` left (the eraser and shift are what it was), and
+`cottages` left with its weight layer — EnvPaint has no cottage brush, and the scatter's
+dooryard path stayed, generic, for whatever plants a building next. A stored scene or session
+log still applies: `paint-tools.ts` `LEGACY_TOOLS` maps each retired id to its replacement —
+and, where the id was the only thing saying what the dab DID, to the mode as well (`drain` is a
+pond dab that erases). The translation happens once, at the replay seam, so the live brush, the
+replay and the sync all route the same way (docs/SESSION.md §4).
 
 ---
 

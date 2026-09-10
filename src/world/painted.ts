@@ -38,7 +38,7 @@
  * docs/port-meridian.md §5 steps 5-6).
  * PLANTING (2026-09-09, user ask: "in the collection we should have brushes
  * for trees, rocks, grass, flowers, rivers, clouds, ponds, etc.") — the same
- * idea, one dimension over: seven weight layers, [0,1], that say how much of
+ * idea, one dimension over: six weight layers, [0,1], that say how much of
  * each motif family somebody wants HERE. They are NOT heights and they never
  * touch the surface; `scatter.ts` reads them as an extra term in its per-cell
  * roll, which is why they live beside `height` in the one painted map rather
@@ -46,7 +46,7 @@
  *
  * The planting layers are coarser than the height map on purpose: placement
  * is decided per scatter cell (6 u), so a texel finer than the step buys
- * nothing but memory, and there are seven of them.
+ * nothing but memory, and there are six of them.
  *
  * Water (ponds, rivers) is NOT here: another branch owns the painted water
  * tools, and a second module writing water would be the second shoreline
@@ -80,22 +80,30 @@ export const DRY = -1000;
 /**
  * The planting brushes, in strip order. Each is one weight layer.
  *
- * `clearing` is the eraser of the set: it does not plant anything, it
- * SUPPRESSES the world's own seeding (scatter.ts), which is how an operator
- * opens a glade in a forest without lowering a global density that would
- * thin the whole field.
+ * The ids are EnvPaint's own (2026-09-10, user ask: *"i want to have the
+ * same brushes as env paint but in the ref style"*) — `trees` was `grove`
+ * and `mask` was `clearing`, and the strip they belong to is the one
+ * EnvPaint ships, minus the brushes this world has no environment item for.
+ * `cottages` went with that pass: EnvPaint has no such brush, so the weight
+ * layer went too and buildings are the field's own again. A stored map or
+ * session log written under the old ids still applies — src/dev/paint-tools.ts
+ * `LEGACY_TOOLS` maps them on the way in.
  *
- * The water brushes (pond, drain) are NOT in this list: water is a LEVEL
- * layer of its own with its own tools, not a weight (see `DRY` above).
+ * `mask` is the eraser of the set: it does not plant anything, it SUPPRESSES
+ * the world's own seeding (scatter.ts), which is how an operator opens a
+ * glade in a forest without lowering a global density that would thin the
+ * whole field.
+ *
+ * The water brush (pond) is NOT in this list: water is a LEVEL layer of its
+ * own with its own tool, not a weight (see `DRY` above).
  */
 export const PLANT_BRUSHES = [
-  'grove',
-  'rocks',
   'grass',
   'flowers',
+  'trees',
+  'rocks',
   'clouds',
-  'cottages',
-  'clearing',
+  'mask',
 ] as const;
 export type PlantBrush = (typeof PLANT_BRUSHES)[number];
 
@@ -106,7 +114,7 @@ export type PlantingWeights = Record<PlantBrush, number>;
  * [D] Texels a side for every planting layer. 256 over 400 units is 1.56 u a
  * texel — finer than the 6 u scatter step (so a brushstroke's edge falls
  * between cells rather than on them), and a quarter of the height map's
- * memory, which matters because there are seven of these and one of that.
+ * memory, which matters because there are six of these and one of that.
  */
 export const PLANTING_RES = 256;
 
@@ -306,9 +314,9 @@ export function samplePlanting(map: PaintedMap, brush: PlantBrush, x: number, z:
  * The map as the sampler `landscape.ts`'s `setPaintedPlanting` takes — every
  * brush's weight at a point, in one object.
  *
- * ALL SEVEN at once rather than a sampler per brush: `sampleLandscape` is
- * called once per scatter cell and the roll needs every weight, so seven
- * calls would be seven bilinear reads at the same point through seven
+ * ALL OF THEM at once rather than a sampler per brush: `sampleLandscape` is
+ * called once per scatter cell and the roll needs every weight, so a call
+ * per brush would be six bilinear reads at the same point through six
  * closures. Bound to the map object like `paintedSampler`, for the same
  * reason: the buffers may be swapped for loaded ones under it.
  */

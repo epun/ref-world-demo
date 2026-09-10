@@ -70,7 +70,34 @@ rehearsal and the night.
    machine, so the url you then hand round is clean. Without it you can still
    sculpt and everyone still sees it — it just is not kept.
 2. Sculpt: `shift+d` → `landscape` → tick **landscape**, move the three dials,
-   then `paint` → tick **painting** and drag on the ground.
+   then `paint` → tick **painting** and drag on the ground. A strip of tools
+   appears along the bottom of the screen — EnvPaint's, exactly:
+
+   | key | tool | what a drag does |
+   |---|---|---|
+   | `0` | sculpt | raises the ground; **shift** or ctrl lowers, alt smooths |
+   | `9` | mask | keeps the world from seeding anything here |
+   | `8` | path | *coming* |
+   | `1` | grass | plants grass |
+   | `2` | comb | *coming* |
+   | `w` | flowers | plants flowers |
+   | `3` | pond | fills a pond to one plane; **shift** drains it |
+   | `4` | river | *coming* |
+   | `5` | waterfall | *coming* |
+   | `6` | trees | plants a stand |
+   | `7` | rocks | scatters stone |
+   | `f` | fire | *coming* |
+   | `c` | clouds | paints cloud |
+
+   And the three that are not tools: the **eraser** at the end of the strip
+   toggles what holding **shift** does (the current tool's opposite), **home**
+   beside it slides the camera back to the default view, and `[` / `]` step
+   the brush radius. A *coming* tool is in the strip but greyed out — it has
+   nothing to place in this world yet.
+
+   The keys only reach the brush while **painting** is ticked; with it off,
+   1–7 emote as usual. **space+drag**, the right button or two fingers turn
+   the camera without lifting the brush.
 3. Under the dials, the **`scene`** line says what is happening to all of it:
    `scene · 412 events · stored`. Anything else is worth reading —
    `not stored (no secret)` means step 1 was skipped,

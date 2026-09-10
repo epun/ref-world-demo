@@ -196,32 +196,30 @@ const SEED_PROB: Record<ScatterKind, number> = {
 // makes live painting read as planting instead of as re-rolling the world,
 // and test/world/scatter-planting.test.ts pins it.
 //
-// `clearing` names no kind at all: it works by suppressing the base term
+// `mask` names no kind at all: it works by suppressing the base term
 // instead (see `prob` in computePlacements).
 
 export type PaintSeed = Partial<Record<ScatterKind, number>>;
 
 export const PAINT_SEED: Record<PlantBrush, PaintSeed> = {
-  // A stand: mostly broadleaf with conifers through it, undergrowth below,
-  // and enough tick texture that the floor is not bare paper.
-  grove: { tree: 0.3, conifer: 0.16, bush: 0.07, tick: 0.06 },
-  // Stone is sparse by nature — a scree of boulders with the odd cut stump
-  // and, rarely, a standing stone. Never a field of rubble.
-  rocks: { rock: 0.16, stump: 0.03, monolith: 0.018 },
   // The grass alphabet, plus the ticks that were always the ground's texture.
   grass: { grass: 0.34, tick: 0.14 },
   // Flowers come in clusters with grass through them — a meadow, not a bed.
   flowers: { flower: 0.3, grass: 0.08 },
+  // A stand: mostly broadleaf with conifers through it, undergrowth below,
+  // and enough tick texture that the floor is not bare paper.
+  trees: { tree: 0.3, conifer: 0.16, bush: 0.07, tick: 0.06 },
+  // Stone is sparse by nature — a scree of boulders with the odd cut stump
+  // and, rarely, a standing stone. Never a field of rubble.
+  rocks: { rock: 0.16, stump: 0.03, monolith: 0.018 },
   // 0.16 rather than the 0.22 first tried: measured in the headless shot, a
   // saturated cloud brush at 0.22 spotted the ground with more hard shadow
   // stamps than paper between them, and TASTE §2.3 wants the field to keep
   // breathing at any brush weight.
   clouds: { cloud: 0.16 },
-  // Structures are "minor elements folded into the landscape, never centred
-  // or enlarged" (the ref brief), so even a painted hamlet stays rare per
-  // cell and stays under BUILDING_MAX.
-  cottages: { building: 0.05 },
-  clearing: {},
+  // The mask names no kind at all: it works by suppressing the base term
+  // instead (see `prob` below).
+  mask: {},
 };
 
 // ── landscape-aware seeding ──────────────────────────────────────────────────
@@ -327,8 +325,8 @@ const REED_OFFSET_SPAN = 0.9;
  * Raised from 4 (user report: "where are the buildings") — structures should
  * be encountered while roaming; the panel's building-density slider layers
  * on top via setKindDensity('building'). Raised again to 12 (2026-09-09)
- * when the `cottages` brush arrived: an operator painting a hamlet must not
- * find the cap already spent by the field's own rolls, and 12 still keeps
+ * when a `cottages` brush briefly existed: it has since left with the EnvPaint
+ * strip (2026-09-10), and the cap stays where it is — 12 still keeps
  * structures "minor elements folded into the landscape" rather than a town. */
 export const BUILDING_MAX = 12;
 /** No two buildings of the same variant within this many world units. */
@@ -336,8 +334,9 @@ export const BUILDING_ADJ_RADIUS = SCATTER_STEP * 8;
 
 /**
  * [D] A PAINTED cottage sweeps this much ground clear around itself — the
- * dooryard. A house standing in a thicket reads as a mistake, and the
- * cottages brush is usually painted over a grove.
+ * dooryard. A house standing in a thicket reads as a mistake. No brush names
+ * `building` today, so nothing takes this path; it is kept because the rule
+ * belongs to painted buildings whenever a brush plants one again.
  *
  * Only painted ones: the field's own buildings have never had a keep-out and
  * giving them one now would move placements in a world nobody painted, which
@@ -489,7 +488,7 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
     Math.max(0, kindDensity[kind] ?? 1) / (DEFAULT_KIND_DENSITY[kind] ?? 1);
 
   /** Ground a PAINTED cottage has swept for its dooryard. Recorded only for
-   * cottages the brush placed — see BUILDING_CLEAR_RADIUS. */
+   * buildings a brush placed — see BUILDING_CLEAR_RADIUS. */
   const dooryards: { x: number; z: number }[] = [];
   const inDooryard = (x: number, z: number): boolean => {
     for (const d of dooryards) {
@@ -541,8 +540,8 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
     // …and nothing but a mountain stands on a mountain.
     if (kind !== 'mountain' && underMountain(x, z)) return;
     // A painted cottage keeps its dooryard (see BUILDING_CLEAR_RADIUS). The
-    // list is empty unless the cottages brush put something down, so an
-    // unpainted world never consults it.
+    // list is empty unless a brush put a building down, so an unpainted
+    // world never consults it.
     if (kind !== 'building' && inDooryard(x, z)) return;
     out.push({ kind, variant, x, z, scale, rotY });
   };
@@ -629,7 +628,7 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
     buildings.push({ x: sx, z: sz, variant });
     const before = out.length;
     push('building', variant, sx, sz, 1);
-    // Only a cottage somebody brushed in sweeps a dooryard, and only if it
+    // Only a building somebody brushed in sweeps a dooryard, and only if it
     // actually landed (the origin clearing and the water cut-out both drop
     // placements silently).
     if (painted && out.length > before) {
@@ -718,18 +717,18 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
       const m = sample.mountain;
       const plant = sample.planting;
       /**
-       * The clearing brush: it plants nothing and suppresses what the world
+       * The mask brush: it plants nothing and suppresses what the world
        * would have planted by itself. Applied to the BASE term only —
-       * clearing a painted grove is what the ctrl-erase on that brush is
-       * for, and a clearing that also cancelled the forest's own table
-       * would be a second, blunter density dial rather than a glade.
+       * clearing a painted stand is what the ctrl-erase on that brush is
+       * for, and a mask that also cancelled the forest's own table would be
+       * a second, blunter density dial rather than a glade.
        */
-      const clear = Math.max(0, 1 - plant.clearing);
+      const clear = Math.max(0, 1 - plant.mask);
       /** Did a brush touch this cell at all? An unpainted cell skips the
        * painted pass entirely, so an unpainted world costs one comparison. */
       let paintedCell = false;
       for (const brush of PLANT_BRUSHES) {
-        if (brush !== 'clearing' && plant[brush] > 0) {
+        if (brush !== 'mask' && plant[brush] > 0) {
           paintedCell = true;
           break;
         }
@@ -850,7 +849,11 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
               spread * 0.7,
             );
           } else {
-            seedProp(kind as PropKind, plant.cottages > 0);
+            // Generic on purpose: no brush names `building` today (the
+            // `cottages` brush left with the EnvPaint strip), so the dooryard
+            // below stays dormant — but a brush that seeds one later gets it
+            // without a second code path.
+            seedProp(kind as PropKind, paintedCell);
           }
         }
       }
