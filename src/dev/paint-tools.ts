@@ -38,6 +38,30 @@ export type HeightToolId = (typeof HEIGHT_TOOL_IDS)[number];
 export const WATER_TOOL_ID = 'pond';
 
 /**
+ * The comb, and the two-channel DIRECTION layer it writes (2026-09-10, user
+ * ask: *"the brushes should have real world physics as well just in the style
+ * of ref world"*).
+ *
+ * Not a planting brush: it plants nothing and rolls no kind. It writes the
+ * stroke's own heading into a layer the grass and tick marks read at
+ * placement, which is one dimension over from a weight and needs two channels
+ * to say it (src/world/comb.ts).
+ */
+export const COMB_TOOL_ID = 'comb';
+export const COMB_LAYER = 'comb';
+
+/**
+ * The fire brush, and its own weight layer.
+ *
+ * Also not a planting brush, for a related reason: a fire weight names no
+ * kind either. What it MEANS is `burnState` (src/world/fire.ts) — a front
+ * that crosses painted grass, burns it out and leaves scorch — exactly as
+ * what a water LEVEL means is painted-water.ts's job.
+ */
+export const FIRE_TOOL_ID = 'fire';
+export const FIRE_LAYER = 'fire';
+
+/**
  * The strip, in EnvPaint's own order and with its own hotkeys (2026-09-10,
  * user ask: *"i want to match the brushes for env paint exactly"*).
  *
@@ -89,15 +113,16 @@ export const STRIP_TOOL_IDS = [
  * The tools that are in the strip but cannot paint yet, in the order they
  * are being built.
  *
- * Each is a real EnvPaint tool with nothing behind it in this world: `comb`
- * wants a lean-direction layer the grass reads, `river` and `waterfall` the
- * water machinery carrying a level downhill and marking where it falls,
- * `fire` an ink flame mark and a scorch. (`path` was one of these until it
- * landed: it is a weight layer the ground draws as a dirt trail.) Until one lands its button is disabled and its tooltip
+ * Each is a real EnvPaint tool with nothing behind it in this world: `river`
+ * and `waterfall` want the water machinery carrying a level downhill and
+ * marking where it falls. (`path` was one of these until it landed — a weight
+ * layer the ground draws as a dirt trail — and so were `comb`, which now
+ * writes a direction layer the grass leans into, and `fire`, which now burns
+ * across painted grass and leaves scorch.) Until one lands its button is disabled and its tooltip
  * says so; nothing routes to it, and `layerForTool` refuses its id exactly as
  * it refuses any id it does not know.
  */
-export const COMING_TOOL_IDS = ['comb', 'river', 'waterfall', 'fire'] as const;
+export const COMING_TOOL_IDS = ['river', 'waterfall'] as const;
 
 /** True while a strip tool has nothing behind it yet — see COMING_TOOL_IDS. */
 export function isComingTool(id: string): boolean {
@@ -162,8 +187,26 @@ export function layerForTool(tool: string): string | null {
   const id = resolveTool(tool).tool;
   if ((HEIGHT_TOOL_IDS as readonly string[]).includes(id)) return HEIGHT_LAYER;
   if (id === WATER_TOOL_ID) return WATER_LAYER;
+  if (id === COMB_TOOL_ID) return COMB_LAYER;
+  if (id === FIRE_TOOL_ID) return FIRE_LAYER;
   if ((PLANT_BRUSHES as readonly string[]).includes(id)) return id;
   return null;
+}
+
+/**
+ * True when a tool's dab needs the SCATTER re-rolled and nothing else — no
+ * vertex moves, no water level changes.
+ *
+ * The planting brushes, plus the two that are not planting brushes but are
+ * read at exactly the same moment: the comb (the grass leans at placement)
+ * and fire (what is alight, and what has burnt, decides which marks are
+ * placed at all). Without this a comb or fire dab would fall through to the
+ * TERRAIN rebuild, which re-seats the scatter without re-ROLLING it — the
+ * stroke would land in the layer and nothing on screen would move.
+ */
+export function isScatterTool(tool: string): boolean {
+  const id = resolveTool(tool).tool;
+  return id === COMB_TOOL_ID || id === FIRE_TOOL_ID || isPlantTool(id);
 }
 
 /** True when a tool id is one of the planting brushes (legacy ids resolved

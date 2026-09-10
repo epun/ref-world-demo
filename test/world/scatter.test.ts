@@ -287,7 +287,9 @@ describe('scatter placement', () => {
     expect(SCATTER_KINDS).toContain('cloud');
     expect(SCATTER_KINDS).toContain('grass');
     expect(SCATTER_KINDS).toContain('flower');
-    expect(SCATTER_KINDS.length).toBe(17);
+    // …and the flame the fire brush places (2026-09-10).
+    expect(SCATTER_KINDS).toContain('flame');
+    expect(SCATTER_KINDS.length).toBe(18);
   });
 
   it('new kinds land at their authored rarities and cluster shapes', () => {

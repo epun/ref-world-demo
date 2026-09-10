@@ -44,7 +44,11 @@ import { MOTION, SURFACE, WORLD } from '../taste/tokens';
 import {
   activeWaterBodies,
   isWater,
+  hasPaintedFire,
+  hasPaintedLean,
   hasPaintedPlanting,
+  paintedFireAt,
+  paintedLeanAt,
   paintedPlantingAt,
   paintedShoreSamples,
   sampleLandscape,
@@ -54,6 +58,7 @@ import {
   type ShoreSample,
 } from './landscape';
 import { PLANT_BRUSHES, type PlantBrush, type PlantingWeights } from './painted';
+import { combLean } from './comb';
 import {
   BUILDING_COURTYARD_VARIANT,
   buildPropGeometries,
@@ -65,13 +70,19 @@ import {
 import { stampEllipse, stampRotationY, type StampEllipse } from './shadows';
 import { ROLLING_SURFACE, type Surface } from './surface';
 
-export type MarkKind = 'tick' | 'reed' | 'grass' | 'flower';
+export type MarkKind = 'tick' | 'reed' | 'grass' | 'flower' | 'flame';
 export type ScatterKind = PropKind | MarkKind;
 
 /** The flat ink marks: no collider, no shadow stamp, no inflated variant
  * geometry behind them. Everything else in a placement list is a prop. */
 function isMark(kind: ScatterKind): kind is MarkKind {
-  return kind === 'tick' || kind === 'reed' || kind === 'grass' || kind === 'flower';
+  return (
+    kind === 'tick' ||
+    kind === 'reed' ||
+    kind === 'grass' ||
+    kind === 'flower' ||
+    kind === 'flame'
+  );
 }
 
 /** Variants per mark kind. Ticks and reeds have exactly one build and always
@@ -83,6 +94,11 @@ export const MARK_VARIANT_COUNTS: Record<MarkKind, number> = {
   reed: 1,
   grass: 4,
   flower: 3,
+  // One build (2026-09-10, scope call): a lick of three wavered strokes with
+  // a spark tick beside it, in the ONE mark. A second variant is an author's
+  // decision, not a structural one — `buildFlameGeometry` takes the index
+  // already.
+  flame: 1,
 };
 
 /** Authored variant count for any scatter kind, marks included. */
@@ -182,6 +198,10 @@ const SEED_PROB: Record<ScatterKind, number> = {
   cloud: 0,
   grass: 0,
   flower: 0,
+  // And the flame seeds at zero for a stronger reason than the rest: it does
+  // not ROLL at all. A flame stands where the fire field says something is
+  // alight (see FLAME_MIN), and nowhere else.
+  flame: 0,
 };
 
 // ── painted planting (2026-09-09, user ask) ──────────────────────────────────
@@ -324,6 +344,24 @@ const FLOWER_SALT = 101.3;
  * `PAINT_SALT + index * 13.31`, a family of its own so a brush stroke can
  * never land on a salt the world's own rolls already use. */
 const PAINT_SALT = 111.9;
+/** …and the flame's own, appended past it for the same reason. */
+const FLAME_SALT = 151.7;
+
+/**
+ * [D] Flame envelope above which a burning cell puts a mark down, and scorch
+ * above which the grass in a cell is CONSUMED (its weight read as 0 at
+ * placement, so the tufts are simply not placed there).
+ *
+ * The flame floor is low on purpose: `burnState` ramps its envelope in and
+ * out rather than switching, so a low floor means a mark appears near the
+ * start of that ramp and leaves near the end of it, which is as close to "no
+ * pop" as a discrete placement gets (TASTE §2.1).
+ */
+const FLAME_MIN = 0.06;
+const SCORCH_CONSUMES = 0.35;
+
+/** An unlit cell — allocated once, never handed out to anything that writes. */
+const ZERO_FIRE = { burning: 0, scorch: 0 } as const;
 
 /** At most this many mountains in the region, in cell order — a backdrop
  * range, not a mountain world. */
@@ -463,7 +501,14 @@ const PAINT_ROLL_ORDER: ScatterKind[] = [
 
 /** Every controllable scatter kind, for generic dev-panel controls.
  * `mountain` rides in through PROP_KINDS; `reed` is scatter's own. */
-export const SCATTER_KINDS: ScatterKind[] = [...PROP_KINDS, 'tick', 'reed', 'grass', 'flower'];
+export const SCATTER_KINDS: ScatterKind[] = [
+  ...PROP_KINDS,
+  'tick',
+  'reed',
+  'grass',
+  'flower',
+  'flame',
+];
 
 function cellHash(ix: number, iz: number, salt: number): number {
   const x =
@@ -766,6 +811,24 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
        */
       let plant = sample.planting;
       let plantAt: { sx: number; sz: number } | undefined;
+      /**
+       * FIRE (2026-09-10, user ask: *"the brushes should have real world
+       * physics as well just in the style of ref world"*). What is alight and
+       * what has already burnt, at the cell's own seed point — read through
+       * the same kind of sampler seam the planting weights come through, so
+       * this loop never learns that a Dijkstra front computed it
+       * (src/world/fire.ts, src/world/landscape.ts `setPaintedFire`).
+       *
+       * Scorch CONSUMES the grass: the cell's grass weight reads as 0, which
+       * takes its tufts and the tick texture that rides the same brush seed
+       * with it. A copy, never the sample's own object, because the sample is
+       * shared with the base rolls above and burning a cell must not also
+       * un-plant it for anything else.
+       */
+      const fire = hasPaintedFire() ? paintedFireAt(sx, sz) : ZERO_FIRE;
+      if (fire.scorch > SCORCH_CONSUMES && plant.grass > 0) {
+        plant = { ...plant, grass: 0 };
+      }
       if (hasPaintedPlanting() && paintedTotal(plant) <= 0) {
         const cx = ix * SCATTER_STEP;
         const cz = iz * SCATTER_STEP;
@@ -944,6 +1007,16 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
             seedProp(kind as PropKind, paintedCell, plantAt);
           }
         }
+      }
+
+      // ── the flames ────────────────────────────────────────────────────
+      // Not a roll: a cell that is alight has a flame in it, because the
+      // fire field already decided where the fire is and a probability on
+      // top of it would only make the fire look unreliable. The one hashed
+      // choice is whether a second lick stands beside the first, so a
+      // burning patch is a scatter of marks rather than a lattice of them.
+      if (fire.burning > FLAME_MIN) {
+        cluster('flame', ix, iz, cellHash(ix, iz, FLAME_SALT) < 0.5 ? 1 : 0, spread, plantAt);
       }
     }
   }
@@ -1435,6 +1508,77 @@ function buildFlowerGeometry(variant: number): BufferGeometry {
   return geometry;
 }
 
+// -- the flame mark (2026-09-10, user ask: "the brushes should have real world
+// physics as well just in the style of ref world") -------------------------
+// A fire in this world is not a particle system and not a light: it is INK,
+// like the grass it is eating. One mark, three wavered upright strokes of
+// falling height with a spark tick thrown off beside them, drawn with the
+// same `ribbon` pen as every other mark and rendered in the same unlit ink
+// material -- so a burning patch reads as more marks on the paper rather than
+// as a second lighting model arriving on the field.
+//
+// It does NOT flicker by appearing and disappearing (TASTE 2.1 forbids the
+// hard cut). The outline is wavered in the geometry and the whole mark rides
+// the tick wind profile already injected into the ink material, whose gust is
+// smooth two-octave value noise that never arrests -- a slow phase shift of
+// the drawn outline, inside the ambient drift floor.
+
+/** [D] The lick: three strokes, tallest first. Taller than a grass tuft
+ * (0.35-0.7 u) so a flame reads over the grass it stands in, and nowhere near
+ * a tree. */
+const FLAME_LICKS: { h: number; curve: number; turn: number; seed: number }[] = [
+  { h: 0.86, curve: 0.16, turn: 0.0, seed: 91.1 },
+  { h: 0.62, curve: -0.2, turn: 1.9, seed: 97.3 },
+  { h: 0.44, curve: 0.24, turn: 3.6, seed: 103.7 },
+];
+
+/** [D] The spark: one short tick thrown clear of the licks, so the mark has
+ * something loose in it and never reads as a bundle of three neat strokes. */
+const FLAME_SPARK = { h: 0.16, out: 0.19, up: 0.52, turn: 2.6, seed: 111.9 };
+
+function buildFlameGeometry(variant: number): BufferGeometry {
+  const positions: number[] = [];
+  const phase = variant * 1.37;
+  for (const lick of FLAME_LICKS) {
+    const a = lick.turn + phase + markHash(lick.seed) * 0.4;
+    const dirX = Math.cos(a);
+    const dirZ = -Math.sin(a);
+    // The spine leaves the root upright and wavers as it rises: the same
+    // `bladeSpine` the grass uses, at more segments and a curve that reverses
+    // through the hand-wobble, which is what makes a tongue rather than a
+    // blade.
+    const spine = bladeSpine(lick.h, lick.curve, dirX, dirZ, lick.seed + phase, 7);
+    for (let i = 1; i < spine.length; i++) {
+      const t = i / (spine.length - 1);
+      const w = markHash(lick.seed + i * 9.1 + phase) * 0.05 * t;
+      const pt = spine[i]!;
+      pt[0] += dirZ * w;
+      pt[2] += -dirX * w;
+    }
+    ribbon(positions, spine, dirX, dirZ, 0.03, 0.12);
+  }
+  const sa = FLAME_SPARK.turn + phase;
+  const sdx = Math.cos(sa);
+  const sdz = -Math.sin(sa);
+  const bx = sdx * FLAME_SPARK.out;
+  const bz = sdz * FLAME_SPARK.out;
+  ribbon(
+    positions,
+    [
+      [bx, FLAME_SPARK.up, bz],
+      [bx + sdx * FLAME_SPARK.h * 0.5, FLAME_SPARK.up + FLAME_SPARK.h, bz + sdz * FLAME_SPARK.h * 0.5],
+    ],
+    sdx,
+    sdz,
+    0.022,
+    0.3,
+  );
+  const geometry = new BufferGeometry();
+  geometry.setAttribute('position', new BufferAttribute(new Float32Array(positions), 3));
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
 /** Every mark kind's authored variant geometries, in variant order. Exported
  * for the tests that measure their bounds. */
 export function buildMarkGeometries(): Record<MarkKind, BufferGeometry[]> {
@@ -1443,6 +1587,7 @@ export function buildMarkGeometries(): Record<MarkKind, BufferGeometry[]> {
     reed: [buildReedGeometry()],
     grass: GRASS_TUFTS.map((_, i) => buildGrassGeometry(i)),
     flower: [0, 1, 2].map((i) => buildFlowerGeometry(i)),
+    flame: [buildFlameGeometry(0)],
   };
 }
 
@@ -1836,6 +1981,7 @@ export const KIND_GROUP_LABELS: Record<ScatterKind, string> = {
   cloud: 'clouds',
   grass: 'grass tufts',
   flower: 'flowers',
+  flame: 'flames',
 };
 
 export interface ScatterOptions {
@@ -1848,7 +1994,7 @@ export interface ScatterOptions {
 }
 
 /** Mark kinds in build order — the render loop's counterpart to PROP_KINDS. */
-const MARK_KIND_ORDER: readonly MarkKind[] = ['tick', 'reed', 'grass', 'flower'];
+const MARK_KIND_ORDER: readonly MarkKind[] = ['tick', 'reed', 'grass', 'flower', 'flame'];
 
 /**
  * How far above the ground one cloud floats: the shared altitude plus its
@@ -2136,6 +2282,13 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
 
   const scaleOf = (kind: ScatterKind): number => Math.max(0, kindScale[kind] ?? 1);
 
+  /** The comb at a point, as `combLean` wants it. One object per read; the
+   * branch above skips it entirely on an uncombed world. */
+  const leanVec = (x: number, z: number): { x: number; z: number } => {
+    const l = paintedLeanAt(x, z);
+    return { x: l.dirX, z: l.dirZ };
+  };
+
   function replace(): void {
     placements = computePlacements({ density: globalDensity, kindDensity });
   }
@@ -2146,6 +2299,7 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
   const spin = new Quaternion();
   const axisY = new Vector3(0, 1, 0);
   const normal = new Vector3();
+  const combAxis = new Vector3();
   const pos = new Vector3();
   const scl = new Vector3();
 
@@ -2279,8 +2433,31 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
         // Marks ride the same variation path — for them it reads as blade
         // length / bend jitter.
         const variation = new Float32Array(of.length * 4);
+        // THE COMB, read at PLACEMENT (2026-09-10, user ask: *"the brushes
+        // should have real world physics as well just in the style of ref
+        // world"*). Meridian's grass is instanced ink marks, not a GPU blade
+        // field, so a painted lean direction cannot be a texture read in a
+        // fragment: it is applied to the instance MATRIX here — the mark's
+        // yaw turns to the combed heading and the whole tuft tips over by the
+        // vector's magnitude, capped at `COMB_LEAN_MAX` so blades stay
+        // readable. Deterministic in the layer, so the same stroke leans the
+        // same tufts on every device.
+        //
+        // Only the grass alphabet and the tick texture read it: a reed is the
+        // shore's own mark and a flower is a study, and neither is something
+        // a hand runs a comb through.
+        const combed = (kind === 'grass' || kind === 'tick') && hasPaintedLean();
         of.forEach((p, i) => {
           quat.setFromAxisAngle(axisY, p.rotY);
+          if (combed) {
+            const lean = combLean(leanVec(p.x, p.z));
+            if (lean) {
+              quat.setFromAxisAngle(axisY, lean.yaw);
+              combAxis.set(lean.axisX, 0, lean.axisZ);
+              tilt.setFromAxisAngle(combAxis, lean.lean);
+              quat.premultiply(tilt);
+            }
+          }
           pos.set(p.x, surface.sampleHeight(p.x, p.z) + TICK_LIFT, p.z);
           scl.setScalar(p.scale * mult);
           mesh.setMatrixAt(i, matrix.compose(pos, quat, scl));

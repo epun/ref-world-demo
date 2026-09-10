@@ -184,6 +184,16 @@ function readPaintScene(rec: Record<string, unknown>, t: number): SceneEvent | n
   if (rec['level'] !== undefined && level === null) return null;
   const mode = rec['mode'];
   if (mode !== undefined && (typeof mode !== 'string' || mode.length > MAX_LABEL)) return null;
+  // The comb's heading (src/session/events.ts `dx`/`dz`). A UNIT vector by
+  // construction, so the clamp is [-1, 1] and a sender that claims more is
+  // simply held to a full lean — the alternative is a public broker able to
+  // hand the world a comb of length one thousand. Both or neither: half a
+  // heading is not one.
+  const dx = rec['dx'] === undefined ? null : num(rec['dx']);
+  if (rec['dx'] !== undefined && dx === null) return null;
+  const dz = rec['dz'] === undefined ? null : num(rec['dz']);
+  if (rec['dz'] !== undefined && dz === null) return null;
+  const heading = dx !== null && dz !== null ? { dx: clamp(dx, -1, 1), dz: clamp(dz, -1, 1) } : {};
 
   return {
     k: 'paint',
@@ -198,6 +208,7 @@ function readPaintScene(rec: Record<string, unknown>, t: number): SceneEvent | n
     ...(seed === null ? {} : { seed }),
     ...(flattenTo === null ? {} : { flattenTo: clamp(flattenTo, -MAX_HEIGHT, MAX_HEIGHT) }),
     ...(level === null ? {} : { level: clamp(level, -MAX_HEIGHT, MAX_HEIGHT) }),
+    ...heading,
   };
 }
 

@@ -209,6 +209,19 @@ export interface PaintEvent extends EventBase {
   seed?: number;
   /** `flatten` only: the height the stroke levelled toward. */
   flattenTo?: number;
+  /**
+   * Comb only: the stroke's own HEADING at this dab, a unit vector in world
+   * xz (2026-09-10, user ask: *"the brushes should have real world physics as
+   * well just in the style of ref world"*).
+   *
+   * The one thing a direction dab did that neither its position nor its mode
+   * says. The Brush derives it from the two points the pointer passed
+   * through, so nothing at replay time could recover it — and a replayed comb
+   * with a different heading is a different comb. Absent on a dab that ERASED
+   * a comb, which has no heading to carry.
+   */
+  dx?: number;
+  dz?: number;
   /** Water tools only: the absolute surface height the dab filled to, so a
    * replay lays the same plane without re-reading a bank that may since have
    * moved. Absent on a drain, which fills to nothing. */

@@ -123,6 +123,17 @@ export type PlantingWeights = Record<PlantBrush, number>;
  */
 export const PLANTING_RES = 256;
 
+/**
+ * [D] Channels in the `comb` direction layer, and the neutral both hold when
+ * nothing is combed — re-declared from src/world/comb.ts's own constants
+ * only where the ALLOCATION needs them, so this module keeps carrying no
+ * dependency it does not need. `clearPaintedMap` fills to the neutral, not
+ * to zero, because the live paint layer whose buffer this IS is constructed
+ * at the neutral (src/dev/paint.ts).
+ */
+export const COMB_CHANNELS = 2;
+export const COMB_NEUTRAL = 0.5;
+
 /** A zeroed weight set — an unplanted point, and the value every consumer
  * gets when no map is installed. A fresh object per call: nobody mutates a
  * shared sample (same discipline as `sampleLandscape`). */
@@ -158,6 +169,20 @@ export interface PaintedMap {
    * is visible to the next placement roll with nothing in between.
    */
   planting: Record<PlantBrush, Float32Array>;
+  /**
+   * The comb: a DIRECTION per texel, two channels (`dir.x`, `dir.z`) encoded
+   * `d * 0.5 + 0.5`, `plantingRes²` texels — `2 * plantingRes²` floats. Read
+   * by scatter's mark placement through src/world/comb.ts, never by the
+   * ground. Shared with the brush's own layer like every other array here.
+   */
+  comb: Float32Array;
+  /**
+   * The fire brush's weight, [0,1], `plantingRes²` floats, same indexing as
+   * a planting layer. NOT one of `PLANT_BRUSHES`: fire plants nothing and
+   * rolls no kind — what it means is src/world/fire.ts's `burnState`, exactly
+   * as what a water level means is painted-water.ts's.
+   */
+  fire: Float32Array;
 }
 
 /** The serialised form: the same numbers, base64, for a committed map.json. */
@@ -175,6 +200,13 @@ export interface PaintedMapJson {
   /** Base64 per brush, same encoding as `height`. A missing brush is an
    * unpainted one. */
   planting?: Partial<Record<PlantBrush, string>>;
+  /** The comb layer, same encoding, `2 * plantingRes²` floats. Absent in a
+   * map written before the comb existed — such a map loads UNCOMBED, which
+   * is what a zeroed buffer reads as (src/world/comb.ts `decodeComb`). */
+  comb?: string;
+  /** The fire layer, same encoding. Absent in a map written before it, and
+   * such a map loads with nothing alight. */
+  fire?: string;
 }
 
 /**
@@ -195,6 +227,12 @@ export function createPaintedMap(
   water?: Float32Array,
   planting?: Partial<Record<PlantBrush, Float32Array>>,
   plantingRes: number = PLANTING_RES,
+  /** The two layers that are not planting weights but ride at the planting
+   * resolution: the comb (2 channels) and the fire brush's weight. Adopted by
+   * reference on the same terms as everything else, and allocated when
+   * absent. An OBJECT rather than two more positional arguments — this
+   * signature is already six deep. */
+  extra?: { comb?: Float32Array; fire?: Float32Array },
 ): PaintedMap {
   if (!Number.isInteger(res) || res < 2) throw new Error(`painted map: res must be >= 2, got ${res}`);
   if (!(size > 0)) throw new Error(`painted map: size must be positive, got ${size}`);
@@ -221,6 +259,14 @@ export function createPaintedMap(
     }
     layers[brush] = given ?? new Float32Array(plantingRes * plantingRes);
   }
+  const combCount = plantingRes * plantingRes * COMB_CHANNELS;
+  if (extra?.comb && extra.comb.length !== combCount) {
+    throw new Error(`painted map: comb must hold ${combCount} floats, got ${extra.comb.length}`);
+  }
+  const fireCount = plantingRes * plantingRes;
+  if (extra?.fire && extra.fire.length !== fireCount) {
+    throw new Error(`painted map: fire must hold ${fireCount} floats, got ${extra.fire.length}`);
+  }
   return {
     res,
     size,
@@ -228,6 +274,10 @@ export function createPaintedMap(
     water: water ?? new Float32Array(res * res).fill(DRY),
     plantingRes,
     planting: layers,
+    // Zeroed when nobody hands one in — which reads as UNCOMBED, not as a
+    // lean to the north-west (src/world/comb.ts explains why that matters).
+    comb: extra?.comb ?? new Float32Array(combCount),
+    fire: extra?.fire ?? new Float32Array(fireCount),
   };
 }
 
@@ -238,6 +288,10 @@ export function clearPaintedMap(map: PaintedMap): void {
   map.height.fill(0);
   map.water.fill(DRY);
   for (const brush of PLANT_BRUSHES) map.planting[brush]?.fill(0);
+  // The comb goes back to NEUTRAL rather than to zero: its buffer is the live
+  // paint layer's, and that layer is constructed at the neutral.
+  map.comb.fill(COMB_NEUTRAL);
+  map.fire.fill(0);
 }
 
 /**
@@ -403,6 +457,8 @@ export function serializeMap(map: PaintedMap): PaintedMapJson {
       new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
     );
   }
+  const comb = new Uint8Array(map.comb.buffer, map.comb.byteOffset, map.comb.byteLength);
+  const fire = new Uint8Array(map.fire.buffer, map.fire.byteOffset, map.fire.byteLength);
   return {
     res: map.res,
     size: map.size,
@@ -410,6 +466,8 @@ export function serializeMap(map: PaintedMap): PaintedMapJson {
     water: encodeBase64(water),
     plantingRes: map.plantingRes,
     planting,
+    comb: encodeBase64(comb),
+    fire: encodeBase64(fire),
   };
 }
 
@@ -442,5 +500,10 @@ export function deserializeMap(o: PaintedMapJson): PaintedMap {
     if (b64 === undefined) continue;
     planting[brush] = layer(b64, `planting '${brush}'`, plantFloats);
   }
-  return createPaintedMap(o.res, o.size, height, water, planting, plantingRes);
+  // Both are OPTIONAL on the way in: a map written before either layer
+  // existed simply has none, and loads uncombed and unlit.
+  const extra: { comb?: Float32Array; fire?: Float32Array } = {};
+  if (o.comb !== undefined) extra.comb = layer(o.comb, 'comb', plantFloats * COMB_CHANNELS);
+  if (o.fire !== undefined) extra.fire = layer(o.fire, 'fire', plantFloats);
+  return createPaintedMap(o.res, o.size, height, water, planting, plantingRes, extra);
 }
