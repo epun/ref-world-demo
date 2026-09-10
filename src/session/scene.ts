@@ -109,6 +109,73 @@ const MAX_STRENGTH = 8;
  * whole relief is tens of units. */
 const MAX_HEIGHT = 1000;
 
+/**
+ * [D] Largest texel index a `patch` rectangle may name.
+ *
+ * The finest layer is 512 a side (`PAINTED_RES`); this is the door's bound,
+ * loose enough never to argue with a real map and tight enough that a
+ * rectangle cannot claim a gigabyte.
+ */
+export const SCENE_MAX_TEXEL = 4095;
+
+/**
+ * [D] Most texels one `patch` may carry — 4096, a 64×64 rect, 16 KB of
+ * floats and ~22 KB of base64.
+ *
+ * An undo of a long stroke covers more than that, so the brush SPLITS it
+ * into tiles (src/dev/paint.ts) rather than the door growing a hole big
+ * enough to post a whole layer through: the broker is a free public one and
+ * `MAX_SCENE_BATCH` chunks the events, not the bytes inside one.
+ */
+export const SCENE_MAX_PATCH_TEXELS = 4096;
+
+/** A layer id: a short lowercase identifier. The layer must also EXIST on
+ * the receiving page — `src/dev/paint.ts` looks it up and refuses an unknown
+ * one — so this is the wire's shape check, not the world's truth. */
+const LAYER_ID = /^[a-z][a-z0-9-]{0,15}$/;
+
+/** Base64 of `bytes` bytes is exactly this many characters (padded). */
+function base64Length(bytes: number): number {
+  return Math.ceil(bytes / 3) * 4;
+}
+
+/**
+ * A rectangle of texels somebody undid, validated whole or not at all.
+ *
+ * Every field is load-bearing: a rect whose data is the wrong length would
+ * write a shifted image into the layer, and a rect naming texels the layer
+ * does not have would write nothing on one screen and something on another.
+ * So this refuses rather than clamps — unlike a dab, which is geometry and
+ * can be trimmed to the map.
+ */
+function readPatchScene(rec: Record<string, unknown>, t: number): SceneEvent | null {
+  const layer = rec['layer'];
+  if (typeof layer !== 'string' || !LAYER_ID.test(layer)) return null;
+  const data = rec['data'];
+  if (typeof data !== 'string') return null;
+  const x0 = num(rec['x0']);
+  const y0 = num(rec['y0']);
+  const x1 = num(rec['x1']);
+  const y1 = num(rec['y1']);
+  if (x0 === null || y0 === null || x1 === null || y1 === null) return null;
+  for (const v of [x0, y0, x1, y1]) {
+    if (!Number.isInteger(v) || v < 0 || v > SCENE_MAX_TEXEL) return null;
+  }
+  if (x1 < x0 || y1 < y0) return null;
+  const texels = (x1 - x0 + 1) * (y1 - y0 + 1);
+  if (texels > SCENE_MAX_PATCH_TEXELS) return null;
+  // Floats per texel: 1 unless the layer says otherwise, and only the counts
+  // a paint layer can actually have (`PaintLayer` takes 1, 2 or 4). The comb
+  // is the two-channel one — see `ch` in src/session/events.ts.
+  const chRaw = rec['ch'];
+  const ch = chRaw === undefined ? 1 : num(chRaw);
+  if (ch === null || (ch !== 1 && ch !== 2 && ch !== 4)) return null;
+  // Exactly that many floats, and base64 of exactly that many bytes.
+  if (data.length !== base64Length(texels * ch * 4)) return null;
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(data)) return null;
+  return { k: 'paint', t, tool: 'patch', layer, x0, y0, x1, y1, data, ...(ch === 1 ? {} : { ch }) };
+}
+
 /** Is this recorded event one the whole room has to see? */
 export function isSceneEvent(event: SessionEvent): event is SceneEvent {
   if (event.k === 'paint') return true;
@@ -169,6 +236,8 @@ function readPaintScene(rec: Record<string, unknown>, t: number): SceneEvent | n
   if (typeof tool !== 'string' || tool.length === 0 || tool.length > MAX_LABEL) return null;
   // The map was thrown away: no geometry, nothing to clamp.
   if (tool === 'clear') return { k: 'paint', t, tool };
+  // An undo: texels rather than a dab, and refused rather than clamped.
+  if (tool === 'patch') return readPatchScene(rec, t);
 
   const x = num(rec['x']);
   const z = num(rec['z']);

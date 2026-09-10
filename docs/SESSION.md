@@ -74,7 +74,7 @@ the log, so the log is always schedulable.
 | `retire` | `id`, `cause` | a creature left. `cause` is `population` (the guard), `operator`, `replaced` (same drawer sent a new drawing), `cleared` (clear-all / reset) |
 | `emote` | `id`, `emote`, `source` | an emote played. `source` is `phone` \| `key` \| `panel` |
 | `drive` | `id`, `ax`, `az`, `mag` | somebody steered a creature. `ax`/`az` are the ground-space direction under the camera at that moment, `mag` how hard. `mag: 0` (with no `ax`/`az`) is the release — the hand came off the stick. Thinned, never per frame — see below |
-| `paint` | `tool`, `x`, `z`, `r`, `strength`, `hardness?`, `mode?`, `seed?`, `flattenTo?`, `level?` | one dab of the terrain brush (dev). `tool` is `raise` \| `lower` \| `flatten` \| `smooth` on the height layer or `pond` \| `drain` on the water one; `x`/`z`/`r` are world units, the same space `egg` uses; `mode` is what the dab actually did (a tool erases with ctrl, smooths with alt); `seed` is the dab's own rim; `level` is the water tools' absolute surface height, so a replayed pond lays the plane the stroke chose rather than re-reading a bank that has since moved (absent on a drain). `{ tool: 'clear' }` — the map was thrown away — carries no geometry |
+| `paint` | `tool`, `x`, `z`, `r`, `strength`, `hardness?`, `mode?`, `seed?`, `flattenTo?`, `level?`, and for `patch`: `layer`, `x0`, `y0`, `x1`, `y1`, `data` | one dab of the terrain brush (dev). `tool` is a strip tool id — `sculpt` on the height layer, `pond` \| `river` on the water one, a planting brush on its own weight layer (older logs' `raise` \| `lower` \| `flatten` \| `smooth` \| `grove` \| `clearing` \| `drain` map on at the seam, src/dev/paint-tools.ts `LEGACY_TOOLS`); `x`/`z`/`r` are world units, the same space `egg` uses; `mode` is what the dab actually did (a tool erases with ctrl, smooths with alt); `seed` is the dab's own rim; `level` is the water tools' absolute surface height, so a replayed pond lays the plane the stroke chose rather than re-reading a bank that has since moved (absent on a drain). `{ tool: 'clear' }` — the map was thrown away — carries no geometry, and `{ tool: 'patch' }` carries a rectangle of texels somebody undid instead of a dab |
 | `keep` | `id`, `action`, `source` | somebody kept their creature: `action` is `photo` \| `model` \| `link`, `source` is `phone`. Informational — nothing in the world changed — and in the log because "somebody wanted to take this home" is what a session is judged on afterwards |
 | `operator` | `action`, `id`, `on?` | a moderation tap: `approve`, `discard`, `remove`, `block`, `unblock`, or `hold` (with `on` carrying the new hold-arrivals state). Bulk taps record one event per drawer, not one for the batch |
 | `world` | `field`, `value`, `kind?` | a world control an operator moved: `weather`, `timeOfDay`, `intensity`, `wind`, `density`, `kindDensity`/`kindScale` (with `kind`), `landscape` (`1` reveals the authored map, `0` returns the world to the flat plain it opens on), `terrain` (with `kind` — `elevation`, `tierStep` or `relief`), `grain`, `background`, `objectHue`/`objectSaturation`, `ink*`, `wanderSpeed` |
@@ -104,6 +104,19 @@ per-frame dump wearing an event's clothes:
   not work out for itself: `level`, the plane the stroke filled to. It is chosen
   once, from the bank around the stroke's first dab, and by replay time that bank
   may have been painted over.
+- **`paint` with `tool: 'patch'`** — the one paint event that is **not a dab**.
+  An undo (or a redo) puts a recorded rectangle of texels back into a layer, and
+  no stamp describes what it put there, so the texels themselves travel:
+  `layer`, the rect `x0`/`y0`/`x1`/`y1` in texels, and `data`, base64
+  little-endian Float32 row-major within the rect — one float per texel,
+  `(x1-x0+1) * (y1-y0+1)` of them. It replays through the same seam a dab does
+  (`stampPaint`), marks that layer dirty and rebuilds the kind that layer needs,
+  so ctrl+z on the projection reaches every phone and survives a reload. A
+  rectangle larger than `SCENE_MAX_PATCH_TEXELS` (4096, a 64×64 tile) is split
+  into tiles by the brush — a strip of tiles is still exactly the rectangle when
+  they all land. Unlike a dab, the door **refuses** a malformed patch rather than
+  clamping it: a dab is geometry and can be trimmed to the map, but a rect whose
+  payload is the wrong length would write a shifted image into somebody's world.
 
 Both still hold the rule the format is built on: an idle world records nothing,
 and nothing in the file is a per-frame sample of anything.
@@ -305,7 +318,7 @@ session — but even then the record is kept, so a recall can still ask for it.
 | `src/creatures/manager.ts` → `observer` | `egg`, `hatch` (with its cause), `retire` (with its cause), `emote` (with its source) |
 | `src/main.ts` → `applyDrive` | `drive`. The one seam every steering intent passes through on the page that SIMULATES — this screen's own stick, a viewer's intent off the wire, and the expiry that lets go for a phone that stopped talking. A route that steered a creature around it would be a hand on the world the log never saw |
 | `src/main.ts` → `connectWorldFeed({ onKeep })` | `keep`, on the host only, so a room with two screens open does not log it twice. The handset publishes `{ type: 'keep', from, action }` on the room's own topic (src/net/phoneLink.ts), the same transport an emote rides; with no link there is nothing sent and the save is exactly as saved |
-| `src/dev/paint.ts` → each tool's `onStamp`, and the `clear map` button | `paint` |
+| `src/dev/paint.ts` → each tool's `onStamp`, the `clear map` button, and the frame sweep that sees an undo's restored rect | `paint` |
 | `src/dev/index.ts` panel handlers | `world` control changes |
 | `RecorderOptions.onEvent` → `src/main.ts` | nothing new. It is the TAP the scene layer hangs on (§6): every scene event already crosses the recorder, so what makes it reach the other screens hangs there rather than on each control — the same argument that put the autosave on the gate's observer rather than on the mqtt callback |
 
@@ -344,7 +357,7 @@ and a serverless handler alike.
 |---|---|
 | `world` with `field: landscape` | `world` with `weather`, `timeOfDay`, `grain`, `background`, `ink*`, `density`, `wanderSpeed` … |
 | `world` with `field: terrain` (`kind` is `elevation` \| `tierStep` \| `relief`) | every other kind: `drawing`, `egg`, `hatch`, `drive`, `keep`, `operator` … |
-| `paint` — every dab, and `{ tool: 'clear' }` | |
+| `paint` — every dab, `{ tool: 'clear' }`, and `{ tool: 'patch' }` (an undo) | |
 
 The line is **the ground, not the look**. Weather and paper are cheap to set
 per page and a room where one person's phone re-tints everybody else's is a
