@@ -89,15 +89,15 @@ export const STRIP_TOOL_IDS = [
  * The tools that are in the strip but cannot paint yet, in the order they
  * are being built.
  *
- * Each is a real EnvPaint tool with nothing behind it in this world: `path`
- * wants an ink dirt trail in the ground marks, `comb` a lean-direction layer
- * the grass shader reads, `river` and `waterfall` the water machinery
- * carrying a level downhill and marking where it falls, `fire` an ink flame
- * mark and a scorch. Until one lands its button is disabled and its tooltip
+ * Each is a real EnvPaint tool with nothing behind it in this world: `comb`
+ * wants a lean-direction layer the grass reads, `river` and `waterfall` the
+ * water machinery carrying a level downhill and marking where it falls,
+ * `fire` an ink flame mark and a scorch. (`path` was one of these until it
+ * landed: it is a weight layer the ground draws as a dirt trail.) Until one lands its button is disabled and its tooltip
  * says so; nothing routes to it, and `layerForTool` refuses its id exactly as
  * it refuses any id it does not know.
  */
-export const COMING_TOOL_IDS = ['path', 'comb', 'river', 'waterfall', 'fire'] as const;
+export const COMING_TOOL_IDS = ['comb', 'river', 'waterfall', 'fire'] as const;
 
 /** True while a strip tool has nothing behind it yet — see COMING_TOOL_IDS. */
 export function isComingTool(id: string): boolean {

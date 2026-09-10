@@ -6,7 +6,7 @@
  * → grain (the final paper layer). GENERATOR §ink rendering pass.
  */
 
-import { Color, Scene, WebGLRenderer } from 'three';
+import { Color, Scene, WebGLRenderer, type Texture } from 'three';
 import { SURFACE } from '../taste/tokens';
 import { CameraRig } from './camera';
 import { createEnvironment, type Environment } from './environment';
@@ -135,6 +135,13 @@ export interface WorldHandles {
    * usable while an audience watches.
    */
   refreshScatter(): void;
+  /**
+   * Hand the ground the `path` brush's live weight texture, or `null` to
+   * stop drawing a trail (`Ground.setPaintedPath`). The dev paint skill's
+   * half of the dirt trail: the ground inks it, the scatter refuses to grow
+   * on it, and both read the one painted layer.
+   */
+  setPaintedPath(texture: Texture | null): void;
   /** Slide the camera back to the world's default view (`CameraRig.resetView`)
    * — the tool strip's home button. Never a cut: the rig retargets. */
   resetView(): void;
@@ -406,6 +413,9 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
     },
     resetView: (): void => {
       cameraRig.resetView();
+    },
+    setPaintedPath: (texture: Texture | null): void => {
+      ground.setPaintedPath(texture);
     },
     landscape: (): boolean => landscapeMode() === 'landscape',
     setSoloDrag: (enabled: boolean): void => {

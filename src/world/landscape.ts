@@ -891,6 +891,26 @@ export function setPaintedPlanting(
   paintedPlanting = sampler;
 }
 
+/**
+ * The planting weights at a point, straight from the installed sampler —
+ * every weight 0 when there is none.
+ *
+ * `sampleLandscape` already carries these for the point IT was asked about;
+ * this is for the one caller that needs a SECOND point in the same cell:
+ * scatter's painted pass, checking the cell's centre when the jittered seed
+ * point it normally speaks for turns out to be outside a narrow stroke
+ * (`hasPaintedPlanting` lets it skip the work entirely on an unpainted
+ * world, which is every cell of the shipped one).
+ */
+export function paintedPlantingAt(x: number, z: number): PlantingWeights {
+  return paintedPlanting ? paintedPlanting(x, z) : zeroPlanting();
+}
+
+/** Whether anybody has installed planting weights at all. */
+export function hasPaintedPlanting(): boolean {
+  return paintedPlanting !== null;
+}
+
 /** The painted offset at (x, z) — 0 when nothing is painted. */
 function painted(x: number, z: number): number {
   return paintedHeight ? paintedHeight(x, z) : 0;

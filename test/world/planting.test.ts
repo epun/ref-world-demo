@@ -274,6 +274,45 @@ describe('painted placement', () => {
     expect(swept).toBeLessThan(base);
   });
 
+  it('the path brush suppresses the painted term as well as the base one', () => {
+    // The one way a path is not a mask: a mask opens a glade in the world's
+    // own seeding and leaves a painted grove standing in it; a path is ground
+    // nothing stands on, painted or not. A trail with a tree in the middle of
+    // it is not a trail.
+    const grove = createPaintedMap();
+    stamp(grove, 'trees', 0, 0, 40);
+    const masked = createPaintedMap();
+    stamp(masked, 'trees', 0, 0, 40);
+    stamp(masked, 'mask', 0, 0, 40);
+    const trailed = createPaintedMap();
+    stamp(trailed, 'trees', 0, 0, 40);
+    stamp(trailed, 'path', 0, 0, 40);
+
+    const inside = (map: PaintedMap): number =>
+      painted(map, () => computePlacements().filter((p) => Math.hypot(p.x, p.z) < 30)).length;
+
+    const planted = inside(grove);
+    expect(planted).toBeGreaterThan(0);
+    // The mask leaves the painted stand alone…
+    expect(inside(masked)).toBeGreaterThan(0);
+    // …and the path clears the ground entirely.
+    expect(inside(trailed)).toBe(0);
+  });
+
+  it('the path plants nothing of its own', () => {
+    // It is a weight layer the GROUND reads (src/world/ground.ts inks the
+    // trail); it names no scatter kind at all.
+    expect(Object.keys(PAINT_SEED.path)).toEqual([]);
+    const map = createPaintedMap();
+    stamp(map, 'path', 60, 60, 25);
+    // Well inside the stamp, where the weight is saturated: at the rim it
+    // fades, and a fading path is meant to let the field back in.
+    const near = painted(map, () =>
+      computePlacements().filter((p) => Math.hypot(p.x - 60, p.z - 60) < 12),
+    );
+    expect(near).toEqual([]);
+  });
+
   it('plants grass tufts and flowers only where they are painted', () => {
     const map = createPaintedMap();
     stamp(map, 'grass', 70, -70, 25);
