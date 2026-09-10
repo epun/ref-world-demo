@@ -568,8 +568,8 @@ there because `envpaint/ui` does not export its stylesheet.
 | comb | `2` | paint | `comb` direction layer — grass and ticks lean at placement | shipped |
 | flowers | `w` | paint | `flowers` weight | shipped |
 | pond | `3` | paint | `water` level (shift/eraser drains) | shipped |
-| river | `4` | paint | a level carried downhill along the stroke | coming |
-| waterfall | `5` | paint | an ink mark where a level falls | coming |
+| river | `4` | paint | `water` level carried downhill, and a light carve (shift/eraser drains) | shipped |
+| waterfall | `5` | paint | an ink mark on the painted map's `marks` list (shift/eraser removes the nearest) | shipped |
 | trees | `6` | paint | `trees` weight | shipped |
 | rocks | `7` | paint | `rocks` weight | shipped |
 | fire | `f` | paint | `fire` weight — burns across painted grass, leaves scorch | shipped |
@@ -604,6 +604,30 @@ wind profile's slow smooth gust (TASTE §2.1: no pop). Scorch is drawn by the GR
 like the path texture and mixed toward `SURFACE.ink` and no further (TASTE §1). The world
 frame drives a throttled re-evaluation (`FIRE_TICK_MS`, ~4/s) and re-rolls the marks only when
 the burning SET changes.
+
+**The river** is the pond's machinery with a level that can only fall. Each dab carves a little
+channel (a `sculpt` `lower` dab, recorded as one, so a replay carves through the path that
+already exists) and then fills to the plane this stretch of the stroke belongs to: the bank
+around the dab less `basinDrop`, taken as a **running minimum** and bounded by a gradient so it
+cannot chase the basin it has just cut. A dab inside water somebody else painted takes that
+body's plane — a river reaching a pond joins it.
+
+A river is a **chain of pools**, not one sheet [D]. `deriveWater` levels every texel of one
+connected body to that body's own plane (lowest wins), because in this world a body of water
+*is* a plane — so a continuous ribbon from a hill to a valley would flatten to its lowest dab
+and the ground would cut a canyon the length of the stroke. Where the running level has fallen
+by a real step, the stroke drains a short **riser** across itself: the run above and the run
+below derive as two bodies, each at its own level, and the river descends the way water in a
+plane-surfaced world has to. The riser is also exactly where a waterfall mark belongs.
+
+**The waterfall** writes no layer at all. It appends `{ kind: 'waterfall', x, z, seed, yaw }` to
+`PaintedMap.marks` (serialised beside the layers; a map written before marks existed loads with
+none), and `src/world/waterfall-marks.ts` draws it — vertical hatched falling lines with splash
+ticks at the foot, two authored variants, through the same instanced mark path as the grass
+tufts and the reeds. The facing is read down the local gradient through the `Surface` seam and
+**recorded**, like a pond's `level`, because the ground it came off may have been sculpted by
+the time a log replays; the span is the surface at the lip less the surface one run downhill.
+One mark a stroke. Automatic placement across a riser is *not* built.
 
 A tool that is *coming* sits in its place holding its key, disabled, tooltip `coming`:
 the strip is the picture of the whole kit and a gap in it would be a different kit.

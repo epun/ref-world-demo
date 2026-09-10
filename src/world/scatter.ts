@@ -69,8 +69,13 @@ import {
 } from './props';
 import { stampEllipse, stampRotationY, type StampEllipse } from './shadows';
 import { ROLLING_SURFACE, type Surface } from './surface';
+import {
+  buildWaterfallGeometries,
+  WATERFALL_VARIANTS,
+  waterfallPlacements,
+} from './waterfall-marks';
 
-export type MarkKind = 'tick' | 'reed' | 'grass' | 'flower' | 'flame';
+export type MarkKind = 'tick' | 'reed' | 'grass' | 'flower' | 'flame' | 'waterfall';
 export type ScatterKind = PropKind | MarkKind;
 
 /** The flat ink marks: no collider, no shadow stamp, no inflated variant
@@ -81,7 +86,8 @@ function isMark(kind: ScatterKind): kind is MarkKind {
     kind === 'reed' ||
     kind === 'grass' ||
     kind === 'flower' ||
-    kind === 'flame'
+    kind === 'flame' ||
+    kind === 'waterfall'
   );
 }
 
@@ -99,6 +105,9 @@ export const MARK_VARIANT_COUNTS: Record<MarkKind, number> = {
   // decision, not a structural one — `buildFlameGeometry` takes the index
   // already.
   flame: 1,
+  // Painted, never rolled: a waterfall is stamped one at a time and its
+  // variants live in src/world/waterfall-marks.ts.
+  waterfall: WATERFALL_VARIANTS,
 };
 
 /** Authored variant count for any scatter kind, marks included. */
@@ -202,6 +211,9 @@ const SEED_PROB: Record<ScatterKind, number> = {
   // not ROLL at all. A flame stands where the fire field says something is
   // alight (see FLAME_MIN), and nowhere else.
   flame: 0,
+  // A waterfall never rolls either: it is placed one at a time by the brush
+  // and appended to the frame after the roll (see `rebuild`).
+  waterfall: 0,
 };
 
 // ── painted planting (2026-09-09, user ask) ──────────────────────────────────
@@ -990,13 +1002,17 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
               plantAt,
             );
           } else if (kind === 'flower') {
-            // Flowers cluster tighter and sparser than grass — a few heads.
+            // A MEADOW, not a few specimens (2026-09-10, user report: the
+            // density is too small). 4-9 blooms spread over the whole cell
+            // rather than 2-4 huddled in the middle of it — the brush's
+            // table already puts grass through them, so the patch reads as
+            // a meadow and not as a bouquet.
             cluster(
               'flower',
               ix,
               iz,
-              1 + Math.floor(cellHash(ix, iz, FLOWER_SALT) * 3) + bonus,
-              spread * 0.7,
+              3 + Math.floor(cellHash(ix, iz, FLOWER_SALT) * 6) + bonus,
+              spread,
               plantAt,
             );
           } else {
@@ -1450,26 +1466,34 @@ function flowerStem(
   const dirX = Math.cos(a);
   const dirZ = -Math.sin(a);
   const spine = bladeSpine(h, lean, dirX, dirZ, seed + 2.3, 4);
-  ribbon(positions, spine, dirX, dirZ, 0.019, 0.7);
+  ribbon(positions, spine, dirX, dirZ, 0.032, 0.7);
   const tip = spine[spine.length - 1]!;
   return { x: tip[0], y: tip[1], z: tip[2], dirX, dirZ };
 }
 
 /**
- * [D] The three flower studies, 0.3-0.5 u tall: a daisy (ring of petal
- * loops round an open centre), a bell (a drooping cup), a bud (a small
- * closed knob). Ink lines only - no fill, and no colour that is not already
- * in the tokens (they render in the ink material with everything else).
+ * [D] The three flower studies, 0.8-1.1 u tall: a daisy (ring of petal loops
+ * round an open centre), a bell (a drooping cup), a bud (a small closed
+ * knob). Ink lines only - no fill, and no colour that is not already in the
+ * tokens (they render in the ink material with everything else).
+ *
+ * DOUBLED from 0.3-0.5 u (2026-09-10, user report: *"the scale of the
+ * flowers and density are too small"*). At the projection's default framing
+ * a 0.4 u study was a few pixels of hairline and read as lint on the paper;
+ * a bloom now stands a head above a grass blade's tip (0.35-0.7 u), which is
+ * what makes it read AS a bloom. The pen thickens with it — a stroke that
+ * stays at 0.017 while the drawing doubles reads as a finer pen, not a
+ * bigger flower.
  */
 function buildFlowerGeometry(variant: number): BufferGeometry {
   const positions: number[] = [];
   if (variant === 1) {
     // bell - a stem that leans over and carries a cup hanging off its tip.
-    const t = flowerStem(positions, 0.5, 0.12, 61.1);
-    const cupR = 0.1;
+    const t = flowerStem(positions, 1.0, 0.12, 61.1);
+    const cupR = 0.2;
     // The cup: an open loop below the tip, plus a lip stroke under it, so it
     // reads as hanging rather than as a bead on a wire.
-    inkLoop(positions, t.x, t.y - cupR * 0.9, t.z, cupR, cupR * 1.15, t.dirX, t.dirZ, 62.2);
+    inkLoop(positions, t.x, t.y - cupR * 0.9, t.z, cupR, cupR * 1.15, t.dirX, t.dirZ, 62.2, 0.03);
     ribbon(
       positions,
       [
@@ -1479,27 +1503,27 @@ function buildFlowerGeometry(variant: number): BufferGeometry {
       ],
       t.dirX,
       t.dirZ,
-      0.017,
+      0.03,
       1,
     );
   } else if (variant === 2) {
     // bud - a short stem with a small closed knob, and one leaf low down.
-    const t = flowerStem(positions, 0.38, 0.06, 71.1);
-    inkLoop(positions, t.x, t.y + 0.06, t.z, 0.066, 0.082, t.dirX, t.dirZ, 72.2, 0.018, 7);
-    ribbon(positions, bladeSpine(0.16, 0.1, -t.dirX, -t.dirZ, 73.3, 3), -t.dirX, -t.dirZ, 0.019);
+    const t = flowerStem(positions, 0.8, 0.06, 71.1);
+    inkLoop(positions, t.x, t.y + 0.12, t.z, 0.13, 0.16, t.dirX, t.dirZ, 72.2, 0.031, 7);
+    ribbon(positions, bladeSpine(0.33, 0.1, -t.dirX, -t.dirZ, 73.3, 3), -t.dirX, -t.dirZ, 0.032);
   } else {
     // daisy - a ring of petal loops round an OPEN centre: the paper is the
     // flower's middle, which is the reference's whole trick.
-    const t = flowerStem(positions, 0.44, 0.05, 51.1);
+    const t = flowerStem(positions, 0.9, 0.05, 51.1);
     const petals = 6;
-    const ring = 0.078;
+    const ring = 0.155;
     for (let i = 0; i < petals; i++) {
       const a = (i / petals) * Math.PI * 2 + markHash(51.1 + i) * 0.18;
       // Petals lie in the flower's own plane, splayed round the stem tip.
       const px = t.x + t.dirX * Math.cos(a) * ring;
       const pz = t.z + t.dirZ * Math.cos(a) * ring;
       const py = t.y + Math.sin(a) * ring * 0.9;
-      inkLoop(positions, px, py, pz, 0.046, 0.038, t.dirX, t.dirZ, 52.2 + i * 3.3, 0.016, 7);
+      inkLoop(positions, px, py, pz, 0.092, 0.076, t.dirX, t.dirZ, 52.2 + i * 3.3, 0.028, 7);
     }
   }
   const geometry = new BufferGeometry();
@@ -1588,6 +1612,7 @@ export function buildMarkGeometries(): Record<MarkKind, BufferGeometry[]> {
     grass: GRASS_TUFTS.map((_, i) => buildGrassGeometry(i)),
     flower: [0, 1, 2].map((i) => buildFlowerGeometry(i)),
     flame: [buildFlameGeometry(0)],
+    waterfall: buildWaterfallGeometries(),
   };
 }
 
@@ -1982,6 +2007,7 @@ export const KIND_GROUP_LABELS: Record<ScatterKind, string> = {
   grass: 'grass tufts',
   flower: 'flowers',
   flame: 'flames',
+  waterfall: 'waterfalls',
 };
 
 export interface ScatterOptions {
@@ -1994,7 +2020,14 @@ export interface ScatterOptions {
 }
 
 /** Mark kinds in build order — the render loop's counterpart to PROP_KINDS. */
-const MARK_KIND_ORDER: readonly MarkKind[] = ['tick', 'reed', 'grass', 'flower', 'flame'];
+const MARK_KIND_ORDER: readonly MarkKind[] = [
+  'tick',
+  'reed',
+  'grass',
+  'flower',
+  'flame',
+  'waterfall',
+];
 
 /**
  * How far above the ground one cloud floats: the shared altitude plus its
@@ -2352,7 +2385,16 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
     // Colliders track visible placements: drop the cache, bump the version.
     colliderCache = null;
     colliderVersion++;
-    const visible = filterExcluded(placements, exclusions);
+    // The painted marks ride in AFTER the exclusion filter, and after the
+    // roll rather than inside it (2026-09-10, user ask: the waterfall tool).
+    // Two reasons, and they are the cloud's and the mountain's: somebody put
+    // this mark here by hand and a creature walking past must not blink it
+    // out (TASTE §2.3 is a character's negative space on the ground), and its
+    // height spans the ground the Surface reports RIGHT NOW, so it is read
+    // fresh on every rebuild rather than frozen into a placement list.
+    const visible = filterExcluded(placements, exclusions).concat(
+      waterfallPlacements(surface),
+    );
 
     // One InstancedMesh per (kind, variant) — ~30 draws total.
     for (const kind of PROP_KINDS) {

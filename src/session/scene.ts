@@ -120,6 +120,14 @@ function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
 }
 
+/** An angle onto (-π, π]. A clamp would turn a wound-up rotation into a
+ * facing nobody meant; a wrap is the same direction. */
+function wrapAngle(v: number): number {
+  const tau = Math.PI * 2;
+  const wrapped = v - Math.floor((v + Math.PI) / tau) * tau;
+  return wrapped;
+}
+
 /** A finite number, or null. */
 function num(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
@@ -182,6 +190,12 @@ function readPaintScene(rec: Record<string, unknown>, t: number): SceneEvent | n
   // sheet on every screen. Same clamp as the flatten target — it is a height.
   const level = rec['level'] === undefined ? null : num(rec['level']);
   if (rec['level'] !== undefined && level === null) return null;
+  // A waterfall mark's facing (src/session/events.ts `yaw`): without it a
+  // synced mark would face whatever gradient the receiving page happens to
+  // have under it. Wrapped rather than clamped — it is an angle, and every
+  // real one is somewhere on the circle.
+  const yaw = rec['yaw'] === undefined ? null : num(rec['yaw']);
+  if (rec['yaw'] !== undefined && yaw === null) return null;
   const mode = rec['mode'];
   if (mode !== undefined && (typeof mode !== 'string' || mode.length > MAX_LABEL)) return null;
   // The comb's heading (src/session/events.ts `dx`/`dz`). A UNIT vector by
@@ -209,6 +223,7 @@ function readPaintScene(rec: Record<string, unknown>, t: number): SceneEvent | n
     ...(flattenTo === null ? {} : { flattenTo: clamp(flattenTo, -MAX_HEIGHT, MAX_HEIGHT) }),
     ...(level === null ? {} : { level: clamp(level, -MAX_HEIGHT, MAX_HEIGHT) }),
     ...heading,
+    ...(yaw === null ? {} : { yaw: wrapAngle(yaw) }),
   };
 }
 

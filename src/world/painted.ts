@@ -112,6 +112,29 @@ export const PLANT_BRUSHES = [
 ] as const;
 export type PlantBrush = (typeof PLANT_BRUSHES)[number];
 
+/**
+ * One placed ink mark that is NOT a scatter roll — somebody stamped it here
+ * (2026-09-10, user ask: *"i want to match the brushes for env paint
+ * exactly"*, the waterfall tool).
+ *
+ * A weight layer says "more of this family around here" and the roll decides
+ * where; a waterfall is a single mark at one spot, facing one way, so it is a
+ * LIST and not a layer. It rides on the painted map because the map is the
+ * one object a projection restores.
+ *
+ * `yaw` is the mark's y rotation, already in the scatter's own convention
+ * (local +x is the way the water falls), recorded at stamp time from the
+ * terrain gradient so a replay faces it the same way on ground that has
+ * since moved. `seed` picks the variant and its hand-wobble.
+ */
+export interface PaintedMark {
+  kind: 'waterfall';
+  x: number;
+  z: number;
+  seed: number;
+  yaw: number;
+}
+
 /** One weight per brush at a point, each in [0,1]. */
 export type PlantingWeights = Record<PlantBrush, number>;
 
@@ -183,6 +206,12 @@ export interface PaintedMap {
    * as what a water level means is painted-water.ts's.
    */
   fire: Float32Array;
+  /**
+   * Placed ink marks, in the order they were stamped. Not a layer: see
+   * `PaintedMark`. Mutated in place (the array is the one the brush appends
+   * to and the one the world reads), like every buffer above it.
+   */
+  marks: PaintedMark[];
 }
 
 /** The serialised form: the same numbers, base64, for a committed map.json. */
@@ -207,6 +236,9 @@ export interface PaintedMapJson {
   /** The fire layer, same encoding. Absent in a map written before it, and
    * such a map loads with nothing alight. */
   fire?: string;
+  /** Placed marks, plain json. Absent in a map written before marks existed —
+   * such a map loads with none, which is what it had. */
+  marks?: PaintedMark[];
 }
 
 /**
@@ -227,11 +259,12 @@ export function createPaintedMap(
   water?: Float32Array,
   planting?: Partial<Record<PlantBrush, Float32Array>>,
   plantingRes: number = PLANTING_RES,
+  marks?: PaintedMark[],
   /** The two layers that are not planting weights but ride at the planting
    * resolution: the comb (2 channels) and the fire brush's weight. Adopted by
    * reference on the same terms as everything else, and allocated when
    * absent. An OBJECT rather than two more positional arguments — this
-   * signature is already six deep. */
+   * signature is already seven deep. */
   extra?: { comb?: Float32Array; fire?: Float32Array },
 ): PaintedMap {
   if (!Number.isInteger(res) || res < 2) throw new Error(`painted map: res must be >= 2, got ${res}`);
@@ -278,6 +311,9 @@ export function createPaintedMap(
     // lean to the north-west (src/world/comb.ts explains why that matters).
     comb: extra?.comb ?? new Float32Array(combCount),
     fire: extra?.fire ?? new Float32Array(fireCount),
+    // Adopted by reference like every buffer above, and a fresh empty list
+    // otherwise: an unpainted map has no marks on it.
+    marks: marks ?? [],
   };
 }
 
@@ -292,6 +328,8 @@ export function clearPaintedMap(map: PaintedMap): void {
   // paint layer's, and that layer is constructed at the neutral.
   map.comb.fill(COMB_NEUTRAL);
   map.fire.fill(0);
+  // In place, not a new array: the list is shared exactly as the buffers are.
+  map.marks.length = 0;
 }
 
 /**
@@ -468,6 +506,9 @@ export function serializeMap(map: PaintedMap): PaintedMapJson {
     planting,
     comb: encodeBase64(comb),
     fire: encodeBase64(fire),
+    // Copied one level deep, for the reason the header gives: the caller may
+    // hold this while painting continues.
+    marks: map.marks.map((m) => ({ ...m })),
   };
 }
 
@@ -505,5 +546,19 @@ export function deserializeMap(o: PaintedMapJson): PaintedMap {
   const extra: { comb?: Float32Array; fire?: Float32Array } = {};
   if (o.comb !== undefined) extra.comb = layer(o.comb, 'comb', plantFloats * COMB_CHANNELS);
   if (o.fire !== undefined) extra.fire = layer(o.fire, 'fire', plantFloats);
-  return createPaintedMap(o.res, o.size, height, water, planting, plantingRes, extra);
+  // Marks are read defensively rather than trusted: this payload may come out
+  // of a store a moderator writes, and a mark with no place is not a mark.
+  const marks: PaintedMark[] = [];
+  for (const m of o.marks ?? []) {
+    if (!m || m.kind !== 'waterfall') continue;
+    if (!Number.isFinite(m.x) || !Number.isFinite(m.z)) continue;
+    marks.push({
+      kind: 'waterfall',
+      x: m.x,
+      z: m.z,
+      seed: Number.isFinite(m.seed) ? m.seed : 0,
+      yaw: Number.isFinite(m.yaw) ? m.yaw : 0,
+    });
+  }
+  return createPaintedMap(o.res, o.size, height, water, planting, plantingRes, marks, extra);
 }

@@ -34,7 +34,9 @@ export const WATER_LAYER = 'water';
 export const HEIGHT_TOOL_IDS = ['sculpt', 'raise', 'lower', 'flatten', 'smooth'] as const;
 export type HeightToolId = (typeof HEIGHT_TOOL_IDS)[number];
 
-/** The one tool that writes the water level layer. */
+/** The first tool that wrote the water level layer, and the one every older
+ * scene was recorded under. Kept as its own export because the tests and the
+ * legacy table name it. */
 export const WATER_TOOL_ID = 'pond';
 
 /**
@@ -60,6 +62,19 @@ export const COMB_LAYER = 'comb';
  */
 export const FIRE_TOOL_ID = 'fire';
 export const FIRE_LAYER = 'fire';
+
+/**
+ * The tools that write the water level layer.
+ *
+ * `river` joined `pond` on 2026-09-10 (user ask: *"i want to match the
+ * brushes for env paint exactly"*). It is the same layer and the same
+ * `writeLevelDisc` stamp — what differs is only which plane a dab fills to:
+ * a pond picks one for the whole stroke, a river carries a running minimum
+ * downhill. `waterfall` is deliberately NOT here: it writes no layer at all,
+ * it appends a mark to the painted map, so `layerForTool` refuses it exactly
+ * as it refuses any id with no layer behind it.
+ */
+export const WATER_TOOL_IDS = ['pond', 'river'] as const;
 
 /**
  * The strip, in EnvPaint's own order and with its own hotkeys (2026-09-10,
@@ -113,16 +128,19 @@ export const STRIP_TOOL_IDS = [
  * The tools that are in the strip but cannot paint yet, in the order they
  * are being built.
  *
- * Each is a real EnvPaint tool with nothing behind it in this world: `river`
- * and `waterfall` want the water machinery carrying a level downhill and
- * marking where it falls. (`path` was one of these until it landed — a weight
- * layer the ground draws as a dirt trail — and so were `comb`, which now
- * writes a direction layer the grass leans into, and `fire`, which now burns
- * across painted grass and leaves scorch.) Until one lands its button is disabled and its tooltip
+ * NOTHING IS, as of 2026-09-10: `path` landed first (a weight layer the
+ * ground draws as a dirt trail), then `river` and `waterfall` together (the
+ * level layer carries a running minimum downhill and the painted map carries
+ * a mark where it falls), then `comb` (a direction layer the grass leans
+ * into) and `fire` (a front that burns across painted grass and leaves
+ * scorch). The list and the machinery around it stay: the strip is the
+ * picture of the whole kit, and the next tool EnvPaint ships that this world
+ * has no environment item for goes in here rather than being left out of it.
+ * Until one lands its button is disabled and its tooltip
  * says so; nothing routes to it, and `layerForTool` refuses its id exactly as
  * it refuses any id it does not know.
  */
-export const COMING_TOOL_IDS = ['river', 'waterfall'] as const;
+export const COMING_TOOL_IDS = [] as readonly string[];
 
 /** True while a strip tool has nothing behind it yet — see COMING_TOOL_IDS. */
 export function isComingTool(id: string): boolean {
@@ -186,7 +204,7 @@ export function resolveTool(
 export function layerForTool(tool: string): string | null {
   const id = resolveTool(tool).tool;
   if ((HEIGHT_TOOL_IDS as readonly string[]).includes(id)) return HEIGHT_LAYER;
-  if (id === WATER_TOOL_ID) return WATER_LAYER;
+  if ((WATER_TOOL_IDS as readonly string[]).includes(id)) return WATER_LAYER;
   if (id === COMB_TOOL_ID) return COMB_LAYER;
   if (id === FIRE_TOOL_ID) return FIRE_LAYER;
   if ((PLANT_BRUSHES as readonly string[]).includes(id)) return id;

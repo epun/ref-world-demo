@@ -97,6 +97,38 @@ describe('the door', () => {
     expect(readSceneEvent({ k: 'world', t: 1, field: 'landscape', value: 0 })?.k).toBe('world');
   });
 
+  it('lets a waterfall mark through with its seed and its facing', () => {
+    // 2026-09-10, user ask: the waterfall tool. The mark's facing is recorded
+    // because the ground it was read off may have been sculpted by the time a
+    // log replays; the door WRAPS it rather than clamping, because a clamp
+    // would turn a wound-up angle into a direction nobody meant.
+    const event = readSceneEvent({
+      k: 'paint',
+      t: 3,
+      tool: 'waterfall',
+      x: 10,
+      z: -20,
+      r: 3,
+      seed: 41,
+      yaw: Math.PI * 2 + 0.5,
+    });
+    expect(event).toMatchObject({ k: 'paint', tool: 'waterfall', x: 10, z: -20, seed: 41 });
+    expect((event as { yaw?: number }).yaw).toBeCloseTo(0.5, 6);
+    // Not a number is not an angle.
+    expect(readSceneEvent({ k: 'paint', t: 3, tool: 'waterfall', x: 0, z: 0, r: 1, yaw: 'down' }))
+      .toBeNull();
+    // …and a mark stamped before the field existed still reads, facing
+    // whatever the receiving page's gradient says.
+    expect(
+      readSceneEvent({ k: 'paint', t: 3, tool: 'waterfall', x: 0, z: 0, r: 1 }),
+    ).not.toBeNull();
+  });
+
+  it('lets a river dab through carrying the plane it filled to', () => {
+    const event = readSceneEvent({ k: 'paint', t: 4, tool: 'river', x: 1, z: 2, r: 3, level: -1.5 });
+    expect(event).toMatchObject({ k: 'paint', tool: 'river', level: -1.5 });
+  });
+
   it('refuses a landscape switch that is not an answer to a switch', () => {
     expect(readSceneEvent({ k: 'world', t: 1, field: 'landscape', value: 'on' })).toBeNull();
     expect(readSceneEvent({ k: 'world', t: 1, field: 'landscape', value: 7 })).toBeNull();
