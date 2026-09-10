@@ -74,6 +74,21 @@ export {
 } from './replay';
 
 export {
+  MAX_SCENE_BATCH,
+  MAX_SCENE_EVENTS,
+  SCENE_EXTENT,
+  SCENE_MAX_RADIUS,
+  SCENE_TERRAIN_LIMITS,
+  SCENE_WORLD_FIELDS,
+  compactScene,
+  isSceneEvent,
+  readSceneBatch,
+  readSceneEvent,
+  type SceneEvent,
+  type SceneWorldField,
+} from './scene';
+
+export {
   recordCreatures,
   recordGate,
   type CreatureObserverShape,

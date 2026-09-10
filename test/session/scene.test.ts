@@ -1,0 +1,378 @@
+/**
+ * The scene layer's pure half (src/session/scene.ts, docs/SESSION.md §6).
+ *
+ * Three claims live here and nowhere else:
+ *
+ *   1. WHICH events are the scene. A drawing is not; a dab is. Get this wrong
+ *      and either the room stops sharing its ground or every phone starts
+ *      broadcasting its whole population at everybody else.
+ *   2. The DOOR clamps. These arrive over a public broker and out of a
+ *      database, so a batch has to be unable to hand the world a brush the
+ *      size of the map — the same rule `readWorldSyncMessage` keeps for a
+ *      drive, and the reason it is pinned rather than assumed.
+ *   3. COMPACTION cannot change what a fresh page ends up looking at. It is
+ *      what keeps a world that has been painted every day from becoming a
+ *      megabyte on arrival, and it is only allowed to drop what is already
+ *      unobservable.
+ *
+ * Plus the recorder's `onEvent`, which is the seam all of it hangs on.
+ */
+
+import { describe, expect, it } from 'vitest';
+import {
+  MAX_SCENE_BATCH,
+  MAX_SCENE_EVENTS,
+  SCENE_EXTENT,
+  SCENE_MAX_RADIUS,
+  SCENE_TERRAIN_LIMITS,
+  SCENE_WORLD_FIELDS,
+  compactScene,
+  isSceneEvent,
+  readSceneBatch,
+  readSceneEvent,
+  type SceneEvent,
+} from '../../src/session/scene';
+import { createSessionRecorder, type SessionEvent } from '../../src/session';
+import { TERRAIN_LIMITS } from '../../src/world/landscape';
+import { PAINTED_SIZE } from '../../src/world/painted';
+
+const dab = (over: Partial<Record<string, unknown>> = {}): Record<string, unknown> => ({
+  k: 'paint',
+  t: 10,
+  tool: 'raise',
+  x: 4,
+  z: -6,
+  r: 12,
+  strength: 0.4,
+  seed: 0.25,
+  ...over,
+});
+
+describe('the copies of the world constants', () => {
+  it('the mirrored terrain limits are the real ones', () => {
+    // src/session/ may only import pure siblings (purity.test.ts), so the
+    // dials' ranges are copied into the scene module. A copy that drifted
+    // would clamp a legitimate dial or let an illegitimate one through, and
+    // nothing else in the build would notice.
+    expect(SCENE_TERRAIN_LIMITS).toEqual(TERRAIN_LIMITS);
+  });
+
+  it('the mirrored map extent is the real one', () => {
+    expect(SCENE_EXTENT).toBe(PAINTED_SIZE);
+  });
+});
+
+describe('which events are the scene', () => {
+  it('the ground dials and the brush are', () => {
+    expect(isSceneEvent({ k: 'world', t: 0, field: 'landscape', value: 1 })).toBe(true);
+    expect(
+      isSceneEvent({ k: 'world', t: 0, field: 'terrain', value: 1.2, kind: 'elevation' }),
+    ).toBe(true);
+    expect(isSceneEvent({ k: 'paint', t: 0, tool: 'raise', x: 0, z: 0, r: 4 })).toBe(true);
+    expect(isSceneEvent({ k: 'paint', t: 0, tool: 'clear' })).toBe(true);
+  });
+
+  it('the look and the cast are not', () => {
+    // Weather and paper are look: cheap to set per page, and a room where one
+    // phone re-tints everybody else's is a worse room.
+    expect(isSceneEvent({ k: 'world', t: 0, field: 'weather', value: 'fog' })).toBe(false);
+    expect(isSceneEvent({ k: 'world', t: 0, field: 'grain', value: 0.3 })).toBe(false);
+    expect(isSceneEvent({ k: 'hatch', t: 0, id: 'a', cause: 'timer' })).toBe(false);
+    expect(isSceneEvent({ k: 'drive', t: 0, id: 'a', mag: 0 })).toBe(false);
+  });
+
+  it('the field list is the two that shape the ground', () => {
+    expect([...SCENE_WORLD_FIELDS]).toEqual(['landscape', 'terrain']);
+  });
+});
+
+describe('the door', () => {
+  it('reads a landscape switch as 1 or 0, however it was written', () => {
+    expect(readSceneEvent({ k: 'world', t: 1, field: 'landscape', value: true })).toEqual({
+      k: 'world',
+      t: 1,
+      field: 'landscape',
+      value: 1,
+    });
+    expect(readSceneEvent({ k: 'world', t: 1, field: 'landscape', value: 0 })?.k).toBe('world');
+  });
+
+  it('refuses a landscape switch that is not an answer to a switch', () => {
+    expect(readSceneEvent({ k: 'world', t: 1, field: 'landscape', value: 'on' })).toBeNull();
+    expect(readSceneEvent({ k: 'world', t: 1, field: 'landscape', value: 7 })).toBeNull();
+    expect(readSceneEvent({ k: 'world', t: 1, field: 'landscape', value: null })).toBeNull();
+  });
+
+  it('clamps a terrain dial to its own range', () => {
+    const high = readSceneEvent({
+      k: 'world',
+      t: 2,
+      field: 'terrain',
+      value: 999,
+      kind: 'elevation',
+    });
+    expect(high).toEqual({
+      k: 'world',
+      t: 2,
+      field: 'terrain',
+      value: SCENE_TERRAIN_LIMITS['elevation']![1],
+      kind: 'elevation',
+    });
+    const low = readSceneEvent({
+      k: 'world',
+      t: 2,
+      field: 'terrain',
+      value: -50,
+      kind: 'relief',
+    });
+    expect((low as { value: number }).value).toBe(SCENE_TERRAIN_LIMITS['relief']![0]);
+  });
+
+  it('refuses a dial with no name, an unknown name, or no number', () => {
+    expect(readSceneEvent({ k: 'world', t: 2, field: 'terrain', value: 1 })).toBeNull();
+    expect(
+      readSceneEvent({ k: 'world', t: 2, field: 'terrain', value: 1, kind: 'wobble' }),
+    ).toBeNull();
+    expect(
+      readSceneEvent({ k: 'world', t: 2, field: 'terrain', value: 'a lot', kind: 'relief' }),
+    ).toBeNull();
+    expect(
+      readSceneEvent({ k: 'world', t: 2, field: 'terrain', value: NaN, kind: 'relief' }),
+    ).toBeNull();
+  });
+
+  it('carries a pond dab\'s plane, clamped like a height', () => {
+    const pond = readSceneEvent(dab({ tool: 'pond', level: 3.5 })) as { level?: number };
+    expect(pond.level).toBe(3.5);
+    const deep = readSceneEvent(dab({ tool: 'pond', level: -1e9 })) as { level?: number };
+    expect(deep.level).toBe(-1000);
+    expect(readSceneEvent(dab({ tool: 'pond', level: 'wet' }))).toBeNull();
+  });
+
+  it('refuses a world field that is not the ground', () => {
+    expect(readSceneEvent({ k: 'world', t: 0, field: 'weather', value: 'rain' })).toBeNull();
+  });
+
+  it('reads a dab, and clamps its place and its size', () => {
+    expect(readSceneEvent(dab())).toEqual({
+      k: 'paint',
+      t: 10,
+      tool: 'raise',
+      x: 4,
+      z: -6,
+      r: 12,
+      strength: 0.4,
+      seed: 0.25,
+    });
+    const wild = readSceneEvent(dab({ x: 1e9, z: -1e9, r: 1e6 })) as {
+      x: number;
+      z: number;
+      r: number;
+    };
+    expect(wild.x).toBe(SCENE_EXTENT);
+    expect(wild.z).toBe(-SCENE_EXTENT);
+    expect(wild.r).toBe(SCENE_MAX_RADIUS);
+  });
+
+  it('a clear carries no geometry and needs none', () => {
+    expect(readSceneEvent({ k: 'paint', t: 3, tool: 'clear' })).toEqual({
+      k: 'paint',
+      t: 3,
+      tool: 'clear',
+    });
+  });
+
+  it('refuses a dab with no place, no size, or a size of nothing', () => {
+    expect(readSceneEvent(dab({ x: undefined }))).toBeNull();
+    expect(readSceneEvent(dab({ r: undefined }))).toBeNull();
+    expect(readSceneEvent(dab({ r: 0 }))).toBeNull();
+    expect(readSceneEvent(dab({ r: -3 }))).toBeNull();
+    expect(readSceneEvent(dab({ z: 'over there' }))).toBeNull();
+  });
+
+  it('refuses labels that are not labels', () => {
+    expect(readSceneEvent(dab({ tool: '' }))).toBeNull();
+    expect(readSceneEvent(dab({ tool: 'r'.repeat(64) }))).toBeNull();
+    expect(readSceneEvent(dab({ mode: 'm'.repeat(64) }))).toBeNull();
+    expect(readSceneEvent(dab({ tool: 4 }))).toBeNull();
+  });
+
+  it('clamps a dab amount rather than trusting it', () => {
+    const huge = readSceneEvent(dab({ strength: 1e6, hardness: 42 })) as {
+      strength: number;
+      hardness: number;
+    };
+    expect(huge.strength).toBeLessThanOrEqual(8);
+    expect(huge.hardness).toBe(1);
+  });
+
+  it('an absent offset is the start of the session, a negative one is junk', () => {
+    expect(readSceneEvent({ k: 'paint', t: undefined, tool: 'clear' })?.t).toBe(0);
+    expect(readSceneEvent({ k: 'paint', t: -1, tool: 'clear' })).toBeNull();
+    expect(readSceneEvent({ k: 'paint', t: Infinity, tool: 'clear' })).toBeNull();
+  });
+
+  it('refuses anything that is not an event at all', () => {
+    expect(readSceneEvent(null)).toBeNull();
+    expect(readSceneEvent('paint')).toBeNull();
+    expect(readSceneEvent([])).toBeNull();
+    expect(readSceneEvent({ k: 'drawing', t: 0, id: 'a', strokes: [] })).toBeNull();
+  });
+
+  it('a batch drops what will not read and keeps what will', () => {
+    // Dropping rather than refusing the batch: this is a live world's ground
+    // arriving in pieces, and one dent must not cost a phone the landscape.
+    const batch = readSceneBatch([dab(), { k: 'paint', t: 0 }, dab({ tool: 'lower' })]);
+    expect(batch).toHaveLength(2);
+    expect(batch.map((e) => (e as { tool: string }).tool)).toEqual(['raise', 'lower']);
+    expect(readSceneBatch('not a list')).toEqual([]);
+  });
+
+  it('a batch is capped', () => {
+    const many = Array.from({ length: MAX_SCENE_BATCH + 40 }, () => dab());
+    expect(readSceneBatch(many)).toHaveLength(MAX_SCENE_BATCH);
+    // …and the cap is a wire cap, not a world cap: the store may hold far more.
+    expect(readSceneBatch(many, MAX_SCENE_EVENTS)).toHaveLength(many.length);
+  });
+});
+
+describe('compaction', () => {
+  const world = (field: string, value: number, kind?: string): SceneEvent =>
+    ({ k: 'world', t: 0, field, value, ...(kind === undefined ? {} : { kind }) }) as SceneEvent;
+  const stamp = (tool: string): SceneEvent =>
+    ({ k: 'paint', t: 0, tool, x: 0, z: 0, r: 4 }) as SceneEvent;
+
+  it('a dial keeps only its last value', () => {
+    const out = compactScene([
+      world('terrain', 0.5, 'elevation'),
+      world('terrain', 0.9, 'elevation'),
+      world('terrain', 1.4, 'elevation'),
+    ]);
+    expect(out).toHaveLength(1);
+    expect((out[0] as { value: number }).value).toBe(1.4);
+  });
+
+  it('each dial is its own knob', () => {
+    const out = compactScene([
+      world('landscape', 1),
+      world('terrain', 1, 'elevation'),
+      world('terrain', 2, 'tierStep'),
+      world('landscape', 0),
+    ]);
+    expect(out).toHaveLength(3);
+    expect((out[out.length - 1] as { field: string; value: number }).value).toBe(0);
+  });
+
+  it('a clear swallows every dab before it, and itself', () => {
+    const out = compactScene([
+      stamp('raise'),
+      stamp('raise'),
+      stamp('clear'),
+      stamp('lower'),
+    ]);
+    // A page that never stamped anything has nothing to clear, so the clear
+    // goes with the dabs it threw away.
+    expect(out).toEqual([stamp('lower')]);
+  });
+
+  it('a clear does not touch the dials', () => {
+    const out = compactScene([world('landscape', 1), stamp('raise'), stamp('clear')]);
+    expect(out).toEqual([world('landscape', 1)]);
+  });
+
+  it('what survives keeps its order', () => {
+    // A flatten depends on the ground it is flattening, and a landscape
+    // switch decides what a dab is landing on.
+    const events = [
+      stamp('raise'),
+      world('landscape', 1),
+      stamp('flatten'),
+      world('terrain', 1, 'relief'),
+      stamp('smooth'),
+    ];
+    expect(compactScene(events)).toEqual(events);
+  });
+
+  it('nothing compacts to nothing', () => {
+    expect(compactScene([])).toEqual([]);
+  });
+});
+
+describe('the recorder tells its observer', () => {
+  const recorderWith = (seen: SessionEvent[]) => {
+    let clock = 0;
+    return createSessionRecorder({
+      epoch: 'w-test',
+      room: 'abcd',
+      startedAt: '2026-09-09T00:00:00.000Z',
+      config: {},
+      now: () => (clock += 1000),
+      onEvent: (event) => seen.push(event),
+    });
+  };
+
+  it('every appended event reaches it', () => {
+    const seen: SessionEvent[] = [];
+    const rec = recorderWith(seen);
+    rec.paint({ tool: 'raise', x: 1, z: 2, r: 3 });
+    rec.emote('a', 'wave', 'panel');
+    rec.world('landscape', 1);
+    expect(seen.map((e) => e.k)).toEqual(['paint', 'emote', 'world']);
+    expect(seen.length).toBe(rec.count());
+  });
+
+  it('a coalesced drag reports the rewritten event, not a second one', () => {
+    const seen: SessionEvent[] = [];
+    let clock = 0;
+    const rec = createSessionRecorder({
+      epoch: 'w-test',
+      room: 'abcd',
+      startedAt: '2026-09-09T00:00:00.000Z',
+      config: {},
+      // Inside the coalesce window, so the second write rewrites the first.
+      now: () => (clock += 10),
+      onEvent: (event) => seen.push(event),
+    });
+    rec.world('terrain', 0.4, 'elevation');
+    rec.world('terrain', 0.8, 'elevation');
+    expect(rec.count()).toBe(1);
+    expect(seen).toHaveLength(2);
+    // Both notifications describe the one event that is actually in the log —
+    // the scene layer downstream must broadcast where the hand ended up.
+    expect((seen[1] as { value: number }).value).toBe(0.8);
+    expect(seen[1]).toBe(rec.events()[0]);
+  });
+
+  it('an event the limit refused is not announced', () => {
+    const seen: SessionEvent[] = [];
+    let clock = 0;
+    const rec = createSessionRecorder({
+      epoch: 'w-test',
+      room: 'abcd',
+      startedAt: '2026-09-09T00:00:00.000Z',
+      config: {},
+      now: () => (clock += 1000),
+      limit: 2,
+      onEvent: (event) => seen.push(event),
+    });
+    rec.paint({ tool: 'raise' });
+    rec.paint({ tool: 'raise' });
+    rec.paint({ tool: 'raise' });
+    expect(rec.overflowed()).toBe(true);
+    // An event that is not in the log did not happen, and must not be shared.
+    expect(seen).toHaveLength(2);
+  });
+
+  it('a recorder with no observer behaves exactly as before', () => {
+    let clock = 0;
+    const rec = createSessionRecorder({
+      epoch: 'w-test',
+      room: 'abcd',
+      startedAt: '2026-09-09T00:00:00.000Z',
+      config: {},
+      now: () => (clock += 1000),
+    });
+    rec.world('landscape', 1);
+    expect(rec.count()).toBe(1);
+  });
+});

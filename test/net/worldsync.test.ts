@@ -130,6 +130,70 @@ describe('reading what arrived', () => {
   });
 });
 
+describe('a scene message (docs/SESSION.md §6)', () => {
+  const dab = { k: 'paint', t: 0, tool: 'raise', x: 1, z: 2, r: 3 };
+
+  it('carries the events it can read', () => {
+    const msg = readWorldSyncMessage({ t: 'scene', id: 'a', seq: 4, events: [dab] });
+    expect(msg).toEqual({ t: 'scene', id: 'a', seq: 4, events: [dab] });
+  });
+
+  it('drops the events it cannot, and keeps the rest', () => {
+    // A live world's ground arrives in pieces. Refusing the packet over one
+    // dent means a phone that never sees the landscape at all.
+    const msg = readWorldSyncMessage({
+      t: 'scene',
+      id: 'a',
+      seq: 0,
+      events: [dab, { k: 'paint', t: 0 }, { k: 'drawing', t: 0, id: 'x' }],
+    });
+    expect((msg as { events: unknown[] }).events).toHaveLength(1);
+  });
+
+  it('clamps what it does let through', () => {
+    const msg = readWorldSyncMessage({
+      t: 'scene',
+      id: 'a',
+      seq: 0,
+      events: [{ ...dab, r: 1e9 }],
+    }) as { events: { r: number }[] };
+    expect(msg.events[0]!.r).toBeLessThanOrEqual(200);
+  });
+
+  it('caps one packet', () => {
+    const many = Array.from({ length: 700 }, () => dab);
+    const msg = readWorldSyncMessage({ t: 'scene', id: 'a', seq: 0, events: many });
+    expect((msg as { events: unknown[] }).events).toHaveLength(500);
+  });
+
+  it('survives a missing seq and a missing list', () => {
+    expect(readWorldSyncMessage({ t: 'scene', id: 'a' })).toEqual({
+      t: 'scene',
+      id: 'a',
+      seq: 0,
+      events: [],
+    });
+  });
+
+  it('resets only on the exact word', () => {
+    // A truthy anything must not be able to wipe the world's map.
+    expect(
+      (readWorldSyncMessage({ t: 'scene', id: 'a', seq: 0, events: [], reset: true }) as {
+        reset?: true;
+      }).reset,
+    ).toBe(true);
+    expect(
+      (readWorldSyncMessage({ t: 'scene', id: 'a', seq: 0, events: [], reset: 1 }) as {
+        reset?: true;
+      }).reset,
+    ).toBeUndefined();
+  });
+
+  it('still needs a sender', () => {
+    expect(readWorldSyncMessage({ t: 'scene', seq: 0, events: [] })).toBeNull();
+  });
+});
+
 describe('following without stepping', () => {
   it('converges monotonically and never overshoots', () => {
     // Frames land 5 times a second; placing a creature ON each one is a

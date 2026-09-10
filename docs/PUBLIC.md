@@ -230,6 +230,80 @@ that confirms it exists to an unauthorised caller has told them something.
 A moderation endpoint that opens itself when misconfigured is worse than
 one that never works.
 
+## the scene
+
+The drawings survive a redeploy. Until 2026-09-09 the **world they stand in**
+did not: the landscape switch, the three terrain dials and every dab of the
+terrain brush lived in the page that made them, so a new build opened onto the
+flat plain the world ships as, under a population that came back grown. And a
+phone looking at the world — which is this same page, running its own copy of
+it — saw that plain while the projection had hills.
+
+So a world keeps its **scene** too: `refworld:<world>:scene`, a list of the
+same session events the log already records, applied on every page through the
+same replay driver (docs/SESSION.md §6).
+
+```
+GET  /api/scene?world=<name>
+```
+
+No auth, `cache-control: no-store`, and that is deliberate: the scene is what
+everyone standing in the world is already looking at, and a phone has to be
+able to read it before it can draw the ground under its creature. Refusing it
+would only produce a room where the projection has hills and the handsets do
+not.
+
+```jsonc
+{ "world": "meridian", "store": "live", "count": 412, "events": [ /* … */ ] }
+```
+
+`store` is `live` or `none`, the same honest signal `/api/drawings` gives: a
+world with no database behind it reads empty either way, and the difference is
+worth saying rather than looking like a quiet night.
+
+```bash
+# append changes
+curl -X POST -H "x-moderator: $MODERATOR_SECRET" -H 'content-type: application/json' \
+  -d '{"events":[{"k":"world","t":0,"field":"landscape","value":1}]}' \
+  'https://<host>/api/scene?world=meridian'
+
+# throw the whole scene away
+curl -X POST -H "x-moderator: $MODERATOR_SECRET" -H 'content-type: application/json' \
+  -d '{"reset":true}' 'https://<host>/api/scene?world=meridian'
+```
+
+Writing is the **moderator's**, gated on the same shared secret as
+`/api/moderate` and **404 without it**, for the same reason: an endpoint that
+confirms it exists to an unauthorised caller has told them something. Writing
+here re-shapes the world for everybody, which is exactly the operator's job
+and nobody else's. `503` with no store; `400` when nothing in the batch reads;
+`413` past 500 events in one write.
+
+Every event goes through `readSceneEvent` on the way in and on the way out
+(`src/session/scene.ts`), which **clamps** — a stored scene cannot hand a
+world a brush the size of the map, whatever wrote it.
+
+### `?mod=` on the projection
+
+The page that is doing the sculpting needs that secret. A projection has no
+login and nowhere to type, so it arrives in the address:
+
+```
+https://<host>/?host=1&mod=<MODERATOR_SECRET>
+```
+
+…and leaves again immediately. It is stored under `refworld:moderator` on that
+device, stripped out of the url with `history.replaceState`, and **never
+printed** — not in a readout, not in an error, not in the panel's `scene`
+line, which says only whether writing worked. The url on the projection is the
+one people photograph off the wall and the one an operator copies to send
+round; a share link carrying the secret would hand the room's whole world to
+whoever read it over somebody's shoulder.
+
+A page with no secret still sculpts, still broadcasts, and still reads the
+stored scene. It simply does not keep what it makes, and the panel says so:
+`scene · 412 events · not stored (no secret)`.
+
 ## the switches
 
 Two things an operator changes without a deploy, both on `/api/moderate`:

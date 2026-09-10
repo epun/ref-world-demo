@@ -16,3 +16,6 @@ __pycache__/
 # screenshots written by the scratch smokes (scratch/*.mjs); the scripts are
 # committed, their output is evidence for one run and not a repo artefact.
 scratch/*.png
+
+# agent worktrees the harness checks out under the repo; never a repo artefact.
+.claude/worktrees/

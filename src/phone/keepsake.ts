@@ -63,25 +63,50 @@ export const KEEPSAKE_MARGIN = 1.32;
  */
 export { keepUrl, keepsakeFilename, readKeepId } from './keeplink';
 
-export type DeliveryResult = 'shared' | 'downloaded' | 'failed';
+export type DeliveryResult = 'shared' | 'downloaded' | 'opened' | 'failed';
 
 /**
- * Put a file where the person can find it.
+ * Has the share sheet already refused once in this document?
  *
- * Two routes, and which one is right depends entirely on the handset.
+ * Not a preference — a fact about this browser, learned the only way it
+ * can be learned. A refusal costs the tap that discovered it (see below),
+ * so remembering it is what makes the SECOND tap work instead of failing
+ * the same way forever.
+ */
+let shareRefused = false;
+
+/** Are we the companion inside the world's panel, rather than a page? */
+function framed(): boolean {
+  try {
+    return window.parent !== window;
+  } catch {
+    // Cross-origin parent: not our panel, so behave as a page.
+    return false;
+  }
+}
+
+/**
+ * Put a file where the person can find it, WITHOUT losing the tap.
  *
- * On iOS the share sheet is the ONLY route that reaches the camera roll —
- * a download link there lands the file in Files, several taps deep, which
- * for a picture is the same as losing it. So the share sheet is tried
- * first whenever the browser says it can carry this file.
+ * On iOS the share sheet is the only route that reaches the camera roll —
+ * a download there lands the file in Files, several taps deep, which for a
+ * picture is the same as losing it. So the sheet is tried first whenever
+ * the browser says it can carry this file. Everywhere else, and for
+ * anything the sheet refuses (it commonly refuses model files), a file is
+ * the honest answer and is what a desktop wants anyway.
  *
- * Everywhere else, and for anything the share sheet refuses (it commonly
- * refuses model files), a download is the honest answer and is what a
- * desktop wants anyway.
+ * The thing that has to be got right is what happens when the sheet says
+ * NO. This used to `await nav.share(...)` and, on rejection, fall through
+ * to the download anchor — but by then the tap's user activation has been
+ * spent on the share that failed, so the download is refused as well and
+ * NOTHING HAPPENS (user report, 2026-09-09: *"the 3d file … isn't
+ * working"*). A refusal is now reported as a failure, so the row says `try
+ * again` rather than lying, and it is REMEMBERED: the next tap skips the
+ * sheet and goes straight to the file with a live gesture behind it.
  *
  * A cancelled share is NOT a failure: the person pressed cancel, they know
- * what happened, and falling through to a download would hand them a file
- * they just declined. `AbortError` is the browser telling us that.
+ * what happened, and falling through would hand them a file they just
+ * declined. `AbortError` is the browser telling us that.
  */
 export async function deliver(blob: Blob, filename: string): Promise<DeliveryResult> {
   const nav = navigator as Navigator & {
@@ -89,30 +114,74 @@ export async function deliver(blob: Blob, filename: string): Promise<DeliveryRes
     share?: (data: { files?: File[]; title?: string }) => Promise<void>;
   };
   const file = new File([blob], filename, { type: blob.type });
-  if (typeof nav.share === 'function' && nav.canShare?.({ files: [file] })) {
+  if (!shareRefused && typeof nav.share === 'function' && nav.canShare?.({ files: [file] })) {
     try {
       await nav.share({ files: [file] });
       return 'shared';
     } catch (err) {
-      // Cancelled. Nothing went wrong and nothing else should happen.
       if (err instanceof Error && err.name === 'AbortError') return 'shared';
-      // Anything else: fall through and try the download.
+      shareRefused = true;
+      return 'failed';
     }
   }
+  return saveFile(blob, filename);
+}
+
+/**
+ * The file itself — synchronous to the browser call, so it runs on the
+ * tap's own activation.
+ *
+ * Two routes, and the frame is what decides. A `download` anchor is the
+ * right one on a page: the browser saves the file under the name it was
+ * given and says so. INSIDE THE COMPANION'S IFRAME it is the one most
+ * likely to be dropped on the floor — a framed download is blocked
+ * outright by some engines, and mobile safari ignores `download` on a blob
+ * url and navigates instead, which in a frame means the person's companion
+ * goes somewhere rather than the file arriving. So a framed PICTURE opens
+ * in a tab of its own, which is also how a person on a phone gets one into
+ * their camera roll: press and hold, save image.
+ *
+ * `window.open` needs the same user activation the anchor does — which is
+ * exactly why this is called from the tap and never after an await.
+ */
+function saveFile(blob: Blob, filename: string): DeliveryResult {
+  let url = '';
   try {
-    const url = URL.createObjectURL(blob);
+    url = URL.createObjectURL(blob);
+    // Revoked on a timer rather than immediately — revoking in the same
+    // tick cancels the transfer that has only just started.
+    const forget = (): void => {
+      window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    };
+    /*
+     * A PICTURE, in a frame, goes to a tab of its own — and only a
+     * picture. `window.open` carries no filename, so a model opened this
+     * way arrives as an unnamed blob (measured in chromium: a download
+     * called `e16f0657-aedf-…`), which is a worse file than the anchor's
+     * named one and no easier to reach. A png in a tab is different: it is
+     * the only route from a framed companion to a camera roll, and there
+     * is nothing to name because nobody files a picture they are about to
+     * press and hold on.
+     */
+    if (framed() && blob.type.startsWith('image/')) {
+      const opened = window.open(url, '_blank');
+      if (opened) {
+        forget();
+        return 'opened';
+      }
+    }
     const anchor = document.createElement('a');
     anchor.href = url;
     anchor.download = filename;
     // Appended, because a detached anchor's click is ignored in some
-    // browsers, and revoked on a timer rather than immediately — revoking
-    // in the same tick cancels the download that has only just started.
+    // browsers.
     document.body.appendChild(anchor);
     anchor.click();
     anchor.remove();
-    window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    forget();
     return 'downloaded';
   } catch {
+    if (url) URL.revokeObjectURL(url);
     return 'failed';
   }
 }
@@ -166,8 +235,24 @@ export async function renderKeepsake(
   canvas.height = sidePx;
 
   let renderer: WebGLRenderer | null = null;
+  let ink: InkPass | null = null;
   try {
-    renderer = new WebGLRenderer({ canvas, antialias: true, alpha: false });
+    renderer = new WebGLRenderer({
+      canvas,
+      antialias: true,
+      alpha: false,
+      /*
+       * The frame has to survive being read.
+       *
+       * Without this the drawing buffer may be cleared the moment the
+       * browser composites, and everything about a one-shot export happens
+       * around that moment. It costs one extra buffer for the few hundred
+       * milliseconds this renderer exists, and the pixels are read straight
+       * back below rather than through `canvas.toBlob`, so between the two
+       * there is nothing left for a mobile gpu to throw away.
+       */
+      preserveDrawingBuffer: true,
+    });
     // Exactly one device pixel per canvas pixel: the canvas is already the
     // size we want, and a pixel ratio on top of it would render at 2048 and
     // hand back a file twice the size for no visible gain.
@@ -185,8 +270,29 @@ export async function renderKeepsake(
     camera.position.set(centre.x, centre.y, 12);
     camera.lookAt(centre.x, centre.y, 0);
 
-    const ink = new InkPass();
+    ink = new InkPass();
     const grain = new GrainPass();
+    /*
+     * SIZE THE PASSES. Measured cause of the blank keepsake (user report,
+     * 2026-09-09, from a real handset: *"the photo in particular is
+     * blank"*).
+     *
+     * Both passes build their render targets at 1x1 in their constructors
+     * and only get their real measure from `setSize` — the alive screen
+     * calls it from `sizePortrait` on every layout, which is why the
+     * portrait in the person's hand has always been right. This path never
+     * called it. So the whole scene was rendered into a ONE PIXEL target
+     * and that pixel was stretched over the export: measured at 256px, the
+     * saved png held 19 distinct colours, zero ink pixels, and a flat
+     * rgb(144,144,139) — not even the paper value. Every picture anybody
+     * has saved has been that square.
+     *
+     * Pixel ratio 1, to match `setPixelRatio` above: the canvas is already
+     * the pixel size we want.
+     */
+    ink.setSize(sidePx, sidePx, 1);
+    grain.setSize(sidePx, sidePx, 1);
+
     // One frame, at a fixed time. The ambient drift and the grain are both
     // time-driven, and a keepsake should be reproducible: the same creature
     // saved twice is the same picture, not two frames of an animation.
@@ -194,17 +300,78 @@ export async function renderKeepsake(
     character.update(0, at);
     grain.compose(renderer, ink.render(renderer, scene, camera, at), at);
 
+    /*
+     * Read the pixels back HERE, in the same task as the draw call, off the
+     * default framebuffer the grain pass just composed into.
+     *
+     * `canvas.toBlob` is asynchronous, and on a handset the gap between the
+     * render and the callback is exactly where the drawing buffer goes
+     * away. `readPixels` is synchronous and returns the frame that was just
+     * drawn; from there the picture lives in a 2d canvas, which has no
+     * drawing buffer to lose.
+     */
+    const gl = renderer.getContext();
+    const pixels = new Uint8Array(sidePx * sidePx * 4);
+    gl.readPixels(0, 0, sidePx, sidePx, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+    if (!frameHasInk(pixels)) return null;
+
+    const flat = document.createElement('canvas');
+    flat.width = sidePx;
+    flat.height = sidePx;
+    const flatCtx = flat.getContext('2d');
+    if (!flatCtx) return null;
+    const image = flatCtx.createImageData(sidePx, sidePx);
+    // gl reads bottom-up; a png is top-down. One row copy each way.
+    const stride = sidePx * 4;
+    for (let y = 0; y < sidePx; y++) {
+      image.data.set(pixels.subarray((sidePx - 1 - y) * stride, (sidePx - y) * stride), y * stride);
+    }
+    flatCtx.putImageData(image, 0, 0);
+
     return await new Promise<Blob | null>((resolve) => {
-      canvas.toBlob((blob) => resolve(blob), 'image/png');
+      flat.toBlob((blob) => resolve(blob), 'image/png');
     });
   } catch {
     return null;
   } finally {
     // The context is a real gpu resource on a handset that has two others
     // running. It goes back whether or not the render worked.
+    ink?.dispose();
     renderer?.dispose();
     character?.dispose?.();
   }
+}
+
+/**
+ * Is there a creature in this frame, or is it an empty square?
+ *
+ * A keepsake is a near-black silhouette on paper, so a frame with no dark
+ * pixels in it is not a picture of anything — it is the failure mode this
+ * export shipped with, and it is indistinguishable from success to
+ * everything downstream: a flat grey png is a perfectly valid png, it
+ * shares, it downloads, it lands in the camera roll. Checking the pixels is
+ * the only thing that can tell the two apart, so it is checked here and a
+ * blank frame is a FAILED render — the row says `try again`, which is true,
+ * instead of handing somebody an empty square and calling it saved.
+ *
+ * The threshold is a fraction of the frame rather than a single pixel: one
+ * stray dark texel is noise, and a creature at any size covers far more
+ * than a two-thousandth of the picture it is the subject of.
+ *
+ * Exported because it is the only part of the export chain that can be
+ * checked without a gpu, and it is the part that decides whether a person
+ * is told the truth.
+ */
+export function frameHasInk(pixels: Uint8Array): boolean {
+  const threshold = Math.max(16, Math.floor(pixels.length / 4 / 2000));
+  let dark = 0;
+  for (let i = 0; i < pixels.length; i += 4) {
+    if (pixels[i]! < 90 && pixels[i + 1]! < 90 && pixels[i + 2]! < 90) {
+      dark++;
+      if (dark >= threshold) return true;
+    }
+  }
+  return false;
 }
 
 /**

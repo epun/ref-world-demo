@@ -227,7 +227,30 @@ export interface PaintProbe {
    * throttle, so a replayed stroke grows the hill the way the stroke did.
    */
   applyPaint(event: PaintEvent): void;
+  /**
+   * Re-apply MANY recorded dabs and re-cut the ground once.
+   *
+   * Not a convenience wrapper: `applyPaint` rebuilds on the stroke throttle,
+   * and a rebuild is ~300ms of re-displacing 103k vertices. The throttle
+   * measures from the START of a rebuild, so a tight loop of stamps clears
+   * the 125ms gap every single time and pays for a full re-cut per dab —
+   * a phone loading a stored scene of five hundred dabs would sit there for
+   * two minutes. The scene layer (src/main.ts) arrives in batches by nature,
+   * so it stamps a batch and re-cuts once.
+   */
+  applyPaintBatch(events: readonly PaintEvent[]): void;
 }
+
+/**
+ * Fired on `window` the moment the probe above is installed.
+ *
+ * The paint skill arrives by dynamic import behind the ghost panel, so on any
+ * page there is a window — a second or two — where a stored or broadcast dab
+ * has nowhere to land. The scene loader queues those and waits for this
+ * rather than polling or dropping them, so painting shows up on a phone whose
+ * owner never opens the panel (2026-09-09, the demo plan).
+ */
+export const PAINT_READY_EVENT = 'refworld:paint-ready';
 
 /**
  * Register `refworld.paint` on a ghost panel.
@@ -872,23 +895,25 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
   /** Both layers: `clearPaintedMap` puts the height back to 0 and the level
    * back to `DRY`, and the two rects are what tell the undo sweep and the
    * texture upload that it happened. The button records the tap; a replay
-   * calls this straight, because the tap it is replaying is already logged. */
+   * calls this straight, because the tap it is replaying is already logged.
+   * The REBUILD is the caller's, so a clear arriving in the middle of a
+   * synced batch does not re-cut the ground on its own — but the water flag
+   * is raised here, so whichever rebuild follows takes the water path and
+   * derives the field to null rather than leaving the last pond installed
+   * over an empty layer. */
   const clearMap = (): void => {
     clearPaintedMap(map);
     heightLayer.markDirtyRect(0, 0, PAINTED_RES - 1, PAINTED_RES - 1);
     waterLayer.markDirtyRect(0, 0, PAINTED_RES - 1, PAINTED_RES - 1);
     history.clear();
-    // Down the water path, so the field is derived (to null) and taken off
-    // the geography and the renderer — a rebuild alone would leave the last
-    // pond installed over an empty layer.
     waterDirty = true;
-    rebuildNow();
   };
   folder.addButton('clear map', () => {
     // An action, so it is in the record: without it a replay would keep
     // every dab of a map somebody threw away.
     handles.session?.paint({ tool: 'clear' });
     clearMap();
+    rebuildNow();
   });
   folder.addInfo('', 'paint-range');
   refreshReadout();
@@ -917,7 +942,9 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
    * stack. Ctrl+z is for the hand that is painting, and a log playing back
    * is not one.
    */
-  const applyPaint = (event: PaintEvent): void => {
+  /** One recorded dab into the layer, and nothing else — no rebuild, no undo
+   * entry. The two entry points below decide when the ground is re-cut. */
+  const stampPaint = (event: PaintEvent): void => {
     if (event.tool === 'clear') {
       clearMap();
       return;
@@ -945,17 +972,29 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
       const drain = event.mode === 'erase' || event.tool === 'drain';
       stampWater(op, { x: event.x, y: 0, z: event.z, u, v }, drain, null);
       strokeLevel = held;
-      rebuildSoon();
       return;
     }
     if (event.mode === 'flatten' && event.flattenTo !== undefined) flattenTo = event.flattenTo;
     heightLayer.stamp(event.mode === 'flatten' ? { ...op, flattenTo } : op);
+  };
+
+  const applyPaint = (event: PaintEvent): void => {
+    stampPaint(event);
     rebuildSoon();
+  };
+
+  const applyPaintBatch = (events: readonly PaintEvent[]): void => {
+    for (const event of events) stampPaint(event);
+    // ONE re-cut for the batch, and `Now` rather than `Soon`: a batch is
+    // already a whole gesture's worth of ground, so what is on screen when it
+    // lands is what is in the map — the same rule `strokeend` keeps.
+    rebuildNow();
   };
 
   const probe: PaintProbe = {
     brush,
     applyPaint,
+    applyPaintBatch,
     setPainting: (on: boolean): void => {
       folder.get('paint-on')?.setValue?.(on);
       setPainting(on);
@@ -969,6 +1008,10 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
   };
   const scope = window as Window & { __refworldPaint?: PaintProbe };
   scope.__refworldPaint = probe;
+  // Announced rather than polled: the scene layer holds dabs that arrived
+  // before this skill did, and it has to be told the moment there is
+  // somewhere to put them (see PAINT_READY_EVENT).
+  window.dispatchEvent(new CustomEvent(PAINT_READY_EVENT));
   disposers.push(() => {
     delete scope.__refworldPaint;
   });

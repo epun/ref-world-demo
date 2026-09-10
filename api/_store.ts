@@ -19,6 +19,12 @@
  */
 
 import { Redis } from '@upstash/redis';
+import {
+  MAX_SCENE_EVENTS,
+  compactScene,
+  readSceneEvent,
+  type SceneEvent,
+} from '../src/session/scene.js';
 
 /** A drawing as it is stored, and as the world reads it back. */
 export interface StoredDrawing {
@@ -80,6 +86,7 @@ const listKey = (world: string): string => `refworld:${world}:drawings`;
 const deviceKey = (world: string, device: string): string =>
   `refworld:${world}:device:${device}`;
 const configKey = (world: string): string => `refworld:${world}:config`;
+const sceneKey = (world: string): string => `refworld:${world}:scene`;
 const rateKey = (world: string, who: string, hour: number): string =>
   `refworld:${world}:rate:${hour}:${who}`;
 
@@ -297,6 +304,92 @@ export async function setDisposition(
         // less than pretending the refusal failed.
       }
     }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/* ── the scene (src/session/scene.ts, docs/SESSION.md §6) ─────────────────
+ *
+ * WHY THE SCENE IS IN THE STORE AT ALL (2026-09-09, the demo plan: *"update
+ * the url without resetting the scene and losing everyone's eggs"*). The
+ * drawings already survive a redeploy — they are up here and come back grown.
+ * The world those creatures stand in did not: the landscape switch, the three
+ * terrain dials and every dab of the brush lived in the page that made them,
+ * so a new build opened onto the flat plain the world ships as, under a
+ * population that had spent the evening somewhere else entirely.
+ *
+ * A list, in the order the changes were made, because order is what makes
+ * them mean anything: a flatten depends on the ground it is flattening. Same
+ * discipline as everything else in this file — never throws, and with no
+ * store configured every call is a quiet no-op.
+ */
+
+/** Every scene change this world has kept, oldest first. */
+export async function readScene(world: string): Promise<SceneEvent[]> {
+  const db = store();
+  if (!db) return [];
+  try {
+    const rows = await db.lrange<SceneEvent | string>(sceneKey(world), 0, -1);
+    const out: SceneEvent[] = [];
+    for (const row of rows) {
+      // Upstash parses json for us when it can; older writes may be strings.
+      let parsed: unknown = row;
+      if (typeof row === 'string') {
+        try {
+          parsed = JSON.parse(row);
+        } catch {
+          continue;
+        }
+      }
+      const event = readSceneEvent(parsed);
+      if (event) out.push(event);
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Append changes, compacting the list when it has grown past its ceiling.
+ *
+ * COMPACTION IS NOT TRIMMING. Dropping the oldest events would drop the
+ * landscape switch and leave a world of dabs floating over a flat plain;
+ * `compactScene` instead throws away what is already unobservable — a dial
+ * that was moved again afterwards, a dab that was later cleared — so what
+ * remains still lands a fresh page on exactly the scene the room is looking
+ * at (src/session/scene.ts).
+ */
+export async function appendScene(
+  world: string,
+  events: readonly SceneEvent[],
+): Promise<{ ok: boolean; count: number; reason?: string }> {
+  const db = store();
+  if (!db) return { ok: false, count: 0, reason: 'no store configured' };
+  const key = sceneKey(world);
+  try {
+    if (events.length === 0) return { ok: true, count: await db.llen(key) };
+    const length = await db.rpush(key, ...events.map((event) => JSON.stringify(event)));
+    if (length <= MAX_SCENE_EVENTS) return { ok: true, count: length };
+    const compacted = compactScene(await readScene(world));
+    await db.del(key);
+    if (compacted.length > 0) {
+      await db.rpush(key, ...compacted.map((event) => JSON.stringify(event)));
+    }
+    return { ok: true, count: compacted.length };
+  } catch (err) {
+    return { ok: false, count: 0, reason: err instanceof Error ? err.message : 'store write failed' };
+  }
+}
+
+/** Throw the whole scene away — the panel's `reset scene`. */
+export async function clearScene(world: string): Promise<boolean> {
+  const db = store();
+  if (!db) return false;
+  try {
+    await db.del(sceneKey(world));
     return true;
   } catch {
     return false;

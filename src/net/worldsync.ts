@@ -43,6 +43,8 @@
  * wired in src/main.ts.
  */
 
+import { MAX_SCENE_BATCH, readSceneBatch, type SceneEvent } from '../session/scene';
+
 /** How often the host repeats its claim. */
 export const HOST_HEARTBEAT_MS = 2000;
 /** A claim older than this is from a page that has gone away. Three beats,
@@ -125,7 +127,44 @@ export interface DriveMessage {
   mag: number;
 }
 
-export type WorldSyncMessage = HostClaim | RosterMessage | PoseMessage | DriveMessage;
+/**
+ * A change to the SHARED SCENE — the landscape switch, a terrain dial, a dab
+ * of the brush (src/session/scene.ts, docs/SESSION.md §6).
+ *
+ * 2026-09-09, the demo plan: the operator sculpts the world live in front of
+ * the room, and every phone — each of which is running its own copy of this
+ * same page — has to see the ground change under its creature. Poses cannot
+ * carry that: they say where the cast is standing, not what it is standing
+ * on, and a viewer following poses over a flat plain has its creatures
+ * hovering above a world it never heard about.
+ *
+ * LIKE `drive`, THIS IS NOT A HOST CLAIM. It travels sideways rather than
+ * down: whoever moved the ground says so, and every page — host or viewer —
+ * applies it, because every page is drawing that ground for itself. Letting
+ * it into the election would make a phone with a brush a candidate to
+ * simulate the world.
+ *
+ * `seq` is the sender's own counter. Nothing depends on it today (the events
+ * are idempotent and the store is the tiebreak); it is here so a receiver
+ * that ever needs to notice a gap can, without a format change.
+ *
+ * `reset` is the whole scene thrown away — the panel's `reset scene`. It
+ * carries no events: there is nothing to describe about an empty map.
+ */
+export interface SceneMessage {
+  t: 'scene';
+  id: string;
+  seq: number;
+  events: SceneEvent[];
+  reset?: true;
+}
+
+export type WorldSyncMessage =
+  | HostClaim
+  | RosterMessage
+  | PoseMessage
+  | DriveMessage
+  | SceneMessage;
 
 /**
  * How often a held stick repeats its intent.
@@ -277,6 +316,24 @@ export function readWorldSyncMessage(value: unknown): WorldSyncMessage | null {
       x: Math.max(-1, Math.min(1, x)),
       z: Math.max(-1, Math.min(1, z)),
       mag: Math.max(0, Math.min(1, mag)),
+    };
+  }
+  if (rec['t'] === 'scene') {
+    // Every event goes through the scene module's own door, which clamps
+    // (src/session/scene.ts). One bad event is DROPPED and the rest of the
+    // batch stands: this is a live world's ground arriving in pieces, and
+    // refusing the packet over one dent means a phone that never sees the
+    // landscape at all.
+    const seq = typeof rec['seq'] === 'number' && Number.isFinite(rec['seq']) ? rec['seq'] : 0;
+    const events = readSceneBatch(rec['events'], MAX_SCENE_BATCH);
+    return {
+      t: 'scene',
+      id,
+      seq,
+      events,
+      // Only the exact word. A truthy anything must not be able to wipe the
+      // world's map.
+      ...(rec['reset'] === true ? { reset: true as const } : {}),
     };
   }
   if (rec['t'] === 'poses' && typeof rec['rev'] === 'number' && Array.isArray(rec['p'])) {
