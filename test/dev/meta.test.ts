@@ -183,18 +183,28 @@ describe('the paint skill is wired the way the port plan asks', () => {
   const source = readFileSync(join(process.cwd(), 'src/dev/paint.ts'), 'utf8');
 
   it('installs the painted sampler on the landscape, and takes it off again', () => {
-    expect(source).toContain("import { setPaintedHeight } from '../world/landscape'");
+    expect(source).toContain(
+      "import { setPaintedHeight, setPaintedPlanting } from '../world/landscape'",
+    );
     expect(source).toContain('setPaintedHeight(paintedSampler(map))');
     expect(source).toContain('setPaintedHeight(null)');
+    // …and the planting seam beside it (the environment brush kit).
+    expect(source).toContain('setPaintedPlanting(plantingSampler(map))');
+    expect(source).toContain('setPaintedPlanting(null)');
   });
 
   it('shares the paint layer buffer with the map rather than copying it', () => {
-    expect(source).toContain('createPaintedMap(PAINTED_RES, PAINTED_SIZE, layer.data as Float32Array)');
+    expect(source).toContain('layer.data as Float32Array,');
+    expect(source).toContain('plantData[brush] = l.data as Float32Array;');
     expect(source).toContain('worldSize: PAINTED_SIZE');
   });
 
   it('leaves the world its pointer until painting is switched on', () => {
-    expect(source).toContain('canPaint: (event: PointerEvent): boolean => painting && !event.shiftKey');
+    // Shift became the INVERT modifier (2026-09-09, user ask), so the camera
+    // escape moved to space, the secondary button and two fingers.
+    expect(source).toContain(
+      'painting && !spaceHeld && event.button === 0 && event.isPrimary',
+    );
     expect(source).toContain('brush.enabled = false');
     expect(source).toContain('handles.setSoloDrag?.(!on)');
   });
@@ -203,8 +213,10 @@ describe('the paint skill is wired the way the port plan asks', () => {
     // Each one is built through `recorded(id, …)` now — the helper that
     // records the dab and then stamps it — so the id is its first argument
     // rather than a literal field.
-    for (const id of ['raise', 'lower', 'flatten', 'smooth']) {
-      expect(source, id).toContain(`recorded('${id}'`);
+    // The ids come from HEIGHT_TOOL_IDS now — the same table the replay
+    // routing reads (src/dev/paint-tools.ts).
+    for (let i = 0; i < 4; i++) {
+      expect(source, `tool ${i}`).toContain(`recorded(HEIGHT_TOOL_IDS[${i}]`);
     }
     expect(source).toContain("const TOOL_KEYS = ['1', '2', '3', '4'] as const;");
     expect(source).toContain('layer: HEIGHT_LAYER');

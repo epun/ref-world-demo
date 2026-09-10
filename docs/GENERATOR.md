@@ -252,6 +252,53 @@ A `SphereSurface` behind the same seam remains open for later.
 Water colliders are now a hex tiling of small hard circles approximating each body, not a
 ring [D].
 
+### Motif library — the environment brush kit *(2026-09-09, user ask)*
+
+> *"in the collection we should have brushes for trees, rocks, grass, flowers, rivers,
+> clouds, ponds, etc. … we'll create 3d objects for each of the brushes in the style"*
+
+Seven planting brushes (`src/dev/paint.ts`) paint weight layers that scatter's per-cell roll
+reads (`src/world/painted.ts` → `landscape.ts` → `scatter.ts`, PLAN §7.4). Three new motif
+families were authored for them; the rest of the kit re-mixes motifs the library already had.
+Water brushes (ponds, rivers) are **not** here — another branch owns them.
+
+**Grass tufts** — `grass`, a flat ink mark like the ticks, four variants **[D]**: 5 blades
+(0.42–0.66 u), 3 blades (0.38–0.58 u), 7 low blades (0.35–0.52 u), 4 tall blades
+(0.5–0.7 u). Blades fan from ONE root, curve as they rise (offset ∝ t², so the root leaves
+vertical), and every spine point carries a seeded hand-wobble. The ref brief's *"grass-tuft
+alphabet"*: authored studies reused as texture fill, not a parameterised generator.
+
+**Flowers** — `flower`, three variants **[D]**, 0.34–0.5 u tall: a **daisy** (six petal loops
+round an OPEN centre, so the paper is the flower's middle), a **bell** (a stem that leans over
+and carries a drooping cup), a **bud** (a small closed knob and one low leaf). **Ink lines
+only** — closed loops of thin ribbon, no fill, no new colour. Pen weight matches the grass
+blades (the brief's *"uniform pen-and-ink line"*); the first pass drew them at half that and
+they vanished at any distance.
+
+**Clouds** — `cloud`, an INFLATED prop kind, four variants **[D]**: `cumulus` (heaped lobes
+over a flat base, 3.4 u), `lozenge` (long low stratus, 1.9 u), `puff` (one small lump, 1.8 u),
+`double` (two lobes over one base, 2.4 u). Authored as `wobblyBlob` clusters in the same
+[0,1] canvas as the crowns. Two things carry the read and both are in the **silhouette**,
+because inflation rounds whatever it is given: the lobes are spaced so the outline keeps a
+notch between them, and every study is **wide and low** — a cloud lies across the sky, a
+boulder stands on the ground, and in an orthographic frame that proportion is most of the
+difference. Measured in the headless shot: the first pass (taller, more overlapped) read as
+boulders.
+
+Clouds are the only kind that does not touch the ground. They float at `CLOUD_ALTITUDE` 16 u
+**[D]** plus a hashed 0–5 u spread — above every tree and above the terrain's own relief,
+level with the range's summits — as an **offset above the sampled Surface**, never an absolute
+y, so a painted sky rides the range up when the elevation dial moves. Each one stamps a hard
+flat shadow on the ground at its own (x, z) at `CLOUD_SHADOW_FIT` 0.62 of its footprint
+(capped at 6 u, past the props' 4). That fraction is smaller than a prop's 0.8 and the stamp
+is still the biggest hard mark on the ground: a cloud's footprint is 8–10 units where a tree's
+is one, and the shared sun ellipse stretches every stamp up to 3.2× at a low sun. At the 1.15
+first tried the stamp read as the subject and the cloud as its echo.
+
+Clouds carry their own wind profile — a slow **lateral drift of the whole form** (0.09 Hz
+against the trees' 0.38, ~0.85 u at strength 1), not a bend from a root, and never arresting
+(the strength floor keeps it breathing at every weather setting).
+
 ### Ink rendering pass *(reference-locked by user)*
 
 The user supplied three reference frames and the instruction: *"the 3D version in the world

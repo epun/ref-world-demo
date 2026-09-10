@@ -117,6 +117,18 @@ export interface WorldHandles {
    * until it hatches.
    */
   setLandscape(on: boolean): void;
+  /**
+   * Re-roll and rebuild the SCATTER alone, on the ground exactly as it
+   * stands (2026-09-09, user ask: the environment brush kit).
+   *
+   * A planting stroke changes what grows, never where the ground is — so it
+   * needs the scatter's own re-roll and none of the rest of `setTerrain`.
+   * The ground field, the water levels and every shadow stamp on them are
+   * untouched, which is the whole reason this exists as a separate handle:
+   * one is ~20-30ms, the other ~250-330ms, and the brush is meant to be
+   * usable while an audience watches.
+   */
+  refreshScatter(): void;
   /** True when the authored map is the world on screen. */
   landscape(): boolean;
   /**
@@ -369,6 +381,9 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
       // so the sheets are re-seated before they are shown.
       water.refreshLevels();
       water.setVisible(on);
+    },
+    refreshScatter: (): void => {
+      scatter.refreshLandscape();
     },
     landscape: (): boolean => landscapeMode() === 'landscape',
     setSoloDrag: (enabled: boolean): void => {

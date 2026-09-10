@@ -74,6 +74,7 @@
  */
 
 import type { Collider } from '../physics/colliders';
+import { zeroPlanting, type PlantingWeights } from './painted';
 
 export type Region = 'plain' | 'forest' | 'mountain' | 'island' | 'water';
 
@@ -111,6 +112,20 @@ export interface LandscapeSample {
   island: boolean;
   /** Dominant label: water > island > forest > mountain > plain. */
   region: Region;
+  /**
+   * What somebody has PAINTED here (src/world/painted.ts), per brush, [0,1] —
+   * all zero when no planting sampler is installed, which is the shipped
+   * world exactly.
+   *
+   * It rides on the landscape sample rather than being a query of its own
+   * because every consumer that wants it (scatter's per-cell roll) already
+   * takes one sample per cell, and a second query would be a second sample
+   * of the same point. The authored fields above are gated by the landscape
+   * MODE; this one is not — a person's own hand is not part of the map that
+   * can be switched off, and painting the flat field is the whole point of
+   * opening on one (2026-09-09, user ask).
+   */
+  planting: PlantingWeights;
 }
 
 // ── deterministic hash ───────────────────────────────────────────────────────
@@ -382,7 +397,10 @@ function blobWeight(blobs: readonly Blob[], falloff: number, x: number, z: numbe
  * of its own. A fresh object per call, like the mapped path: nobody mutates
  * a shared sample. */
 export function sampleLandscape(x: number, z: number): LandscapeSample {
-  if (!mapped()) return { forest: 0, mountain: 0, water: false, island: false, region: 'plain' };
+  // Painting answers in BOTH modes — see LandscapeSample.planting.
+  const planting = paintedPlanting ? paintedPlanting(x, z) : zeroPlanting();
+  if (!mapped())
+    return { forest: 0, mountain: 0, water: false, island: false, region: 'plain', planting };
   const water = isWater(x, z);
   const island = water ? false : isIslandLand(x, z);
   // Nothing grows on water, and the island is its own thing — the forest and
@@ -399,7 +417,7 @@ export function sampleLandscape(x: number, z: number): LandscapeSample {
         : mountain >= 0.5
           ? 'mountain'
           : 'plain';
-  return { forest, mountain, water, island, region };
+  return { forest, mountain, water, island, region, planting };
 }
 
 // ── terrain height ───────────────────────────────────────────────────────────
@@ -757,6 +775,30 @@ let paintedHeight: ((x: number, z: number) => number) | null = null;
  */
 export function setPaintedHeight(sampler: ((x: number, z: number) => number) | null): void {
   paintedHeight = sampler;
+}
+
+/**
+ * The installed planting sampler — the same hook shape as `paintedHeight`
+ * above, one dimension over (src/world/painted.ts `plantingSampler`).
+ */
+let paintedPlanting: ((x: number, z: number) => PlantingWeights) | null = null;
+
+/**
+ * Install (or, with null, remove) the painted planting weights — what
+ * somebody has brushed onto the field per motif family, read by
+ * `sampleLandscape` and from there by scatter's per-cell roll
+ * (2026-09-09, user ask: brushes for trees, rocks, grass, flowers, clouds…).
+ *
+ * Same contract as `setPaintedHeight`: pure, finite, held by reference, and
+ * callers must rebuild the SCATTER to see a change. Not the ground — a
+ * planting stroke moves no vertex, and re-cutting 103k of them for a stroke
+ * that plants a tuft of grass is the difference between a live tool and a
+ * slideshow (`WorldHandles.refreshScatter`).
+ */
+export function setPaintedPlanting(
+  sampler: ((x: number, z: number) => PlantingWeights) | null,
+): void {
+  paintedPlanting = sampler;
 }
 
 /** The painted offset at (x, z) — 0 when nothing is painted. */

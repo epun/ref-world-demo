@@ -116,6 +116,9 @@ describe('prop motif variants', () => {
       // Mountains span from a wide low ridge (0.62) to a peak barely taller
       // than it is broad — a mass, never a spire.
       mountain: [0.5, 1.4],
+      // Clouds are wide and low by construction — a heap over a flat base
+      // (the lozenge is the widest thing in the pack).
+      cloud: [0.25, 1.0],
     };
     for (const kind of INFLATED_PROP_KINDS) {
       const [lo, hi] = aspects[kind];

@@ -147,6 +147,12 @@ export interface DevHandles {
    * handles here, so this module keeps importing from node.
    */
   setTerrain?(next: { elevation?: number; tierStep?: number; relief?: number }): void;
+  /**
+   * Re-roll and rebuild the scatter alone (`WorldHandles.refreshScatter`).
+   * What a PLANTING stroke needs: the ground has not moved, only what grows
+   * on it (2026-09-09, user ask — the environment brush kit).
+   */
+  refreshScatter?(): void;
   /** …and reads them back, so the sliders start where the world is. */
   terrain?(): { elevation: number; tierStep: number; relief: number };
   /**
@@ -1553,6 +1559,8 @@ export async function initDevPanel(
       // An empty partial moves no dial and rebuilds all three systems in
       // order — ground, then scatter, then water (src/world/scene.ts).
       rebuildTerrain: () => handles.setTerrain?.({}),
+      // …and the cheap half, for a stroke that plants rather than sculpts.
+      ...(handles.refreshScatter ? { rebuildScatter: handles.refreshScatter } : {}),
       onFrame: handles.onFrame,
       ...(handles.setSoloDrag ? { setSoloDrag: handles.setSoloDrag } : {}),
       ...(handles.tour ? { tour: handles.tour } : {}),

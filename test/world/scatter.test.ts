@@ -51,6 +51,7 @@ import {
   SCATTER_EXTENT,
   SCATTER_KINDS,
   SCATTER_STEP,
+  variantCount,
   WATER_TOWER_MAX,
   WIND_AZIMUTH_PERIOD_MS,
   WIND_STRENGTH_MAX,
@@ -115,14 +116,11 @@ describe('scatter placement', () => {
   it('every variant index is in range for its kind', () => {
     for (const p of computePlacements()) {
       expect(p.variant).toBeGreaterThanOrEqual(0);
-      // The flat ink marks (grass ticks, shoreline reeds) have no variant
-      // library behind them.
-      if (p.kind === 'tick' || p.kind === 'reed') {
-        expect(p.variant).toBe(0);
-      } else {
-        expect(p.variant, p.kind).toBeLessThan(PROP_VARIANT_COUNTS[p.kind]);
-        expect(Number.isInteger(p.variant)).toBe(true);
-      }
+      // Ticks and reeds have exactly one build behind them; the painted
+      // mark families carry alphabets, so every mark kind answers through
+      // `variantCount` now.
+      expect(p.variant, p.kind).toBeLessThan(variantCount(p.kind));
+      expect(Number.isInteger(p.variant)).toBe(true);
     }
   });
 
@@ -284,7 +282,12 @@ describe('scatter placement', () => {
     expect(SCATTER_KINDS).toContain('mountain');
     expect(SCATTER_KINDS).toContain('reed');
     expect(new Set(SCATTER_KINDS).size).toBe(SCATTER_KINDS.length);
-    expect(SCATTER_KINDS.length).toBe(14);
+    // 12 prop kinds (clouds appended with the brush kit) plus the four flat
+    // mark kinds — ticks, reeds, and the painted grass / flower alphabets.
+    expect(SCATTER_KINDS).toContain('cloud');
+    expect(SCATTER_KINDS).toContain('grass');
+    expect(SCATTER_KINDS).toContain('flower');
+    expect(SCATTER_KINDS.length).toBe(17);
   });
 
   it('new kinds land at their authored rarities and cluster shapes', () => {

@@ -415,6 +415,62 @@ and **recording, saving and baking** — the `paint` session event per stamp, a 
 button, and a committed `map.json` the deployment loads. `src/dev/paint.ts` carries one marked
 hook comment where the session event goes.
 
+### 7.4 Painted planting (dev) — *(shipped)*
+
+2026-09-09, user ask: *"in the collection we should have brushes for trees, rocks, grass,
+flowers, rivers, clouds, ponds, etc."* — the operator paints the world live in front of an
+audience, so what a brush puts down must be **deterministic from the painted data**: same
+painted layers → identical placements on every device, no `Math.random`, no clock.
+
+**The layers.** `src/world/painted.ts` gains `planting`: one `Float32Array` per brush
+(`grove`, `rocks`, `grass`, `flowers`, `clouds`, `cottages`, `clearing`), weights in [0,1],
+`PLANTING_RES` 256 over the same 400 units — 1.56 u a texel **[D]**, finer than the 6 u
+scatter step so a stroke's edge falls between cells, and a quarter of the height map's memory
+because there are seven of them. Same sampler recipe as `height`: bilinear between half-texel
+centres, exactly 0 outside, fading over the last half texel. Same buffer-sharing rule: the
+arrays **are** the brush's paint layers'. `serializeMap` / `deserializeMap` carry them, and a
+map written before planting existed still loads.
+
+**The seam.** `setPaintedPlanting(sampler | null)` beside `setPaintedHeight`, and
+`sampleLandscape` gains `planting: PlantingWeights`. All zero when nothing is installed, so an
+unpainted world is byte-identical to the shipped one — pinned in `test/world/planting.test.ts`.
+It answers in **both** landscape modes, unlike the authored fields: the mode gates the map, not
+a person's hand, and painting the flat field is the point of opening on one.
+
+**The roll.** `scatter.ts` keeps its own rolls exactly as they were and adds a **second,
+painted pass** over the same cells, on its own salt family, in which every kind rolls
+independently and no kind claims the cell from another:
+
+```
+base'(kind) = base(kind) * (1 - planting.clearing)          // the clearing suppresses
+paint(kind) = Σ_brush planting[brush] * PAINT_SEED[brush][kind] * user
+```
+
+The separation is the whole guarantee. The base loop stops at its first hit, so if the painted
+weight rode inside it a grove could out-roll a rock in a cell the rock already held and the
+rock would **vanish** — painting would read as reshuffling the world rather than adding to it.
+The painted pass is skipped entirely on an unpainted cell, which is every cell of the shipped
+world. `PAINT_SEED` is the mix per brush (a grove is mostly one crown build plus conifers,
+undergrowth and tick texture); `clearing` names no kind.
+
+**Rebuild cost.** A planting stroke moves no vertex, so it rebuilds the **scatter only** —
+`WorldHandles.refreshScatter` (re-roll + re-instance) rather than `setTerrain({})` (re-displace
+the ground field, re-normal, re-seat, re-level water). Measured in a headless chromium on the
+plain field: **~31–39 ms scatter-only against ~65–78 ms full**. The throttle is shared with the
+height tools and the flag is sticky — if any dab in a coalesced burst was a height dab, the
+burst owes the full rebuild.
+
+**The brushes.** One tool per brush on the existing Brush, stamping `add` and erasing with
+ctrl (weights clamped to [0,1] over the layer's dirty rect — the layers are float and
+unclamped by construction). No new hotkeys: 1–4 stay the height tools, 5–7 stay emotes, the
+strip selects the brushes. `[` / `]` step the radius through **this** world's 0.5–40 range
+(EnvPaint's own handler clamps at 12 and would stop responding over most of the field), and
+**shift inverts** every tool — raise ↔ lower, add ↔ erase, smooth and flatten unchanged. The
+inversion is applied before the session event is written, so a replayed or synced dab lands the
+same result without knowing about a modifier. Shift was the camera escape; it moved to
+**space+drag**, the **secondary button** and **two fingers** (the last was always true — the
+world's pinch path ignores `setSoloDrag`).
+
 ---
 
 ## 8. Networking (`src/net/`, `worker/`)

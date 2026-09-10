@@ -263,6 +263,25 @@ a build. All live in the Ghost Panel `refworld.taste` skill.
 | **Mark-set lint** | UI uses only `icon`, `ruleLine`, `border`. Flags filled panels and new mark types. |
 | **Grain check** | Grain is uniform across the frame and does not vary within a character's fill. |
 
+## 7a. Derived decisions — the environment brush kit **[D]**
+
+Three calls made while building the planting brushes (2026-09-09 user ask, GENERATOR
+§motif library). All **[D]**: nothing in either brief speaks to any of them, and none of
+them is attributable to the measured taste.
+
+- **Clouds float at 16 u** (+ a hashed 0–5 u spread), as an offset above the sampled
+  Surface rather than an absolute height. Chosen against the isometric camera: high enough
+  to clear every tree and the terrain's own relief, level with the range's summits, and far
+  enough above its own shadow stamp that the two read as a pair rather than as one object.
+- **Clouds are exempt from the creature exclusion radii, from colliders, and from the
+  water and mountain cut-outs.** §2.3's exclusion is a character's negative space on the
+  *ground*; a cloud does not occupy it, and one blinking out because a creature walked
+  underneath would be absurd — the same reasoning that already exempts mountains.
+- **Flowers are ink lines only** — closed loops with an open centre, no fill and no new
+  colour. §1 keeps near-black for characters and §6 has six greys; a filled flower head
+  would put a second light-albedo lump on a field whose only light lumps are eggs, and the
+  ref brief's shading is density of mark rather than value anyway.
+
 ## 8. Open
 
 - **`fidelity` default** for drawing→character interpretation — a taste call to make against

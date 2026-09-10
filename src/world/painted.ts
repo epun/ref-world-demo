@@ -29,8 +29,21 @@
  * contour line in the ink pass — a square one, which is the one shape TASTE
  * §2.5 will not have on screen.
  *
- * Water, region weights, clearing and the painted map's own baking are later
- * steps (envpaint docs/port-meridian.md §5 steps 4-6). This file is height.
+ * PLANTING (2026-09-09, user ask: "in the collection we should have brushes
+ * for trees, rocks, grass, flowers, rivers, clouds, ponds, etc.") — the same
+ * idea, one dimension over: seven weight layers, [0,1], that say how much of
+ * each motif family somebody wants HERE. They are NOT heights and they never
+ * touch the surface; `scatter.ts` reads them as an extra term in its per-cell
+ * roll, which is why they live beside `height` in the one painted map rather
+ * than in a second one — a projection restores one object, not two.
+ *
+ * The planting layers are coarser than the height map on purpose: placement
+ * is decided per scatter cell (6 u), so a texel finer than the step buys
+ * nothing but memory, and there are seven of them.
+ *
+ * Water (ponds, rivers) is NOT here: another branch owns the painted water
+ * tools, and a second module writing water would be the second shoreline
+ * this project keeps warning about.
  */
 
 /** [D] Texels a side. 512 over 400 units is 0.78 u a texel — finer than the
@@ -45,6 +58,47 @@ export const PAINTED_RES = 512;
  */
 export const PAINTED_SIZE = 400;
 
+/**
+ * The planting brushes, in strip order. Each is one weight layer.
+ *
+ * `clearing` is the eraser of the set: it does not plant anything, it
+ * SUPPRESSES the world's own seeding (scatter.ts), which is how an operator
+ * opens a glade in a forest without lowering a global density that would
+ * thin the whole field.
+ *
+ * Water brushes (ponds, rivers) are deliberately absent — see the header.
+ */
+export const PLANT_BRUSHES = [
+  'grove',
+  'rocks',
+  'grass',
+  'flowers',
+  'clouds',
+  'cottages',
+  'clearing',
+] as const;
+export type PlantBrush = (typeof PLANT_BRUSHES)[number];
+
+/** One weight per brush at a point, each in [0,1]. */
+export type PlantingWeights = Record<PlantBrush, number>;
+
+/**
+ * [D] Texels a side for every planting layer. 256 over 400 units is 1.56 u a
+ * texel — finer than the 6 u scatter step (so a brushstroke's edge falls
+ * between cells rather than on them), and a quarter of the height map's
+ * memory, which matters because there are seven of these and one of that.
+ */
+export const PLANTING_RES = 256;
+
+/** A zeroed weight set — an unplanted point, and the value every consumer
+ * gets when no map is installed. A fresh object per call: nobody mutates a
+ * shared sample (same discipline as `sampleLandscape`). */
+export function zeroPlanting(): PlantingWeights {
+  const out = {} as PlantingWeights;
+  for (const brush of PLANT_BRUSHES) out[brush] = 0;
+  return out;
+}
+
 export interface PaintedMap {
   /** Texels a side. */
   res: number;
@@ -56,6 +110,14 @@ export interface PaintedMap {
    * when one is wired in; never copy it, or the two silently diverge.
    */
   height: Float32Array;
+  /** Texels a side for every planting layer. */
+  plantingRes: number;
+  /**
+   * Planting weight per brush, [0,1], row-major, `plantingRes²` floats each.
+   * Shared with the brush's own paint layers exactly as `height` is — a dab
+   * is visible to the next placement roll with nothing in between.
+   */
+  planting: Record<PlantBrush, Float32Array>;
 }
 
 /** The serialised form: the same numbers, base64, for a committed map.json. */
@@ -64,6 +126,12 @@ export interface PaintedMapJson {
   size: number;
   /** Base64 of the raw little-endian Float32 bytes. */
   height: string;
+  /** Texels a side for the planting layers. Absent in a map written before
+   * planting existed — such a map deserialises with empty layers. */
+  plantingRes?: number;
+  /** Base64 per brush, same encoding as `height`. A missing brush is an
+   * unpainted one. */
+  planting?: Partial<Record<PlantBrush, string>>;
 }
 
 /**
@@ -79,19 +147,40 @@ export function createPaintedMap(
   res: number = PAINTED_RES,
   size: number = PAINTED_SIZE,
   height?: Float32Array,
+  planting?: Partial<Record<PlantBrush, Float32Array>>,
+  plantingRes: number = PLANTING_RES,
 ): PaintedMap {
   if (!Number.isInteger(res) || res < 2) throw new Error(`painted map: res must be >= 2, got ${res}`);
   if (!(size > 0)) throw new Error(`painted map: size must be positive, got ${size}`);
   if (height && height.length !== res * res) {
     throw new Error(`painted map: height must hold ${res * res} floats, got ${height.length}`);
   }
-  return { res, size, height: height ?? new Float32Array(res * res) };
+  if (!Number.isInteger(plantingRes) || plantingRes < 2) {
+    throw new Error(`painted map: plantingRes must be >= 2, got ${plantingRes}`);
+  }
+  // Adopted by reference, exactly like `height` — the brush's own layer
+  // buffer, never a copy — and allocated zeroed for any brush not handed in,
+  // so an older caller that knows nothing about planting still gets a
+  // complete map back.
+  const layers = {} as Record<PlantBrush, Float32Array>;
+  for (const brush of PLANT_BRUSHES) {
+    const given = planting?.[brush];
+    if (given && given.length !== plantingRes * plantingRes) {
+      throw new Error(
+        `painted map: planting '${brush}' must hold ${plantingRes * plantingRes} floats, got ${given.length}`,
+      );
+    }
+    layers[brush] = given ?? new Float32Array(plantingRes * plantingRes);
+  }
+  return { res, size, height: height ?? new Float32Array(res * res), plantingRes, planting: layers };
 }
 
-/** Every texel back to zero — the map, and with it the paint layer sharing
- * the buffer, is unpainted again. */
+/** Every texel back to zero — the map, and with it every paint layer sharing
+ * a buffer with it, is unpainted again. Planting goes with the height: `clear
+ * map` means the map, not half of it. */
 export function clearPaintedMap(map: PaintedMap): void {
   map.height.fill(0);
+  for (const brush of PLANT_BRUSHES) map.planting[brush]?.fill(0);
 }
 
 /**
@@ -134,6 +223,57 @@ export function sampleHeight(map: PaintedMap, x: number, z: number): number {
  */
 export function paintedSampler(map: PaintedMap): (x: number, z: number) => number {
   return (x: number, z: number): number => sampleHeight(map, x, z);
+}
+
+/**
+ * One brush's planting weight at (x, z), [0,1]. Bilinear between texel
+ * centres, exactly 0 outside the map, fading over the last half texel — the
+ * same recipe (and the same reason) as `sampleHeight`: texels off the array
+ * read 0 instead of clamping to the border, so a stroke that runs to the rim
+ * fades out instead of smearing a straight edge across the field.
+ *
+ * Deliberately NOT clamped here: the brush clamps as it stamps, and a
+ * sampler that quietly repaired out-of-range data would hide the day
+ * something wrote 3.
+ */
+export function samplePlanting(map: PaintedMap, brush: PlantBrush, x: number, z: number): number {
+  const res = map.plantingRes;
+  const data = map.planting[brush];
+  if (!data) return 0;
+  const u = x / map.size + 0.5;
+  const v = z / map.size + 0.5;
+  if (u < 0 || u > 1 || v < 0 || v > 1) return 0;
+  const fx = u * res - 0.5;
+  const fy = v * res - 0.5;
+  const x0 = Math.floor(fx);
+  const y0 = Math.floor(fy);
+  const tx = fx - x0;
+  const ty = fy - y0;
+  const at = (tex: number, tey: number): number => {
+    if (tex < 0 || tex >= res || tey < 0 || tey >= res) return 0;
+    return data[tey * res + tex] ?? 0;
+  };
+  const top = at(x0, y0) + (at(x0 + 1, y0) - at(x0, y0)) * tx;
+  const bot = at(x0, y0 + 1) + (at(x0 + 1, y0 + 1) - at(x0, y0 + 1)) * tx;
+  return top + (bot - top) * ty;
+}
+
+/**
+ * The map as the sampler `landscape.ts`'s `setPaintedPlanting` takes — every
+ * brush's weight at a point, in one object.
+ *
+ * ALL SEVEN at once rather than a sampler per brush: `sampleLandscape` is
+ * called once per scatter cell and the roll needs every weight, so seven
+ * calls would be seven bilinear reads at the same point through seven
+ * closures. Bound to the map object like `paintedSampler`, for the same
+ * reason: the buffers may be swapped for loaded ones under it.
+ */
+export function plantingSampler(map: PaintedMap): (x: number, z: number) => PlantingWeights {
+  return (x: number, z: number): PlantingWeights => {
+    const out = {} as PlantingWeights;
+    for (const brush of PLANT_BRUSHES) out[brush] = samplePlanting(map, brush, x, z);
+    return out;
+  };
 }
 
 /** Lowest and highest painted offset in the map, world units. Both 0 on an
@@ -198,7 +338,20 @@ function decodeBase64(text: string): Uint8Array {
  */
 export function serializeMap(map: PaintedMap): PaintedMapJson {
   const bytes = new Uint8Array(map.height.buffer, map.height.byteOffset, map.height.byteLength);
-  return { res: map.res, size: map.size, height: encodeBase64(bytes) };
+  const planting: Partial<Record<PlantBrush, string>> = {};
+  for (const brush of PLANT_BRUSHES) {
+    const data = map.planting[brush];
+    planting[brush] = encodeBase64(
+      new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
+    );
+  }
+  return {
+    res: map.res,
+    size: map.size,
+    height: encodeBase64(bytes),
+    plantingRes: map.plantingRes,
+    planting,
+  };
 }
 
 /** The inverse. Throws on a payload whose byte count is not the resolution it
@@ -211,5 +364,21 @@ export function deserializeMap(o: PaintedMapJson): PaintedMap {
   }
   const height = new Float32Array(floats);
   new Uint8Array(height.buffer).set(bytes);
-  return createPaintedMap(o.res, o.size, height);
+  const plantingRes = o.plantingRes ?? PLANTING_RES;
+  const plantFloats = plantingRes * plantingRes;
+  const planting: Partial<Record<PlantBrush, Float32Array>> = {};
+  for (const brush of PLANT_BRUSHES) {
+    const b64 = o.planting?.[brush];
+    if (b64 === undefined) continue; // a brush nobody painted, or an older map
+    const raw = decodeBase64(b64);
+    if (raw.length !== plantFloats * 4) {
+      throw new Error(
+        `painted map: expected ${plantFloats * 4} bytes for planting '${brush}' at res ${plantingRes}, got ${raw.length}`,
+      );
+    }
+    const data = new Float32Array(plantFloats);
+    new Uint8Array(data.buffer).set(raw);
+    planting[brush] = data;
+  }
+  return createPaintedMap(o.res, o.size, height, planting, plantingRes);
 }
