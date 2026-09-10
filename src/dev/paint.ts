@@ -1154,7 +1154,24 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
   };
 
   /**
-   * The comb: a directional stroke tool, EnvPaint's own id, key and mode.
+   * The comb: a directional stroke tool, EnvPaint's own id and key.
+   *
+   * ITS TOOL MODE IS NOT `direction`, and that is a workaround, not a
+   * preference [D]. `Brush._stampAt` bails on `mode === 'direction' && !dir`
+   * BEFORE it records `_lastStamp` (envpaint src/core/Brush.js), and
+   * `pointermove` only derives a heading once `_lastStamp` exists — so a tool
+   * whose mode is `direction` bails on the pointer-down dab, never sets
+   * `_lastStamp`, and every move after it takes the same no-heading path. The
+   * stroke can never produce a direction and the layer never moves (measured
+   * headless, 2026-09-10: zero `onStamp` calls over a six-move drag).
+   *
+   * So the engine is handed an ordinary mode, the dab reaches here, and the
+   * DIRECTION stamp is issued from `stampComb` with the heading the Brush
+   * computed. The pointer-down dab still has no heading — a stroke of one
+   * point has no direction — and is simply skipped rather than written as
+   * something else. Reported upstream in the port notes rather than patched
+   * into the vendored engine.
+   *
    * `strengthScale` is the planting one — a direction lerp is in [0,1] like a
    * weight, so a dab at the engine's own scale would barely turn a blade.
    */
@@ -1163,7 +1180,7 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
     label: COMB_TOOL_ID,
     ...(keyFor(COMB_TOOL_ID) === undefined ? {} : { key: keyFor(COMB_TOOL_ID) as string }),
     layer: COMB_LAYER,
-    mode: 'direction',
+    mode: 'set',
     eraseMode: 'erase',
     strengthScale: PLANT_STRENGTH_SCALE,
     onStamp: (_ctx: unknown, op: StampOp): void => {
@@ -1171,7 +1188,9 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
       // un-combing one, and the event says so rather than saying which key
       // was held (docs/SESSION.md §4).
       const erasing = shiftHeld ? op.mode !== 'erase' : op.mode === 'erase';
-      const dir = erasing ? null : op.dir;
+      const dir = erasing ? null : (op.dir ?? null);
+      // The first dab of a stroke, with nowhere to point yet.
+      if (!erasing && !dir) return;
       const dab: StampOp = erasing ? { ...op, mode: 'erase' as StampMode } : op;
       recordStamp(COMB_TOOL_ID, dab);
       stampComb(dab, dir);
