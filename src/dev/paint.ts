@@ -1112,22 +1112,21 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
   // is a no-op on a frame where nothing was painted.
   handles.onFrame(() => {
     for (const l of layers.all()) {
-      if (l.dirtyRect) history.noteDirty(l, l.dirtyRect);
-    }
-    // A dirty rect is the ONE signal that says the layers changed, whoever
-    // changed them — and that is why the rebuild is asked for here rather
-    // than only from the brush's own stroke events. An UNDO writes the
-    // recorded rect straight back into `layer.data` and calls
-    // `markDirtyRect` (envpaint src/core/History.js), emitting no stroke at
-    // all; before this, an undone height stroke stayed on screen until the
-    // next stroke happened to rebuild over it. Both layers are read, so both
-    // are fixed, and water carries a flag as well because it needs a derive
-    // and not just a re-cut.
-    if (waterLayer.dirtyRect) {
-      waterDirty = true;
+      if (!l.dirtyRect) continue;
+      history.noteDirty(l, l.dirtyRect);
+      // …and whatever moved has to be REBUILT, whoever moved it. An undo
+      // writes its recorded rect straight back into `layer.data` and calls
+      // `markDirtyRect` (envpaint src/core/History.js) without emitting a
+      // stroke, so this sweep is the only thing that sees it. Before this,
+      // only the height and water layers were read here and ctrl+z on a
+      // planting stroke put the weights back while the trees stayed on
+      // screen until something else happened to re-roll — which is the whole
+      // of "undo doesn't work for the brushes" (2026-09-10, user report).
+      if (l === waterLayer) waterDirty = true;
+      else if (l === heightLayer) terrainDirty = true;
+      else plantingDirty = true;
       rebuildSoon();
     }
-    if (heightLayer.dirtyRect) rebuildSoon();
     layers.commitAll();
     // ── the strip follows the panel ────────────────────────────────────────
     // 2026-09-10, user ask: *"when i shift + d to hide ghost panel the brush
