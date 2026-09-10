@@ -79,7 +79,16 @@ export function invertStampMode(mode: string): string {
  */
 export const RADIUS_MIN = 0.5;
 export const RADIUS_MAX = 40;
-export const RADIUS_DEFAULT = 12;
+/**
+ * The radius a fresh panel opens on, world units (2026-09-10, user ask: the
+ * brush should open on EnvPaint's own numbers — radius 3.0, strength 0.28).
+ *
+ * The RANGE above is still this world's (a 400-unit field), only the opening
+ * value is EnvPaint's: a 12-unit default drew a stroke wider than most of
+ * what anybody wants to plant, and a first dab that covers a tenth of the
+ * map reads as the tool being broken rather than as a big brush.
+ */
+export const RADIUS_DEFAULT = 3;
 
 /** EnvPaint's own bracket ratio (Brush.js `RADIUS_STEP`), kept identical so
  * the keys feel the same in both worlds — only the clamp differs. */

@@ -172,6 +172,33 @@ const FLAT_GROUND = new Float32Array(PAINTED_RES * PAINTED_RES);
  */
 const REBUILD_MIN_MS = 125;
 
+/**
+ * [D] The strength a fresh panel opens on — EnvPaint's own panel reads 0.28
+ * (2026-09-10, user ask), and the radius beside it is `RADIUS_DEFAULT`.
+ */
+const STRENGTH_DEFAULT = 0.28;
+
+/**
+ * [D] What one unit of brush strength is worth to a PLANTING layer, ×7.
+ *
+ * This is the bug behind "the brush tools aren't working". A height dab
+ * writes WORLD UNITS — 0.07 of a unit a dab is a hill you watch grow — but a
+ * planting dab writes a WEIGHT in [0,1] that `scatter.ts` multiplies by a
+ * per-kind seed of its own (PAINT_SEED grove tree = 0.3). At the engine's
+ * own scale a whole pass left ~0.13 weight, so the strongest thing the trees
+ * brush could ask for was 0.13 × 0.3 ≈ a 4% chance per cell — over a 3 u
+ * radius, which is half a scatter cell, that is a stroke that plants
+ * nothing and looks like a dead tool.
+ *
+ * ×7 puts one pass at ~0.6-1.0, which is what the label promises: paint
+ * trees, get a stand. The layers are still clamped to [0,1] as they are
+ * stamped (`clampPlantLayer`), so this buys saturation, never overflow, and
+ * `strengthScale` is EnvPaint's own tool field — the scaled strength is what
+ * lands in `op.strength`, so a RECORDED dab carries it and a replay needs to
+ * know nothing about this number.
+ */
+const PLANT_STRENGTH_SCALE = 7;
+
 /** Hotkeys 1-6, in strip order: the four height tools, then pond and drain.
  * The seven PLANTING brushes get none — 7 more digits would take the whole
  * keyboard row off the operator, and 5-7 already emote — so the strip is
@@ -502,6 +529,11 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
   // flag and `canPaint` are BOTH wired rather than either alone.
   brush.enabled = false;
   brush.settings.radius = RADIUS_DEFAULT;
+  // EnvPaint ships 0.26 and a radius of 1.0; the user's own panel reads 0.28
+  // and 3.0, and those are the numbers this world opens on. The `strength`
+  // slider below reads this field for its opening value, so the two cannot
+  // disagree about what a fresh brush is.
+  brush.settings.strength = STRENGTH_DEFAULT;
   disposers.push(() => brush.dispose());
 
   /** The radius, past EnvPaint's own 0.3-12 clamp — see RADIUS_MAX. */
@@ -799,7 +831,13 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
   );
   for (const tool of plantTools) {
     // The layer a planting tool writes is named for the tool (paint-tools).
-    brush.registerTool({ ...tool, layer: tool.id, color: SURFACE.ink });
+    brush.registerTool({
+      ...tool,
+      layer: tool.id,
+      color: SURFACE.ink,
+      // A weight in [0,1], not world units — see PLANT_STRENGTH_SCALE.
+      strengthScale: PLANT_STRENGTH_SCALE,
+    });
   }
   brush.setTool(HEIGHT_TOOL_IDS[0]);
 
@@ -874,9 +912,17 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
     if (pendingRebuild) window.clearTimeout(pendingRebuild);
   });
 
-  /** Mark what this stroke's tool touches, then rebuild on the throttle. */
+  /**
+   * Mark what this stroke's tool touches, then rebuild on the throttle.
+   *
+   * BOTH flags are real: a planting stroke has to raise `plantingDirty` the
+   * same way a replayed dab does (`stampPaint`), or a burst that also moved
+   * the ground takes the terrain path — which RE-SEATS the scatter without
+   * re-ROLLING it — and the trees the brush just planted never appear.
+   */
   const noteTool = (): void => {
-    if (!isPlantTool(brush.tool ?? '')) terrainDirty = true;
+    if (isPlantTool(brush.tool ?? '')) plantingDirty = true;
+    else terrainDirty = true;
   };
 
   brush.on('strokestart', (payload) => {
