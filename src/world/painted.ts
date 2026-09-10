@@ -427,6 +427,33 @@ function decodeBase64(text: string): Uint8Array {
 }
 
 /**
+ * A run of floats, base64 — and back.
+ *
+ * The one thing that travels a LAYER rather than a dab: an undo restores a
+ * rectangle of texels that no stamp accounts for, so it syncs as the texels
+ * themselves (`patch` in docs/SESSION.md §paint). Same little-endian
+ * Float32 transform the whole-map serialiser uses, exported so the dev
+ * brush can encode a rect without a second copy of the encoder.
+ *
+ * `decodeFloats` throws on a payload whose byte count is not a whole number
+ * of floats: half a texel is not a value, and a patch that half-applied
+ * would leave the map different on one screen from every other.
+ */
+export function encodeFloats(values: Float32Array): string {
+  return encodeBase64(new Uint8Array(values.buffer, values.byteOffset, values.byteLength));
+}
+
+export function decodeFloats(text: string): Float32Array {
+  const bytes = decodeBase64(text);
+  if (bytes.length % 4 !== 0) {
+    throw new Error(`painted patch: ${bytes.length} bytes is not a whole number of floats`);
+  }
+  const out = new Float32Array(bytes.length / 4);
+  new Uint8Array(out.buffer).set(bytes);
+  return out;
+}
+
+/**
  * The map as committable json. A COPY of the bytes — the caller may hold the
  * result while painting continues, and a live paint layer's buffer is
  * mutating underneath.

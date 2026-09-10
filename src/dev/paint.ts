@@ -117,6 +117,8 @@ import {
 import {
   clearPaintedMap,
   createPaintedMap,
+  decodeFloats,
+  encodeFloats,
   paintedRange,
   paintedSampler,
   plantingSampler,
@@ -223,6 +225,22 @@ const STRENGTH_DEFAULT = 0.28;
  * know nothing about this number.
  */
 const PLANT_STRENGTH_SCALE = 7;
+
+/**
+ * Most texels one recorded `patch` may carry — the scene door's own ceiling
+ * (`SCENE_MAX_PATCH_TEXELS`), mirrored here because src/dev may not import
+ * from src/session's pure half at runtime for a constant, and an undo bigger
+ * than this is split into tiles rather than dropped.
+ */
+const PATCH_MAX_TEXELS = 4096;
+
+/** A layer's dirty rectangle, in texels. */
+interface LayerRect {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+}
 
 // ── the river (2026-09-10, user ask: "i want to match the brushes for env
 // paint exactly") ───────────────────────────────────────────────────────────
@@ -784,11 +802,30 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
    * pointer events too, so a key pressed while the window was unfocused
    * cannot leave the flag stale mid-stroke.
    */
+  /**
+   * True while a RECORDED event is being applied — a replay, a synced batch,
+   * or the clear button. Everything those touch is already in the log they
+   * came from, so the frame sweep must not record a patch for it and double
+   * every undo each time a session is played back.
+   */
+  let applying = false;
+  /**
+   * True when a dab has already been RECORDED into this frame's dirty rects.
+   *
+   * `brush.painting` is not the test: a stroke's last dab lands, the pointer
+   * lifts, and the rect it left is still dirty on the next frame — which
+   * would travel a second time as a patch of ground the log already
+   * describes dab by dab. A frame either carries dabs or it carries somebody
+   * else's write; this says which.
+   */
+  let dabbed = false;
   let shiftHeld = false;
   /** Space, live — the camera escape while painting is on (see canPaint). */
   let spaceHeld = false;
 
   const recordStamp = (tool: string, op: StampOp, level?: number): void => {
+    // This frame's rects are accounted for — see `dabbed`.
+    dabbed = true;
     handles.session?.paint({
       tool,
       x: (op.u - 0.5) * PAINTED_SIZE,
@@ -1371,10 +1408,91 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
   // `commitAll` is what clears it — so the sweep and the commit ride together
   // on the world's frame, exactly as EnvPaint's own app runs them. All of it
   // is a no-op on a frame where nothing was painted.
+  /**
+   * ── an undo travels as texels (docs/SESSION.md §paint) ───────────────────
+   *
+   * Every other change to a layer is a DAB, and a dab is four numbers the
+   * whole room can re-stamp. An undo is not: History puts a recorded
+   * rectangle back and nothing describes what it put there, so the texels
+   * themselves travel — one `paint` event with `tool: 'patch'`, the layer,
+   * the rect and its floats, replayed through the same `stampPaint` seam a
+   * dab uses. Redo is the same event with the other numbers in it.
+   *
+   * Tiled at the door's ceiling (`SCENE_MAX_PATCH_TEXELS`): an undo of a
+   * long stroke covers more texels than one wire message may carry, and a
+   * strip of tiles is still exactly the rectangle when they all land.
+   */
+  const recordPatch = (l: PaintLayer, rect: LayerRect): void => {
+    if (!handles.session) return;
+    const data = l.data as Float32Array;
+    const tile = Math.max(1, Math.floor(Math.sqrt(PATCH_MAX_TEXELS)));
+    for (let ty = rect.y0; ty <= rect.y1; ty += tile) {
+      const y1 = Math.min(rect.y1, ty + tile - 1);
+      for (let tx = rect.x0; tx <= rect.x1; tx += tile) {
+        const x1 = Math.min(rect.x1, tx + tile - 1);
+        const w = x1 - tx + 1;
+        const h = y1 - ty + 1;
+        const values = new Float32Array(w * h);
+        for (let y = 0; y < h; y++) {
+          const row = (ty + y) * l.res + tx;
+          values.set(data.subarray(row, row + w), y * w);
+        }
+        handles.session.paint({
+          tool: 'patch',
+          layer: l.id,
+          x0: tx,
+          y0: ty,
+          x1,
+          y1,
+          data: encodeFloats(values),
+        });
+      }
+    }
+  };
+
+  /** Write one patch back into its layer. Returns false when the payload
+   * does not fit the rect it claims — a half-applied patch would leave this
+   * page's map different from every other page's. */
+  const applyPatch = (event: PaintEvent): boolean => {
+    const { layer, x0, y0, x1, y1, data } = event;
+    if (
+      layer === undefined ||
+      x0 === undefined ||
+      y0 === undefined ||
+      x1 === undefined ||
+      y1 === undefined ||
+      data === undefined
+    ) {
+      return false;
+    }
+    const target = layers.get(layer);
+    if (!target) return false;
+    if (x0 < 0 || y0 < 0 || x1 >= target.res || y1 >= target.res || x1 < x0 || y1 < y0) return false;
+    const w = x1 - x0 + 1;
+    const h = y1 - y0 + 1;
+    let values: Float32Array;
+    try {
+      values = decodeFloats(data);
+    } catch {
+      return false;
+    }
+    if (values.length !== w * h) return false;
+    const dst = target.data as Float32Array;
+    for (let y = 0; y < h; y++) {
+      dst.set(values.subarray(y * w, y * w + w), (y0 + y) * target.res + x0);
+    }
+    target.markDirtyRect(x0, y0, x1, y1);
+    return true;
+  };
+
   handles.onFrame(() => {
     for (const l of layers.all()) {
       if (!l.dirtyRect) continue;
       history.noteDirty(l, l.dirtyRect);
+      // Nobody's dab put this here: an undo, a redo, or any future panel
+      // button that writes a layer. It has to reach the room and the store,
+      // and the only honest description of it is the texels themselves.
+      if (!dabbed && !applying) recordPatch(l, l.dirtyRect);
       // …and whatever moved has to be REBUILT, whoever moved it. An undo
       // writes its recorded rect straight back into `layer.data` and calls
       // `markDirtyRect` (envpaint src/core/History.js) without emitting a
@@ -1388,6 +1506,9 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
       else plantingDirty = true;
       rebuildSoon();
     }
+    // Every dab this frame is now in the log under its own event, and the
+    // next frame's rects belong to whoever writes them next.
+    dabbed = false;
     layers.commitAll();
     // ── the strip follows the panel ────────────────────────────────────────
     // 2026-09-10, user ask: *"when i shift + d to hide ghost panel the brush
@@ -1705,10 +1826,14 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
     plantingDirty = true;
   };
   folder.addButton('clear map', () => {
+    // Inside the flag: the tap is recorded as `clear`, one event, and the
+    // seven full-layer rects it dirties must not ALSO travel as patches.
+    applying = true;
     // An action, so it is in the record: without it a replay would keep
     // every dab of a map somebody threw away.
     handles.session?.paint({ tool: 'clear' });
     clearMap();
+    applying = false;
     rebuildNow();
   });
   folder.addInfo('', 'paint-range');
@@ -1741,6 +1866,16 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
   /** One recorded dab into the layer, and nothing else — no rebuild, no undo
    * entry. The two entry points below decide when the ground is re-cut. */
   const stampPaint = (event: PaintEvent): void => {
+    if (event.tool === 'patch') {
+      // Already in the log it came out of — see `applying`.
+      if (applyPatch(event)) {
+        const id = event.layer;
+        if (id === WATER_LAYER) waterDirty = true;
+        else if (id === HEIGHT_LAYER) terrainDirty = true;
+        else plantingDirty = true;
+      }
+      return;
+    }
     if (event.tool === 'clear') {
       clearMap();
       return;
@@ -1807,12 +1942,22 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
   };
 
   const applyPaint = (event: PaintEvent): void => {
-    stampPaint(event);
+    applying = true;
+    try {
+      stampPaint(event);
+    } finally {
+      applying = false;
+    }
     rebuildSoon();
   };
 
   const applyPaintBatch = (events: readonly PaintEvent[]): void => {
-    for (const event of events) stampPaint(event);
+    applying = true;
+    try {
+      for (const event of events) stampPaint(event);
+    } finally {
+      applying = false;
+    }
     // ONE re-cut for the batch, and `Now` rather than `Soon`: a batch is
     // already a whole gesture's worth of ground, so what is on screen when it
     // lands is what is in the map — the same rule `strokeend` keeps.
