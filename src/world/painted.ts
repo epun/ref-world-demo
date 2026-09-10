@@ -38,7 +38,7 @@
  * docs/port-meridian.md §5 steps 5-6).
  * PLANTING (2026-09-09, user ask: "in the collection we should have brushes
  * for trees, rocks, grass, flowers, rivers, clouds, ponds, etc.") — the same
- * idea, one dimension over: six weight layers, [0,1], that say how much of
+ * idea, one dimension over: seven weight layers, [0,1], that say how much of
  * each motif family somebody wants HERE. They are NOT heights and they never
  * touch the surface; `scatter.ts` reads them as an extra term in its per-cell
  * roll, which is why they live beside `height` in the one painted map rather
@@ -46,7 +46,7 @@
  *
  * The planting layers are coarser than the height map on purpose: placement
  * is decided per scatter cell (6 u), so a texel finer than the step buys
- * nothing but memory, and there are six of them.
+ * nothing but memory, and there are seven of them.
  *
  * Water (ponds, rivers) is NOT here: another branch owns the painted water
  * tools, and a second module writing water would be the second shoreline
@@ -89,21 +89,26 @@ export const DRY = -1000;
  * session log written under the old ids still applies — src/dev/paint-tools.ts
  * `LEGACY_TOOLS` maps them on the way in.
  *
- * `mask` is the eraser of the set: it does not plant anything, it SUPPRESSES
+ * Two of them plant nothing. `mask` is the eraser of the set: it SUPPRESSES
  * the world's own seeding (scatter.ts), which is how an operator opens a
  * glade in a forest without lowering a global density that would thin the
- * whole field.
+ * whole field. `path` is a place things cannot stand — it suppresses the
+ * world's seeding AND the painted term (the one way it differs from the
+ * mask: a trail with a tree standing in it is not a trail), and it is the
+ * one planting layer the GROUND reads as well, drawing itself as an ink
+ * dirt trail (src/world/ground.ts).
  *
  * The water brush (pond) is NOT in this list: water is a LEVEL layer of its
  * own with its own tool, not a weight (see `DRY` above).
  */
 export const PLANT_BRUSHES = [
+  'mask',
+  'path',
   'grass',
   'flowers',
   'trees',
   'rocks',
   'clouds',
-  'mask',
 ] as const;
 export type PlantBrush = (typeof PLANT_BRUSHES)[number];
 
@@ -114,7 +119,7 @@ export type PlantingWeights = Record<PlantBrush, number>;
  * [D] Texels a side for every planting layer. 256 over 400 units is 1.56 u a
  * texel — finer than the 6 u scatter step (so a brushstroke's edge falls
  * between cells rather than on them), and a quarter of the height map's
- * memory, which matters because there are six of these and one of that.
+ * memory, which matters because there are seven of these and one of that.
  */
 export const PLANTING_RES = 256;
 
@@ -316,7 +321,7 @@ export function samplePlanting(map: PaintedMap, brush: PlantBrush, x: number, z:
  *
  * ALL OF THEM at once rather than a sampler per brush: `sampleLandscape` is
  * called once per scatter cell and the roll needs every weight, so a call
- * per brush would be six bilinear reads at the same point through six
+ * per brush would be seven bilinear reads at the same point through seven
  * closures. Bound to the map object like `paintedSampler`, for the same
  * reason: the buffers may be swapped for loaded ones under it.
  */

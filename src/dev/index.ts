@@ -161,6 +161,9 @@ export interface DevHandles {
    * home button (2026-09-10, user ask). Optional: without it the strip shows
    * no home button rather than one that does nothing. */
   resetView?(): void;
+  /** Hand the ground the `path` brush's live weight texture, or `null`
+   * (`WorldHandles.setPaintedPath`) — the drawn half of the dirt trail. */
+  setPaintedPath?(texture: unknown): void;
   /** …and reads them back, so the sliders start where the world is. */
   terrain?(): { elevation: number; tierStep: number; relief: number };
   /**
@@ -1696,6 +1699,7 @@ export async function initDevPanel(
       // the scatter and nothing else.
       ...(handles.refreshScatter ? { rebuildScatter: handles.refreshScatter } : {}),
       ...(handles.resetView ? { resetView: handles.resetView } : {}),
+      ...(handles.setPaintedPath ? { setPaintedPath: handles.setPaintedPath } : {}),
       // …and the landscape mode RE-APPLIED unchanged is exactly the other
       // rebuild: ground, `scatter.refreshLandscape()`, water levels. It is
       // what a water stroke needs and a height stroke does not — a pond

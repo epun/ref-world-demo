@@ -271,6 +271,11 @@ describe('the paint skill is wired the way the port plan asks', () => {
     // …and the rules that make the strip legible, which `envpaint/ui` does
     // not export. No uppercase anywhere, hotkey glyphs included (TASTE §5).
     expect(source).toContain('const STRIP_CSS =');
+    // …and the strip is part of the panel's chrome: shift+d takes both
+    // (2026-09-10, user ask). Polled, because ghost-panel emits nothing on
+    // a toggle, and painting is untouched while the strip is away.
+    expect(source).toContain('const panelShown = panelUi.isVisible();');
+    expect(source).toContain('strip?.setVisible(panelShown);');
     expect(source).toContain('text-transform: none;');
     expect(source).not.toContain('text-transform: uppercase');
   });

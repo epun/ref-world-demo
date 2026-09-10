@@ -493,10 +493,10 @@ audience, so what a brush puts down must be **deterministic from the painted dat
 painted layers → identical placements on every device, no `Math.random`, no clock.
 
 **The layers.** `src/world/painted.ts` gains `planting`: one `Float32Array` per brush
-(`grass`, `flowers`, `trees`, `rocks`, `clouds`, `mask`), weights in [0,1],
+(`mask`, `path`, `grass`, `flowers`, `trees`, `rocks`, `clouds`), weights in [0,1],
 `PLANTING_RES` 256 over the same 400 units — 1.56 u a texel **[D]**, finer than the 6 u
 scatter step so a stroke's edge falls between cells, and a quarter of the height map's memory
-because there are six of them. Same sampler recipe as `height`: bilinear between half-texel
+because there are seven of them. Same sampler recipe as `height`: bilinear between half-texel
 centres, exactly 0 outside, fading over the last half texel. Same buffer-sharing rule: the
 arrays **are** the brush's paint layers'. `serializeMap` / `deserializeMap` carry them, and a
 map written before planting existed still loads.
@@ -512,8 +512,8 @@ painted pass** over the same cells, on its own salt family, in which every kind 
 independently and no kind claims the cell from another:
 
 ```
-base'(kind) = base(kind) * (1 - planting.mask)              // the mask suppresses
-paint(kind) = Σ_brush planting[brush] * PAINT_SEED[brush][kind] * user
+base'(kind) = base(kind) * (1 - planting.mask) * (1 - planting.path)
+paint(kind) = Σ_brush planting[brush] * PAINT_SEED[brush][kind] * user * (1 - planting.path)
 ```
 
 The separation is the whole guarantee. The base loop stops at its first hit, so if the painted
@@ -521,7 +521,17 @@ weight rode inside it a stand could out-roll a rock in a cell the rock already h
 rock would **vanish** — painting would read as reshuffling the world rather than adding to it.
 The painted pass is skipped entirely on an unpainted cell, which is every cell of the shipped
 world. `PAINT_SEED` is the mix per brush (a `trees` stand is mostly one crown build plus
-conifers, undergrowth and tick texture); `mask` names no kind.
+conifers, undergrowth and tick texture); `mask` and `path` name no kind.
+
+**The path is drawn, not built.** It is the one planting layer the GROUND reads: no geometry
+moves and no material is added — `src/world/ground.ts` takes the brush's own `DataTexture`
+through `WorldHandles.setPaintedPath` and inks the trail in the same fragment injection that
+draws the terrace lips, from the sampled weight and the pen's own wobble. Its rim is a line the
+noise breaks gaps in and its tread is stipple with paper between the specks, because TASTE §2.5
+will not have a ruled edge on this map and §2.3 wants the field breathing. The demo build binds
+a 1×1 empty texture and never installs a layer. It is also the one brush that suppresses the
+**painted** term as well as the base one: a mask opens a glade and leaves a painted grove
+standing in it, a path is ground nothing stands on at all.
 
 **Rebuild cost.** A planting stroke moves no vertex, so it rebuilds the **scatter only** —
 `WorldHandles.refreshScatter` (re-roll + re-instance) rather than `setTerrain({})` (re-displace
@@ -553,7 +563,7 @@ there because `envpaint/ui` does not export its stylesheet.
 |---|---|---|---|---|
 | sculpt | `0` | ground | `height` (raise; shift/ctrl lower, alt smooth) | shipped |
 | mask | `9` | ground | `mask` weight — suppresses the world's own seeding | shipped |
-| path | `8` | ground | dirt trail in the ground marks | coming |
+| path | `8` | ground | `path` weight — inked as a dirt trail, and nothing grows on it | shipped |
 | grass | `1` | paint | `grass` weight | shipped |
 | comb | `2` | paint | lean direction for grass | coming |
 | flowers | `w` | paint | `flowers` weight | shipped |

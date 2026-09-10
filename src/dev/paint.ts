@@ -91,7 +91,7 @@
  * when there is one, it records here.
  */
 
-import type { Camera, Object3D, Scene, WebGLRenderer } from 'three';
+import type { Camera, Object3D, Scene, Texture, WebGLRenderer } from 'three';
 import { Raycaster, Vector2, Vector3 } from 'three';
 import type { GhostFolder, GhostPanelUi } from 'ghost-panel';
 import type { BrushHit, EdgeShape, StampMode, StampOp, Tool } from 'envpaint/core';
@@ -341,6 +341,16 @@ export interface PaintHandles {
    * geography gets its own copy through `setPaintedWater` in landscape.ts;
    * this is the drawing half. */
   setPaintedWater(field: PaintedWaterField | null): void;
+  /**
+   * Hand the ground the `path` brush's live weight texture, or `null`
+   * (`WorldHandles.setPaintedPath`). The drawing half of the dirt trail —
+   * the placement half needs no handle at all, because `scatter.ts` reads
+   * the same weight through the planting sampler already installed.
+   *
+   * Optional: a build with no handle simply grows nothing on the path and
+   * draws no trail, which is a missing mark rather than a broken world.
+   */
+  setPaintedPath?(texture: Texture | null): void;
   /** The terrain dials in force (`WorldHandles.terrain()`). A pond chooses
    * its level with `basinDrop` at the dials the painter is looking at. */
   terrain(): { elevation: number; tierStep: number; relief: number };
@@ -515,6 +525,10 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
   // ones. All zero until somebody paints, which is the shipped world exactly
   // (test/world/scatter-planting.test.ts).
   setPaintedPlanting(plantingSampler(map));
+  // …and the one planting layer the GROUND reads as well. Its buffer is the
+  // map's like every other, so this is handed over once and never again: the
+  // frame's `commitAll` uploads whatever the brush has written into it.
+  handles.setPaintedPath?.(plantLayers.path.texture as Texture);
 
   // ── undo ──────────────────────────────────────────────────────────────────
   // EnvPaint's History wraps each stroke in one entry and, once handed the
@@ -1115,6 +1129,21 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
     }
     if (heightLayer.dirtyRect) rebuildSoon();
     layers.commitAll();
+    // ── the strip follows the panel ────────────────────────────────────────
+    // 2026-09-10, user ask: *"when i shift + d to hide ghost panel the brush
+    // panel should hide too."* The strip is part of that chrome, and an
+    // operator hiding the panel is clearing the screen to paint on.
+    //
+    // POLLED, not hooked [D]: ghost-panel toggles from a key binding, from
+    // its own header and from `ui.hide()`, and emits nothing on any of them.
+    // One boolean read a frame catches all three, and painting is untouched
+    // either way — the brush keeps the pointer while the strip is away, and
+    // shift+d brings it back exactly as it left.
+    const panelShown = panelUi.isVisible();
+    if (panelShown !== stripShown) {
+      stripShown = panelShown;
+      strip?.setVisible(panelShown);
+    }
   });
 
   // ── the tool strip ────────────────────────────────────────────────────────
@@ -1132,6 +1161,8 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
   // HOME is an `extras` button: the world's default view, slid into
   // (`CameraRig.resetView`). Only shown when a build wires the handle.
   let strip: ToolStrip | null = null;
+  /** What the strip's visibility was last set to — see the frame sweep. */
+  let stripShown = true;
   const mountStrip = (): void => {
     if (strip) return;
     injectStripStyles();
@@ -1158,6 +1189,10 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
     const eraser = strip.element.querySelector<HTMLElement>('.ep-strip-erase');
     if (eraser) eraser.dataset.tooltip = 'eraser — what holding shift does';
     strip.element.addEventListener('click', () => strip?.sync());
+    // Mounted while the panel is hidden (painting switched on, then shift+d,
+    // then off and on again): it comes up hidden, with the panel.
+    stripShown = panelUi.isVisible();
+    if (!stripShown) strip.setVisible(false);
   };
   const unmountStrip = (): void => {
     strip?.dispose();
@@ -1544,6 +1579,7 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
       // the water field on the geography AND on the renderer.
       setPaintedHeight(null);
       setPaintedPlanting(null);
+      handles.setPaintedPath?.(null);
       setPaintedWater(null);
       handles.setPaintedWater(null);
       layers.dispose();

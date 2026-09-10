@@ -43,16 +43,20 @@
 
 import {
   Color,
+  DataTexture,
   Group,
   Mesh,
   MeshBasicMaterial,
   PlaneGeometry,
+  RedFormat,
   RingGeometry,
   Vector2,
+  type Texture,
   type WebGLProgramParametersWithUniforms,
 } from 'three';
 import { MOTION, SURFACE } from '../taste/tokens';
 import { TERRAIN, terrainParams } from './landscape';
+import { PAINTED_SIZE } from './painted';
 import type { Surface } from './surface';
 
 /** Outer radius of the flat far field. */
@@ -105,7 +109,7 @@ const GROUND_DRIFT_PER_S = 0.05 / (MOTION.ambientMs / 1000);
  * The widths are in HEIGHT units, so a stroke keeps its drawn weight at any
  * zoom instead of thinning out — the reference's pen does the same.
  */
-const GROUND_MARKS_CACHE_KEY = 'ground-terrace-marks-v1';
+const GROUND_MARKS_CACHE_KEY = 'ground-terrace-marks-v2';
 
 // The dial set [D]. Every one of these is a threshold on world height or on
 // the surface's tilt — no screen-space term anywhere, so the marks hold
@@ -133,6 +137,33 @@ const HATCH_INK = 0.9;
 const LIP_BAND: [number, number, number, number] = [0.06, 0.02, 0.0, 0.03];
 /** …and the tilt it needs to exist at all: a flat plain has no lip. */
 const LIP_SLOPE: [number, number] = [0.003, 0.012];
+
+// ── the painted path (dev brush, drawn here) ────────────────────────────────
+/**
+ * The `path` brush's weight layer, read straight off the brush's own
+ * `DataTexture` (src/dev/paint.ts hands it over; the demo build never does,
+ * and the shader falls back to the 1×1 empty texture below).
+ *
+ * A dirt trail is DRAWN, not built [D]: no geometry moves, no material is
+ * added, and nothing rectilinear appears — the ground inks itself along the
+ * painted band exactly as it inks its own terrace lips, from a field value
+ * and the pen's own wobble. TASTE §2.5 will not have a ruled edge on this
+ * map, so the trail has no outline of constant width: its rim is a broken
+ * line that the noise opens gaps in, and its body is stipple with paper
+ * between the specks (TASTE §2.3).
+ */
+/** Weight at which the trail's rim line runs, and where its body is solid. */
+const PATH_RIM = 0.22;
+const PATH_RIM_BAND = 0.13;
+const PATH_IN: [number, number] = [0.12, 0.34];
+/** Stipple frequency on world xz, and the threshold that leaves paper. */
+const PATH_SPECK_SCALE = 2.9;
+const PATH_SPECK_IN: [number, number] = [0.6, 0.72];
+/** How much of the rim line the noise breaks away. */
+const PATH_BREAK_IN: [number, number] = [0.38, 0.56];
+/** Ink strengths — the rim reads as the drawn edge, the specks as tread. */
+const PATH_RIM_INK = 0.72;
+const PATH_SPECK_INK = 0.5;
 
 /** A number that is always a glsl float literal (never `2` for `2.0`). */
 function glslFloat(n: number): string {
@@ -167,6 +198,12 @@ export interface Ground {
   /** The ONE material they share — the dev color grade recolors just this. */
   material: MeshBasicMaterial;
   /**
+   * Hand the ground the `path` brush's weight layer (its live `DataTexture`),
+   * or `null` to stop drawing a trail. The buffer is the painted map's, so
+   * there is nothing to sync: the next frame's `commitAll` uploads it.
+   */
+  setPaintedPath(texture: Texture | null): void;
+  /**
    * Advance the pen wobble's ambient drift. Call once per frame, like
    * `water.update` — one uniform write, a wall-clock value, no integration.
    */
@@ -198,11 +235,19 @@ export function createGround(surface: Surface): Ground {
   // uStep is LIVE: the tier spacing is a dial (landscape's TerrainParams), and
   // a hatch drawn at the old step over geometry cut at the new one would put
   // the lip lines somewhere other than the risers.
+  // A 1×1 single-channel zero, so the sampler is always bound to something
+  // real: an unbound sampler2D is undefined behaviour, and the demo build
+  // never installs a painted layer at all.
+  const emptyPath = new DataTexture(new Uint8Array([0]), 1, 1, RedFormat);
+  emptyPath.needsUpdate = true;
   const markUniforms = {
     uInk: { value: new Color(SURFACE.ink) },
     uStep: { value: terrainParams().tierStep },
     uRiser: { value: new Vector2(TERRAIN.terraceRiser[0], TERRAIN.terraceRiser[1]) },
     uGroundTime: { value: 0 },
+    uPath: { value: emptyPath as Texture },
+    /** 0 with no painted layer installed — the branch costs one multiply. */
+    uPathOn: { value: 0 },
   };
   material.onBeforeCompile = (shader: WebGLProgramParametersWithUniforms): void => {
     Object.assign(shader.uniforms, markUniforms);
@@ -227,6 +272,8 @@ uniform vec3 uInk;
 uniform float uStep;
 uniform vec2 uRiser;
 uniform float uGroundTime;
+uniform sampler2D uPath;
+uniform float uPathOn;
 varying vec3 vGroundPos;
 varying vec3 vGroundNormal;
 ${groundNoiseGlsl}`,
@@ -255,7 +302,30 @@ ${groundNoiseGlsl}`,
   float lipBand = smoothstep(uRiser.y - ${glslFloat(LIP_BAND[0])}, uRiser.y - ${glslFloat(LIP_BAND[1])}, f)
     * (1.0 - smoothstep(uRiser.y + ${glslFloat(LIP_BAND[2])}, uRiser.y + ${glslFloat(LIP_BAND[3])}, f));
   float lip = lipBand * smoothstep(${glslFloat(LIP_SLOPE[0])}, ${glslFloat(LIP_SLOPE[1])}, slope);
-  float ink = clamp(hatchInk + lip, 0.0, 1.0);
+  // The painted dirt trail. Same two ingredients as everything else on this
+  // ground — a field value and the pen's wobble — so it holds still under an
+  // orbit and keeps its weight under a zoom.
+  float pathInk = 0.0;
+  if (uPathOn > 0.5) {
+    vec2 puv = vGroundPos.xz / ${glslFloat(PAINTED_SIZE)} + 0.5;
+    float w = texture2D(uPath, puv).r;
+    float onPath = smoothstep(${glslFloat(PATH_IN[0])}, ${glslFloat(PATH_IN[1])}, w);
+    // Tread: sparse specks, most of the band left as paper.
+    float speck = groundNoise(vGroundPos.xz * ${glslFloat(PATH_SPECK_SCALE)}
+      + uGroundTime * ${glslFloat(GROUND_DRIFT_PER_S)});
+    float tread = onPath
+      * smoothstep(${glslFloat(PATH_SPECK_IN[0])}, ${glslFloat(PATH_SPECK_IN[1])}, speck);
+    // Rim: a line along the trail's edge, broken by the same noise so it is
+    // never a ruled outline.
+    float rim = 1.0 - smoothstep(0.0, ${glslFloat(PATH_RIM_BAND)},
+      abs(w - ${glslFloat(PATH_RIM)}));
+    float broken = smoothstep(${glslFloat(PATH_BREAK_IN[0])}, ${glslFloat(PATH_BREAK_IN[1])},
+      groundNoise(vGroundPos.xz * 1.35 + 7.1
+        + uGroundTime * ${glslFloat(GROUND_DRIFT_PER_S)}));
+    pathInk = max(rim * broken * ${glslFloat(PATH_RIM_INK)},
+      tread * ${glslFloat(PATH_SPECK_INK)});
+  }
+  float ink = clamp(hatchInk + lip + pathInk, 0.0, 1.0);
   diffuseColor.rgb = mix(diffuseColor.rgb, uInk, ink);
 }`,
       );
@@ -302,6 +372,10 @@ ${groundNoiseGlsl}`,
       // Wall-clock seconds, like the ripples: no integration, so a dropped
       // frame cannot make the wobble jump.
       markUniforms.uGroundTime.value = nowMs / 1000;
+    },
+    setPaintedPath: (texture: Texture | null): void => {
+      markUniforms.uPath.value = texture ?? emptyPath;
+      markUniforms.uPathOn.value = texture ? 1 : 0;
     },
     rebuild: (): void => {
       displace();

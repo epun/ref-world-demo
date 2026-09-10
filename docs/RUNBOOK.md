@@ -77,7 +77,7 @@ rehearsal and the night.
    |---|---|---|
    | `0` | sculpt | raises the ground; **shift** or ctrl lowers, alt smooths |
    | `9` | mask | keeps the world from seeding anything here |
-   | `8` | path | *coming* |
+   | `8` | path | draws a dirt trail; nothing grows on it |
    | `1` | grass | plants grass |
    | `2` | comb | *coming* |
    | `w` | flowers | plants flowers |

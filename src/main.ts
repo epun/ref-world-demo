@@ -15,7 +15,7 @@
  * from src/taste/tokens.ts; all durations from MOTION tokens.
  */
 
-import { Vector3 } from 'three';
+import { Vector3, type Texture } from 'three';
 import { installHoverNames } from './creatures/hover';
 import { createCreatureManager } from './creatures/manager';
 import {
@@ -1983,6 +1983,9 @@ function main(): void {
         // (landscape.ts `setPaintedWater`), which is why only this half needs
         // a handle — the world draws what the geography already answers for.
         setPaintedWater: (field) => world.water.setPainted(field),
+        // …and the painted PATH, to the ground: one weight layer, drawn as an
+        // ink dirt trail by the same injection that draws the terrace lips.
+        setPaintedPath: (texture) => world.setPaintedPath(texture as Texture | null),
         // The paint skill draws on the ground with a plain drag, which is
         // the same gesture the view controls orbit with; the world lets go
         // of it while a stroke is live (src/world/scene.ts setSoloDrag).

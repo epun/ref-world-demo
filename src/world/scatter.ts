@@ -44,6 +44,8 @@ import { MOTION, SURFACE, WORLD } from '../taste/tokens';
 import {
   activeWaterBodies,
   isWater,
+  hasPaintedPlanting,
+  paintedPlantingAt,
   paintedShoreSamples,
   sampleLandscape,
   shoreSamples,
@@ -51,7 +53,7 @@ import {
   type LandscapeSample,
   type ShoreSample,
 } from './landscape';
-import { PLANT_BRUSHES, type PlantBrush } from './painted';
+import { PLANT_BRUSHES, type PlantBrush, type PlantingWeights } from './painted';
 import {
   BUILDING_COURTYARD_VARIANT,
   buildPropGeometries,
@@ -196,10 +198,24 @@ const SEED_PROB: Record<ScatterKind, number> = {
 // makes live painting read as planting instead of as re-rolling the world,
 // and test/world/scatter-planting.test.ts pins it.
 //
-// `mask` names no kind at all: it works by suppressing the base term
-// instead (see `prob` in computePlacements).
+// `mask` and `path` name no kind at all: they work by suppressing instead
+// (see `prob` in computePlacements).
 
 export type PaintSeed = Partial<Record<ScatterKind, number>>;
+
+/**
+ * How much a brush has PLANTED at a point — the mask and the path excluded,
+ * because neither plants anything: they only take away, and a cell holding
+ * nothing but a mask has nothing to seat.
+ */
+function paintedTotal(weights: PlantingWeights): number {
+  let total = 0;
+  for (const brush of PLANT_BRUSHES) {
+    if (brush === 'mask' || brush === 'path') continue;
+    total += weights[brush];
+  }
+  return total;
+}
 
 // WEIGHT 1 MEANS A CLUSTER IN EVERY CELL (2026-09-10, user report: "none of
 // the brushes work except water"). These were per-cell probabilities of
@@ -220,14 +236,18 @@ export const PAINT_SEED: Record<PlantBrush, PaintSeed> = {
   // Stone is sparse by nature — a scree of boulders with the odd cut stump
   // and, rarely, a standing stone. Never a field of rubble.
   rocks: { rock: 0.6, stump: 0.08, monolith: 0.04 },
-  // 0.16 rather than the 0.22 first tried: measured in the headless shot, a
-  // saturated cloud brush at 0.22 spotted the ground with more hard shadow
-  // stamps than paper between them, and TASTE §2.3 wants the field to keep
-  // breathing at any brush weight.
+  // Clouds are the one kind that must NOT reach ~0.9: each carries a hard
+  // shadow stamp and a cloud is ~8 units across, so a cluster in every cell
+  // would carpet the ground with more shadow than paper, and TASTE §2.3
+  // wants the field breathing at any brush weight.
   clouds: { cloud: 0.45 },
   // The mask names no kind at all: it works by suppressing the base term
   // instead (see `prob` below).
   mask: {},
+  // Nor does the path, and it suppresses the PAINTED term as well — see
+  // `onPath` below. What a path DOES is drawn, not placed: the ground reads
+  // this same layer and inks a dirt trail along it (src/world/ground.ts).
+  path: {},
 };
 
 // ── landscape-aware seeding ──────────────────────────────────────────────────
@@ -594,8 +614,12 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
     iz: number,
     extras: number,
     spread = 1,
+    /** Where the cluster seats, when that is not the cell's own seed point —
+     * a PAINTED cluster whose cell was painted somewhere the seed point is
+     * not (see `plantAt` in the seeding loop). */
+    at?: { sx: number; sz: number },
   ): void => {
-    const { sx, sz } = seedPos(ix, iz);
+    const { sx, sz } = at ?? seedPos(ix, iz);
     const count = variantCount(kind);
     // The cluster's species: uniform over the kind's variants.
     const clusterVariant = Math.min(count - 1, Math.floor(cellHash(ix, iz, 31.1) * count));
@@ -723,7 +747,36 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
       if (underMountain(sx, sz)) continue;
       const f = sample.forest;
       const m = sample.mountain;
-      const plant = sample.planting;
+      /**
+       * The cell's painted weights, and where a painted cluster seats.
+       *
+       * Normally both come from the cell's own seed point — the jittered
+       * spot the whole cell speaks for. But that jitter reaches 0.42 of a
+       * step (2.5 u) and the brush opens at a 3 u radius, so a narrow stroke
+       * can paint a cell right across the middle and still miss the one
+       * point that answers for it: the operator paints trees, the cell rolls
+       * nothing, and the tool looks dead (2026-09-10, user report). When the
+       * seed point is unpainted and the cell's CENTRE is not, the centre
+       * speaks instead and the painted cluster seats there.
+       *
+       * It can only ever ADD: an unpainted world never takes the branch (no
+       * sampler is installed), and a cell painted at its seed point is
+       * untouched. The base rolls keep the seed point either way, so nothing
+       * that was already standing moves.
+       */
+      let plant = sample.planting;
+      let plantAt: { sx: number; sz: number } | undefined;
+      if (hasPaintedPlanting() && paintedTotal(plant) <= 0) {
+        const cx = ix * SCATTER_STEP;
+        const cz = iz * SCATTER_STEP;
+        if (!isWater(cx, cz, SHORE_KEEPOUT) && !underMountain(cx, cz)) {
+          const centre = paintedPlantingAt(cx, cz);
+          if (paintedTotal(centre) > 0) {
+            plant = centre;
+            plantAt = { sx: cx, sz: cz };
+          }
+        }
+      }
       /**
        * The mask brush: it plants nothing and suppresses what the world
        * would have planted by itself. Applied to the BASE term only —
@@ -732,11 +785,19 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
        * a second, blunter density dial rather than a glade.
        */
       const clear = Math.max(0, 1 - plant.mask);
+      /**
+       * The path brush, and the one way it is not the mask: a mask opens a
+       * glade in the world's OWN seeding and leaves a painted grove standing
+       * in it; a path is ground nothing stands on at all, so it suppresses
+       * the painted term too. A trail with a tree in the middle of it is not
+       * a trail.
+       */
+      const onPath = Math.max(0, 1 - plant.path);
       /** Did a brush touch this cell at all? An unpainted cell skips the
        * painted pass entirely, so an unpainted world costs one comparison. */
       let paintedCell = false;
       for (const brush of PLANT_BRUSHES) {
-        if (brush !== 'mask' && plant[brush] > 0) {
+        if (brush !== 'mask' && brush !== 'path' && plant[brush] > 0) {
           paintedCell = true;
           break;
         }
@@ -749,12 +810,12 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
       const prob = (kind: ScatterKind): number => {
         const user = density * userMult(kind);
         // The island is its own flora list, not a blend over the plain.
-        if (sample.island) return (ISLAND_SEED[kind] ?? 0) * user * clear;
-        const base = SEED_PROB[kind] * density * Math.max(0, kindDensity[kind] ?? 1) * clear;
+        if (sample.island) return (ISLAND_SEED[kind] ?? 0) * user * clear * onPath;
+        const base =
+          SEED_PROB[kind] * density * Math.max(0, kindDensity[kind] ?? 1) * clear * onPath;
         return (
           base * (1 - f) * (1 - m) +
-          f * (FOREST_SEED[kind] ?? 0) * user +
-          m * (MOUNTAIN_SEED[kind] ?? 0) * user
+          (f * (FOREST_SEED[kind] ?? 0) * user + m * (MOUNTAIN_SEED[kind] ?? 0) * user) * onPath
         );
       };
       /**
@@ -771,7 +832,7 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
           const seed = PAINT_SEED[brush][kind];
           if (seed) paint += w * seed;
         }
-        return paint * density * userMult(kind);
+        return paint * density * userMult(kind) * onPath;
       };
       // The island's own grove rule (see ISLAND_CLUSTER_SPREAD).
       const spread = sample.island ? ISLAND_CLUSTER_SPREAD : 1;
@@ -788,7 +849,11 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
       // hashes independently of the chosen kind (monotonicity).
       /** Seed one prop kind's cluster in this cell. Returns false when a
        * cap refused it, which is what the base loop's `break` reads. */
-      const seedProp = (kind: PropKind, paintedCell: boolean): boolean => {
+      const seedProp = (
+        kind: PropKind,
+        paintedCell: boolean,
+        at?: { sx: number; sz: number },
+      ): boolean => {
         if (kind === 'building') {
           if (buildings.length >= BUILDING_MAX) return false;
           placeBuilding(ix, iz, paintedCell);
@@ -796,20 +861,20 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
           if (towers.length >= WATER_TOWER_MAX) return false;
           placeWaterTower(ix, iz);
         } else if (kind === 'cactus' || kind === 'picnicTable') {
-          cluster(kind, ix, iz, 0, spread); // sparse loners
+          cluster(kind, ix, iz, 0, spread, at); // sparse loners
         } else if (kind === 'cloud') {
           // A cloud bank is one or two forms far apart, never a heap: the
           // spread is over twice a prop cluster's because a cloud is ~8
           // units wide and two of them at a tree's spacing would merge into
           // one blob. Painted skies stay "low density, room to breathe"
           // (the ref brief) at any brush weight.
-          cluster(kind, ix, iz, cellHash(ix, iz, 4.4) < 0.5 ? 1 : 0, CLOUD_CLUSTER_SPREAD);
+          cluster(kind, ix, iz, cellHash(ix, iz, 4.4) < 0.5 ? 1 : 0, CLOUD_CLUSTER_SPREAD, at);
         } else if (kind === 'monolith') {
           // Standing stones come mostly in pairs, sometimes alone.
-          cluster(kind, ix, iz, cellHash(ix, iz, 4.4) < 0.65 ? 1 : 0, spread);
+          cluster(kind, ix, iz, cellHash(ix, iz, 4.4) < 0.65 ? 1 : 0, spread, at);
         } else {
           const extras = 1 + Math.floor(cellHash(ix, iz, 4.4) * 4) + bonus; // 1–4 (+island)
-          cluster(kind, ix, iz, extras, spread);
+          cluster(kind, ix, iz, extras, spread, at);
         }
         return true;
       };
@@ -843,10 +908,24 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
           if (pp <= 0) continue;
           if (cellHash(ix, iz, PAINT_SALT + k * 13.31) >= pp) continue;
           if (kind === 'tick') {
-            cluster('tick', ix, iz, 1 + Math.floor(cellHash(ix, iz, 2.2) * 3) + bonus, spread);
+            cluster(
+              'tick',
+              ix,
+              iz,
+              1 + Math.floor(cellHash(ix, iz, 2.2) * 3) + bonus,
+              spread,
+              plantAt,
+            );
           } else if (kind === 'grass') {
             // A tuft alphabet reads as a patch, not as specimens: 3–5 marks.
-            cluster('grass', ix, iz, 2 + Math.floor(cellHash(ix, iz, GRASS_SALT) * 3) + bonus, spread);
+            cluster(
+              'grass',
+              ix,
+              iz,
+              2 + Math.floor(cellHash(ix, iz, GRASS_SALT) * 3) + bonus,
+              spread,
+              plantAt,
+            );
           } else if (kind === 'flower') {
             // Flowers cluster tighter and sparser than grass — a few heads.
             cluster(
@@ -855,13 +934,14 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
               iz,
               1 + Math.floor(cellHash(ix, iz, FLOWER_SALT) * 3) + bonus,
               spread * 0.7,
+              plantAt,
             );
           } else {
             // Generic on purpose: no brush names `building` today (the
             // `cottages` brush left with the EnvPaint strip), so the dooryard
             // below stays dormant — but a brush that seeds one later gets it
             // without a second code path.
-            seedProp(kind as PropKind, paintedCell);
+            seedProp(kind as PropKind, paintedCell, plantAt);
           }
         }
       }
