@@ -213,6 +213,18 @@ export interface PaintEvent extends EventBase {
    * replay lays the same plane without re-reading a bank that may since have
    * moved. Absent on a drain, which fills to nothing. */
   level?: number;
+  /**
+   * `waterfall` only: the y rotation the mark was stamped facing, radians
+   * (2026-09-10, user ask: *"i want to match the brushes for env paint
+   * exactly"*).
+   *
+   * Recorded rather than re-derived for the same reason `level` is: the
+   * facing comes off the terrain gradient at stamp time, and by the time a
+   * log is replayed that ground may have been sculpted. A dab without one —
+   * an older log, or a sender that left it off — falls back to the gradient
+   * as it now stands, which is the best guess available.
+   */
+  yaw?: number;
 }
 
 /**

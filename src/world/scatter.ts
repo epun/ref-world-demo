@@ -64,14 +64,25 @@ import {
 } from './props';
 import { stampEllipse, stampRotationY, type StampEllipse } from './shadows';
 import { ROLLING_SURFACE, type Surface } from './surface';
+import {
+  buildWaterfallGeometries,
+  WATERFALL_VARIANTS,
+  waterfallPlacements,
+} from './waterfall-marks';
 
-export type MarkKind = 'tick' | 'reed' | 'grass' | 'flower';
+export type MarkKind = 'tick' | 'reed' | 'grass' | 'flower' | 'waterfall';
 export type ScatterKind = PropKind | MarkKind;
 
 /** The flat ink marks: no collider, no shadow stamp, no inflated variant
  * geometry behind them. Everything else in a placement list is a prop. */
 function isMark(kind: ScatterKind): kind is MarkKind {
-  return kind === 'tick' || kind === 'reed' || kind === 'grass' || kind === 'flower';
+  return (
+    kind === 'tick' ||
+    kind === 'reed' ||
+    kind === 'grass' ||
+    kind === 'flower' ||
+    kind === 'waterfall'
+  );
 }
 
 /** Variants per mark kind. Ticks and reeds have exactly one build and always
@@ -83,6 +94,9 @@ export const MARK_VARIANT_COUNTS: Record<MarkKind, number> = {
   reed: 1,
   grass: 4,
   flower: 3,
+  // Painted, never rolled: a waterfall is stamped one at a time and its
+  // variants live in src/world/waterfall-marks.ts.
+  waterfall: WATERFALL_VARIANTS,
 };
 
 /** Authored variant count for any scatter kind, marks included. */
@@ -182,6 +196,9 @@ const SEED_PROB: Record<ScatterKind, number> = {
   cloud: 0,
   grass: 0,
   flower: 0,
+  // And a waterfall never rolls at all: it is placed one at a time by the
+  // brush and appended to the frame after the roll (see `rebuild`).
+  waterfall: 0,
 };
 
 // ── painted planting (2026-09-09, user ask) ──────────────────────────────────
@@ -1455,6 +1472,7 @@ export function buildMarkGeometries(): Record<MarkKind, BufferGeometry[]> {
     reed: [buildReedGeometry()],
     grass: GRASS_TUFTS.map((_, i) => buildGrassGeometry(i)),
     flower: [0, 1, 2].map((i) => buildFlowerGeometry(i)),
+    waterfall: buildWaterfallGeometries(),
   };
 }
 
@@ -1848,6 +1866,7 @@ export const KIND_GROUP_LABELS: Record<ScatterKind, string> = {
   cloud: 'clouds',
   grass: 'grass tufts',
   flower: 'flowers',
+  waterfall: 'waterfalls',
 };
 
 export interface ScatterOptions {
@@ -1860,7 +1879,7 @@ export interface ScatterOptions {
 }
 
 /** Mark kinds in build order — the render loop's counterpart to PROP_KINDS. */
-const MARK_KIND_ORDER: readonly MarkKind[] = ['tick', 'reed', 'grass', 'flower'];
+const MARK_KIND_ORDER: readonly MarkKind[] = ['tick', 'reed', 'grass', 'flower', 'waterfall'];
 
 /**
  * How far above the ground one cloud floats: the shared altitude plus its
@@ -2210,7 +2229,16 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
     // Colliders track visible placements: drop the cache, bump the version.
     colliderCache = null;
     colliderVersion++;
-    const visible = filterExcluded(placements, exclusions);
+    // The painted marks ride in AFTER the exclusion filter, and after the
+    // roll rather than inside it (2026-09-10, user ask: the waterfall tool).
+    // Two reasons, and they are the cloud's and the mountain's: somebody put
+    // this mark here by hand and a creature walking past must not blink it
+    // out (TASTE §2.3 is a character's negative space on the ground), and its
+    // height spans the ground the Surface reports RIGHT NOW, so it is read
+    // fresh on every rebuild rather than frozen into a placement list.
+    const visible = filterExcluded(placements, exclusions).concat(
+      waterfallPlacements(surface),
+    );
 
     // One InstancedMesh per (kind, variant) — ~30 draws total.
     for (const kind of PROP_KINDS) {

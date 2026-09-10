@@ -82,8 +82,8 @@ rehearsal and the night.
    | `2` | comb | *coming* |
    | `w` | flowers | plants flowers |
    | `3` | pond | fills a pond to one plane; **shift** drains it |
-   | `4` | river | *coming* |
-   | `5` | waterfall | *coming* |
+   | `4` | river | carves a channel and runs water down it in pools; **shift** drains |
+   | `5` | waterfall | stamps a falling-water mark; **shift** removes the nearest |
    | `6` | trees | plants a stand |
    | `7` | rocks | scatters stone |
    | `f` | fire | *coming* |
