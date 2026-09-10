@@ -109,7 +109,7 @@ const GROUND_DRIFT_PER_S = 0.05 / (MOTION.ambientMs / 1000);
  * The widths are in HEIGHT units, so a stroke keeps its drawn weight at any
  * zoom instead of thinning out — the reference's pen does the same.
  */
-const GROUND_MARKS_CACHE_KEY = 'ground-terrace-marks-v2';
+const GROUND_MARKS_CACHE_KEY = 'ground-terrace-marks-v3';
 
 // The dial set [D]. Every one of these is a threshold on world height or on
 // the surface's tilt — no screen-space term anywhere, so the marks hold
@@ -165,6 +165,29 @@ const PATH_BREAK_IN: [number, number] = [0.38, 0.56];
 const PATH_RIM_INK = 0.72;
 const PATH_SPECK_INK = 0.5;
 
+// ── the scorch a fire leaves (dev brush, drawn here) ───────────────────────
+/**
+ * Where the fire brush has burnt (2026-09-10, user ask: *"the brushes should
+ * have real world physics as well just in the style of ref world"*).
+ *
+ * Bound exactly like the painted path above — a live single-channel texture
+ * the driver writes and the ground reads — and drawn the same way, because
+ * it is the same kind of thing: a mark, not a material. The scorch DARKENS
+ * the ground's own stipple rather than painting a black patch on it, and it
+ * darkens toward `uInk` (SURFACE.ink, `#353534`) and no further, so the
+ * burnt ground can never reach the near-black band that belongs to the
+ * characters (TASTE §1).
+ */
+/** Scorch weight at which the burn starts and at which it is full. */
+const SCORCH_IN: [number, number] = [0.08, 0.55];
+/** Stipple frequency, and the threshold that leaves paper between specks —
+ * denser and finer than the path's tread: ash, not a trodden trail. */
+const SCORCH_SPECK_SCALE = 4.3;
+const SCORCH_SPECK_IN: [number, number] = [0.42, 0.62];
+/** Ink strength of the burn at full scorch. Under 1: the paper still shows
+ * through, which is what keeps a burnt patch reading as drawn (TASTE §2.3). */
+const SCORCH_INK = 0.82;
+
 /** A number that is always a glsl float literal (never `2` for `2.0`). */
 function glslFloat(n: number): string {
   return Number.isInteger(n) ? `${n}.0` : `${n}`;
@@ -203,6 +226,12 @@ export interface Ground {
    * there is nothing to sync: the next frame's `commitAll` uploads it.
    */
   setPaintedPath(texture: Texture | null): void;
+  /**
+   * Hand the ground the fire driver's live scorch texture, or `null` to stop
+   * drawing burns. Same deal as `setPaintedPath`: the buffer is the driver's,
+   * and it flags its own `needsUpdate` as the field moves.
+   */
+  setPaintedScorch(texture: Texture | null): void;
   /**
    * Advance the pen wobble's ambient drift. Call once per frame, like
    * `water.update` — one uniform write, a wall-clock value, no integration.
@@ -248,6 +277,8 @@ export function createGround(surface: Surface): Ground {
     uPath: { value: emptyPath as Texture },
     /** 0 with no painted layer installed — the branch costs one multiply. */
     uPathOn: { value: 0 },
+    uScorch: { value: emptyPath as Texture },
+    uScorchOn: { value: 0 },
   };
   material.onBeforeCompile = (shader: WebGLProgramParametersWithUniforms): void => {
     Object.assign(shader.uniforms, markUniforms);
@@ -274,6 +305,8 @@ uniform vec2 uRiser;
 uniform float uGroundTime;
 uniform sampler2D uPath;
 uniform float uPathOn;
+uniform sampler2D uScorch;
+uniform float uScorchOn;
 varying vec3 vGroundPos;
 varying vec3 vGroundNormal;
 ${groundNoiseGlsl}`,
@@ -325,7 +358,22 @@ ${groundNoiseGlsl}`,
     pathInk = max(rim * broken * ${glslFloat(PATH_RIM_INK)},
       tread * ${glslFloat(PATH_SPECK_INK)});
   }
-  float ink = clamp(hatchInk + lip + pathInk, 0.0, 1.0);
+  // The scorch a fire left. Same two ingredients again — a field value and
+  // the pen's wobble — so it holds still under an orbit and keeps its weight
+  // under a zoom, and it mixes toward uInk like every other mark here, which
+  // is the floor: burnt ground never goes below SURFACE.ink (TASTE §1).
+  float scorchInk = 0.0;
+  if (uScorchOn > 0.5) {
+    vec2 suv = vGroundPos.xz / ${glslFloat(PAINTED_SIZE)} + 0.5;
+    float b = texture2D(uScorch, suv).r;
+    float burnt = smoothstep(${glslFloat(SCORCH_IN[0])}, ${glslFloat(SCORCH_IN[1])}, b);
+    float ash = groundNoise(vGroundPos.xz * ${glslFloat(SCORCH_SPECK_SCALE)}
+      + uGroundTime * ${glslFloat(GROUND_DRIFT_PER_S)});
+    scorchInk = burnt
+      * smoothstep(${glslFloat(SCORCH_SPECK_IN[0])}, ${glslFloat(SCORCH_SPECK_IN[1])}, ash)
+      * ${glslFloat(SCORCH_INK)};
+  }
+  float ink = clamp(hatchInk + lip + pathInk + scorchInk, 0.0, 1.0);
   diffuseColor.rgb = mix(diffuseColor.rgb, uInk, ink);
 }`,
       );
@@ -376,6 +424,10 @@ ${groundNoiseGlsl}`,
     setPaintedPath: (texture: Texture | null): void => {
       markUniforms.uPath.value = texture ?? emptyPath;
       markUniforms.uPathOn.value = texture ? 1 : 0;
+    },
+    setPaintedScorch: (texture: Texture | null): void => {
+      markUniforms.uScorch.value = texture ?? emptyPath;
+      markUniforms.uScorchOn.value = texture ? 1 : 0;
     },
     rebuild: (): void => {
       displace();

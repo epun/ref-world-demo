@@ -79,14 +79,14 @@ rehearsal and the night.
    | `9` | mask | keeps the world from seeding anything here |
    | `8` | path | draws a dirt trail; nothing grows on it |
    | `1` | grass | plants grass |
-   | `2` | comb | *coming* |
+   | `2` | comb | combs the grass: the tufts turn to your stroke and lean over |
    | `w` | flowers | plants flowers |
    | `3` | pond | fills a pond to one plane; **shift** drains it |
    | `4` | river | carves a channel and runs water down it in pools; **shift** drains |
    | `5` | waterfall | stamps a falling-water mark; **shift** removes the nearest |
    | `6` | trees | plants a stand |
    | `7` | rocks | scatters stone |
-   | `f` | fire | *coming* |
+   | `f` | fire | lights painted grass — it spreads downwind, burns out, leaves scorch |
    | `c` | clouds | paints cloud |
 
    And the three that are not tools: the **eraser** at the end of the strip

@@ -565,17 +565,45 @@ there because `envpaint/ui` does not export its stylesheet.
 | mask | `9` | ground | `mask` weight — suppresses the world's own seeding | shipped |
 | path | `8` | ground | `path` weight — inked as a dirt trail, and nothing grows on it | shipped |
 | grass | `1` | paint | `grass` weight | shipped |
-| comb | `2` | paint | lean direction for grass | coming |
+| comb | `2` | paint | `comb` direction layer — grass and ticks lean at placement | shipped |
 | flowers | `w` | paint | `flowers` weight | shipped |
 | pond | `3` | paint | `water` level (shift/eraser drains) | shipped |
 | river | `4` | paint | `water` level carried downhill, and a light carve (shift/eraser drains) | shipped |
 | waterfall | `5` | paint | an ink mark on the painted map's `marks` list (shift/eraser removes the nearest) | shipped |
 | trees | `6` | paint | `trees` weight | shipped |
 | rocks | `7` | paint | `rocks` weight | shipped |
-| fire | `f` | paint | flame marks and scorch | coming |
+| fire | `f` | paint | `fire` weight — burns across painted grass, leaves scorch | shipped |
 | clouds | `c` | paint | `clouds` weight | shipped |
 | eraser | — | end | toggles the current tool's opposite (what shift holds) | shipped |
 | home | — | end | slides the camera to the default view (`CameraRig.resetView`) | shipped |
+
+**The comb, and fire** (2026-09-10, user ask: *"the brushes should have real world physics
+as well just in the style of ref world"*). Two more layers beside the seven weights, neither
+of them a planting brush because neither names a kind.
+
+`comb` is a TWO-CHANNEL direction layer at `PLANTING_RES`, written by EnvPaint's own
+`direction` stamp mode (`dir * 0.5 + 0.5`, neutral 0.5) and serialised beside the rest; a map
+written before it loads uncombed, because a zeroed buffer decodes to no comb rather than to a
+lean (src/world/comb.ts spells out why that case is special). It is read AT PLACEMENT — this
+world's grass is instanced ink marks, not a GPU blade field, so the lean is a transform on the
+instance matrix: the mark's yaw turns to the combed heading and the tuft tips by the vector's
+magnitude, capped at `COMB_LEAN_MAX` (~26°) so blades stay readable. Deterministic in the
+layer. The dab records its heading (`dx`, `dz` on the paint event) because nothing at replay
+time could recover it.
+
+`fire` is a weight layer whose MEANING is `src/world/fire.ts`'s `burnState` — pure, the way
+`deriveWater` is what a level layer means. From each painted texel a front advances across
+contiguous painted grass at a fixed rate in texels a second, biased along the wind; a texel
+burns for one ambient beat and is scorch afterwards, and grass under scorch is consumed (its
+weight reads 0 at placement, so the tufts are simply not placed). **Nothing spreads beyond
+painted grass.** The clock is the session's: each fire texel carries the `t` of the stamp that
+lit it, so `elapsedMs` is the same number on every screen and no two of them simulate
+separately. Burning cells place a **flame** mark — a new ink mark kind, three wavered strokes
+and a spark, on the same instanced mark path as the grass, flickering only through the tick
+wind profile's slow smooth gust (TASTE §2.1: no pop). Scorch is drawn by the GROUND, bound
+like the path texture and mixed toward `SURFACE.ink` and no further (TASTE §1). The world
+frame drives a throttled re-evaluation (`FIRE_TICK_MS`, ~4/s) and re-rolls the marks only when
+the burning SET changes.
 
 **The river** is the pond's machinery with a level that can only fall. Each dab carves a little
 channel (a `sculpt` `lower` dab, recorded as one, so a replay carves through the path that

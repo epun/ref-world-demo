@@ -164,6 +164,9 @@ export interface DevHandles {
   /** Hand the ground the `path` brush's live weight texture, or `null`
    * (`WorldHandles.setPaintedPath`) — the drawn half of the dirt trail. */
   setPaintedPath?(texture: unknown): void;
+  /** …and the fire driver's scorch texture (`WorldHandles.setPaintedScorch`)
+   * — the drawn half of a burn. */
+  setPaintedScorch?(texture: unknown): void;
   /** …and reads them back, so the sliders start where the world is. */
   terrain?(): { elevation: number; tierStep: number; relief: number };
   /**
@@ -1700,6 +1703,7 @@ export async function initDevPanel(
       ...(handles.refreshScatter ? { rebuildScatter: handles.refreshScatter } : {}),
       ...(handles.resetView ? { resetView: handles.resetView } : {}),
       ...(handles.setPaintedPath ? { setPaintedPath: handles.setPaintedPath } : {}),
+      ...(handles.setPaintedScorch ? { setPaintedScorch: handles.setPaintedScorch } : {}),
       // …and the landscape mode RE-APPLIED unchanged is exactly the other
       // rebuild: ground, `scatter.refreshLandscape()`, water levels. It is
       // what a water stroke needs and a height stroke does not — a pond
