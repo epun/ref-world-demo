@@ -21,6 +21,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   MAX_SCENE_BATCH,
+  SCENE_MAX_PATCH_TEXELS,
+  SCENE_MAX_TEXEL,
   MAX_SCENE_EVENTS,
   SCENE_EXTENT,
   SCENE_MAX_RADIUS,
@@ -34,7 +36,7 @@ import {
 } from '../../src/session/scene';
 import { createSessionRecorder, type SessionEvent } from '../../src/session';
 import { TERRAIN_LIMITS } from '../../src/world/landscape';
-import { PAINTED_SIZE } from '../../src/world/painted';
+import { decodeFloats, encodeFloats, PAINTED_SIZE } from '../../src/world/painted';
 
 const dab = (over: Partial<Record<string, unknown>> = {}): Record<string, unknown> => ({
   k: 'paint',
@@ -406,5 +408,102 @@ describe('the recorder tells its observer', () => {
     });
     rec.world('landscape', 1);
     expect(rec.count()).toBe(1);
+  });
+});
+
+
+describe('an undo travels as texels', () => {
+  // The one paint event that is not a dab (docs/SESSION.md §paint): History
+  // puts a rectangle back into a layer and no stamp describes what it put
+  // there, so the texels themselves travel — and unlike a dab, which is
+  // geometry and can be trimmed to the map, a patch is REFUSED rather than
+  // clamped. A rect whose data is the wrong length would write a shifted
+  // image; a rect naming texels the layer does not have would land on one
+  // screen and not another.
+  const floats = (n: number): string => {
+    const values = new Float32Array(n);
+    for (let i = 0; i < n; i++) values[i] = i * 0.5;
+    return encodeFloats(values);
+  };
+  const patch = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+    k: 'paint',
+    t: 12,
+    tool: 'patch',
+    layer: 'trees',
+    x0: 4,
+    y0: 8,
+    x1: 6,
+    y1: 9,
+    data: floats(3 * 2),
+    ...over,
+  });
+
+  it('reads a well-formed patch whole', () => {
+    const read = readSceneEvent(patch());
+    expect(read).toEqual({
+      k: 'paint',
+      t: 12,
+      tool: 'patch',
+      layer: 'trees',
+      x0: 4,
+      y0: 8,
+      x1: 6,
+      y1: 9,
+      data: floats(6),
+    });
+    // …and the floats survive the round trip, exactly.
+    expect([...decodeFloats((read as { data: string }).data)]).toEqual([0, 0.5, 1, 1.5, 2, 2.5]);
+  });
+
+  it('refuses a payload that is not the size of the rect it claims', () => {
+    expect(readSceneEvent(patch({ data: floats(5) }))).toBeNull();
+    expect(readSceneEvent(patch({ data: floats(7) }))).toBeNull();
+    expect(readSceneEvent(patch({ data: 'not base64 at all!!' }))).toBeNull();
+    expect(readSceneEvent(patch({ data: undefined }))).toBeNull();
+  });
+
+  it('refuses a rectangle that is inside out, negative or past the map', () => {
+    expect(readSceneEvent(patch({ x1: 3 }))).toBeNull();
+    expect(readSceneEvent(patch({ y0: 12 }))).toBeNull();
+    expect(readSceneEvent(patch({ x0: -1 }))).toBeNull();
+    expect(readSceneEvent(patch({ x0: 1.5 }))).toBeNull();
+    expect(readSceneEvent(patch({ x1: SCENE_MAX_TEXEL + 1 }))).toBeNull();
+  });
+
+  it('refuses a rectangle bigger than one wire message may carry', () => {
+    // The brush splits an undo into tiles at exactly this ceiling rather
+    // than the door growing a hole big enough to post a layer through.
+    const side = Math.floor(Math.sqrt(SCENE_MAX_PATCH_TEXELS));
+    const ok = patch({ x0: 0, y0: 0, x1: side - 1, y1: side - 1, data: floats(side * side) });
+    expect(readSceneEvent(ok)).not.toBeNull();
+    const tooBig = patch({
+      x0: 0,
+      y0: 0,
+      x1: side,
+      y1: side,
+      data: floats((side + 1) * (side + 1)),
+    });
+    expect(readSceneEvent(tooBig)).toBeNull();
+  });
+
+  it('refuses a layer id that is not one', () => {
+    for (const layer of ['', 'Trees', 'a'.repeat(17), '../height', 42]) {
+      expect(readSceneEvent(patch({ layer })), String(layer)).toBeNull();
+    }
+  });
+
+  it('is a scene event, and a clear still buries it', () => {
+    const read = readSceneEvent(patch());
+    expect(read).not.toBeNull();
+    expect(isSceneEvent(read as never)).toBe(true);
+    // A patch before a clear is a patch to a map somebody threw away.
+    const later = readSceneEvent(patch({ t: 14 }));
+    const kept = compactScene([
+      read as never,
+      { k: 'paint', t: 13, tool: 'clear' },
+      later as never,
+    ]);
+    expect(kept).toHaveLength(1);
+    expect(kept[0]?.t).toBe(14);
   });
 });

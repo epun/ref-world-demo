@@ -190,8 +190,12 @@ export interface DriveEvent extends EventBase {
  */
 export interface PaintEvent extends EventBase {
   k: 'paint';
-  /** `raise` | `lower` | `flatten` | `smooth` on the height layer, `pond` |
-   * `drain` on the water one, or `clear` for the whole map. */
+  /** A strip tool id — `sculpt` on the height layer, `pond` / `river` on the
+   * water one, a planting brush on its own weight layer — or one of the two
+   * that are not tools: `clear` for the whole map, and `patch` for a
+   * rectangle of texels somebody UNDID (see `layer` below). Ids recorded by
+   * older builds (`raise`, `grove`, `drain`…) still apply: src/dev/paint-tools.ts
+   * `LEGACY_TOOLS` maps them at the seam. */
   tool: string;
   /** Ground-space centre of the dab — world units, the same space `egg`
    * records, converted from the brush's uv at the seam. Absent on `clear`. */
@@ -209,6 +213,23 @@ export interface PaintEvent extends EventBase {
   seed?: number;
   /** `flatten` only: the height the stroke levelled toward. */
   flattenTo?: number;
+  /**
+   * `patch` only — the layer the rectangle belongs to (`height`, `water`, or
+   * a planting brush's own id), the rectangle in TEXELS, and its floats.
+   *
+   * An undo is the one thing in this log that is not a dab: History puts a
+   * recorded rectangle back into the layer, and no stamp describes what it
+   * put there (docs/SESSION.md §paint). So the texels themselves travel —
+   * base64 little-endian Float32, row-major within the rect, `(x1-x0+1) *
+   * (y1-y0+1)` of them — and the same event replays on a phone, restores
+   * from the store and re-applies from the log, exactly like a dab.
+   */
+  layer?: string;
+  x0?: number;
+  y0?: number;
+  x1?: number;
+  y1?: number;
+  data?: string;
   /** Water tools only: the absolute surface height the dab filled to, so a
    * replay lays the same plane without re-reading a bank that may since have
    * moved. Absent on a drain, which fills to nothing. */

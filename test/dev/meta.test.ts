@@ -324,6 +324,17 @@ describe('the paint skill is wired the way the port plan asks', () => {
     expect(head).toContain('else if (l === heightLayer) terrainDirty = true;');
     expect(head).toContain('else plantingDirty = true;');
     expect(head).toContain('rebuildSoon();');
+    // …and what no dab accounts for travels: an undo is recorded as the
+    // texels it restored, so ctrl+z on the projection reaches every phone
+    // and survives a reload (docs/SESSION.md §paint).
+    expect(head).toContain('if (!dabbed && !applying) recordPatch(l, l.dirtyRect);');
+    expect(source).toContain("tool: 'patch',");
+    expect(source).toContain('const applyPatch = (event: PaintEvent): boolean => {');
+    expect(source).toContain("if (event.tool === 'patch') {");
+    // A replayed or synced patch must NOT record itself again, or every
+    // playback would double the undos in the log.
+    expect(source).toContain('let applying = false;');
+    expect(source).toContain('applying = true;');
     // …and before `commitAll`, which is what clears those rects.
     expect(sweep.indexOf('dirtyRect')).toBeLessThan(sweep.indexOf('layers.commitAll()'));
   });
