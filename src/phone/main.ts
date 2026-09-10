@@ -22,6 +22,7 @@ import { resolveName } from '../creatures/naming';
 import {
   clearSubmission,
   drawerId,
+  generationVerdict,
   isStale,
   readSubmission,
   writeSubmission,
@@ -490,6 +491,33 @@ async function boot(): Promise<void> {
   // — this only drives the LOCAL session, so no duplicate egg.
   if (strokes.length > 0) session.sendDrawing(strokes);
 
+  // ── what the world says back ─────────────────────────────────────────────
+  // Once the person is being told something, nothing else navigates out
+  // from under them — the staleness check below would otherwise redirect on
+  // the very message that carries the refusal.
+  let told = false;
+  const drawAgain = (): void => {
+    if (room.length > 0) clearSubmission(room);
+    location.href = padUrl();
+  };
+  /**
+   * Back to the pad because the world was reset — keeping the drawing.
+   *
+   * Deliberately NOT `drawAgain`: that one clears the submission, which is
+   * right after a refusal (the creature will never exist) and wrong here.
+   * The drawing still exists on this phone, the keepsake still works from
+   * it, and a recall can still ask for it. Only the offering stops.
+   *
+   * `restarted=1` is what the pad shows its one lowercase line off — the
+   * note belongs on the screen the person lands on, not on the one they are
+   * leaving (public/draw/index.html).
+   */
+  const stepDownToPad = (worldEpoch: string | null): void => {
+    if (told) return;
+    told = true;
+    location.replace(padUrl(worldEpoch ?? undefined) + '&restarted=1');
+  };
+
   /*
    * OFFER THE DRAWING BACK TO THE STORE, if the store does not have it.
    *
@@ -511,19 +539,19 @@ async function boot(): Promise<void> {
         id: mineNow.id,
         name: mineNow.name,
         strokes: mineNow.strokes,
+        // The run of the world this drawing belongs to. Without it the heal
+        // would put a creature from before a reset straight back into the
+        // world that reset it — the store's device claim is gone, so the
+        // POST would be accepted (user ask, 2026-09-09).
+        epoch: mineNow.epoch ?? null,
+      }).then((outcome) => {
+        // The one thing heal has to say out loud. Everything else it can
+        // report is about a database and is not this person's to read.
+        if (outcome === 'old-generation') stepDownToPad(null);
       });
     }
   }
 
-  // ── what the world says back ─────────────────────────────────────────────
-  const drawAgain = (): void => {
-    if (room.length > 0) clearSubmission(room);
-    location.href = padUrl();
-  };
-  // Once the person is being told something, nothing else navigates out
-  // from under them — the staleness check below would otherwise redirect on
-  // the very message that carries the refusal.
-  let told = false;
   /** The world this handset last heard from, for a resend to address. */
   let lastWorldEpoch: string | null = null;
   /**
@@ -602,6 +630,27 @@ async function boot(): Promise<void> {
     lastWorldEpoch = worldEpoch;
     if (room.length === 0 || told) return;
     const mine = readSubmission(room);
+    /*
+     * THE WORLD STARTED OVER (user ask, 2026-09-09: *"if we reset the URL we
+     * should also reset the characters that are within that room"*).
+     *
+     * A newer GENERATION is not the same event as a newer session, and the
+     * two need opposite answers. A restarted projection lost a population it
+     * still wants back, so the handset re-homes its drawing into it — that
+     * is the heal below, and it is what makes a refresh mid-demo invisible.
+     * A reset world threw that population away ON PURPOSE, so re-homing is
+     * the one thing that must not happen: it would hand every rehearsal
+     * creature back to the world that was just cleared.
+     *
+     * So: step down. The drawing is NOT deleted (CLAUDE.md — it is the only
+     * copy that survives anything, and the keepsake still builds from it),
+     * it is simply never offered again, and the person is put back on the
+     * pad to draw into the world that is running now.
+     */
+    if (generationVerdict(mine, worldEpoch) === 'step-down') {
+      stepDownToPad(worldEpoch);
+      return;
+    }
     if (!isStale(mine, worldEpoch)) return;
     // The world running now is not the one this drawing went into. That
     // used to mean one thing — the creature is gone, send the person back

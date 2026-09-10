@@ -800,7 +800,15 @@
     // world that restarted (and lost every creature) hands out a new one —
     // and a handset holding a record from the old world is let in to draw
     // again rather than bounced to a creature that no longer exists.
-    const WORLD_EPOCH = (params.get('w') || '').replace(/[^a-z0-9]/gi, '').slice(0, 16);
+    // The dash is KEPT. A public world's epoch is `w-<world>-g<generation>`
+    // (api/_store.ts, src/phone/identity.ts) and stripping the separators
+    // would fold `w-meridian-g1` into `wmeridiang1` — a string that matches
+    // nothing the world ever announces and carries no readable generation.
+    const WORLD_EPOCH = (params.get('w') || '').replace(/[^a-z0-9-]/gi, '').slice(0, 32);
+    /** `?restarted=1` — the companion sent them back because of a reset. */
+    const RESTARTED = params.get('restarted') === '1';
+    /** The epoch the running world announces, once it has (see the up topic). */
+    var liveEpoch = '';
     /** `?recover=1`: hand this handset's stored drawing back, then leave. */
     const RECOVER_MODE = params.get('recover') === '1';
     let recovered = false;
@@ -816,6 +824,51 @@
     const WORLD = (params.get('world') || '').toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 24);
     function storedSubmission() {
       try { return JSON.parse(localStorage.getItem(SUBMISSION_KEY) || 'null'); } catch { return null; }
+    }
+    /*
+     * WHICH RUN OF THE WORLD (user ask, 2026-09-09: *"if we reset the URL we
+     * should also reset the characters that are within that room"*).
+     *
+     * Mirrors `generationOf` in src/phone/identity.ts — this page imports
+     * nothing, so the rule is written out twice and the two are kept in
+     * step. Anything without the suffix is generation 0, which is what every
+     * record written before the reset existed says by saying nothing.
+     */
+    function generationOf(epoch) {
+      const m = /-g(\d{1,9})$/.exec(String(epoch || ''));
+      return m ? Number(m[1]) : 0;
+    }
+    /**
+     * The generation this pad last saw its world on.
+     *
+     * Remembered so the SECOND visit after a reset knows immediately, rather
+     * than freezing the pad and then unfreezing it a network round trip
+     * later. Per world, because two worlds reset independently.
+     */
+    const GENERATION_KEY = 'refworld:generation:' + WORLD;
+    function knownGeneration() {
+      try { return Number(localStorage.getItem(GENERATION_KEY)) || 0; } catch { return 0; }
+    }
+    function learnGeneration(n) {
+      if (!WORLD || typeof n !== 'number' || !(n > knownGeneration())) return;
+      try { localStorage.setItem(GENERATION_KEY, String(Math.floor(n))); } catch {}
+    }
+    /** The world running now, as best this pad knows it. */
+    function liveGeneration() {
+      return Math.max(generationOf(WORLD_EPOCH), knownGeneration());
+    }
+    /**
+     * Has the world started over since this drawing was admitted?
+     *
+     * The pad is FREE when it has: the store's device claim was released by
+     * the reset, so a new drawing will be accepted, and the local
+     * one-creature rule must not be the thing that refuses it. The record
+     * itself is never touched (CLAUDE.md — it is the only copy of the
+     * drawing that survives anything).
+     */
+    function fromOlderWorld(rec) {
+      if (!rec) return false;
+      return liveGeneration() > generationOf(rec.epoch);
     }
     function staleRecord(rec) {
       // Only a KNOWN mismatch frees the handset: with no epoch in the url
@@ -842,6 +895,13 @@
       // let through to draw again, and until they actually send something
       // the old drawing is still here for a recall to hand back.
       if (staleRecord(rec)) return false;
+      // The world was reset out from under this drawing. Same answer as a
+      // stale record and for a stronger reason — there is nothing left in
+      // the store to send them to.
+      if (fromOlderWorld(rec)) return false;
+      // Already handed back once this page load — a bfcache restore or a
+      // tab coming back must not freeze the pad again underneath them.
+      if (steppedDown) return false;
       return true;
     }
     /**
@@ -910,7 +970,7 @@
      * capped at one MOTION.primaryMs: a store that slow is healed from the
      * companion instead, which is the same call on a page that stays put.
      */
-    function healThenGo(then) {
+    function healThenGo(then, onOlderWorld) {
       // A second call — a bfcache restore, a tab coming back — must still
       // hand the person over. Only the WRITE is once; the navigation is
       // this function's job every time it is asked.
@@ -925,6 +985,27 @@
       fetch(endpoint, { cache: 'no-store' })
         .then(function (r) { return r.ok ? r.json() : null; })
         .then(function (body) {
+          /*
+           * THE WORLD WAS RESET (user ask, 2026-09-09/10).
+           *
+           * The log says which run of the world it is (api/drawings.ts,
+           * `config.generation`), and a drawing from an older one must not
+           * be healed back in: the reset released this device's claim, so
+           * the POST would succeed and put a rehearsal creature straight
+           * back into the world that had just been cleared.
+           *
+           * Read off the log this function already fetched, so the answer
+           * cannot race an mqtt announcement that has not arrived yet.
+           */
+          var gen = body && body.config && typeof body.config.generation === 'number'
+            ? body.config.generation
+            : null;
+          if (gen !== null) learnGeneration(gen);
+          if (gen !== null && gen > generationOf(rec.epoch)) {
+            left = true;              // the hand-off is cancelled, not merely late
+            if (onOlderWorld) onOlderWorld();
+            return null;
+          }
           if (storeHasDrawing(body, rec.id) !== 'no') return null;
           var payload = JSON.stringify({ id: rec.id, name: rec.name || '', strokes: rec.strokes });
           var options = {
@@ -951,8 +1032,28 @@
       if (send) send.disabled = true;
       const clear = document.getElementById('clear');
       if (clear) clear.disabled = true;
-      healThenGo(goToCompanion);
+      healThenGo(goToCompanion, stepDownToPad);
       return true;
+    }
+    /**
+     * The world started over — give this pad back, keeping the drawing.
+     *
+     * The record is NOT removed (CLAUDE.md, and test/session/recovery.test.ts
+     * pins it): it is the only copy of the drawing that survives anything,
+     * the keepsake still builds from it, and a recall can still ask for it.
+     * All that changes is that it is never offered to the world again.
+     */
+    var steppedDown = false;
+    function stepDownToPad() {
+      steppedDown = true;
+      healing = false;      // a later pageshow may still need to hand over
+      stage.dataset.spent = '';
+      const send = document.getElementById('send');
+      if (send) send.disabled = false;
+      const clear = document.getElementById('clear');
+      if (clear) clear.disabled = false;
+      syncKeys();
+      sayRestarted();
     }
     enforceSingleDrawing();
     // Fires on first load AND on every bfcache restore (event.persisted).
@@ -1059,6 +1160,26 @@
       toast.textContent = msg; toast.classList.add('show');
       setTimeout(() => toast.classList.remove('show'), ms);
     }
+    /*
+     * THE ONE LINE A RESET OWES THE PERSON HOLDING THE PHONE.
+     *
+     * They had a creature a moment ago and now they are looking at an empty
+     * pad; without this the pad is simply wrong about them. It rides the
+     * toast the page already has rather than a panel of its own — the world
+     * brief's mark set is icon + rule + border, and a reset is not worth a
+     * new surface. Lowercase, and it dwells one ambient beat rather than one
+     * primary: it is a sentence to read, not a state change to notice.
+     */
+    var saidRestarted = false;
+    function sayRestarted() {
+      if (saidRestarted) return;
+      saidRestarted = true;
+      showToast('the world started over — draw again', MOTION.ambientMs);
+    }
+    // The companion bounces here with `?restarted=1` when it hears a newer
+    // generation over mqtt (src/phone/main.ts). The note belongs on the
+    // screen they land on, so it is said here rather than there.
+    if (RESTARTED) sayRestarted();
     try {
       client = mqtt.connect(BROKER, { clientId: 'draw_' + Math.random().toString(16).slice(2, 10), keepalive: 30, reconnectPeriod: 2000 });
       client.on('connect', () => {
@@ -1083,6 +1204,21 @@
           // are the ones that cannot. Same id, same strokes — the pipeline
           // is pure, so the world rebuilds the identical creature.
           if (m.type === 'recall') { answerRecall(m.epoch || null); return; }
+          /*
+           * WHICH WORLD THIS PAD IS DRAWING INTO (2026-09-09/10).
+           *
+           * The projection announces its epoch retained, so this lands the
+           * moment the subscription is up — before anybody has drawn. It is
+           * what a new submission is stamped with, and without it every
+           * drawing made from a scanned qr (which carries no `?w=`) would be
+           * stored with no epoch at all, read as generation 0, and stepped
+           * down by the next reset even though it was drawn after one.
+           */
+          if (m.type === 'world' && typeof m.epoch === 'string' && m.epoch) {
+            liveEpoch = m.epoch;
+            learnGeneration(generationOf(m.epoch));
+            return;
+          }
           if (m.text) showToast(m.text);
         } catch {}
       });
@@ -1253,7 +1389,7 @@
         }), { qos: 0 });
       } catch { return false; }
       try {
-        localStorage.setItem(SUBMISSION_KEY, JSON.stringify({ ...rec, epoch: WORLD_EPOCH || null }));
+        localStorage.setItem(SUBMISSION_KEY, JSON.stringify({ ...rec, epoch: liveEpoch || WORLD_EPOCH || null }));
       } catch {}
       showToast('sent your creature back');
       setTimeout(goToCompanion, 900);
@@ -1268,7 +1404,7 @@
           id: rec.id, name: rec.name || '', strokes: rec.strokes, ts: Date.now(),
         }), { qos: 0 });
       } catch { return; }
-      const use = epoch || WORLD_EPOCH || null;
+      const use = epoch || liveEpoch || WORLD_EPOCH || null;
       try {
         localStorage.setItem(SUBMISSION_KEY, JSON.stringify({ ...rec, epoch: use }));
       } catch {}
@@ -1335,7 +1471,12 @@
         sessionStorage.setItem('refworld:handoff', JSON.stringify({ id: msg.id, name: userName || null, room, strokes: msg.strokes, ts: msg.ts }));
         // Persisted too: a reload (or coming back later) must land on the
         // creature this handset already made, never on an empty pad.
-        localStorage.setItem(SUBMISSION_KEY, JSON.stringify({ id: msg.id, name: userName || null, strokes: msg.strokes, ts: msg.ts, epoch: WORLD_EPOCH || null }));
+        // `liveEpoch` first: the qr for a public world carries no `?w=`
+        // (src/net/protocol.ts `joinUrl`), so the retained announcement is
+        // the only thing that knows which generation this drawing is
+        // entering. A record with no epoch reads as generation 0 and would
+        // be stepped down by a reset that happened before it was drawn.
+        localStorage.setItem(SUBMISSION_KEY, JSON.stringify({ id: msg.id, name: userName || null, strokes: msg.strokes, ts: msg.ts, epoch: liveEpoch || WORLD_EPOCH || null }));
       } catch {}
       keySend.disabled = true;
       // The seam (PHONE-STAGE §4). Satellites leave, the core travels to the

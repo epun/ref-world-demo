@@ -268,6 +268,48 @@ curl -X POST -H "x-moderator: $MODERATOR_SECRET" -H 'content-type: application/j
 `disposition` is `admitted`, `held` or `refused`, and a removal takes
 effect on every projection within one poll.
 
+### starting the world over
+
+A rehearsal leaves trial creatures in the store, and **refusing them one by
+one is not a reset**. A refusal releases the device slot, and every handset
+that drew still holds its own drawing and heals it straight back in on its
+next visit (§the handset heals the store) — by design, and the one copy of a
+drawing that survives anything is never ours to delete.
+
+So the world steps forward instead:
+
+```bash
+curl -X POST -H "x-moderator: $MOD" -H 'content-type: application/json' \
+  "$BASE/api/moderate?world=meridian" -d '{"reset":true}'
+```
+
+It deletes the drawings, every device claim those drawings hold (found by
+reading the drawings, never by scanning the keyspace), and the scene — a
+reset world that opened onto last night's hills would be half a clean start —
+and it counts `generation` up. The answer is `{"world","generation","cleared"}`.
+
+**The generation is what the handsets read.** A public world's epoch is
+`w-<world>-g<generation>`, announced retained to every phone in the room. A
+handset compares the generation its drawing was admitted under against the
+one the world is announcing now, and when the world's is newer it *steps
+down*: it does not heal, it does not re-publish, it keeps the drawing bytes
+(the keepsake still works from them), and it goes back to the pad with one
+lowercase line — `the world started over — draw again`. An epoch with no
+`-g` suffix, and a record with no epoch at all, are both generation 0, so
+every drawing that exists today keeps working unchanged.
+
+The projection reads its generation on the first pull of `/api/drawings` and
+announces nothing until it has: an epoch announced before the number was
+known would be an epoch the page then had to take back, which is every phone
+in the room told the world changed, twice, at boot.
+
+`shift+d` → `scene` → **`reset world`** is the same call from the panel. It
+asks twice — one tap arms it and says `tap again to reset the world`, and the
+arming lapses after one `MOTION.primaryMs` — then reloads, because the page
+that asked is also a page full of creatures that no longer exist. **Any other
+screen open on the world needs a reload too**; its readout says so when it
+notices the generation move.
+
 **The gate fails closed.** With no secret set, or one shorter than eight
 characters, every moderation request 404s — not 403, because an endpoint
 that confirms it exists to an unauthorised caller has told them something.

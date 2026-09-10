@@ -35,6 +35,7 @@ import {
   clearScene,
   hasStore,
   isModerator,
+  readConfig,
   readScene,
   worldKey,
 } from './_store.js';
@@ -47,12 +48,17 @@ export default async function handler(
 
   if (req.method === 'GET') {
     const events = await readScene(world);
+    // The world's generation rides here too, so a page that is watching the
+    // ground does not need a second request to learn it has been started
+    // over (api/_store.ts `resetWorld`).
+    const config = await readConfig(world);
     // never cached: a scene one poll behind is a room where the ground moved
     // and one screen did not.
     res.setHeader('cache-control', 'no-store');
     res.status(200).json({
       world,
       store: hasStore() ? 'live' : 'none',
+      generation: config.generation,
       count: events.length,
       events,
     });
