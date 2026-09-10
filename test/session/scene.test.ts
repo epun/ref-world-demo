@@ -455,6 +455,20 @@ describe('an undo travels as texels', () => {
     expect([...decodeFloats((read as { data: string }).data)]).toEqual([0, 0.5, 1, 1.5, 2, 2.5]);
   });
 
+  it('carries the two-channel comb, and only the channel counts a layer can have', () => {
+    // The comb is a DIRECTION per texel, two floats (src/world/comb.ts), so
+    // its patch carries twice the rect. Without `ch` the door would measure
+    // that payload against the texel count and refuse an honest undo.
+    const comb = patch({ layer: 'comb', ch: 2, data: floats(3 * 2 * 2) });
+    expect(readSceneEvent(comb)).toEqual({ ...comb, k: 'paint', t: 12 });
+    // The default is one, and it is not echoed back.
+    expect(readSceneEvent(patch())).not.toHaveProperty('ch');
+    // A count no paint layer has, or the right count with the wrong payload.
+    expect(readSceneEvent(patch({ ch: 3, data: floats(18) }))).toBeNull();
+    expect(readSceneEvent(patch({ ch: 2, data: floats(6) }))).toBeNull();
+    expect(readSceneEvent(patch({ ch: 2 }))).toBeNull();
+  });
+
   it('refuses a payload that is not the size of the rect it claims', () => {
     expect(readSceneEvent(patch({ data: floats(5) }))).toBeNull();
     expect(readSceneEvent(patch({ data: floats(7) }))).toBeNull();

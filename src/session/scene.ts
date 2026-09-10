@@ -164,10 +164,16 @@ function readPatchScene(rec: Record<string, unknown>, t: number): SceneEvent | n
   if (x1 < x0 || y1 < y0) return null;
   const texels = (x1 - x0 + 1) * (y1 - y0 + 1);
   if (texels > SCENE_MAX_PATCH_TEXELS) return null;
-  // Exactly one float per texel, and base64 of exactly that many bytes.
-  if (data.length !== base64Length(texels * 4)) return null;
+  // Floats per texel: 1 unless the layer says otherwise, and only the counts
+  // a paint layer can actually have (`PaintLayer` takes 1, 2 or 4). The comb
+  // is the two-channel one — see `ch` in src/session/events.ts.
+  const chRaw = rec['ch'];
+  const ch = chRaw === undefined ? 1 : num(chRaw);
+  if (ch === null || (ch !== 1 && ch !== 2 && ch !== 4)) return null;
+  // Exactly that many floats, and base64 of exactly that many bytes.
+  if (data.length !== base64Length(texels * ch * 4)) return null;
   if (!/^[A-Za-z0-9+/]*={0,2}$/.test(data)) return null;
-  return { k: 'paint', t, tool: 'patch', layer, x0, y0, x1, y1, data };
+  return { k: 'paint', t, tool: 'patch', layer, x0, y0, x1, y1, data, ...(ch === 1 ? {} : { ch }) };
 }
 
 /** Is this recorded event one the whole room has to see? */
@@ -261,6 +267,16 @@ function readPaintScene(rec: Record<string, unknown>, t: number): SceneEvent | n
   if (rec['yaw'] !== undefined && yaw === null) return null;
   const mode = rec['mode'];
   if (mode !== undefined && (typeof mode !== 'string' || mode.length > MAX_LABEL)) return null;
+  // The comb's heading (src/session/events.ts `dx`/`dz`). A UNIT vector by
+  // construction, so the clamp is [-1, 1] and a sender that claims more is
+  // simply held to a full lean — the alternative is a public broker able to
+  // hand the world a comb of length one thousand. Both or neither: half a
+  // heading is not one.
+  const dx = rec['dx'] === undefined ? null : num(rec['dx']);
+  if (rec['dx'] !== undefined && dx === null) return null;
+  const dz = rec['dz'] === undefined ? null : num(rec['dz']);
+  if (rec['dz'] !== undefined && dz === null) return null;
+  const heading = dx !== null && dz !== null ? { dx: clamp(dx, -1, 1), dz: clamp(dz, -1, 1) } : {};
 
   return {
     k: 'paint',
@@ -275,6 +291,7 @@ function readPaintScene(rec: Record<string, unknown>, t: number): SceneEvent | n
     ...(seed === null ? {} : { seed }),
     ...(flattenTo === null ? {} : { flattenTo: clamp(flattenTo, -MAX_HEIGHT, MAX_HEIGHT) }),
     ...(level === null ? {} : { level: clamp(level, -MAX_HEIGHT, MAX_HEIGHT) }),
+    ...heading,
     ...(yaw === null ? {} : { yaw: wrapAngle(yaw) }),
   };
 }

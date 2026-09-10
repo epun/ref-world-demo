@@ -142,6 +142,11 @@ export interface WorldHandles {
    * on it, and both read the one painted layer.
    */
   setPaintedPath(texture: Texture | null): void;
+  /** …and the fire driver's scorch texture (`Ground.setPaintedScorch`): the
+   * drawing half of a burn, exactly as `setPaintedPath` is the drawing half
+   * of a trail. The placement half needs no handle — scatter reads the fire
+   * field through the sampler seam already installed. */
+  setPaintedScorch(texture: Texture | null): void;
   /** Slide the camera back to the world's default view (`CameraRig.resetView`)
    * — the tool strip's home button. Never a cut: the rig retargets. */
   resetView(): void;
@@ -416,6 +421,9 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
     },
     setPaintedPath: (texture: Texture | null): void => {
       ground.setPaintedPath(texture);
+    },
+    setPaintedScorch: (texture: Texture | null): void => {
+      ground.setPaintedScorch(texture);
     },
     landscape: (): boolean => landscapeMode() === 'landscape',
     setSoloDrag: (enabled: boolean): void => {

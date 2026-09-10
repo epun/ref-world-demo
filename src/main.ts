@@ -1986,6 +1986,7 @@ function main(): void {
         // …and the painted PATH, to the ground: one weight layer, drawn as an
         // ink dirt trail by the same injection that draws the terrace lips.
         setPaintedPath: (texture) => world.setPaintedPath(texture as Texture | null),
+        setPaintedScorch: (texture) => world.setPaintedScorch(texture as Texture | null),
         // The paint skill draws on the ground with a plain drag, which is
         // the same gesture the view controls orbit with; the world lets go
         // of it while a stroke is live (src/world/scene.ts setSoloDrag).

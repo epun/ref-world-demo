@@ -911,6 +911,75 @@ export function hasPaintedPlanting(): boolean {
   return paintedPlanting !== null;
 }
 
+/**
+ * The painted LEAN sampler — the comb, at a point (2026-09-10, user ask:
+ * *"the brushes should have real world physics as well just in the style of
+ * ref world"*).
+ *
+ * Same hook shape and the same contract as the two above: pure, finite, held
+ * by reference, and callers rebuild the SCATTER to see a change. Read once
+ * per grass/tick INSTANCE rather than once per cell, which is why it hands
+ * back one object with everything a mark needs from the layer — the press
+ * factor, when it lands, is a field on this object rather than a fourth hook
+ * (src/world/comb.ts).
+ */
+let paintedLean: ((x: number, z: number) => PaintedLean) | null = null;
+
+/** What a mark reads off the comb (and, later, the press) at its own point. */
+export interface PaintedLean {
+  /** The comb vector in world xz, (0, 0) where nothing is combed. */
+  dirX: number;
+  dirZ: number;
+}
+
+export function setPaintedLean(sampler: ((x: number, z: number) => PaintedLean) | null): void {
+  paintedLean = sampler;
+}
+
+/** The comb at a point — uncombed when nobody has installed a sampler. */
+export function paintedLeanAt(x: number, z: number): PaintedLean {
+  return paintedLean ? paintedLean(x, z) : { dirX: 0, dirZ: 0 };
+}
+
+/** Whether anybody has installed a comb at all — the read point skips the
+ * whole lean branch on an unpainted world, which is every shipped one. */
+export function hasPaintedLean(): boolean {
+  return paintedLean !== null;
+}
+
+/**
+ * The painted FIRE sampler: what is alight and what has burnt, at a point.
+ *
+ * The field itself is src/world/fire.ts's `burnState` — a pure function of
+ * the two painted layers and the clock — re-evaluated a few times a second by
+ * the driver that owns it (src/dev/paint-fire.ts). This is only the seam it
+ * arrives through, so `scatter.ts` reads fire exactly the way it reads
+ * planting and never learns where the numbers came from.
+ */
+let paintedFire: ((x: number, z: number) => PaintedFire) | null = null;
+
+/** What a scatter cell reads off the fire field at its own point. */
+export interface PaintedFire {
+  /** Flame envelope, [0,1] — 0 where nothing is alight. */
+  burning: number;
+  /** Scorch, [0,1] — the grass under it is consumed. */
+  scorch: number;
+}
+
+export function setPaintedFire(sampler: ((x: number, z: number) => PaintedFire) | null): void {
+  paintedFire = sampler;
+}
+
+/** The fire at a point — nothing alight and nothing burnt without a sampler. */
+export function paintedFireAt(x: number, z: number): PaintedFire {
+  return paintedFire ? paintedFire(x, z) : { burning: 0, scorch: 0 };
+}
+
+/** Whether anybody has lit anything at all. */
+export function hasPaintedFire(): boolean {
+  return paintedFire !== null;
+}
+
 /** The painted offset at (x, z) — 0 when nothing is painted. */
 function painted(x: number, z: number): number {
   return paintedHeight ? paintedHeight(x, z) : 0;

@@ -109,11 +109,17 @@ import { createToolStrip, HOME_ICON, type ToolStrip } from 'envpaint/ui';
 import { WORLD } from '../taste/tokens';
 import {
   paintedWater,
+  setPaintedFire,
   setPaintedHeight,
+  setPaintedLean,
   setPaintedPlanting,
   setPaintedWater,
   TERRAIN,
+  type PaintedLean,
 } from '../world/landscape';
+import { COMB_CHANNELS, COMB_NEUTRAL, sampleComb } from '../world/comb';
+import { windAzimuth } from '../world/scatter';
+import { createFireDriver } from './paint-fire';
 import {
   clearPaintedMap,
   createPaintedMap,
@@ -134,9 +140,14 @@ import {
 } from '../world/painted';
 import {
   clampRadius,
+  COMB_LAYER,
+  COMB_TOOL_ID,
+  FIRE_LAYER,
+  FIRE_TOOL_ID,
   HEIGHT_LAYER,
   invertStampMode,
   isPlantTool,
+  isScatterTool,
   layerForTool,
   RADIUS_DEFAULT,
   RADIUS_MAX,
@@ -427,6 +438,18 @@ export interface PaintHandles {
    * draws no trail, which is a missing mark rather than a broken world.
    */
   setPaintedPath?(texture: Texture | null): void;
+  /**
+   * Hand the ground the fire driver's live scorch texture, or `null`
+   * (`WorldHandles.setPaintedScorch`). The drawing half of a burn, exactly as
+   * `setPaintedPath` is the drawing half of a trail; the placement half needs
+   * no handle, because `scatter.ts` reads the fire field through the sampler
+   * seam this module installs.
+   *
+   * Optional, on the same terms: a build with no handle burns the grass away
+   * and draws no scorch under it, which is a missing mark rather than a
+   * broken world.
+   */
+  setPaintedScorch?(texture: Texture | null): void;
   /** The terrain dials in force (`WorldHandles.terrain()`). A pond chooses
    * its level with `basinDrop` at the dials the painter is looking at. */
   terrain(): { elevation: number; tierStep: number; relief: number };
@@ -451,7 +474,7 @@ export interface PaintHandles {
    * recorder wired, and then the brush simply paints unrecorded — a dev
    * tool must never fail because the log is missing.
    */
-  session?: Pick<SessionRecorder, 'paint'>;
+  session?: Pick<SessionRecorder, 'paint' | 'durationMs'>;
 }
 
 /** Live handles the headless paint smoke drives (scratch/paint-smoke.mjs),
@@ -465,6 +488,10 @@ export interface PaintProbe {
   sampleAt(x: number, z: number): number;
   /** One brush's planting weight at a world point, [0,1]. */
   plantingAt(brush: PlantBrush, x: number, z: number): number;
+  /** The combed direction at a world point — (0, 0) where nothing is combed. */
+  combAt(x: number, z: number): { x: number; z: number };
+  /** The fire at a world point: what is alight, and what has burnt. */
+  fireAt(x: number, z: number): { burning: number; scorch: number };
   /** Lowest and highest painted offset in the map. */
   range(): { min: number; max: number };
   /** The painted LEVEL in the texel covering a world point — the layer as it
@@ -588,6 +615,34 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
     plantLayers[brush] = l;
     plantData[brush] = l.data as Float32Array;
   }
+  /**
+   * The comb (2026-09-10, user ask: *"the brushes should have real world
+   * physics as well just in the style of ref world"*).
+   *
+   * TWO channels and `initial: COMB_NEUTRAL`, both of them EnvPaint's own
+   * (`PaintLayer.stamp` mode `direction` writes `dir * 0.5 + 0.5`, so 0.5 in
+   * both channels is "no lean here"). The layer is float rather than the byte
+   * one EnvPaint uses: this world reads it on the CPU at placement time
+   * (src/world/comb.ts) rather than in a fragment shader, and a byte layer
+   * would quantise the heading to about 0.8° for no saving anybody sees.
+   */
+  const combLayer = layers.add(
+    new PaintLayer(COMB_LAYER, {
+      channels: COMB_CHANNELS,
+      float: true,
+      initial: COMB_NEUTRAL,
+      res: PLANTING_RES,
+    }),
+  );
+  /**
+   * The fire brush's weight — one channel, exactly like a planting layer, and
+   * deliberately NOT one of them: it names no kind and plants nothing. What it
+   * means is `burnState` (src/world/fire.ts), the way what the level layer
+   * means is `deriveWater`.
+   */
+  const fireLayer = layers.add(
+    new PaintLayer(FIRE_LAYER, { channels: 1, float: true, initial: 0, res: PLANTING_RES }),
+  );
   const map = createPaintedMap(
     PAINTED_RES,
     PAINTED_SIZE,
@@ -595,6 +650,9 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
     waterLayer.data as Float32Array,
     plantData,
     PLANTING_RES,
+    // No marks to adopt: the waterfall tool appends to the map's own list.
+    undefined,
+    { comb: combLayer.data as Float32Array, fire: fireLayer.data as Float32Array },
   );
   // From here on the world's heights carry whatever is in that array. With an
   // unpainted map that is the authored world exactly (test/world/painted.test.ts).
@@ -612,6 +670,51 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
   // map's like every other, so this is handed over once and never again: the
   // frame's `commitAll` uploads whatever the brush has written into it.
   handles.setPaintedPath?.(plantLayers.path.texture as Texture);
+
+  // ── the comb, and the fire ────────────────────────────────────────────────
+  // Both ride the same kind of seam the planting weights do: a pure sampler
+  // handed to landscape.ts, read by scatter's placement, and nothing
+  // downstream of it importing a brush. The comb is read once per grass /
+  // tick INSTANCE; the fire once per cell.
+  setPaintedLean((x: number, z: number): PaintedLean => {
+    const dir = sampleComb(map.comb, map.plantingRes, map.size, x, z);
+    return { dirX: dir.x, dirZ: dir.z };
+  });
+  /**
+   * Session-ms, the one clock every screen in the room agrees on.
+   *
+   * There is no session clock to read directly — the recorder stamps its own
+   * events — so the offset between this page's monotonic clock and session
+   * zero is learned from the first stamp that carries a `t` (our own, through
+   * `recordStamp`, or a synced one arriving through `applyPaint`). Until one
+   * has, `t` is measured from the moment the skill mounted, which is the best
+   * a world with no recorder wired can do and is exactly right for the only
+   * screen there is.
+   */
+  const mountedAtMs = performance.now();
+  let sessionOffsetMs: number | null = null;
+  const noteSessionT = (t: number): void => {
+    if (sessionOffsetMs === null) sessionOffsetMs = performance.now() - t;
+  };
+  const sessionNowMs = (): number => performance.now() - (sessionOffsetMs ?? mountedAtMs);
+
+  const fireDriver = createFireDriver({
+    fire: fireLayer.data as Float32Array,
+    grass: plantLayers.grass.data as Float32Array,
+    res: PLANTING_RES,
+    size: PAINTED_SIZE,
+    sessionNowMs,
+    windAzimuth,
+    // The marks are re-rolled only when the burning SET moves — a few times
+    // over the life of a fire, not a few times a second.
+    onBurningChanged: (): void => {
+      plantingDirty = true;
+      rebuildSoon();
+    },
+  });
+  setPaintedFire(fireDriver.sampler);
+  handles.setPaintedScorch?.(fireDriver.texture);
+  disposers.push(() => fireDriver.dispose());
 
   // ── undo ──────────────────────────────────────────────────────────────────
   // EnvPaint's History wraps each stroke in one entry and, once handed the
@@ -823,7 +926,7 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
   /** Space, live — the camera escape while painting is on (see canPaint). */
   let spaceHeld = false;
 
-  const recordStamp = (tool: string, op: StampOp, level?: number): void => {
+  const recordStamp = (tool: string, op: StampOp, level?: number): number => {
     // This frame's rects are accounted for — see `dabbed`.
     dabbed = true;
     handles.session?.paint({
@@ -837,7 +940,19 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
       ...(op.seed === undefined ? {} : { seed: op.seed }),
       ...(op.mode === 'flatten' ? { flattenTo } : {}),
       ...(level === undefined ? {} : { level }),
+      // The comb's one extra field [D]: the stroke's own HEADING. A dab
+      // records what it did, and for a direction stamp what it did is not in
+      // the mode or the position — it is the vector, which the Brush computes
+      // from the two points the pointer passed through and nothing at replay
+      // time can recover.
+      ...(op.dir ? { dx: op.dir.x, dz: op.dir.y } : {}),
     });
+    // The recorder's own stamp for the event just written, which is what
+    // teaches this module where session zero is (see `sessionNowMs`) and what
+    // the fire driver records as the moment a texel was lit.
+    const t = handles.session?.durationMs();
+    if (t !== undefined) noteSessionT(t);
+    return t ?? sessionNowMs();
   };
 
   /**
@@ -1042,6 +1157,97 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
       // a filled dab becomes a drained one and the event says so.
       const drain = shiftHeld ? op.mode !== 'erase' : op.mode === 'erase';
       stampWater(drain ? { ...op, mode: 'erase' as StampMode } : op, hit, drain, 'pond');
+    },
+  };
+
+  /**
+   * One dab of the comb: EnvPaint's `direction` stamp mode, which lerps both
+   * channels toward the stroke's own heading encoded `d * 0.5 + 0.5`.
+   *
+   * The eraser (and shift) SETS both channels back to the neutral rather than
+   * subtracting from them — "no lean here" is a value, not the absence of
+   * one, and an `erase` on a direction layer would walk the encoded heading
+   * toward (-1, -1) and comb the grass north-west. EnvPaint's own comb tool
+   * does exactly this, for exactly this reason.
+   */
+  const stampComb = (op: StampOp, dir: { x: number; y: number } | null | undefined): void => {
+    if (!dir) {
+      combLayer.stamp({ ...op, mode: 'set' as StampMode, value: COMB_NEUTRAL, channel: 0 });
+      combLayer.stamp({ ...op, mode: 'set' as StampMode, value: COMB_NEUTRAL, channel: 1 });
+      return;
+    }
+    combLayer.stamp({ ...op, mode: 'direction' as StampMode, dir });
+  };
+
+  /**
+   * One dab of fire: a weight, clamped like a planting one, and then the
+   * driver is told WHEN the texels it lit were lit. That time is the whole
+   * synchronisation story — see src/dev/paint-fire.ts.
+   */
+  const stampFire = (op: StampOp, tMs: number): void => {
+    fireLayer.stamp(op);
+    clampPlantLayer(fireLayer);
+    fireDriver.noteStamp(fireLayer.dirtyRect, tMs);
+  };
+
+  /**
+   * The comb: a directional stroke tool, EnvPaint's own id and key.
+   *
+   * ITS TOOL MODE IS NOT `direction`, and that is a workaround, not a
+   * preference [D]. `Brush._stampAt` bails on `mode === 'direction' && !dir`
+   * BEFORE it records `_lastStamp` (envpaint src/core/Brush.js), and
+   * `pointermove` only derives a heading once `_lastStamp` exists — so a tool
+   * whose mode is `direction` bails on the pointer-down dab, never sets
+   * `_lastStamp`, and every move after it takes the same no-heading path. The
+   * stroke can never produce a direction and the layer never moves (measured
+   * headless, 2026-09-10: zero `onStamp` calls over a six-move drag).
+   *
+   * So the engine is handed an ordinary mode, the dab reaches here, and the
+   * DIRECTION stamp is issued from `stampComb` with the heading the Brush
+   * computed. The pointer-down dab still has no heading — a stroke of one
+   * point has no direction — and is simply skipped rather than written as
+   * something else. Reported upstream in the port notes rather than patched
+   * into the vendored engine.
+   *
+   * `strengthScale` is the planting one — a direction lerp is in [0,1] like a
+   * weight, so a dab at the engine's own scale would barely turn a blade.
+   */
+  const combTool: Tool = {
+    id: COMB_TOOL_ID,
+    label: COMB_TOOL_ID,
+    ...(keyFor(COMB_TOOL_ID) === undefined ? {} : { key: keyFor(COMB_TOOL_ID) as string }),
+    layer: COMB_LAYER,
+    mode: 'set',
+    eraseMode: 'erase',
+    strengthScale: PLANT_STRENGTH_SCALE,
+    onStamp: (_ctx: unknown, op: StampOp): void => {
+      // Shift inverts here as it does everywhere: a combing dab becomes an
+      // un-combing one, and the event says so rather than saying which key
+      // was held (docs/SESSION.md §4).
+      const erasing = shiftHeld ? op.mode !== 'erase' : op.mode === 'erase';
+      const dir = erasing ? null : (op.dir ?? null);
+      // The first dab of a stroke, with nowhere to point yet.
+      if (!erasing && !dir) return;
+      const dab: StampOp = erasing ? { ...op, mode: 'erase' as StampMode } : op;
+      recordStamp(COMB_TOOL_ID, dab);
+      stampComb(dab, dir);
+    },
+  };
+
+  /** The fire brush: a weight, added and erased like a planting one, whose
+   * dab also records WHEN it was lit. */
+  const fireTool: Tool = {
+    id: FIRE_TOOL_ID,
+    label: FIRE_TOOL_ID,
+    ...(keyFor(FIRE_TOOL_ID) === undefined ? {} : { key: keyFor(FIRE_TOOL_ID) as string }),
+    layer: FIRE_LAYER,
+    mode: 'add',
+    eraseMode: 'erase',
+    strengthScale: PLANT_STRENGTH_SCALE,
+    onStamp: (_ctx: unknown, op: StampOp): void => {
+      const mode = shiftHeld ? (invertStampMode(op.mode ?? 'add') as StampMode) : op.mode;
+      const dab: StampOp = mode === op.mode ? op : { ...op, mode: mode as StampMode };
+      stampFire(dab, recordStamp(FIRE_TOOL_ID, dab));
     },
   };
 
@@ -1278,6 +1484,8 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
       });
     }
     if (id === 'pond') return pondTool;
+    if (id === COMB_TOOL_ID) return combTool;
+    if (id === FIRE_TOOL_ID) return fireTool;
     if (id === 'river') return riverTool;
     if (id === 'waterfall') return waterfallTool;
     return plantTool(id as PlantBrush);
@@ -1373,10 +1581,13 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
    */
   const noteTool = (): void => {
     const tool = brush.tool ?? '';
-    // A waterfall stamp moves no vertex and no water level — it appends a
-    // mark — so it re-rolls the scatter and nothing else, exactly as a
-    // planting dab does. (Its own dabs raise the flag too; this is the burst.)
-    if (isPlantTool(tool) || tool === 'waterfall') plantingDirty = true;
+    // `isScatterTool`, not `isPlantTool`: the comb and fire are not planting
+    // brushes either, but a dab of either changes only what the placement roll
+    // answers — so both take the scatter-only rebuild and never a terrain
+    // re-cut. A waterfall stamp is the third of them: it moves no vertex and
+    // no water level, it appends a mark. (Their own dabs raise the flag too;
+    // this is the burst.)
+    if (isScatterTool(tool) || tool === 'waterfall') plantingDirty = true;
     else terrainDirty = true;
   };
 
@@ -1432,10 +1643,15 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
         const x1 = Math.min(rect.x1, tx + tile - 1);
         const w = x1 - tx + 1;
         const h = y1 - ty + 1;
-        const values = new Float32Array(w * h);
+        // CHANNELS, not texels: the comb is two floats a texel (a direction,
+        // not a weight), so a row is `w * channels` long and so is its stride
+        // into the layer. Every other layer here is one channel and the
+        // multiply is an identity.
+        const ch = l.channels;
+        const values = new Float32Array(w * h * ch);
         for (let y = 0; y < h; y++) {
-          const row = (ty + y) * l.res + tx;
-          values.set(data.subarray(row, row + w), y * w);
+          const row = ((ty + y) * l.res + tx) * ch;
+          values.set(data.subarray(row, row + w * ch), y * w * ch);
         }
         handles.session.paint({
           tool: 'patch',
@@ -1445,6 +1661,7 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
           x1,
           y1,
           data: encodeFloats(values),
+          ...(ch === 1 ? {} : { ch }),
         });
       }
     }
@@ -1476,12 +1693,23 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
     } catch {
       return false;
     }
-    if (values.length !== w * h) return false;
+    // The layer's own channel count decides the length, so a patch recorded
+    // for a one-channel layer can never be written into the two-channel one
+    // (or the other way about) with a plausible-looking shift.
+    const ch = target.channels;
+    if (values.length !== w * h * ch) return false;
     const dst = target.data as Float32Array;
     for (let y = 0; y < h; y++) {
-      dst.set(values.subarray(y * w, y * w + w), (y0 + y) * target.res + x0);
+      dst.set(values.subarray(y * w * ch, (y * w + w) * ch), ((y0 + y) * target.res + x0) * ch);
     }
     target.markDirtyRect(x0, y0, x1, y1);
+    // A patch of the FIRE layer is an undo (or a redo) of a fire stroke, and
+    // the driver keeps the one thing the layer does not: WHEN each texel was
+    // lit. `noteStamp` is exactly the right answer to both directions — a
+    // texel the patch put back below the threshold forgets its time, one it
+    // restored keeps the time it already had, and a genuinely new one takes
+    // this event's `t`, which is the clock every screen shares.
+    if (target === fireLayer) fireDriver.noteStamp({ x0, y0, x1, y1 }, event.t);
     return true;
   };
 
@@ -1509,6 +1737,13 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
     // Every dab this frame is now in the log under its own event, and the
     // next frame's rects belong to whoever writes them next.
     dabbed = false;
+    // The fire, on its own throttle: `burnState` is a pure function of the
+    // two layers and the clock, so this is a re-ASK rather than a step, and
+    // a frame that drops changes nothing about where the front has got to.
+    // AFTER the patch sweep above and outside it: the driver writes no layer,
+    // it only reads two and re-asks a pure function, so it has nothing that
+    // could travel as texels.
+    fireDriver.update();
     layers.commitAll();
     // ── the strip follows the panel ────────────────────────────────────────
     // 2026-09-10, user ask: *"when i shift + d to hide ghost panel the brush
@@ -1820,6 +2055,13 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
     for (const l of Object.values(plantLayers)) {
       l.markDirtyRect(0, 0, PLANTING_RES - 1, PLANTING_RES - 1);
     }
+    // …and the two layers that are not planting weights. `clearPaintedMap`
+    // has already put the comb back to its NEUTRAL (not to zero — see
+    // src/world/painted.ts) and the fire layer to nothing; the driver's own
+    // stamp times and its scorch go with them.
+    combLayer.markDirtyRect(0, 0, PLANTING_RES - 1, PLANTING_RES - 1);
+    fireLayer.markDirtyRect(0, 0, PLANTING_RES - 1, PLANTING_RES - 1);
+    fireDriver.clear();
     history.clear();
     waterDirty = true;
     terrainDirty = true;
@@ -1931,6 +2173,29 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
       waterDirty = true;
       return;
     }
+    // A synced dab is the other place session zero can be learned from: it
+    // carries the world's own `t`, and every screen in the room is reading the
+    // same one (see `sessionNowMs`).
+    noteSessionT(event.t);
+    if (tool === COMB_TOOL_ID) {
+      // The recorded heading, or none at all for a dab that erased one — the
+      // same two cases the live tool has, routed through the same stamp.
+      const dir =
+        event.dx === undefined || event.dz === undefined || mode === 'erase'
+          ? null
+          : { x: event.dx, y: event.dz };
+      stampComb(op, dir);
+      plantingDirty = true;
+      return;
+    }
+    if (tool === FIRE_TOOL_ID) {
+      // The dab's OWN `t`, not now: a fire restored from a log or arriving
+      // over the wire was lit when it was lit, and the front it has already
+      // run is exactly the difference (src/world/fire.ts).
+      stampFire(op, event.t);
+      plantingDirty = true;
+      return;
+    }
     if (mode === 'flatten' && event.flattenTo !== undefined) flattenTo = event.flattenTo;
     // Routed by tool id through the SAME table the live brush stamps
     // through, so a replayed or synced dab lands in the layer it was
@@ -1975,6 +2240,10 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
     sampleAt: (x: number, z: number): number => sampleHeight(map, x, z),
     plantingAt: (brushId: PlantBrush, x: number, z: number): number =>
       samplePlanting(map, brushId, x, z),
+    combAt: (x: number, z: number): { x: number; z: number } =>
+      sampleComb(map.comb, map.plantingRes, map.size, x, z),
+    fireAt: (x: number, z: number): { burning: number; scorch: number } =>
+      fireDriver.sampler(x, z),
     range: (): { min: number; max: number } => paintedRange(map),
     waterAt: (x: number, z: number): number => levelAt(x, z),
     shoreAt: (x: number, z: number): number => paintedWater()?.shore(x, z) ?? -Infinity,
@@ -2001,7 +2270,10 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
       // the water field on the geography AND on the renderer.
       setPaintedHeight(null);
       setPaintedPlanting(null);
+      setPaintedLean(null);
+      setPaintedFire(null);
       handles.setPaintedPath?.(null);
+      handles.setPaintedScorch?.(null);
       setPaintedWater(null);
       handles.setPaintedWater(null);
       setWaterfallMarks(null);

@@ -214,6 +214,19 @@ export interface PaintEvent extends EventBase {
   /** `flatten` only: the height the stroke levelled toward. */
   flattenTo?: number;
   /**
+   * Comb only: the stroke's own HEADING at this dab, a unit vector in world
+   * xz (2026-09-10, user ask: *"the brushes should have real world physics as
+   * well just in the style of ref world"*).
+   *
+   * The one thing a direction dab did that neither its position nor its mode
+   * says. The Brush derives it from the two points the pointer passed
+   * through, so nothing at replay time could recover it — and a replayed comb
+   * with a different heading is a different comb. Absent on a dab that ERASED
+   * a comb, which has no heading to carry.
+   */
+  dx?: number;
+  dz?: number;
+  /**
    * `patch` only — the layer the rectangle belongs to (`height`, `water`, or
    * a planting brush's own id), the rectangle in TEXELS, and its floats.
    *
@@ -230,6 +243,18 @@ export interface PaintEvent extends EventBase {
   x1?: number;
   y1?: number;
   data?: string;
+  /**
+   * `patch` only — floats per TEXEL in `data`, 1 unless the layer says
+   * otherwise. Absent means 1, which is every layer but one.
+   *
+   * The comb is two channels (a direction, not a weight — src/world/comb.ts),
+   * so an undo of a combing stroke carries twice the floats of the rectangle
+   * it covers. Without this the door would measure its payload against the
+   * texel count, refuse it as the wrong length, and the undo would apply on
+   * the projection and nowhere else — which is the exact failure the patch
+   * event exists to remove.
+   */
+  ch?: number;
   /** Water tools only: the absolute surface height the dab filled to, so a
    * replay lays the same plane without re-reading a bank that may since have
    * moved. Absent on a drain, which fills to nothing. */
