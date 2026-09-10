@@ -310,9 +310,20 @@ describe('the paint skill is wired the way the port plan asks', () => {
   });
 
   it('rebuilds from a dirty rect, so an undo reaches the world too', () => {
+    // EVERY layer, not just the height and water ones: an undo writes its
+    // recorded rect back and calls `markDirtyRect` without emitting a
+    // stroke, so this sweep is the only thing that sees it, and a planting
+    // rect that raised no flag left the trees standing (2026-09-10, user
+    // report: "undo doesn't work for the brushes either").
     const sweep = source.slice(source.indexOf('handles.onFrame(() => {'));
-    expect(sweep.slice(0, 1400)).toContain('if (waterLayer.dirtyRect)');
-    expect(sweep.slice(0, 1400)).toContain('if (heightLayer.dirtyRect) rebuildSoon();');
+    const head = sweep.slice(0, 1400);
+    expect(head).toContain('for (const l of layers.all()) {');
+    expect(head).toContain('if (!l.dirtyRect) continue;');
+    expect(head).toContain('history.noteDirty(l, l.dirtyRect);');
+    expect(head).toContain('if (l === waterLayer) waterDirty = true;');
+    expect(head).toContain('else if (l === heightLayer) terrainDirty = true;');
+    expect(head).toContain('else plantingDirty = true;');
+    expect(head).toContain('rebuildSoon();');
     // …and before `commitAll`, which is what clears those rects.
     expect(sweep.indexOf('dirtyRect')).toBeLessThan(sweep.indexOf('layers.commitAll()'));
   });
