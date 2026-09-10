@@ -184,19 +184,29 @@ describe('the paint skill is wired the way the port plan asks', () => {
 
   it('installs the painted sampler on the landscape, and takes it off again', () => {
     expect(source).toMatch(/import \{[^}]*\bsetPaintedHeight\b[^}]*\} from '\.\.\/world\/landscape'/);
+    expect(source).toMatch(/import \{[^}]*\bsetPaintedPlanting\b[^}]*\} from '\.\.\/world\/landscape'/);
     expect(source).toContain('setPaintedHeight(paintedSampler(map))');
     expect(source).toContain('setPaintedHeight(null)');
+    // …and the planting seam beside it (the environment brush kit).
+    expect(source).toContain('setPaintedPlanting(plantingSampler(map))');
+    expect(source).toContain('setPaintedPlanting(null)');
   });
 
-  it('shares both paint layer buffers with the map rather than copying them', () => {
+  it('shares every paint layer buffer with the map rather than copying them', () => {
     expect(source).toContain('createPaintedMap(');
     expect(source).toContain('heightLayer.data as Float32Array');
     expect(source).toContain('waterLayer.data as Float32Array');
+    // …and one weight layer per planting brush, on the same terms.
+    expect(source).toContain('plantData[brush] = l.data as Float32Array;');
     expect(source).toContain('worldSize: PAINTED_SIZE');
   });
 
   it('leaves the world its pointer until painting is switched on', () => {
-    expect(source).toContain('canPaint: (event: PointerEvent): boolean => painting && !event.shiftKey');
+    // Shift became the INVERT modifier (2026-09-09, user ask), so the camera
+    // escape moved to space, the secondary button and two fingers.
+    expect(source).toContain(
+      'painting && !spaceHeld && event.button === 0 && event.isPrimary',
+    );
     expect(source).toContain('brush.enabled = false');
     expect(source).toContain('handles.setSoloDrag?.(!on)');
   });
@@ -204,10 +214,12 @@ describe('the paint skill is wired the way the port plan asks', () => {
   it('registers the four height tools and the two water ones, hotkeys 1-6', () => {
     // The height four are built through `recorded(id, …)` — the helper that
     // records the dab and then stamps it — so the id is its first argument
-    // rather than a literal field. The water two carry an `onStamp` of their
-    // own (`stampWater`), so they stay literal descriptors.
-    for (const id of ['raise', 'lower', 'flatten', 'smooth']) {
-      expect(source, id).toContain(`recorded('${id}'`);
+    // rather than a literal field, and the ids come from HEIGHT_TOOL_IDS —
+    // the same table the replay routing reads (src/dev/paint-tools.ts). The
+    // water two carry an `onStamp` of their own (`stampWater`), so they stay
+    // literal descriptors.
+    for (let i = 0; i < 4; i++) {
+      expect(source, `tool ${i}`).toContain(`recorded(HEIGHT_TOOL_IDS[${i}]`);
     }
     for (const id of ['pond', 'drain']) {
       expect(source, id).toContain(`id: '${id}'`);

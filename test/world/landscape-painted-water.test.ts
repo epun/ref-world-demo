@@ -34,6 +34,7 @@
  * transparent — through `inPlain`.
  */
 
+import { zeroPlanting } from '../../src/world/painted';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import {
   isWater,
@@ -240,6 +241,9 @@ describe('with nothing painted, the world is the world', () => {
           water: false,
           island: false,
           region: 'plain',
+          // Nothing is painted with a PLANTING brush in this file, so every
+          // weight is 0 (src/world/painted.ts, the environment brush kit).
+          planting: zeroPlanting(),
         });
       }
       expect(waterColliders().length).toBe(0);
@@ -465,6 +469,9 @@ describe('sampleLandscape reports painted water on the plain', () => {
           water: true,
           island: false,
           region: 'water',
+          // Nothing is painted with a PLANTING brush in this file, so every
+          // weight is 0 (src/world/painted.ts, the environment brush kit).
+          planting: zeroPlanting(),
         });
       }
       for (const [x, z] of probes(200)) {
@@ -475,6 +482,9 @@ describe('sampleLandscape reports painted water on the plain', () => {
           water: false,
           island: false,
           region: 'plain',
+          // Nothing is painted with a PLANTING brush in this file, so every
+          // weight is 0 (src/world/painted.ts, the environment brush kit).
+          planting: zeroPlanting(),
         });
       }
     });

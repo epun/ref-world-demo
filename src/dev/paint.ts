@@ -56,10 +56,24 @@
  * through, and a replayed water dab travels the same layer → derive →
  * rebuild path a live one does.
  *
- * WHAT IS NOT HERE YET (envpaint docs/port-meridian.md §5): forest /
- * mountain / clearing weights (step 5), and — of step 6 — "save map" and the
- * build-time bake. There is no "save map" action to record; when there is
- * one, it records here.
+ * THE BRUSH KIT (2026-09-09, user ask: *"in the collection we should have
+ * brushes for trees, rocks, grass, flowers, rivers, clouds, ponds, etc."*).
+ * Seven planting brushes stand beside the height tools and the water ones,
+ * each writing its own weight layer whose buffer IS the painted map's
+ * (src/world/painted.ts `planting`), read by scatter's per-cell roll through
+ * `setPaintedPlanting`.
+ *
+ * THREE STROKES, THREE REBUILDS [D]. A height stroke moves ground things
+ * already stand on: `rebuildTerrain`. A water stroke changes what grows
+ * where: the landscape re-cut above. A PLANTING stroke moves no vertex and
+ * no water level at all — it only changes what the roll answers — so it
+ * re-rolls the scatter and nothing else (`rebuildScatter`, measured ~31-39ms
+ * against ~65-78ms for the terrain one on the plain field). The strongest
+ * kind a coalesced burst contains is the one the burst pays for.
+ *
+ * WHAT IS NOT HERE YET (envpaint docs/port-meridian.md §5): of step 6, "save
+ * map" and the build-time bake. There is no "save map" action to record;
+ * when there is one, it records here.
  */
 
 import type { Camera, Object3D, Scene, WebGLRenderer } from 'three';
@@ -70,6 +84,7 @@ import {
   bankHeight,
   Brush,
   History,
+  isTyping,
   PaintLayer,
   PaintLayers,
   writeLevelDisc,
@@ -77,23 +92,43 @@ import {
 } from 'envpaint/core';
 import { createToolStrip, type ToolStrip } from 'envpaint/ui';
 import { SURFACE } from '../taste/tokens';
-import { paintedWater, setPaintedHeight, setPaintedWater, TERRAIN } from '../world/landscape';
+import {
+  paintedWater,
+  setPaintedHeight,
+  setPaintedPlanting,
+  setPaintedWater,
+  TERRAIN,
+} from '../world/landscape';
 import {
   clearPaintedMap,
   createPaintedMap,
   paintedRange,
   paintedSampler,
+  plantingSampler,
   sampleHeight,
+  samplePlanting,
   DRY,
   PAINTED_RES,
   PAINTED_SIZE,
+  PLANT_BRUSHES,
+  PLANTING_RES,
+  type PlantBrush,
 } from '../world/painted';
+import {
+  clampRadius,
+  HEIGHT_LAYER,
+  HEIGHT_TOOL_IDS,
+  invertStampMode,
+  isPlantTool,
+  layerForTool,
+  RADIUS_DEFAULT,
+  RADIUS_MAX,
+  RADIUS_MIN,
+  steppedRadius,
+} from './paint-tools';
 import { deriveWater, type PaintedWaterField } from '../world/painted-water';
 import type { PaintEvent, SessionRecorder } from '../session';
 import type { DevSkillMeta } from './skills-meta';
-
-/** The terrain offset in world units — the layer the height tools write. */
-const HEIGHT_LAYER = 'height';
 
 /** The absolute water surface level in world units, `DRY` where none — the
  * layer the pond and drain tools write. Its buffer is `PaintedMap.water`. */
@@ -120,20 +155,6 @@ const WATER_LAYER = 'water';
 const FLAT_GROUND = new Float32Array(PAINTED_RES * PAINTED_RES);
 
 /**
- * [D] Brush radius range in world units, 0.5–40.
- *
- * NOT EnvPaint's own: its `Brush.setRadius` clamps to 0.3–12, sized for a
- * 48-unit world, and Meridian's field is 400 across. A dab that can only
- * ever be a twelfth of the forest is not a landscape tool, so the panel
- * writes `settings.radius` (a public field) and calls `flashRadius`, which
- * is what `setRadius` does either side of the clamp. Reported upstream in
- * the port notes rather than worked around silently.
- */
-const RADIUS_MIN = 0.5;
-const RADIUS_MAX = 40;
-const RADIUS_DEFAULT = 12;
-
-/**
  * [D] Shortest gap between two terrain rebuilds during a stroke, ms — ~8 a
  * second, the throttle the port plan asked for.
  *
@@ -151,8 +172,16 @@ const RADIUS_DEFAULT = 12;
  */
 const REBUILD_MIN_MS = 125;
 
-/** Hotkeys 1-6, in strip order. */
+/** Hotkeys 1-6, in strip order: the four height tools, then pond and drain.
+ * The seven PLANTING brushes get none — 7 more digits would take the whole
+ * keyboard row off the operator, and 5-7 already emote — so the strip is
+ * what selects them (2026-09-09, user ask). */
 const TOOL_KEYS = ['1', '2', '3', '4', '5', '6'] as const;
+
+/** The radius keys. EnvPaint binds these itself, but its handler clamps at
+ * 12 units — past that the keys would simply stop working in a 400-unit
+ * world — so this module intercepts them and steps through its own range. */
+const RADIUS_KEYS = { down: '[', up: ']' } as const;
 
 /** What the paint skill needs from the world. Structural, like every other
  * handle in src/dev/, so this module never imports src/world/scene.ts. */
@@ -166,6 +195,13 @@ export interface PaintHandles {
   sampleHeight(x: number, z: number): number;
   /** Rebuild ground → scatter → water: `WorldHandles.setTerrain({})`. */
   rebuildTerrain(): void;
+  /**
+   * Re-roll and rebuild the SCATTER alone (`WorldHandles.refreshScatter`) —
+   * what a planting stroke needs and all it needs. Optional: without it a
+   * planting stroke falls back to the full terrain rebuild, which is correct
+   * but ~10× the cost.
+   */
+  rebuildScatter?(): void;
   /**
    * Re-cut the world for a placement that has CHANGED, not just moved:
    * ground → `scatter.refreshLandscape()` → water levels. What a water stroke
@@ -207,6 +243,8 @@ export interface PaintProbe {
   setPainting(on: boolean): void;
   /** The painted offset at a world point. */
   sampleAt(x: number, z: number): number;
+  /** One brush's planting weight at a world point, [0,1]. */
+  plantingAt(brush: PlantBrush, x: number, z: number): number;
   /** Lowest and highest painted offset in the map. */
   range(): { min: number; max: number };
   /** The painted LEVEL in the texel covering a world point — the layer as it
@@ -316,15 +354,33 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
       res: PAINTED_RES,
     }),
   );
+  // One float layer per planting brush, at the planting resolution. Their
+  // buffers become the map's, exactly as the height and water layers' do — a
+  // dab is visible to the next placement roll with no upload and no copy.
+  const plantLayers = {} as Record<PlantBrush, PaintLayer>;
+  const plantData: Partial<Record<PlantBrush, Float32Array>> = {};
+  for (const brush of PLANT_BRUSHES) {
+    const l = layers.add(
+      new PaintLayer(brush, { channels: 1, float: true, initial: 0, res: PLANTING_RES }),
+    );
+    plantLayers[brush] = l;
+    plantData[brush] = l.data as Float32Array;
+  }
   const map = createPaintedMap(
     PAINTED_RES,
     PAINTED_SIZE,
     heightLayer.data as Float32Array,
     waterLayer.data as Float32Array,
+    plantData,
+    PLANTING_RES,
   );
   // From here on the world's heights carry whatever is in that array. With an
   // unpainted map that is the authored world exactly (test/world/painted.test.ts).
   setPaintedHeight(paintedSampler(map));
+  // …and the scatter's per-cell roll carries whatever is in the planting
+  // ones. All zero until somebody paints, which is the shipped world exactly
+  // (test/world/scatter-planting.test.ts).
+  setPaintedPlanting(plantingSampler(map));
 
   // ── undo ──────────────────────────────────────────────────────────────────
   // EnvPaint's History wraps each stroke in one entry and, once handed the
@@ -423,11 +479,22 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
       worldSize: PAINTED_SIZE,
       pick,
       centre,
-      // The world's own gestures keep working when painting is off, and
-      // shift+drag stays the world's pan even when it is on — a modifier
-      // that means "camera" in one mode and "paint" in another is the kind
-      // of ambiguity the shift+r note in src/main.ts argues against.
-      canPaint: (event: PointerEvent): boolean => painting && !event.shiftKey,
+      // The world's own gestures keep working when painting is off. With it
+      // on, three things still reach the camera instead of the ground
+      // (2026-09-09, user ask — shift is now the INVERT modifier, so the
+      // camera escape had to move off it):
+      //
+      //   space+drag        EnvPaint's own convention, and the only one that
+      //                     works with a trackpad and no second button.
+      //   secondary button  right / middle drag.
+      //   two fingers       already true, and not through this predicate:
+      //                     the world's pinch/twist path ignores soloDrag
+      //                     entirely (src/world/scene.ts), so a second
+      //                     finger has always reached the camera. The
+      //                     `isPrimary` test below keeps the second finger
+      //                     from also painting on its way there.
+      canPaint: (event: PointerEvent): boolean =>
+        painting && !spaceHeld && event.button === 0 && event.isPrimary,
     },
   );
   // Off until the checkbox says otherwise: `enabled: false` also stops the
@@ -439,8 +506,17 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
 
   /** The radius, past EnvPaint's own 0.3-12 clamp — see RADIUS_MAX. */
   const setRadius = (r: number): void => {
-    brush.settings.radius = Math.min(RADIUS_MAX, Math.max(RADIUS_MIN, r));
+    brush.settings.radius = clampRadius(r);
     brush.flashRadius();
+  };
+
+  /** One press of `[` / `]`: step the radius through THIS world's range and
+   * put the panel's slider where the keys left it, so the two controls can
+   * never disagree about what the brush is. */
+  const stepRadius = (direction: -1 | 1): void => {
+    const next = steppedRadius(brush.settings.radius, direction);
+    setRadius(next);
+    folder?.get('paint-radius')?.setValue?.(next);
   };
 
   // ── tools ─────────────────────────────────────────────────────────────────
@@ -484,6 +560,16 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
    * (`applyPaint` below) — four numbers a dab, thousands of dabs, to say
    * the same thing the panel already says.
    */
+  /**
+   * Shift, live. Tracked on the window rather than read off the pointer
+   * event because `onStamp` is handed an op, not an event — and updated from
+   * pointer events too, so a key pressed while the window was unfocused
+   * cannot leave the flag stale mid-stroke.
+   */
+  let shiftHeld = false;
+  /** Space, live — the camera escape while painting is on (see canPaint). */
+  let spaceHeld = false;
+
   const recordStamp = (tool: string, op: StampOp, level?: number): void => {
     handles.session?.paint({
       tool,
@@ -499,18 +585,67 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
     });
   };
 
-  /** A height tool that records its dab and then stamps it. `flatten` also
-   * carries the target the stroke is levelling toward — see the note above.
-   * The layer is on the descriptor rather than added at registration,
-   * because the water tools below write a different one. */
+  /**
+   * Planting weights live in [0,1] and the layers are float (unclamped, like
+   * the height one), so the clamp is ours to apply — over the layer's dirty
+   * rect, which is a superset of what this dab touched and is cleared by the
+   * frame's `commitAll`. Without it a held brush would drive a weight to 4
+   * and the roll would saturate, which is a probability nobody can paint
+   * back down.
+   */
+  const clampPlantLayer = (l: PaintLayer): void => {
+    const rect = l.dirtyRect;
+    if (!rect) return;
+    const data = l.data as Float32Array;
+    for (let y = rect.y0; y <= rect.y1; y++) {
+      const row = y * l.res;
+      for (let x = rect.x0; x <= rect.x1; x++) {
+        const i = row + x;
+        const v = data[i]!;
+        if (v < 0) data[i] = 0;
+        else if (v > 1) data[i] = 1;
+      }
+    }
+  };
+
+  /** Stamp one dab into the layer a tool id owns, clamping the planting
+   * layers as it goes. The ONE place a tool id turns into a layer, shared by
+   * the live brush and by `applyPaint` — a replayed stamp must land where
+   * the live one did (docs/SESSION.md §4). */
+  const stampInto = (tool: string, op: StampOp): void => {
+    const layerId = layerForTool(tool);
+    if (!layerId) return;
+    const target = layers.get(layerId);
+    if (!target) return;
+    target.stamp(op.mode === 'flatten' ? { ...op, flattenTo } : op);
+    if (isPlantTool(tool)) clampPlantLayer(target);
+  };
+
+  /**
+   * A height or planting tool that records its dab and then stamps it.
+   * `flatten` also carries the target the stroke is levelling toward — see
+   * the note above. The layer is on the descriptor rather than added at
+   * registration, because the water tools below write a different one.
+   *
+   * SHIFT INVERTS (2026-09-09, user ask): raise ↔ lower, add ↔ erase, and
+   * smooth / flatten untouched — the inversion is applied HERE, before the
+   * recording, so the session event says what the dab actually did rather
+   * than which tool was selected. A replayed or synced stamp then lands the
+   * same result without knowing anything about a modifier key.
+   */
   const recorded = (id: string, rest: Omit<Tool, 'id' | 'label' | 'onStamp'>): Tool => ({
     layer: HEIGHT_LAYER,
     ...rest,
     id,
     label: id,
     onStamp: (_ctx: unknown, op: StampOp): void => {
-      recordStamp(id, op);
-      heightLayer.stamp(op.mode === 'flatten' ? { ...op, flattenTo } : op);
+      const mode = shiftHeld
+        ? (invertStampMode(op.mode ?? rest.mode ?? 'add') as StampMode)
+        : op.mode;
+      const dab: StampOp =
+        mode === undefined || mode === op.mode ? op : { ...op, mode: mode as StampMode };
+      recordStamp(id, dab);
+      stampInto(id, dab);
     },
   });
 
@@ -615,15 +750,15 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
   };
 
   const tools: Tool[] = [
-    recorded('raise', { key: TOOL_KEYS[0], mode: 'raise', eraseMode: 'lower' }),
-    recorded('lower', { key: TOOL_KEYS[1], mode: 'lower', eraseMode: 'raise' }),
-    recorded('flatten', {
+    recorded(HEIGHT_TOOL_IDS[0], { key: TOOL_KEYS[0], mode: 'raise', eraseMode: 'lower' }),
+    recorded(HEIGHT_TOOL_IDS[1], { key: TOOL_KEYS[1], mode: 'lower', eraseMode: 'raise' }),
+    recorded(HEIGHT_TOOL_IDS[2], {
       key: TOOL_KEYS[2],
       mode: 'flatten',
       altMode: 'smooth',
       eraseMode: 'smooth',
     }),
-    recorded('smooth', { key: TOOL_KEYS[3], mode: 'smooth', eraseMode: 'smooth' }),
+    recorded(HEIGHT_TOOL_IDS[3], { key: TOOL_KEYS[3], mode: 'smooth', eraseMode: 'smooth' }),
     {
       // `mode: 'set'` because a level is a value and not an increment — the
       // engine's stamp modes are for byte layers, and this tool writes the
@@ -655,11 +790,29 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
   for (const tool of tools) {
     brush.registerTool({ color: SURFACE.ink, ...tool });
   }
-  brush.setTool('raise');
+  // ── the planting brushes ─────────────────────────────────────────────────
+  // One tool per brush, each writing its own weight layer: stamp adds, ctrl
+  // (or shift, which inverts) erases. No hotkey — the strip selects them.
+  // Labels stay lowercase like every other string in this product (TASTE §5).
+  const plantTools: Tool[] = PLANT_BRUSHES.map((id) =>
+    recorded(id, { mode: 'add', eraseMode: 'erase' }),
+  );
+  for (const tool of plantTools) {
+    // The layer a planting tool writes is named for the tool (paint-tools).
+    brush.registerTool({ ...tool, layer: tool.id, color: SURFACE.ink });
+  }
+  brush.setTool(HEIGHT_TOOL_IDS[0]);
 
   // ── the rebuild, throttled ────────────────────────────────────────────────
   let lastRebuildMs = 0;
   let pendingRebuild = 0;
+  /**
+   * What has moved since the last rebuild, one flag per rebuild kind. Sticky
+   * rather than per-dab because the throttle coalesces a burst: the burst
+   * pays for the STRONGEST kind any dab in it needed (see `rebuildNow`).
+   */
+  let terrainDirty = false;
+  let plantingDirty = false;
   /** Set by the per-frame sweep when the water layer moved, cleared by the
    * derive that answers for it. A flag and not a read of `dirtyRect`, because
    * `commitAll` clears that rect on the frame it was set. */
@@ -689,9 +842,19 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
       setPaintedWater(field);
       handles.setPaintedWater(field);
       handles.rebuildLandscape();
-    } else {
+    } else if (terrainDirty || !handles.rebuildScatter) {
       handles.rebuildTerrain();
+      // A burst can hold both kinds. The terrain rebuild re-SEATS the scatter
+      // but never re-rolls it (`refreshTerrain`), so a planting dab in the
+      // same burst still needs its own re-roll on top.
+      if (plantingDirty) handles.rebuildScatter?.();
+    } else {
+      // Planting alone: no vertex moved and no level changed, so the ground
+      // and the water sheets are left exactly where they are.
+      handles.rebuildScatter();
     }
+    terrainDirty = false;
+    plantingDirty = false;
     refreshReadout();
   };
 
@@ -711,15 +874,22 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
     if (pendingRebuild) window.clearTimeout(pendingRebuild);
   });
 
+  /** Mark what this stroke's tool touches, then rebuild on the throttle. */
+  const noteTool = (): void => {
+    if (!isPlantTool(brush.tool ?? '')) terrainDirty = true;
+  };
+
   brush.on('strokestart', (payload) => {
     const hit = payload.hit;
     if (hit) flattenTo = sampleHeight(map, hit.x, hit.z);
+    noteTool();
     rebuildSoon();
   });
   brush.on('stroke', () => {
     // The session event is NOT here: `stroke` fires once per batch of dabs
     // and carries no op, so it cannot say where anything landed. It is on
     // each tool's `onStamp` instead — see `recordStamp` above.
+    noteTool();
     rebuildSoon();
   });
   brush.on('strokeend', () => {
@@ -727,6 +897,7 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
     strokeLevel = null;
     // Always one final rebuild, whatever the throttle was doing: what is on
     // screen when the pointer lifts is what is in the map.
+    noteTool();
     rebuildNow();
   });
 
@@ -782,7 +953,35 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
   // painting is on 1-6 select a tool and swallow the key. 7 still emotes, and
   // every other brush hotkey ([ ] x) is left alone.
   const onKeyCapture = (event: KeyboardEvent): void => {
-    if (!painting || event.repeat) return;
+    if (!painting) return;
+    shiftHeld = event.shiftKey;
+    // A panel text field owns the keyboard while it is focused — the same
+    // guard EnvPaint's own handler uses.
+    if (isTyping(event.target)) return;
+    // ── the radius keys ────────────────────────────────────────────────────
+    // Intercepted BEFORE EnvPaint's own window handler, which clamps at 12
+    // units and would stop responding over most of this world's range.
+    // Auto-repeat is welcome here (holding a bracket ramps the radius), so
+    // this branch deliberately runs before the `repeat` bail below.
+    if (event.key === RADIUS_KEYS.down || event.key === RADIUS_KEYS.up) {
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      stepRadius(event.key === RADIUS_KEYS.up ? 1 : -1);
+      event.stopImmediatePropagation();
+      event.preventDefault();
+      return;
+    }
+    if (event.repeat) return;
+    // Space is the camera escape while painting is on: swallowed so the page
+    // does not scroll, and the world's own one-pointer drag is handed back
+    // for as long as it is held.
+    if (event.key === ' ') {
+      if (!spaceHeld) {
+        spaceHeld = true;
+        handles.setSoloDrag?.(true);
+      }
+      event.preventDefault();
+      return;
+    }
     if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
     const index = TOOL_KEYS.indexOf(event.key as (typeof TOOL_KEYS)[number]);
     if (index < 0) return;
@@ -792,8 +991,64 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
     strip?.sync();
     event.stopImmediatePropagation();
   };
+  const onKeyUpCapture = (event: KeyboardEvent): void => {
+    shiftHeld = event.shiftKey;
+    if (event.key === ' ' && spaceHeld) {
+      spaceHeld = false;
+      // Back to the tool owning the pointer — unless painting went off while
+      // the key was down, in which case the world keeps its drag.
+      handles.setSoloDrag?.(!painting);
+    }
+  };
+  /** The window can lose focus mid-chord (alt-tab with shift down); a stale
+   * modifier would invert every dab of the next stroke. */
+  const onBlur = (): void => {
+    shiftHeld = false;
+    if (spaceHeld) {
+      spaceHeld = false;
+      handles.setSoloDrag?.(!painting);
+    }
+  };
   window.addEventListener('keydown', onKeyCapture, true);
-  disposers.push(() => window.removeEventListener('keydown', onKeyCapture, true));
+  window.addEventListener('keyup', onKeyUpCapture, true);
+  window.addEventListener('blur', onBlur);
+  disposers.push(() => {
+    window.removeEventListener('keydown', onKeyCapture, true);
+    window.removeEventListener('keyup', onKeyUpCapture, true);
+    window.removeEventListener('blur', onBlur);
+  });
+
+  // ── the secondary-button escape ──────────────────────────────────────────
+  // A right / middle drag turns the camera even while a tool owns the plain
+  // pointer: the world's one-pointer drag is handed back for the length of
+  // that drag and taken again on release. `canPaint` already refuses any
+  // button but the primary, so no dab lands under it.
+  const canvasEl = handles.renderer.domElement;
+  let secondaryDrag = false;
+  const onPointerDownCapture = (event: PointerEvent): void => {
+    shiftHeld = event.shiftKey;
+    if (!painting || event.button === 0 || secondaryDrag) return;
+    secondaryDrag = true;
+    handles.setSoloDrag?.(true);
+  };
+  const onPointerMoveCapture = (event: PointerEvent): void => {
+    shiftHeld = event.shiftKey;
+  };
+  const endSecondary = (): void => {
+    if (!secondaryDrag) return;
+    secondaryDrag = false;
+    handles.setSoloDrag?.(!(painting && !spaceHeld));
+  };
+  canvasEl.addEventListener('pointerdown', onPointerDownCapture, true);
+  canvasEl.addEventListener('pointermove', onPointerMoveCapture, true);
+  window.addEventListener('pointerup', endSecondary, true);
+  window.addEventListener('pointercancel', endSecondary, true);
+  disposers.push(() => {
+    canvasEl.removeEventListener('pointerdown', onPointerDownCapture, true);
+    canvasEl.removeEventListener('pointermove', onPointerMoveCapture, true);
+    window.removeEventListener('pointerup', endSecondary, true);
+    window.removeEventListener('pointercancel', endSecondary, true);
+  });
 
   // ── the toggle ────────────────────────────────────────────────────────────
   const setPainting = (on: boolean): void => {
@@ -844,7 +1099,7 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
   folder.addCheckbox('painting', {
     value: false,
     id: 'paint-on',
-    tooltip: 'drag on the ground to sculpt; the world keeps shift+drag and the wheel',
+    tooltip: 'drag to sculpt · shift inverts · space+drag orbits · [ ] radius',
     onChange: setPainting,
   });
   folder.addSlider('radius', {
@@ -902,11 +1157,18 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
    * derives the field to null rather than leaving the last pond installed
    * over an empty layer. */
   const clearMap = (): void => {
+    // `clearPaintedMap` zeroes the height AND every planting layer — they
+    // share their buffers with the map, so this is one call, not eight.
     clearPaintedMap(map);
     heightLayer.markDirtyRect(0, 0, PAINTED_RES - 1, PAINTED_RES - 1);
     waterLayer.markDirtyRect(0, 0, PAINTED_RES - 1, PAINTED_RES - 1);
+    for (const l of Object.values(plantLayers)) {
+      l.markDirtyRect(0, 0, PLANTING_RES - 1, PLANTING_RES - 1);
+    }
     history.clear();
     waterDirty = true;
+    terrainDirty = true;
+    plantingDirty = true;
   };
   folder.addButton('clear map', () => {
     // An action, so it is in the record: without it a replay would keep
@@ -972,10 +1234,17 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
       const drain = event.mode === 'erase' || event.tool === 'drain';
       stampWater(op, { x: event.x, y: 0, z: event.z, u, v }, drain, null);
       strokeLevel = held;
+      waterDirty = true;
       return;
     }
     if (event.mode === 'flatten' && event.flattenTo !== undefined) flattenTo = event.flattenTo;
-    heightLayer.stamp(event.mode === 'flatten' ? { ...op, flattenTo } : op);
+    // Routed by tool id through the SAME table the live brush stamps
+    // through, so a replayed or synced dab lands in the layer it was
+    // recorded from, with the recorded rim seed and the recorded MODE — an
+    // inverted (shift-held) dab replays inverted without the key.
+    stampInto(event.tool, op);
+    if (isPlantTool(event.tool)) plantingDirty = true;
+    else terrainDirty = true;
   };
 
   const applyPaint = (event: PaintEvent): void => {
@@ -1000,6 +1269,8 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
       setPainting(on);
     },
     sampleAt: (x: number, z: number): number => sampleHeight(map, x, z),
+    plantingAt: (brushId: PlantBrush, x: number, z: number): number =>
+      samplePlanting(map, brushId, x, z),
     range: (): { min: number; max: number } => paintedRange(map),
     waterAt: (x: number, z: number): number => levelAt(x, z),
     shoreAt: (x: number, z: number): number => paintedWater()?.shore(x, z) ?? -Infinity,
@@ -1024,6 +1295,7 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
       // the mesh says so too. Both hands come off: the offset sampler, and
       // the water field on the geography AND on the renderer.
       setPaintedHeight(null);
+      setPaintedPlanting(null);
       setPaintedWater(null);
       handles.setPaintedWater(null);
       layers.dispose();

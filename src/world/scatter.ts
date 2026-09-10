@@ -51,6 +51,7 @@ import {
   type LandscapeSample,
   type ShoreSample,
 } from './landscape';
+import { PLANT_BRUSHES, type PlantBrush } from './painted';
 import {
   BUILDING_COURTYARD_VARIANT,
   buildPropGeometries,
@@ -62,12 +63,29 @@ import {
 import { stampEllipse, stampRotationY, type StampEllipse } from './shadows';
 import { ROLLING_SURFACE, type Surface } from './surface';
 
-export type ScatterKind = PropKind | 'tick' | 'reed';
+export type MarkKind = 'tick' | 'reed' | 'grass' | 'flower';
+export type ScatterKind = PropKind | MarkKind;
 
 /** The flat ink marks: no collider, no shadow stamp, no inflated variant
  * geometry behind them. Everything else in a placement list is a prop. */
-function isMark(kind: ScatterKind): kind is 'tick' | 'reed' {
-  return kind === 'tick' || kind === 'reed';
+function isMark(kind: ScatterKind): kind is MarkKind {
+  return kind === 'tick' || kind === 'reed' || kind === 'grass' || kind === 'flower';
+}
+
+/** Variants per mark kind. Ticks and reeds have exactly one build and always
+ * did — the pure rolls below read this table, so those two keep answering
+ * exactly what a single-build kind answered before variants existed. The
+ * painted marks (2026-09-09, user ask) carry an alphabet each. */
+export const MARK_VARIANT_COUNTS: Record<MarkKind, number> = {
+  tick: 1,
+  reed: 1,
+  grass: 4,
+  flower: 3,
+};
+
+/** Authored variant count for any scatter kind, marks included. */
+export function variantCount(kind: ScatterKind): number {
+  return isMark(kind) ? MARK_VARIANT_COUNTS[kind] : PROP_VARIANT_COUNTS[kind];
 }
 
 export interface Placement {
@@ -153,6 +171,57 @@ const SEED_PROB: Record<ScatterKind, number> = {
   // a shoreline or nowhere.
   mountain: 0,
   reed: 0,
+  // The painted kinds (2026-09-09, user ask). All three seed at ZERO from
+  // the world's own rules and appear only where somebody has painted them —
+  // that is what makes the brush kit read as adding to the world rather than
+  // as revealing something that was always going to be there. A sky full of
+  // clouds nobody asked for is scenery; one an operator brushed in front of
+  // an audience is a performance.
+  cloud: 0,
+  grass: 0,
+  flower: 0,
+};
+
+// ── painted planting (2026-09-09, user ask) ──────────────────────────────────
+// "in the collection we should have brushes for trees, rocks, grass, flowers,
+// rivers, clouds, ponds, etc." — the brush kit. Each brush paints a weight
+// layer (src/world/painted.ts); this table is what one unit of a brush's
+// weight is worth to each kind's per-cell probability. It is a MIX, not a
+// switch: a grove is mostly one crown build plus strays and a scatter of
+// undergrowth, which is the same thing PROP_VARIANT_DEFS says about a stand.
+//
+// The term is ADDED to the cell's existing probability and every kind keeps
+// its own hash salt, so painting one brush can only ever ADD instances of the
+// kinds it names — nothing already standing moves. That monotonicity is what
+// makes live painting read as planting instead of as re-rolling the world,
+// and test/world/scatter-planting.test.ts pins it.
+//
+// `clearing` names no kind at all: it works by suppressing the base term
+// instead (see `prob` in computePlacements).
+
+export type PaintSeed = Partial<Record<ScatterKind, number>>;
+
+export const PAINT_SEED: Record<PlantBrush, PaintSeed> = {
+  // A stand: mostly broadleaf with conifers through it, undergrowth below,
+  // and enough tick texture that the floor is not bare paper.
+  grove: { tree: 0.3, conifer: 0.16, bush: 0.07, tick: 0.06 },
+  // Stone is sparse by nature — a scree of boulders with the odd cut stump
+  // and, rarely, a standing stone. Never a field of rubble.
+  rocks: { rock: 0.16, stump: 0.03, monolith: 0.018 },
+  // The grass alphabet, plus the ticks that were always the ground's texture.
+  grass: { grass: 0.34, tick: 0.14 },
+  // Flowers come in clusters with grass through them — a meadow, not a bed.
+  flowers: { flower: 0.3, grass: 0.08 },
+  // 0.16 rather than the 0.22 first tried: measured in the headless shot, a
+  // saturated cloud brush at 0.22 spotted the ground with more hard shadow
+  // stamps than paper between them, and TASTE §2.3 wants the field to keep
+  // breathing at any brush weight.
+  clouds: { cloud: 0.16 },
+  // Structures are "minor elements folded into the landscape, never centred
+  // or enlarged" (the ref brief), so even a painted hamlet stays rare per
+  // cell and stays under BUILDING_MAX.
+  cottages: { building: 0.05 },
+  clearing: {},
 };
 
 // ── landscape-aware seeding ──────────────────────────────────────────────────
@@ -220,6 +289,15 @@ const MOUNTAIN_SEED_PROB = 0.22;
  * exact salt it rolled before the map existed. */
 const MOUNTAIN_SALT = 71.9;
 const REED_SALT = 81.3;
+/** Hash salts for the painted mark layers. APPENDED to the salt family for
+ * the same reason every other kind's was: an unpainted world rolls exactly
+ * the salts it rolled before the brush kit existed. */
+const GRASS_SALT = 91.7;
+const FLOWER_SALT = 101.3;
+/** Base salt for the painted pass — every painted kind rolls at
+ * `PAINT_SALT + index * 13.31`, a family of its own so a brush stroke can
+ * never land on a salt the world's own rolls already use. */
+const PAINT_SALT = 111.9;
 
 /** At most this many mountains in the region, in cell order — a backdrop
  * range, not a mountain world. */
@@ -248,14 +326,70 @@ const REED_OFFSET_SPAN = 0.9;
 /** At most this many buildings in the whole region, in cell iteration order.
  * Raised from 4 (user report: "where are the buildings") — structures should
  * be encountered while roaming; the panel's building-density slider layers
- * on top via setKindDensity('building'). */
-export const BUILDING_MAX = 10;
+ * on top via setKindDensity('building'). Raised again to 12 (2026-09-09)
+ * when the `cottages` brush arrived: an operator painting a hamlet must not
+ * find the cap already spent by the field's own rolls, and 12 still keeps
+ * structures "minor elements folded into the landscape" rather than a town. */
+export const BUILDING_MAX = 12;
 /** No two buildings of the same variant within this many world units. */
 export const BUILDING_ADJ_RADIUS = SCATTER_STEP * 8;
+
+/**
+ * [D] A PAINTED cottage sweeps this much ground clear around itself — the
+ * dooryard. A house standing in a thicket reads as a mistake, and the
+ * cottages brush is usually painted over a grove.
+ *
+ * Only painted ones: the field's own buildings have never had a keep-out and
+ * giving them one now would move placements in a world nobody painted, which
+ * is the one thing the brush kit is not allowed to do.
+ */
+export const BUILDING_CLEAR_RADIUS = 4.5;
 
 /** At most this many water towers in the region — the same landmark-rarity
  * family as buildings, spaced by the building adjacency radius. */
 export const WATER_TOWER_MAX = 2;
+
+/**
+ * [D] How high a painted cloud floats above the ground under it, world
+ * units, plus a per-instance spread.
+ *
+ * 16 + up to 5: above every tree (4–6 u) and above the terrain's own relief
+ * (−2.6 to +5.5 at the shipped dials), clear of all but the range's summits
+ * (12–17 u), which is right — a cloud passing a mountain shoulder is the
+ * reference's own image. Under the default isometric camera that lands a
+ * cloud roughly a third of a screen above the ground it shades, so the
+ * shadow reads as belonging to it without the two touching.
+ *
+ * It is an offset ABOVE the sampled surface, never an absolute height: PLAN
+ * §7.2's seam owns y in this file, and a sky pinned to world zero would sink
+ * into the range the moment the elevation dial moved.
+ */
+export const CLOUD_ALTITUDE = 16;
+/** [D] Cluster spread for a cloud bank — see the roll branch. */
+export const CLOUD_CLUSTER_SPREAD = 2.4;
+export const CLOUD_ALTITUDE_SPREAD = 5;
+/** Hash salt for a cloud's own altitude, in the quantized-position family. */
+const CLOUD_ALTITUDE_SALT = 141.9;
+
+/**
+ * [D] A cloud's shadow stamp is drawn wider than a prop's (SHADOW_FIT 0.8):
+ * the stamp is what tells the eye there is a cloud overhead at all, and a
+ * hard-edged mark under a form 16 units up has to be found before it is
+ * understood.
+ *
+ * …but SMALLER as a fraction of its caster than a prop's, which is not a
+ * contradiction: a cloud's own footprint is 8-10 units where a tree's is
+ * one, and the shared sun ellipse stretches every stamp by up to 3.2× at a
+ * low sun (src/world/shadows.ts). Measured in the headless shot at 1.15 and
+ * again at 0.95, the stamp read as the subject and the cloud as its echo —
+ * so the fraction came down until the paper was breathing again (TASTE
+ * §2.3, global density 0.39) while the stamp stayed the biggest hard mark
+ * on the ground, which is what says "something is overhead".
+ */
+export const CLOUD_SHADOW_FIT = 0.62;
+/** …and it is allowed to be bigger than SHADOW_MAX_RADIUS, which exists to
+ * stop a courtyard flooding its own interior — a cloud has no interior. */
+export const CLOUD_SHADOW_MAX_RADIUS = 6;
 
 /** A cluster neighbor repeats its cluster's variant with this probability;
  * otherwise it rerolls uniformly (so a grove is one species plus strays). */
@@ -275,11 +409,34 @@ const PROP_ROLL_ORDER: PropKind[] = [
   'picnicTable',
   'waterTower',
   'monolith',
+  // Appended, so every pre-existing kind keeps its salt. Clouds seed at 0
+  // from the world's own rules — this entry exists so the painted term has
+  // a roll to ride in on.
+  'cloud',
+];
+
+/**
+ * The order the PAINTED pass rolls its kinds in. Every kind any brush names,
+ * marks included; the index is the kind's salt offset, so appending a kind
+ * here never moves an existing one's roll.
+ */
+const PAINT_ROLL_ORDER: ScatterKind[] = [
+  'tree',
+  'conifer',
+  'bush',
+  'rock',
+  'stump',
+  'monolith',
+  'building',
+  'cloud',
+  'tick',
+  'grass',
+  'flower',
 ];
 
 /** Every controllable scatter kind, for generic dev-panel controls.
  * `mountain` rides in through PROP_KINDS; `reed` is scatter's own. */
-export const SCATTER_KINDS: ScatterKind[] = [...PROP_KINDS, 'tick', 'reed'];
+export const SCATTER_KINDS: ScatterKind[] = [...PROP_KINDS, 'tick', 'reed', 'grass', 'flower'];
 
 function cellHash(ix: number, iz: number, salt: number): number {
   const x =
@@ -331,6 +488,18 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
   const userMult = (kind: ScatterKind): number =>
     Math.max(0, kindDensity[kind] ?? 1) / (DEFAULT_KIND_DENSITY[kind] ?? 1);
 
+  /** Ground a PAINTED cottage has swept for its dooryard. Recorded only for
+   * cottages the brush placed — see BUILDING_CLEAR_RADIUS. */
+  const dooryards: { x: number; z: number }[] = [];
+  const inDooryard = (x: number, z: number): boolean => {
+    for (const d of dooryards) {
+      const dx = x - d.x;
+      const dz = z - d.z;
+      if (dx * dx + dz * dz < BUILDING_CLEAR_RADIUS * BUILDING_CLEAR_RADIUS) return true;
+    }
+    return false;
+  };
+
   /** Inside a placed mountain's swept ground. */
   const underMountain = (x: number, z: number): boolean => {
     for (const mt of mountains) {
@@ -357,12 +526,24 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
     scale: number,
     rotY: number,
   ): void => {
+    // A cloud is not ON the ground: it clears nothing, stands in nothing,
+    // and passes over the range and the lake the way weather does. Every
+    // gate below is about ground the placement would occupy, so a cloud
+    // skips the lot (2026-09-09, user ask).
+    if (kind === 'cloud') {
+      out.push({ kind, variant, x, z, scale, rotY });
+      return;
+    }
     const clear = isMark(kind) ? ORIGIN_CLEAR_TICKS : ORIGIN_CLEAR_PROPS;
     if (x * x + z * z < clear * clear) return;
     // Nothing ever stands in water.
     if (isWater(x, z, WATER_KEEPOUT)) return;
     // …and nothing but a mountain stands on a mountain.
     if (kind !== 'mountain' && underMountain(x, z)) return;
+    // A painted cottage keeps its dooryard (see BUILDING_CLEAR_RADIUS). The
+    // list is empty unless the cottages brush put something down, so an
+    // unpainted world never consults it.
+    if (kind !== 'building' && inDooryard(x, z)) return;
     out.push({ kind, variant, x, z, scale, rotY });
   };
 
@@ -408,7 +589,7 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
     spread = 1,
   ): void => {
     const { sx, sz } = seedPos(ix, iz);
-    const count = kind === 'tick' || kind === 'reed' ? 1 : PROP_VARIANT_COUNTS[kind];
+    const count = variantCount(kind);
     // The cluster's species: uniform over the kind's variants.
     const clusterVariant = Math.min(count - 1, Math.floor(cellHash(ix, iz, 31.1) * count));
     push(kind, clusterVariant, sx, sz, 1);
@@ -426,7 +607,7 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
 
   /** A building stands alone; its variant hashes uniformly, then advances
    * cyclically until it differs from every already-placed building nearby. */
-  const placeBuilding = (ix: number, iz: number): void => {
+  const placeBuilding = (ix: number, iz: number, painted: boolean): void => {
     const { sx, sz } = seedPos(ix, iz);
     if (sx * sx + sz * sz < ORIGIN_CLEAR_PROPS * ORIGIN_CLEAR_PROPS) return;
     const count = PROP_VARIANT_COUNTS.building;
@@ -446,7 +627,15 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
       variant = (variant + 1) % count;
     }
     buildings.push({ x: sx, z: sz, variant });
+    const before = out.length;
     push('building', variant, sx, sz, 1);
+    // Only a cottage somebody brushed in sweeps a dooryard, and only if it
+    // actually landed (the origin clearing and the water cut-out both drop
+    // placements silently).
+    if (painted && out.length > before) {
+      const p = out[out.length - 1]!;
+      dooryards.push({ x: p.x, z: p.z });
+    }
   };
 
   /** A water tower is a landmark: capped at WATER_TOWER_MAX, spaced by the
@@ -527,6 +716,24 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
       if (underMountain(sx, sz)) continue;
       const f = sample.forest;
       const m = sample.mountain;
+      const plant = sample.planting;
+      /**
+       * The clearing brush: it plants nothing and suppresses what the world
+       * would have planted by itself. Applied to the BASE term only —
+       * clearing a painted grove is what the ctrl-erase on that brush is
+       * for, and a clearing that also cancelled the forest's own table
+       * would be a second, blunter density dial rather than a glade.
+       */
+      const clear = Math.max(0, 1 - plant.clearing);
+      /** Did a brush touch this cell at all? An unpainted cell skips the
+       * painted pass entirely, so an unpainted world costs one comparison. */
+      let paintedCell = false;
+      for (const brush of PLANT_BRUSHES) {
+        if (brush !== 'clearing' && plant[brush] > 0) {
+          paintedCell = true;
+          break;
+        }
+      }
       /**
        * The cell's probability for one kind. With f = m = 0 and no island
        * this collapses to EXACTLY the pre-map expression, so the open plain
@@ -535,13 +742,29 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
       const prob = (kind: ScatterKind): number => {
         const user = density * userMult(kind);
         // The island is its own flora list, not a blend over the plain.
-        if (sample.island) return (ISLAND_SEED[kind] ?? 0) * user;
-        const base = SEED_PROB[kind] * density * Math.max(0, kindDensity[kind] ?? 1);
+        if (sample.island) return (ISLAND_SEED[kind] ?? 0) * user * clear;
+        const base = SEED_PROB[kind] * density * Math.max(0, kindDensity[kind] ?? 1) * clear;
         return (
           base * (1 - f) * (1 - m) +
           f * (FOREST_SEED[kind] ?? 0) * user +
           m * (MOUNTAIN_SEED[kind] ?? 0) * user
         );
+      };
+      /**
+       * The PAINTED term, summed over the brushes that name this kind.
+       * Zero on an unpainted world, which is why the pass that reads it is
+       * skipped entirely below and the expressions above are exactly the
+       * ones that shipped.
+       */
+      const paintProb = (kind: ScatterKind): number => {
+        let paint = 0;
+        for (const brush of PLANT_BRUSHES) {
+          const w = plant[brush];
+          if (w <= 0) continue;
+          const seed = PAINT_SEED[brush][kind];
+          if (seed) paint += w * seed;
+        }
+        return paint * density * userMult(kind);
       };
       // The island's own grove rule (see ISLAND_CLUSTER_SPREAD).
       const spread = sample.island ? ISLAND_CLUSTER_SPREAD : 1;
@@ -556,25 +779,79 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
       // kind (in roll order) claims the cell — at most one cluster per cell,
       // and collisions are ~1e-4 rare at these probabilities. Neighbor count
       // hashes independently of the chosen kind (monotonicity).
+      /** Seed one prop kind's cluster in this cell. Returns false when a
+       * cap refused it, which is what the base loop's `break` reads. */
+      const seedProp = (kind: PropKind, paintedCell: boolean): boolean => {
+        if (kind === 'building') {
+          if (buildings.length >= BUILDING_MAX) return false;
+          placeBuilding(ix, iz, paintedCell);
+        } else if (kind === 'waterTower') {
+          if (towers.length >= WATER_TOWER_MAX) return false;
+          placeWaterTower(ix, iz);
+        } else if (kind === 'cactus' || kind === 'picnicTable') {
+          cluster(kind, ix, iz, 0, spread); // sparse loners
+        } else if (kind === 'cloud') {
+          // A cloud bank is one or two forms far apart, never a heap: the
+          // spread is over twice a prop cluster's because a cloud is ~8
+          // units wide and two of them at a tree's spacing would merge into
+          // one blob. Painted skies stay "low density, room to breathe"
+          // (the ref brief) at any brush weight.
+          cluster(kind, ix, iz, cellHash(ix, iz, 4.4) < 0.5 ? 1 : 0, CLOUD_CLUSTER_SPREAD);
+        } else if (kind === 'monolith') {
+          // Standing stones come mostly in pairs, sometimes alone.
+          cluster(kind, ix, iz, cellHash(ix, iz, 4.4) < 0.65 ? 1 : 0, spread);
+        } else {
+          const extras = 1 + Math.floor(cellHash(ix, iz, 4.4) * 4) + bonus; // 1–4 (+island)
+          cluster(kind, ix, iz, extras, spread);
+        }
+        return true;
+      };
+
       for (let k = 0; k < PROP_ROLL_ORDER.length; k++) {
         const kind = PROP_ROLL_ORDER[k]!;
         if (cellHash(ix, iz, 3.3 + k * 17.77) < prob(kind)) {
-          if (kind === 'building') {
-            if (buildings.length >= BUILDING_MAX) break;
-            placeBuilding(ix, iz);
-          } else if (kind === 'waterTower') {
-            if (towers.length >= WATER_TOWER_MAX) break;
-            placeWaterTower(ix, iz);
-          } else if (kind === 'cactus' || kind === 'picnicTable') {
-            cluster(kind, ix, iz, 0, spread); // sparse loners
-          } else if (kind === 'monolith') {
-            // Standing stones come mostly in pairs, sometimes alone.
-            cluster(kind, ix, iz, cellHash(ix, iz, 4.4) < 0.65 ? 1 : 0, spread);
-          } else {
-            const extras = 1 + Math.floor(cellHash(ix, iz, 4.4) * 4) + bonus; // 1–4 (+island)
-            cluster(kind, ix, iz, extras, spread);
-          }
+          if (!seedProp(kind, false)) break;
           break;
+        }
+      }
+
+      // ── the painted pass (2026-09-09, user ask) ───────────────────────
+      // Everything a BRUSH puts down rolls here, after the world's own
+      // rolls and on its own salt family, and — unlike the loop above — no
+      // kind claims the cell from another: each rolls, each places.
+      //
+      // That separation is the whole monotonicity guarantee. The base loop
+      // stops at its first hit, so if the painted weight rode inside it a
+      // grove could out-roll a rock in a cell the rock already held and the
+      // rock would VANISH — painting would read as reshuffling the world
+      // rather than as adding to it. Here the base loop is untouched, so
+      // every placement that stood before a stroke still stands after it.
+      //
+      // Skipped entirely on an unpainted cell, which is every cell of the
+      // shipped world.
+      if (paintedCell) {
+        for (let k = 0; k < PAINT_ROLL_ORDER.length; k++) {
+          const kind = PAINT_ROLL_ORDER[k]!;
+          const pp = paintProb(kind);
+          if (pp <= 0) continue;
+          if (cellHash(ix, iz, PAINT_SALT + k * 13.31) >= pp) continue;
+          if (kind === 'tick') {
+            cluster('tick', ix, iz, 1 + Math.floor(cellHash(ix, iz, 2.2) * 3) + bonus, spread);
+          } else if (kind === 'grass') {
+            // A tuft alphabet reads as a patch, not as specimens: 3–5 marks.
+            cluster('grass', ix, iz, 2 + Math.floor(cellHash(ix, iz, GRASS_SALT) * 3) + bonus, spread);
+          } else if (kind === 'flower') {
+            // Flowers cluster tighter and sparser than grass — a few heads.
+            cluster(
+              'flower',
+              ix,
+              iz,
+              1 + Math.floor(cellHash(ix, iz, FLOWER_SALT) * 3) + bonus,
+              spread * 0.7,
+            );
+          } else {
+            seedProp(kind as PropKind, plant.cottages > 0);
+          }
         }
       }
     }
@@ -692,14 +969,16 @@ export function applyInstanceVariation(
 
 /** Placements outside every exclusion circle (strictly inside = hidden).
  *
- * Mountains are EXEMPT. The exclusion circles are a character's negative
- * space (TASTE §2.3) and hiding the dressing around a creature is the whole
- * point of them — but a mountain is landscape, and a mountain blinking out
- * because a creature wandered up to it would be absurd. */
+ * Mountains and clouds are EXEMPT. The exclusion circles are a character's
+ * negative space (TASTE §2.3) and hiding the dressing around a creature is
+ * the whole point of them — but a mountain is landscape and a cloud is
+ * weather, and neither occupies the ground the circle is protecting. */
 export function filterExcluded(placements: Placement[], exclusions: Exclusion[]): Placement[] {
   if (exclusions.length === 0) return placements;
   return placements.filter((p) => {
-    if (p.kind === 'mountain') return true;
+    // Mountains and clouds are both landscape, not dressing: a summit or a
+    // cloud blinking out because a creature walked under it would be absurd.
+    if (p.kind === 'mountain' || p.kind === 'cloud') return true;
     for (const e of exclusions) {
       const dx = p.x - e.x;
       const dz = p.z - e.z;
@@ -752,6 +1031,9 @@ export function colliderFor(
   kindScaleMult = 1,
 ): Collider | null {
   if (isMark(p.kind)) return null;
+  // Weather does not block a creature: a cloud is 16 units over its own
+  // footprint and nothing walks into it (2026-09-09, user ask).
+  if (p.kind === 'cloud') return null;
   const s = p.scale * kindScaleMult;
   if (p.kind === 'bush') {
     return { x: p.x, z: p.z, r: BUSH_SOFT_FOOTPRINT * s, hard: false };
@@ -856,6 +1138,223 @@ function buildReedGeometry(): BufferGeometry {
   return geometry;
 }
 
+// -- the grass alphabet + the flower clusters (2026-09-09, user ask) ---------
+// "brushes for trees, rocks, grass, flowers..." - and the ref brief calls for
+// "a grass-tuft alphabet" and "flower clusters, drawn as standalone studies
+// and reused as texture fill". So: authored variants, not parameters. Both
+// families are FLAT INK MARKS like the ticks and reeds above - the same
+// unlit tickMaterial, the same tick wind profile - because the brief's
+// shading is "density of mark, not thickness", and a filled 3D flower would
+// put a second light-albedo lump on a field whose only light lumps are eggs.
+//
+// Pure and deterministic: every wobble comes from `markHash`, never from
+// Math.random, so the same tuft grows on every device.
+
+/** Deterministic hash -> [-1,1). Same recipe family as props.ts's `shash`. */
+function markHash(n: number): number {
+  const x = Math.sin(n * 127.1 + 311.7) * 43758.5453123;
+  return (x - Math.floor(x)) * 2 - 1;
+}
+
+/**
+ * Emit a tapered double-sided ribbon along a spine, in the vertical plane
+ * whose ground direction is (dirX, dirZ). `w` is the half-width at the root;
+ * it tapers to `tipW` of that at the tip - a pen stroke, not a rectangle.
+ */
+function ribbon(
+  positions: number[],
+  spine: readonly [number, number, number][],
+  dirX: number,
+  dirZ: number,
+  w: number,
+  tipW = 0.25,
+): void {
+  for (let i = 0; i < spine.length - 1; i++) {
+    const t0 = i / (spine.length - 1);
+    const t1 = (i + 1) / (spine.length - 1);
+    const w0 = w * (1 - (1 - tipW) * t0);
+    const w1 = w * (1 - (1 - tipW) * t1);
+    const [ax, ay, az] = spine[i]!;
+    const [bx, by, bz] = spine[i + 1]!;
+    positions.push(
+      ax - dirX * w0, ay, az - dirZ * w0,
+      ax + dirX * w0, ay, az + dirZ * w0,
+      bx + dirX * w1, by, bz + dirZ * w1,
+      ax - dirX * w0, ay, az - dirZ * w0,
+      bx + dirX * w1, by, bz + dirZ * w1,
+      bx - dirX * w1, by, bz - dirZ * w1,
+    );
+  }
+}
+
+/** One blade: a spine that rises to `h`, curving out by `curve` along its own
+ * plane, with a hand-wobble on every interior point. */
+function bladeSpine(
+  h: number,
+  curve: number,
+  dirX: number,
+  dirZ: number,
+  seed: number,
+  segs = 5,
+): [number, number, number][] {
+  const spine: [number, number, number][] = [];
+  for (let i = 0; i <= segs; i++) {
+    const t = i / segs;
+    // t^2 so the blade leaves the root vertical and bends as it rises - a
+    // blade of grass, not a leaning stick.
+    const out = curve * t * t + (i === 0 ? 0 : markHash(seed + i * 3.7) * 0.012);
+    const y = h * t + (i === 0 ? 0 : markHash(seed + i * 5.1 + 17.3) * 0.01);
+    spine.push([dirX * out, y, dirZ * out]);
+  }
+  return spine;
+}
+
+/**
+ * [D] The four tufts of the alphabet: blade count, height range and fan
+ * width. 3-7 blades from ONE root, 0.35-0.7 u tall, per the design ask.
+ */
+const GRASS_TUFTS: { blades: number; hMin: number; hMax: number; fan: number; seed: number }[] = [
+  // upright five - the workhorse tuft
+  { blades: 5, hMin: 0.42, hMax: 0.66, fan: 0.9, seed: 3.1 },
+  // sparse three, leaning together
+  { blades: 3, hMin: 0.38, hMax: 0.58, fan: 0.6, seed: 11.7 },
+  // wide seven, low - the fill tuft
+  { blades: 7, hMin: 0.35, hMax: 0.52, fan: 1.35, seed: 23.9 },
+  // tall four, one blade over-arching
+  { blades: 4, hMin: 0.5, hMax: 0.7, fan: 1.05, seed: 37.3 },
+];
+
+function buildGrassGeometry(variant: number): BufferGeometry {
+  const def = GRASS_TUFTS[variant] ?? GRASS_TUFTS[0]!;
+  const positions: number[] = [];
+  for (let b = 0; b < def.blades; b++) {
+    const s = def.seed + b * 7.13;
+    // Blades fan around the root: an even sweep plus a jitter, so no tuft
+    // reads as a rotational pattern.
+    const a = (b / def.blades) * Math.PI * 2 + markHash(s) * 0.5;
+    const dirX = Math.cos(a);
+    const dirZ = -Math.sin(a);
+    const h = def.hMin + ((def.hMax - def.hMin) * (b + 1)) / def.blades;
+    const curve = def.fan * (0.12 + 0.1 * ((markHash(s + 1.9) + 1) / 2)) * h;
+    ribbon(positions, bladeSpine(h, curve, dirX, dirZ, s), dirX, dirZ, 0.022);
+  }
+  const geometry = new BufferGeometry();
+  geometry.setAttribute('position', new BufferAttribute(new Float32Array(positions), 3));
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+/** A closed loop of thin ribbon - a petal, a cup rim, a bud. Drawn as a LINE
+ * that comes back to itself, so the paper shows through the middle: the ref
+ * brief's flowers are outlines, never fills. */
+function inkLoop(
+  positions: number[],
+  cx: number,
+  cy: number,
+  cz: number,
+  rx: number,
+  ry: number,
+  dirX: number,
+  dirZ: number,
+  seed: number,
+  w = 0.017,
+  points = 9,
+): void {
+  const loop: [number, number, number][] = [];
+  for (let i = 0; i <= points; i++) {
+    const a = (i / points) * Math.PI * 2;
+    const j = 1 + markHash(seed + (i % points) * 4.7) * 0.14;
+    loop.push([
+      cx + dirX * Math.cos(a) * rx * j,
+      cy + Math.sin(a) * ry * j,
+      cz + dirZ * Math.cos(a) * rx * j,
+    ]);
+  }
+  ribbon(positions, loop, dirX, dirZ, w, 1);
+}
+
+/** Stem: one gently curved ribbon from the root. Returns its tip and the
+ * ground direction of the plane it was drawn in, for whatever the stem
+ * carries. */
+function flowerStem(
+  positions: number[],
+  h: number,
+  lean: number,
+  seed: number,
+): { x: number; y: number; z: number; dirX: number; dirZ: number } {
+  const a = markHash(seed) * Math.PI;
+  const dirX = Math.cos(a);
+  const dirZ = -Math.sin(a);
+  const spine = bladeSpine(h, lean, dirX, dirZ, seed + 2.3, 4);
+  ribbon(positions, spine, dirX, dirZ, 0.019, 0.7);
+  const tip = spine[spine.length - 1]!;
+  return { x: tip[0], y: tip[1], z: tip[2], dirX, dirZ };
+}
+
+/**
+ * [D] The three flower studies, 0.3-0.5 u tall: a daisy (ring of petal
+ * loops round an open centre), a bell (a drooping cup), a bud (a small
+ * closed knob). Ink lines only - no fill, and no colour that is not already
+ * in the tokens (they render in the ink material with everything else).
+ */
+function buildFlowerGeometry(variant: number): BufferGeometry {
+  const positions: number[] = [];
+  if (variant === 1) {
+    // bell - a stem that leans over and carries a cup hanging off its tip.
+    const t = flowerStem(positions, 0.5, 0.12, 61.1);
+    const cupR = 0.1;
+    // The cup: an open loop below the tip, plus a lip stroke under it, so it
+    // reads as hanging rather than as a bead on a wire.
+    inkLoop(positions, t.x, t.y - cupR * 0.9, t.z, cupR, cupR * 1.15, t.dirX, t.dirZ, 62.2);
+    ribbon(
+      positions,
+      [
+        [t.x - t.dirX * cupR, t.y - cupR * 1.9, t.z - t.dirZ * cupR],
+        [t.x, t.y - cupR * 2.2, t.z],
+        [t.x + t.dirX * cupR, t.y - cupR * 1.85, t.z + t.dirZ * cupR],
+      ],
+      t.dirX,
+      t.dirZ,
+      0.017,
+      1,
+    );
+  } else if (variant === 2) {
+    // bud - a short stem with a small closed knob, and one leaf low down.
+    const t = flowerStem(positions, 0.38, 0.06, 71.1);
+    inkLoop(positions, t.x, t.y + 0.06, t.z, 0.066, 0.082, t.dirX, t.dirZ, 72.2, 0.018, 7);
+    ribbon(positions, bladeSpine(0.16, 0.1, -t.dirX, -t.dirZ, 73.3, 3), -t.dirX, -t.dirZ, 0.019);
+  } else {
+    // daisy - a ring of petal loops round an OPEN centre: the paper is the
+    // flower's middle, which is the reference's whole trick.
+    const t = flowerStem(positions, 0.44, 0.05, 51.1);
+    const petals = 6;
+    const ring = 0.078;
+    for (let i = 0; i < petals; i++) {
+      const a = (i / petals) * Math.PI * 2 + markHash(51.1 + i) * 0.18;
+      // Petals lie in the flower's own plane, splayed round the stem tip.
+      const px = t.x + t.dirX * Math.cos(a) * ring;
+      const pz = t.z + t.dirZ * Math.cos(a) * ring;
+      const py = t.y + Math.sin(a) * ring * 0.9;
+      inkLoop(positions, px, py, pz, 0.046, 0.038, t.dirX, t.dirZ, 52.2 + i * 3.3, 0.016, 7);
+    }
+  }
+  const geometry = new BufferGeometry();
+  geometry.setAttribute('position', new BufferAttribute(new Float32Array(positions), 3));
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+/** Every mark kind's authored variant geometries, in variant order. Exported
+ * for the tests that measure their bounds. */
+export function buildMarkGeometries(): Record<MarkKind, BufferGeometry[]> {
+  return {
+    tick: [buildTickGeometry()],
+    reed: [buildReedGeometry()],
+    grass: GRASS_TUFTS.map((_, i) => buildGrassGeometry(i)),
+    flower: [0, 1, 2].map((i) => buildFlowerGeometry(i)),
+  };
+}
+
 // ── wind (environment physics) ───────────────────────────────────────────────
 // Per-vertex wind in the shared scatter materials, injected via
 // onBeforeCompile. This REPLACES the old whole-group sampleDrift sway: the
@@ -940,6 +1439,16 @@ interface WindProfile {
    * their aWindHeight attribute (→ heightFrac², roots pinned, crowns sway);
    * ticks use 1.0 (full-blade bend pivoting at the root). */
   heightExpr: string;
+  /**
+   * The WHOLE displacement factor, when a kind does not bend from a root at
+   * all. Default `${heightExpr} * position.y`, which is every rooted kind.
+   *
+   * Clouds set it to a constant: nothing about a cloud is anchored to the
+   * ground, so its motion is a lateral DRIFT of the whole form, not a lean.
+   * With the factor constant, `bend`/`flutter` read as world units rather
+   * than radians (2026-09-09, user ask: clouds drift, slower than trees).
+   */
+  factorExpr?: string;
 }
 
 /** Trees / conifers / bushes: slow crown sway, small amplitude — the gust
@@ -990,6 +1499,24 @@ const WIND_PROFILE_CACTUS: WindProfile = {
   heightExpr: 'aWindHeight',
 };
 
+/**
+ * Clouds: a slow lateral drift of the whole form, in world units, far
+ * slower than the trees' sway (gust 0.09 Hz against their 0.38 — a cloud
+ * crosses its own width over minutes, not seconds) and never arresting. The
+ * strength floor keeps it moving at every weather setting, and the noise is
+ * the same smooth two-octave value field everything else rides, so there is
+ * no snap and no overshoot anywhere in it (TASTE §2.1).
+ */
+const WIND_PROFILE_CLOUD: WindProfile = {
+  bend: 0.85,
+  gustHz: 0.09,
+  flutter: 0.34,
+  flutterHz: 0.04,
+  phaseJitter: 3.4,
+  heightExpr: '1.0',
+  factorExpr: '1.0',
+};
+
 const glslFloat = (v: number): string => v.toFixed(5);
 
 /** Top-level declarations appended after <common>. */
@@ -1037,7 +1564,8 @@ function windBeginGlsl(p: WindProfile): string {
   float windFlut = ${glslFloat(p.flutter)} * uWindStrength
     * windNoise(uWindTime * ${glslFloat(p.flutterHz)} + windPhase * 1.7, 47.9);
   vec2 windLean = uWindDir * windBend + vec2(-uWindDir.y, uWindDir.x) * windFlut;
-  vec3 windWorld = vec3(windLean.x, 0.0, windLean.y) * (${p.heightExpr} * position.y);
+  vec3 windWorld = vec3(windLean.x, 0.0, windLean.y)
+    * (${p.factorExpr ?? `${p.heightExpr} * position.y`});
   transformed += (windWorld * windRot) * inversesqrt(windS2);
 }`;
 }
@@ -1088,6 +1616,9 @@ interface ShadowSpot {
   x: number;
   z: number;
   r: number;
+  /** The radius cap this stamp was filtered against — a cloud's is larger
+   * than a prop's (see CLOUD_SHADOW_MAX_RADIUS). */
+  max?: number;
   /** Terrain height at (x, z) plus PROP_SHADOW_LIFT. */
   y: number;
   /** Up-normal at (x, z): the stamp lies IN the slope, not across it. */
@@ -1211,6 +1742,9 @@ export const KIND_GROUP_LABELS: Record<ScatterKind, string> = {
   mountain: 'mountains',
   tick: 'grass',
   reed: 'reeds',
+  cloud: 'clouds',
+  grass: 'grass tufts',
+  flower: 'flowers',
 };
 
 export interface ScatterOptions {
@@ -1220,6 +1754,22 @@ export interface ScatterOptions {
    * terrain; tests pass FLAT_SURFACE to get the old flat field back.
    */
   surface?: Surface;
+}
+
+/** Mark kinds in build order — the render loop's counterpart to PROP_KINDS. */
+const MARK_KIND_ORDER: readonly MarkKind[] = ['tick', 'reed', 'grass', 'flower'];
+
+/**
+ * How far above the ground one cloud floats: the shared altitude plus its
+ * own hashed spread, so a bank is a sky rather than a shelf. Pure in the
+ * placement's quantized position, like every other per-instance roll.
+ */
+export function cloudLift(p: { x: number; z: number }): number {
+  return (
+    CLOUD_ALTITUDE +
+    cellHash(Math.round(p.x * 8), Math.round(p.z * 8), CLOUD_ALTITUDE_SALT) *
+      CLOUD_ALTITUDE_SPREAD
+  );
 }
 
 export function createScatter(opts: ScatterOptions = {}): Scatter {
@@ -1278,8 +1828,19 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
     roughness: 1,
     metalness: 0,
   });
-  // Ticks are unlit ink marks — the only dark the environment carries.
+  // Ticks are unlit ink marks — the only dark the environment carries. The
+  // grass tufts and flowers share it: same pen, same weight (the ref brief's
+  // "uniform pen-and-ink line").
   const tickMaterial = new MeshBasicMaterial({ color: WORLD.ink, side: DoubleSide });
+  // Clouds: the same LIGHT paper albedo as every other prop — the ink pass
+  // draws their contour, exactly as it draws a crown — plus their own slow
+  // drift. Double-sided because a cloud is read from underneath.
+  const cloudMaterial = new MeshStandardMaterial({
+    color: WORLD.light,
+    roughness: 1,
+    metalness: 0,
+    side: DoubleSide,
+  });
 
   // Dev color grade (see Scatter.setTint): the tintable albedos and each
   // one's token lightness, captured once so re-tints never drift.
@@ -1290,6 +1851,7 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
     palmMaterial,
     cactusMaterial,
     tickMaterial,
+    cloudMaterial,
   ];
   const gradeLightness = gradedMaterials.map((m) => {
     const hsl = { h: 0, s: 0, l: 0 };
@@ -1330,6 +1892,7 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
   injectWind(tickMaterial, WIND_PROFILE_TICK, 'scatter-wind-tick-v1');
   injectWind(palmMaterial, WIND_PROFILE_PALM, 'scatter-wind-palm-v1');
   injectWind(cactusMaterial, WIND_PROFILE_CACTUS, 'scatter-wind-cactus-v1');
+  injectWind(cloudMaterial, WIND_PROFILE_CLOUD, 'scatter-wind-cloud-v1');
 
   // ── soft-body nudge impulses (colliders section) ─────────────────────────
   // [seam: wind agent] A creature brushing through a bush kicks a brief
@@ -1421,6 +1984,7 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
   chainVariation(tickMaterial);
   chainVariation(palmMaterial);
   chainVariation(cactusMaterial);
+  chainVariation(cloudMaterial);
 
   // Bake the height-fraction attribute the sway shader bends by. Rigid kinds
   // deliberately never get this attribute (taste guard: tests assert it).
@@ -1447,8 +2011,9 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
   const shadowGroundValue = new Color(SURFACE.ground);
   const shadowInkValue = new Color(SURFACE.shadow);
 
-  const tickGeometry = buildTickGeometry();
-  const reedGeometry = buildReedGeometry();
+  // Every mark kind's variants — ticks and reeds keep their single build,
+  // the painted families carry their alphabets (buildMarkGeometries).
+  const markGeometries = buildMarkGeometries();
   const shadowGeometry = new CircleGeometry(1, 40);
   shadowGeometry.rotateX(-Math.PI / 2);
 
@@ -1551,7 +2116,9 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
         const of = visible.filter((p) => p.kind === kind && p.variant === v);
         if (of.length === 0) continue;
         const material =
-          kind === 'rock' || kind === 'monolith'
+          kind === 'cloud'
+            ? cloudMaterial
+            : kind === 'rock' || kind === 'monolith'
             ? rockMaterial
             : kind === 'palm'
               ? palmMaterial
@@ -1579,7 +2146,15 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
           // Seated on the ground, standing straight up: a tree grows toward
           // the sky on a hillside, it does not lean out normal to the slope.
           // A mountain's base follows the shoulder it sits on the same way.
-          pos.set(p.x, surface.sampleHeight(p.x, p.z), p.z);
+          // A cloud floats: the ground under it plus CLOUD_ALTITUDE and its
+          // own hashed spread. An OFFSET above the sampled surface, never an
+          // absolute y — the Surface seam owns height in this file, so a
+          // painted sky rides the range up when the elevation dial moves.
+          pos.set(
+            p.x,
+            surface.sampleHeight(p.x, p.z) + (kind === 'cloud' ? cloudLift(p) : 0),
+            p.z,
+          );
           scl.set(p.scale * kMult * widenXZ, p.scale * kMult * squashY, p.scale * kMult * widenXZ);
           mesh.setMatrixAt(i, matrix.compose(pos, quat, scl));
           variation.set(instanceVariation(p.x, p.z), i * 4);
@@ -1591,48 +2166,40 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
       }
     }
 
-    const ticks = visible.filter((p) => p.kind === 'tick');
-    if (ticks.length > 0) {
-      const mesh = new InstancedMesh(tickGeometry, tickMaterial, ticks.length);
-      mesh.name = `grass (${ticks.length})`;
-      mesh.frustumCulled = false;
-      const tickMult = scaleOf('tick');
-      // Ticks ride the same variation path — for them it reads as blade
-      // length / bend jitter.
-      const variation = new Float32Array(ticks.length * 4);
-      ticks.forEach((p, i) => {
-        quat.setFromAxisAngle(axisY, p.rotY);
-        pos.set(p.x, surface.sampleHeight(p.x, p.z) + TICK_LIFT, p.z);
-        scl.setScalar(p.scale * tickMult);
-        mesh.setMatrixAt(i, matrix.compose(pos, quat, scl));
-        variation.set(instanceVariation(p.x, p.z), i * 4);
-      });
-      mesh.geometry.setAttribute('aVariation', new InstancedBufferAttribute(variation, 4));
-      mesh.instanceMatrix.needsUpdate = true;
-      meshes.push(mesh);
-      groupFor('tick').add(mesh);
-    }
-
-    // Reeds: the same ink material and wind profile as the grass, their own
-    // taller geometry, their own outliner row.
-    const reeds = visible.filter((p) => p.kind === 'reed');
-    if (reeds.length > 0) {
-      const mesh = new InstancedMesh(reedGeometry, tickMaterial, reeds.length);
-      mesh.name = `reeds (${reeds.length})`;
-      mesh.frustumCulled = false;
-      const reedMult = scaleOf('reed');
-      const variation = new Float32Array(reeds.length * 4);
-      reeds.forEach((p, i) => {
-        quat.setFromAxisAngle(axisY, p.rotY);
-        pos.set(p.x, surface.sampleHeight(p.x, p.z) + TICK_LIFT, p.z);
-        scl.setScalar(p.scale * reedMult);
-        mesh.setMatrixAt(i, matrix.compose(pos, quat, scl));
-        variation.set(instanceVariation(p.x, p.z), i * 4);
-      });
-      mesh.geometry.setAttribute('aVariation', new InstancedBufferAttribute(variation, 4));
-      mesh.instanceMatrix.needsUpdate = true;
-      meshes.push(mesh);
-      groupFor('reed').add(mesh);
+    // The flat ink marks. One InstancedMesh per (kind, variant), exactly like
+    // the props above — the alphabets (grass, flowers) need it and the
+    // single-build kinds (ticks, reeds) fall out of the same loop with one
+    // variant each, so there is one mark path rather than one per family
+    // (2026-09-09, user ask).
+    for (const kind of MARK_KIND_ORDER) {
+      const variants = markGeometries[kind];
+      const mult = scaleOf(kind);
+      for (let v = 0; v < variants.length; v++) {
+        const of = visible.filter((p) => p.kind === kind && p.variant === v);
+        if (of.length === 0) continue;
+        const mesh = new InstancedMesh(variants[v]!, tickMaterial, of.length);
+        // Single-build kinds keep the bare outliner row they always had; the
+        // alphabets number their variants like the props do.
+        mesh.name =
+          variants.length === 1
+            ? `${KIND_GROUP_LABELS[kind]} (${of.length})`
+            : `${kind}-${v + 1} (${of.length})`;
+        mesh.frustumCulled = false;
+        // Marks ride the same variation path — for them it reads as blade
+        // length / bend jitter.
+        const variation = new Float32Array(of.length * 4);
+        of.forEach((p, i) => {
+          quat.setFromAxisAngle(axisY, p.rotY);
+          pos.set(p.x, surface.sampleHeight(p.x, p.z) + TICK_LIFT, p.z);
+          scl.setScalar(p.scale * mult);
+          mesh.setMatrixAt(i, matrix.compose(pos, quat, scl));
+          variation.set(instanceVariation(p.x, p.z), i * 4);
+        });
+        mesh.geometry.setAttribute('aVariation', new InstancedBufferAttribute(variation, 4));
+        mesh.instanceMatrix.needsUpdate = true;
+        meshes.push(mesh);
+        groupFor(kind).add(mesh);
+      }
     }
 
     // One shadow disc per large/medium prop — the flat ink marks get none,
@@ -1652,11 +2219,15 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
           p.scale *
           scaleOf(p.kind) *
           (p.kind === 'rock' ? ROCK_WIDEN_XZ : 1) *
-          SHADOW_FIT,
+          (p.kind === 'cloud' ? CLOUD_SHADOW_FIT : SHADOW_FIT),
+        // A cloud's stamp sits on the GROUND under it, sampled at (x, z)
+        // like every other stamp — the cloud is 16 units up, its shadow is
+        // not (2026-09-09, user ask).
         y: surface.sampleHeight(p.x, p.z) + PROP_SHADOW_LIFT,
         normal: surface.normalAt(p.x, p.z),
+        max: p.kind === 'cloud' ? CLOUD_SHADOW_MAX_RADIUS : SHADOW_MAX_RADIUS,
       }))
-      .filter((s) => s.r <= SHADOW_MAX_RADIUS);
+      .filter((s) => s.r <= s.max);
     if (spots.length > 0) {
       const mesh = new InstancedMesh(shadowGeometry, shadowMaterial, spots.length);
       mesh.frustumCulled = false;
@@ -1816,8 +2387,8 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
       clearMeshes();
       for (const variants of geometries.values())
         for (const v of variants) v.geometry.dispose();
-      tickGeometry.dispose();
-      reedGeometry.dispose();
+      for (const variants of Object.values(markGeometries))
+        for (const g of variants) g.dispose();
       shadowGeometry.dispose();
       propMaterial.dispose();
       rockMaterial.dispose();
@@ -1825,6 +2396,7 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
       palmMaterial.dispose();
       cactusMaterial.dispose();
       tickMaterial.dispose();
+      cloudMaterial.dispose();
       shadowMaterial.dispose();
     },
   };

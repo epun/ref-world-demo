@@ -56,6 +56,7 @@ export const INFLATED_PROP_KINDS = [
   'cactus',
   'monolith',
   'mountain',
+  'cloud',
 ] as const;
 export type InflatedPropKind = (typeof INFLATED_PROP_KINDS)[number];
 
@@ -1326,6 +1327,69 @@ export const PROP_VARIANT_DEFS: Record<InflatedPropKind, PropVariantDef[]> = {
         ...wobblyBlob(0.34, 0.53, 0.145, 874.4, { ry: 0.075, lump: 0.24 }),
         ...wobblyBlob(0.5, 0.69, 0.13, 875.5, { ry: 0.065, lump: 0.24 }),
         ...wobblyBlob(0.65, 0.64, 0.115, 876.6, { ry: 0.065, lump: 0.24 }),
+      ],
+    },
+  ],
+  // ── clouds ────────────────────────────────────────────────────────────
+  // 2026-09-09, user ask: a brush kit of natural motifs, "a cloud taxonomy"
+  // drawn as standalone studies and reused as texture fill. Four builds, the
+  // same wobbly-blob authoring as the crowns — a cloud in this reference is a
+  // heap of soft lobes with a level underside, never a puffy gradient and
+  // never an outlined ring.
+  //
+  // They are the only kind that does not touch the ground: scatter floats
+  // them at CLOUD_ALTITUDE and stamps their shadow on the land below. The
+  // flat base matters for exactly that reason — a cloud is read from under
+  // it, at an isometric angle, so the underside is most of its silhouette.
+  // [D] Heights are per variant so a painted sky has a skyline of its own.
+  cloud: [
+    {
+      // Heaped lumps over a flat base. Two things carry the read and both
+      // are in the SILHOUETTE, because inflation rounds whatever it is
+      // given: the lobes are spaced so the outline keeps a notch between
+      // them, and the whole study is authored WIDE and LOW — a cloud lies
+      // across the sky, a boulder stands on the ground, and in an
+      // orthographic frame the proportion is most of the difference.
+      name: 'cumulus',
+      height: 3.4,
+      strokes: [
+        ...wobblyBlob(0.5, 0.7, 0.5, 881.1, { ry: 0.055, lump: 0.1, points: 20 }),
+        ...wobblyBlob(0.26, 0.62, 0.19, 882.2, { ry: 0.1, lump: 0.26 }),
+        ...wobblyBlob(0.52, 0.58, 0.26, 883.3, { ry: 0.14, lump: 0.24, points: 16 }),
+        ...wobblyBlob(0.76, 0.63, 0.17, 884.4, { ry: 0.095, lump: 0.26 }),
+        ...wobblyBlob(0.45, 0.46, 0.14, 885.5, { ry: 0.09, lump: 0.28 }),
+      ],
+    },
+    {
+      // Long low stratus — the horizon bar of the taxonomy, its top edge
+      // broken by two shallow rises so it is a cloud and not a lozenge.
+      name: 'lozenge',
+      height: 1.9,
+      strokes: [
+        ...wobblyBlob(0.5, 0.68, 0.52, 891.1, { ry: 0.05, lump: 0.12, points: 20 }),
+        ...wobblyBlob(0.3, 0.6, 0.17, 892.2, { ry: 0.07, lump: 0.24 }),
+        ...wobblyBlob(0.66, 0.59, 0.2, 893.3, { ry: 0.075, lump: 0.22 }),
+      ],
+    },
+    {
+      // One small lump — the stray that keeps a painted sky from ruling.
+      name: 'puff',
+      height: 1.8,
+      strokes: [
+        ...wobblyBlob(0.5, 0.68, 0.36, 901.1, { ry: 0.075, lump: 0.14, points: 15 }),
+        ...wobblyBlob(0.45, 0.58, 0.23, 902.2, { ry: 0.11, lump: 0.26, points: 14 }),
+        ...wobblyBlob(0.68, 0.64, 0.13, 903.3, { ry: 0.07, lump: 0.26 }),
+      ],
+    },
+    {
+      // Two lobes over one base, the eastern one lower — a cloud caught
+      // mid-split, with a real notch between the heads.
+      name: 'double',
+      height: 2.4,
+      strokes: [
+        ...wobblyBlob(0.5, 0.72, 0.48, 911.1, { ry: 0.05, lump: 0.12, points: 18 }),
+        ...wobblyBlob(0.29, 0.6, 0.23, 912.2, { ry: 0.12, lump: 0.26, points: 15 }),
+        ...wobblyBlob(0.72, 0.66, 0.2, 913.3, { ry: 0.09, lump: 0.26, points: 14 }),
       ],
     },
   ],

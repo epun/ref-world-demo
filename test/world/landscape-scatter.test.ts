@@ -355,8 +355,14 @@ describe('the plain is the world that shipped', () => {
   // (the hatch clearing, spelled out below) sits far from every feature in
   // every layout and has not moved a digit, which is what says the
   // expression is intact.
-  const PLAIN_COUNT = 1127;
-  const PLAIN_DIGEST = 'ffb4d6bf';
+  //
+  // Re-taken 2026-09-09 (was 1127 / ffb4d6bf and 1123 / 0aa1f225): BUILDING_MAX
+  // went 10 → 12 with the environment brush kit, so the region's own rolls now
+  // seat two more cottages before the cap stops them. Nothing else moved —
+  // every painted kind seeds at 0 unpainted, and the per-kind counts are
+  // otherwise digit-for-digit what they were.
+  const PLAIN_COUNT = 1129;
+  const PLAIN_DIGEST = '7d360949';
 
   it('places exactly what it placed before the map existed', () => {
     const plain = shipped().filter(deepPlain).map(key);
@@ -390,8 +396,8 @@ describe('the plain is the world that shipped', () => {
    * onto ground the predicate calls deep plain. Those four spill-overs are
    * the map's, so the plain world does not have them — it does not move a
    * single one of the other 1123. */
-  const PLAIN_MODE_COUNT = 1123;
-  const PLAIN_MODE_DIGEST = '0aa1f225';
+  const PLAIN_MODE_COUNT = 1124;
+  const PLAIN_MODE_DIGEST = 'c8a218a7';
 
   it('places no mountain and no reed anywhere in the plain mode', () => {
     const plain = inPlain(() => computePlacements());
@@ -423,7 +429,16 @@ describe('the plain is the world that shipped', () => {
     const plain = new Set(inPlain(() => computePlacements()).filter(deepPlain).map(key));
     const extra = shipped().filter(deepPlain).filter((p) => !plain.has(key(p)));
     expect(extra).toHaveLength(PLAIN_COUNT - PLAIN_MODE_COUNT);
-    for (const p of extra) {
+    // Buildings are the one CAPPED kind in this set (BUILDING_MAX), so a
+    // cottage can differ between the modes for a reason that has nothing to
+    // do with where it stands: the mapped world drops every building that
+    // rolled inside the forest (no building in FOREST_SEED), which frees cap
+    // slots for cells further down the iteration order. That is the cap
+    // working, not the map leaking — so they are counted rather than located,
+    // and the spill rule below is asserted over everything else.
+    const capped = extra.filter((p) => p.kind === 'building');
+    expect(capped.length, 'cap-boundary cottages').toBeLessThanOrEqual(2);
+    for (const p of extra.filter((q) => q.kind !== 'building')) {
       // Every one of them stands within a single scatter step of ground the
       // map weights — a neighbour thrown clear of a cluster seeded inside the
       // forest, which is precisely what the plain world has no seed for.

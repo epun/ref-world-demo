@@ -17,6 +17,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { zeroPlanting } from '../../src/world/painted';
 import {
   activeWaterBodies,
   FOREST_BLOBS,
@@ -179,6 +180,9 @@ describe('landscape — the origin clearing stays open plain', () => {
       water: false,
       island: false,
       region: 'plain',
+      // Nothing is painted in this file, so every brush weight is 0 — an
+      // unpainted world is the shipped one exactly (src/world/painted.ts).
+      planting: zeroPlanting(),
     });
   });
 
@@ -1351,6 +1355,7 @@ describe('landscape — the mode', () => {
           water: false,
           island: false,
           region: 'plain',
+          planting: zeroPlanting(),
         });
         expect(isWater(x, z), at).toBe(false);
         // …with a pad too: a keep-out around nothing is still nothing.
