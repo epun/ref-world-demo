@@ -15,6 +15,20 @@ One page. Read it before the demo, not during.
    moment.
 4. Delete it: `shift+d` → the creature's row → remove. Or just reload; nobody
    has drawn yet.
+5. **Reset the world** — the one that actually clears the room. Refusing the
+   rehearsal creatures one by one does *not* do it: a refusal frees the
+   device, and every phone that drew heals its drawing back in on its next
+   visit. `shift+d` → `scene` → `reset world`, twice (the first tap arms it,
+   the second does it), and the page reloads. From a terminal:
+
+   ```bash
+   curl -X POST -H "x-moderator: $MOD" -H 'content-type: application/json' \
+     "$BASE/api/moderate?world=meridian" -d '{"reset":true}'
+   ```
+
+   Every handset that drew before it is sent back to the pad with `the world
+   started over — draw again`, keeping its drawing. Reload any other screen
+   you have open on the world.
 
 ## during
 

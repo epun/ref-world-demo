@@ -76,7 +76,7 @@ import { MAX_POPULATION, WANDER_SPEED_DEFAULT } from './creatures/manager';
 import { mountDrawScreen } from './draw/ui';
 import { MOTION, SURFACE, WORLD } from './taste/tokens';
 import { createPhoneLink } from './net/phoneLink';
-import { readSubmission } from './phone/identity';
+import { epochFor, readSubmission } from './phone/identity';
 import { mountWorldTray } from './world/tray';
 import { createFollow } from './world/follow';
 import { createCompanionPanel } from './world/companionpanel';
@@ -476,6 +476,34 @@ function main(): void {
     ? `w-${worldName}`
     : 'w' + Math.floor(Math.random() * 0xffffffff).toString(36);
 
+  /*
+   * WHAT THE HANDSETS ARE TOLD THIS WORLD IS (user ask, 2026-09-09: *"if we
+   * reset the URL we should also reset the characters that are within that
+   * room"*).
+   *
+   * `epoch` above is this page's own — the session log's id, the autosave
+   * key, a local fact. What goes ON THE WIRE carries the world's GENERATION
+   * too: `w-<world>-g<n>`, where n counts up every time a moderator resets
+   * the world (api/_store.ts `resetWorld`). That suffix is the whole
+   * mechanism — a handset compares the generation its drawing was admitted
+   * under against the one being announced, and a drawing from an older one
+   * stops being offered (src/phone/identity.ts `generationVerdict`).
+   *
+   * NULL UNTIL THE WORLD HAS READ ITS OWN GENERATION. The number lives in
+   * the store and arrives on the first pull, so announcing before then would
+   * mean announcing an epoch this page is about to take back — every phone
+   * in the room told the world changed, twice, at boot. Silence is the
+   * honest state: a handset that has heard no epoch behaves exactly as it
+   * does when no world is running, which is to leave its drawing alone.
+   *
+   * An installation world has no store and no generation to read, so it is
+   * known from the start and nothing about it changes.
+   */
+  let publishedEpoch: string | null = isPublic ? null : epoch;
+  /** The epoch to put on a wire message, or '' when there is nothing honest
+   * to say yet. `announceEpochRetained` already treats '' as "do not". */
+  const wireEpoch = (): string => publishedEpoch ?? '';
+
   // ── session recorder (src/session/, docs/SESSION.md) ──────────────────────
   // Ships in EVERY build, not just dev: a live event is exactly when you want
   // the log. It records inputs and decisions — stroke lists, ids, moderation
@@ -582,7 +610,7 @@ function main(): void {
       hatch(id, cause) {
         recorder.hatch(id, cause);
         if (isHostNow()) {
-          feed?.publishToPhones({ type: 'hatched', to: id, epoch });
+          feed?.publishToPhones({ type: 'hatched', to: id, epoch: wireEpoch() });
           publishHatch(id);
         }
         saveSession();
@@ -1358,6 +1386,55 @@ function main(): void {
    * lies. */
   const sceneSync: DevSceneApi = {
     status: sceneStatus,
+    /*
+     * START THE WORLD OVER (user ask, 2026-09-09/10: *"if we reset the URL
+     * we should also reset the characters that are within that room"* …
+     * *"let's clear out any existing characters right now so we start
+     * clean"*).
+     *
+     * `reset scene` puts the GROUND back; this puts the POPULATION back —
+     * the drawings, the device claims that would refuse those people a
+     * second creature, and the scene with them. It is the moderator's
+     * endpoint, so it needs the secret the projection was opened with
+     * (`?mod=`), and it says so rather than failing quietly.
+     *
+     * Then it reloads, because the generation is read on load: the page
+     * that asked for the reset is also a page full of creatures that no
+     * longer exist anywhere, and the shortest honest way to stop showing
+     * them is to open the world again.
+     */
+    resetWorld: () => {
+      if (!moderatorSecret) {
+        sceneStored = 'world not reset (no secret — open with ?mod=)';
+        refreshScene();
+        return;
+      }
+      sceneStored = 'resetting the world…';
+      refreshScene();
+      void (async () => {
+        try {
+          const res = await fetch(`/api/moderate?world=${encodeURIComponent(worldName)}`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', 'x-moderator': moderatorSecret },
+            body: JSON.stringify({ reset: true }),
+          });
+          if (!res.ok) {
+            sceneStored =
+              res.status === 404
+                ? 'world not reset (404: wrong secret)'
+                : res.status === 503
+                  ? 'no store on this deployment'
+                  : `world not reset (${res.status})`;
+            refreshScene();
+            return;
+          }
+          location.reload();
+        } catch {
+          sceneStored = 'world not reset (unreachable)';
+          refreshScene();
+        }
+      })();
+    },
     reset: () => {
       clearSceneHere();
       sceneCount = 0;
@@ -1492,6 +1569,38 @@ function main(): void {
       }
     };
 
+    /**
+     * READ THE WORLD'S GENERATION OFF THE LOG IT JUST PULLED.
+     *
+     * This is the only thing that ever sets `publishedEpoch` in a public
+     * world, and it hangs on the pull rather than on a request of its own
+     * for two reasons: the page is already making this request, and the
+     * announcement can then be ordered honestly behind it — nothing is said
+     * about which world this is until this page knows.
+     *
+     * It runs on EVERY pull, not only the first. A reset performed from
+     * another screen while this one is open lands here on the next poll, and
+     * the room's handsets are told within one interval instead of at the
+     * next refresh.
+     */
+    const learnGeneration = (config: SessionLog['config']): void => {
+      const raw = config?.['generation'];
+      const generation =
+        typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0;
+      const next = epochFor(worldName, generation);
+      if (next === publishedEpoch) return;
+      const had = publishedEpoch;
+      publishedEpoch = next;
+      // Retained, so a handset that connects an hour from now is told too.
+      if (isHostNow()) announceEpochRetained(feed, next, phoneHatchMs);
+      // Only a CHANGE is worth a line. The first read is this page learning
+      // its own name, which is not news; a second one means somebody reset
+      // the world while this screen was standing open, and the operator
+      // should know why the phones in the room are about to be sent back to
+      // the pad. Reload to see the world as it now is.
+      if (had !== null) say(`the world was reset — generation ${generation}, reload to see it`);
+    };
+
     const pull = async (first: boolean): Promise<void> => {
       let log: SessionLog | null = null;
       try {
@@ -1503,6 +1612,7 @@ function main(): void {
         return;
       }
       if (!log) return;
+      learnGeneration(log.config);
       // Additive, never a restore: anything already standing is left alone,
       // which is what lets this run every twenty seconds without disturbing
       // a world somebody is looking at.
@@ -1961,7 +2071,7 @@ function main(): void {
    */
   const recallDrawings = (): boolean => {
     if (!feed || !isHostNow()) return false;
-    feed.publishToPhones({ type: 'recall', epoch });
+    feed.publishToPhones({ type: 'recall', epoch: wireEpoch() });
     return true;
   };
 
@@ -1974,7 +2084,7 @@ function main(): void {
       // The screen's own wording is diagnostic, for the operator readout —
       // the phone shows the guideline line, not this.
       reason: entry.reason,
-      epoch,
+      epoch: wireEpoch(),
     });
   };
 
@@ -2003,7 +2113,7 @@ function main(): void {
     // again, because a retained message lives on the broker and a new one
     // has never heard of this world.
     onStatus: (state) => {
-      if (state === 'on' && isHostNow()) announceEpochRetained(feed, epoch, phoneHatchMs);
+      if (state === 'on' && isHostNow()) announceEpochRetained(feed, wireEpoch(), phoneHatchMs);
     },
     onDrawing: (d) => {
       const entry = gate.offer({ ...d, hatchMs: HATCH_TIMER_MS, source: 'phone' });
@@ -2041,7 +2151,7 @@ function main(): void {
       else if (isHostNow())
         feed?.publishToPhones({
           type: 'world',
-          epoch,
+          epoch: wireEpoch(),
           ...(phoneHatchMs === undefined ? {} : { hatchMs: phoneHatchMs }),
         });
     },
@@ -2052,7 +2162,7 @@ function main(): void {
     // that wakes an hour from now — so a phone holding a drawing from a
     // previous session re-homes it without anyone pressing anything
     // (src/phone/main.ts, docs/SESSION.md §4a).
-    if (isHostNow()) announceEpochRetained(handle, epoch, phoneHatchMs);
+    if (isHostNow()) announceEpochRetained(handle, wireEpoch(), phoneHatchMs);
     startWorldSync(handle);
   });
 

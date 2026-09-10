@@ -51,7 +51,12 @@ function readBody(req: VercelRequest): Record<string, unknown> | null {
 }
 
 /** Admitted drawings, shaped as the log `sessionApi.restore` already reads. */
-function asSessionLog(world: string, rows: StoredDrawing[], store: boolean) {
+function asSessionLog(
+  world: string,
+  rows: StoredDrawing[],
+  store: boolean,
+  generation: number,
+) {
   const events: unknown[] = [];
   let t = 0;
   for (const row of rows) {
@@ -97,6 +102,21 @@ function asSessionLog(world: string, rows: StoredDrawing[], store: boolean) {
        * Says whether a store is configured. Never what or where it is.
        */
       store: store ? 'live' : 'none',
+      /*
+       * WHICH RUN OF THIS WORLD THIS LIST BELONGS TO (2026-09-09/10).
+       *
+       * The world page reads it here and nowhere else: its epoch is
+       * `w-<world>-g<generation>`, so the number in this header is what
+       * every handset in the room is eventually told. Which is also why it
+       * rides in the log rather than in a second endpoint — the page that
+       * needs it is already making this request, and an epoch announced
+       * before the generation was known would be an epoch the page then
+       * had to take back.
+       *
+       * Always present, always a number. 0 means the world has never been
+       * reset, which is what a world with no config at all says too.
+       */
+      generation,
     },
     events,
   };
@@ -110,11 +130,12 @@ export default async function handler(
 
   if (req.method === 'GET') {
     const rows = await readDrawings(world);
+    const config = await readConfig(world);
     // A public world is read constantly and changes rarely. A short cache
     // with revalidation keeps a busy projection off the store without ever
     // showing a creature that was removed minutes ago.
     res.setHeader('cache-control', 'public, s-maxage=10, stale-while-revalidate=60');
-    res.status(200).json(asSessionLog(world, rows, hasStore()));
+    res.status(200).json(asSessionLog(world, rows, hasStore(), config.generation));
     return;
   }
 

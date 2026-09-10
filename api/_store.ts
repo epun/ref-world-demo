@@ -111,9 +111,32 @@ export interface WorldConfig {
    * person, without a deploy.
    */
   ipPerHour: number;
+  /**
+   * WHICH RUN OF THIS WORLD IS CURRENT (user ask, 2026-09-09: *"if we reset
+   * the url we should also reset the characters that are within that
+   * room"*).
+   *
+   * A rehearsal leaves trial creatures in the store, and refusing them one
+   * by one is not a reset: a refusal RELEASES the device slot, and every
+   * handset that drew still holds its own drawing and heals it straight
+   * back in on its next visit (src/phone/heal.ts). That is by design and
+   * CLAUDE.md forbids the other fix — a handset's stored drawing is the one
+   * copy that survives a projection restart and is never ours to delete.
+   *
+   * So the world steps forward instead of the drawings being chased. This
+   * number rides in the world's epoch (`w-<world>-g<generation>`), a
+   * handset compares the generation its drawing was admitted under against
+   * the one the world is announcing now, and a drawing from an older
+   * generation simply stops being offered — kept on the phone, never
+   * re-published, never healed.
+   *
+   * 0 is the default and reads as "never reset", which is what every world
+   * and every stored config written before this says by saying nothing.
+   */
+  generation: number;
 }
 
-export const DEFAULT_CONFIG: WorldConfig = { closed: false, ipPerHour: 0 };
+export const DEFAULT_CONFIG: WorldConfig = { closed: false, ipPerHour: 0, generation: 0 };
 
 export async function readConfig(world: string): Promise<WorldConfig> {
   const db = store();
@@ -128,6 +151,12 @@ export async function readConfig(world: string): Promise<WorldConfig> {
         typeof rec.ipPerHour === 'number' && rec.ipPerHour >= 0
           ? rec.ipPerHour
           : DEFAULT_CONFIG.ipPerHour,
+      // Floored and never negative: the generation only ever counts up, and
+      // a config written by an older build carries none at all.
+      generation:
+        typeof rec.generation === 'number' && Number.isFinite(rec.generation) && rec.generation > 0
+          ? Math.floor(rec.generation)
+          : DEFAULT_CONFIG.generation,
     };
   } catch {
     return { ...DEFAULT_CONFIG };
@@ -308,6 +337,75 @@ export async function setDisposition(
   } catch {
     return false;
   }
+}
+
+/**
+ * START THE WORLD OVER (user ask, 2026-09-09/10: *"if we reset the url we
+ * should also reset the characters that are within that room"*, and *"let's
+ * clear out any existing characters right now so we start clean"*).
+ *
+ * Four things go, in this order, and one thing changes:
+ *
+ *   - every device claim this world's drawings hold, so the people who drew
+ *     the rehearsal creatures can draw again;
+ *   - the drawings list itself;
+ *   - the scene, because a reset world that opened onto last night's hills
+ *     would not be a clean start, it would be half of one;
+ *   - `generation` counts up, which is the part the handsets read.
+ *
+ * The claims are found BY READING THE DRAWINGS, never by scanning the
+ * keyspace. `KEYS *` on a shared Redis is a stall for every other tenant on
+ * it and, worse, a pattern one typo away from deleting a neighbouring
+ * world; the drawings already name every device this world has claimed, so
+ * there is nothing a scan would find that this does not.
+ *
+ * Never throws, and with no store configured it is a no-op that SAYS SO —
+ * the same discipline as everything else in this file. A reset that quietly
+ * did nothing is the worst possible answer to this particular question.
+ */
+export async function resetWorld(world: string): Promise<{
+  ok: boolean;
+  /** The generation the world is on AFTER this call. */
+  generation: number;
+  /** How many device claims were released. */
+  cleared: number;
+  reason?: string;
+}> {
+  const db = store();
+  const before = await readConfig(world);
+  if (!db) {
+    return {
+      ok: false,
+      generation: before.generation,
+      cleared: 0,
+      reason: 'no store configured',
+    };
+  }
+
+  let cleared = 0;
+  try {
+    const rows = await readDrawings(world);
+    const ids = [...new Set(rows.map((r) => r.id).filter((id) => id.length > 0))];
+    for (const id of ids) {
+      try {
+        await db.del(deviceKey(world, id));
+        cleared++;
+      } catch {
+        // A claim that will not release is a person who cannot draw again.
+        // Worth reporting to nobody and worth stopping for even less — the
+        // rest of the reset still has to happen.
+      }
+    }
+    await db.del(listKey(world));
+    await db.del(sceneKey(world));
+  } catch {
+    // Fall through to the bump. A half-cleared world that has stepped
+    // forward is recoverable (run it again); one that cleared and did not
+    // step forward would heal itself straight back to where it started.
+  }
+
+  const after = await writeConfig(world, { generation: before.generation + 1 });
+  return { ok: true, generation: after.generation, cleared };
 }
 
 /* ── the scene (src/session/scene.ts, docs/SESSION.md §6) ─────────────────
