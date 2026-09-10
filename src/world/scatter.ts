@@ -201,22 +201,30 @@ const SEED_PROB: Record<ScatterKind, number> = {
 
 export type PaintSeed = Partial<Record<ScatterKind, number>>;
 
+// WEIGHT 1 MEANS A CLUSTER IN EVERY CELL (2026-09-10, user report: "none of
+// the brushes work except water"). These were per-cell probabilities of
+// 0.16–0.34 at full weight over 6 u cells, and the default stroke is 3 u
+// wide: it touched one or two cells and rolled nothing most of the time.
+// Water fills, it does not roll, which is why only the pond showed. A
+// stroke must plant where it went, so full weight now all but guarantees
+// a cluster per painted cell; a lighter touch still thins toward the old
+// numbers.
 export const PAINT_SEED: Record<PlantBrush, PaintSeed> = {
   // The grass alphabet, plus the ticks that were always the ground's texture.
-  grass: { grass: 0.34, tick: 0.14 },
+  grass: { grass: 0.9, tick: 0.3 },
   // Flowers come in clusters with grass through them — a meadow, not a bed.
-  flowers: { flower: 0.3, grass: 0.08 },
+  flowers: { flower: 0.85, grass: 0.2 },
   // A stand: mostly broadleaf with conifers through it, undergrowth below,
   // and enough tick texture that the floor is not bare paper.
-  trees: { tree: 0.3, conifer: 0.16, bush: 0.07, tick: 0.06 },
+  trees: { tree: 0.7, conifer: 0.35, bush: 0.15, tick: 0.2 },
   // Stone is sparse by nature — a scree of boulders with the odd cut stump
   // and, rarely, a standing stone. Never a field of rubble.
-  rocks: { rock: 0.16, stump: 0.03, monolith: 0.018 },
+  rocks: { rock: 0.6, stump: 0.08, monolith: 0.04 },
   // 0.16 rather than the 0.22 first tried: measured in the headless shot, a
   // saturated cloud brush at 0.22 spotted the ground with more hard shadow
   // stamps than paper between them, and TASTE §2.3 wants the field to keep
   // breathing at any brush weight.
-  clouds: { cloud: 0.16 },
+  clouds: { cloud: 0.45 },
   // The mask names no kind at all: it works by suppressing the base term
   // instead (see `prob` below).
   mask: {},
