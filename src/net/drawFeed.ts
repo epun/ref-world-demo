@@ -190,14 +190,33 @@ export async function connectWorldFeed(opts: WorldFeedOptions): Promise<DrawFeed
  * offline page) is simply skipped. Recovery must never be able to throw
  * inside the code path that starts the world.
  */
-export function announceEpochRetained(feed: DrawFeed | null, epoch: string): boolean {
+export function announceEpochRetained(
+  feed: DrawFeed | null,
+  epoch: string,
+  /**
+   * How long an egg stands in this world before it opens by itself, when
+   * the world is willing to say (2026-09-10).
+   *
+   * `0` is the honest answer for a world that will NOT open one on a clock
+   * — a manual world waiting on `h`. The handset shows the egg's forecast
+   * off this number, and a countdown running down to a hatch that is not
+   * coming is the page telling somebody something untrue about their own
+   * creature; no number at all just leaves the brow empty, which is a state
+   * of that slot rather than a bug on screen (src/phone/screens/wait.ts).
+   *
+   * Omitted entirely by a world with nothing to say, so a handset that
+   * hears nothing behaves exactly as it did.
+   */
+  hatchMs?: number,
+): boolean {
   if (!feed || epoch.length === 0) return false;
   const client = feed.client as {
     publish?(topic: string, payload: string, opts: Record<string, unknown>): void;
   } | null;
   if (!client || typeof client.publish !== 'function') return false;
+  const says = typeof hatchMs === 'number' && Number.isFinite(hatchMs) && hatchMs >= 0;
   try {
-    client.publish(feed.upTopic, JSON.stringify({ type: 'world', epoch }), {
+    client.publish(feed.upTopic, JSON.stringify({ type: 'world', epoch, ...(says ? { hatchMs } : {}) }), {
       qos: 0,
       retain: true,
     });

@@ -3,6 +3,7 @@
     "meridian": {
       "host": "ref-world-meridian.vercel.app",
       "residents": "none",
+      "hatch": "manual",
       "dev": true
     }
   }

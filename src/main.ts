@@ -41,6 +41,7 @@ import {
   POSE_INTERVAL_MS,
   ROLE_SETTLE_MS,
   ROSTER_REPEAT_MS,
+  eggsOpenedByHost,
   electHost,
   makeHostId,
   packPoses,
@@ -91,6 +92,7 @@ import {
   type WorldVector,
 } from './world/joystick';
 import { residentsFrom } from './world/residents';
+import { readHatchMode } from './world/hatchmode';
 import { storeNote } from './world/storeline';
 import { start } from './world/scene';
 import { createTour } from './world/tour';
@@ -288,6 +290,34 @@ function main(): void {
   const residents = residentsFrom(
     document.querySelector<HTMLMetaElement>('meta[name="refworld:residents"]')?.content ?? null,
   );
+  /**
+   * And who opens the eggs here — the clock, or the person at the keyboard
+   * (user ask, 2026-09-10: *"in the demo let's pause the hatching until I
+   * press h on the keyboard"*).
+   *
+   * Read once, here, beside the world's own name and for the same reason:
+   * everything downstream — the manager's timer, what the roster carries,
+   * what a first pull spawns, what the handsets are told about a countdown
+   * — has to be answering the same question. `?hatch=manual|timer` on the
+   * address overrides the baked tag, for a preview or a rehearsal without a
+   * deploy. See src/world/hatchmode.ts.
+   */
+  const hatchMode = readHatchMode(
+    params.get('hatch'),
+    document.querySelector<HTMLMetaElement>('meta[name="refworld:hatch"]')?.content ?? null,
+  );
+  /**
+   * What the handsets are told about that (src/net/phoneLink.ts).
+   *
+   * The wait screen draws a countdown off a number, and a countdown that
+   * runs out while the egg sits there is the page telling somebody
+   * something untrue about their own creature. `0` says there is no clock
+   * here, and the forecast goes rather than lying.
+   *
+   * Only a named world says anything. An installation handset's flow is
+   * the one this project shipped with and is not this ask's to change.
+   */
+  const phoneHatchMs = isPublic ? (hatchMode === 'timer' ? PUBLIC_HATCH_MS : 0) : undefined;
 
   /*
    * A named world always meets in the same room; only an unnamed one mints
@@ -513,14 +543,48 @@ function main(): void {
   // and the whole clutch opens together, which is the moment everybody came
   // for. On a link there is no operator and nobody to wait for, and an egg
   // that never hatches is a person who drew something and got nothing.
+  //
+  // UNLESS the world says otherwise (user ask, 2026-09-10: *"in the demo
+  // let's pause the hatching until I press h on the keyboard"*). A world
+  // with somebody standing in front of it is a room again, link or not:
+  // `hatch: manual` in worlds.json takes the clock away and hands the
+  // moment back to the operator (src/world/hatchmode.ts).
+  /**
+   * Send one hatch to every other screen. Wired by `startWorldSync`.
+   *
+   * NOT queued while there is no socket, unlike a scene batch. A hatch is a
+   * moment: publishing a backlog of them the instant a broker came back
+   * would break a clutch of shells open at once, seconds after the room
+   * watched them open, which is a worse lie than the one it fixes. The
+   * late-joiner's copy comes from the roster's `eggs` instead — a state,
+   * which is the right shape for catching up (src/net/worldsync.ts).
+   */
+  let publishHatch: (who: string) => void = () => {};
+
   const recorder = recordCreatures(session);
   const creatures = createCreatureManager(world, {
-    autoHatch: isPublic,
+    autoHatch: isPublic && hatchMode === 'timer',
     observer: {
       ...recorder,
+      /**
+       * A shell opened HERE — and every other screen has to open it too.
+       *
+       * The one seam every hatch crosses, whichever opened it: the `h` key,
+       * `shift+h`, the panel's button, the egg's own timer. So the two
+       * things a hatch owes the rest of the world hang here rather than on
+       * each of those — the same argument as the gate's autosave.
+       *
+       * Both are the HOST's to send. A viewer only ever hatches because it
+       * was told to (see startWorldSync), and a viewer that answered back
+       * would tell the drawer's phone twice and put the hatch round the
+       * room again forever.
+       */
       hatch(id, cause) {
         recorder.hatch(id, cause);
-        feed?.publishToPhones({ type: 'hatched', to: id, epoch });
+        if (isHostNow()) {
+          feed?.publishToPhones({ type: 'hatched', to: id, epoch });
+          publishHatch(id);
+        }
         saveSession();
       },
     },
@@ -1446,7 +1510,15 @@ function main(): void {
       // there before this page opened, so it is grown like the seed. Every
       // pull after it is news: somebody drew that in the last twenty
       // seconds, and an arrival gets its egg and its hatch.
-      const added = (await absorb(log, first)).length;
+      //
+      // EXCEPT in a manual world, where nothing has hatched yet by
+      // definition (user ask, 2026-09-10). There the store's contents are
+      // eggs waiting on the operator, and standing them up grown would be
+      // this page deciding the moment `h` exists to decide — on the
+      // projection, and on every phone whose world view pulled the same
+      // list. They spawn as eggs; the host's roster then says which of them
+      // it has already opened, and this page opens exactly those.
+      const added = (await absorb(log, first && hatchMode === 'timer')).length;
       if (added > 0) saveSession();
       /*
        * NOTHING IS ANNOUNCED ON ARRIVAL (user ask, 2026-09-09).
@@ -1928,7 +2000,7 @@ function main(): void {
     // again, because a retained message lives on the broker and a new one
     // has never heard of this world.
     onStatus: (state) => {
-      if (state === 'on' && isHostNow()) announceEpochRetained(feed, epoch);
+      if (state === 'on' && isHostNow()) announceEpochRetained(feed, epoch, phoneHatchMs);
     },
     onDrawing: (d) => {
       const entry = gate.offer({ ...d, hatchMs: HATCH_TIMER_MS, source: 'phone' });
@@ -1963,7 +2035,12 @@ function main(): void {
     onHello: ({ from }) => {
       const seen = gate.log().find((e) => e.id === from);
       if (seen && seen.disposition !== 'admitted') tellPhone(from, seen);
-      else if (isHostNow()) feed?.publishToPhones({ type: 'world', epoch });
+      else if (isHostNow())
+        feed?.publishToPhones({
+          type: 'world',
+          epoch,
+          ...(phoneHatchMs === undefined ? {} : { hatchMs: phoneHatchMs }),
+        });
     },
   }).then((handle) => {
     feed = handle;
@@ -1972,7 +2049,7 @@ function main(): void {
     // that wakes an hour from now — so a phone holding a drawing from a
     // previous session re-homes it without anyone pressing anything
     // (src/phone/main.ts, docs/SESSION.md §4a).
-    if (isHostNow()) announceEpochRetained(handle, epoch);
+    if (isHostNow()) announceEpochRetained(handle, epoch, phoneHatchMs);
     startWorldSync(handle);
   });
 
@@ -2015,9 +2092,31 @@ function main(): void {
       client.publish?.(syncTopic, JSON.stringify({ ...message, id: me }), { qos: 0 });
     };
     for (const queued of sceneBacklog.splice(0)) publishScene(queued);
+    /*
+     * And the hatch gets its transport (docs/SESSION.md §6).
+     *
+     * Straight out on the same topic through the same client the poses use,
+     * because it is the same thing: the host describing its world. The
+     * manager's observer is what calls this, so no route into a hatch has
+     * to remember to broadcast one.
+     */
+    publishHatch = (who: string): void => {
+      client.publish?.(syncTopic, JSON.stringify({ t: 'hatch', id: me, who }), { qos: 0 });
+    };
     /** Every claim heard, by id. Pruned, so it cannot grow unbounded. */
     const claims = new Map<string, number>();
     let hosting = true;
+    /**
+     * Who this page currently believes is simulating.
+     *
+     * Only a hatch reads it. Poses and rosters get their "is this the host"
+     * check for free — they are handled after the claim bookkeeping and
+     * behind `if (hosting) return`, so on a viewer the loser of an election
+     * is simply the page that also stopped publishing them. A hatch is
+     * handled BEFORE that (it must not enter its sender into the election),
+     * so it has to ask the question itself.
+     */
+    let hostId = me;
     let rosterRev = 0;
     let roster: string[] = [];
     let rosterSentAt = 0;
@@ -2108,6 +2207,30 @@ function main(): void {
         return;
       }
 
+      /*
+       * A HATCH, from the page that is simulating (2026-09-10).
+       *
+       * Handled here, beside `drive` and `scene`, so hearing one never
+       * enters its sender into the election — a page that can open an egg
+       * is not thereby a candidate to simulate the world. But unlike those
+       * two it is honoured ONLY from the host: the hatch is the host's
+       * decision, and a viewer that took one from any id on the topic would
+       * hand the moment to whoever spoke last.
+       *
+       * The host itself ignores it. Its own eggs open through the manager,
+       * and a hatch coming back at the page that sent it is either an echo
+       * or another page reaching into this world's decisions.
+       *
+       * `creatures.hatch(who)` is the manager's ordinary forced hatch — the
+       * same staggered sequence, the same shell, the same recorded event.
+       * Nothing about a viewer's hatch is a different animation.
+       */
+      if (msg.t === 'hatch') {
+        if (hosting || msg.id !== hostId) return;
+        creatures.hatch(msg.who);
+        return;
+      }
+
       // Anything else is the host describing the world. Hearing it is also
       // proof that page is alive, so it counts as a claim — otherwise a
       // host that is busy publishing poses could be voted out for not
@@ -2120,6 +2243,25 @@ function main(): void {
 
       if (msg.t === 'roster') {
         knownRosters.set(msg.rev, msg.ids);
+        /*
+         * Agree with the host about the eggs, too (2026-09-10).
+         *
+         * A `hatch` travels once, at qos 0, and a page that opened after it
+         * never heard it at all. Without this a viewer holds an egg for a
+         * creature the rest of the room is watching walk about — and in a
+         * manual world, where the first pull spawns everything as eggs,
+         * that is every late joiner's whole screen.
+         *
+         * State rather than a replayed moment: the roster already says
+         * which ids are alive and now says which are still eggs, so a
+         * viewer only has to open the ones the host has already opened.
+         * Anything the host still calls an egg stays an egg — including in
+         * a timer world, where this simply makes a viewer's clock agree
+         * with the host's instead of running beside it.
+         */
+        for (const id of eggsOpenedByHost(creatures.eggIds(), msg.ids, msg.eggs)) {
+          creatures.hatch(id);
+        }
         // Two is enough to cover a pose frame that crosses a roster change.
         if (knownRosters.size > 2) {
           const oldest = Math.min(...knownRosters.keys());
@@ -2148,7 +2290,8 @@ function main(): void {
     const settleRole = (): void => {
       const now = Date.now();
       pruneClaims(claims, now);
-      const shouldHost = electHost(me, claims, now) === me;
+      hostId = electHost(me, claims, now);
+      const shouldHost = hostId === me;
       if (shouldHost === hosting) return;
       hosting = shouldHost;
       // A viewer runs no agents: its creatures are placed by the host's
@@ -2189,7 +2332,18 @@ function main(): void {
         rosterSentAt = now;
         client.publish?.(
           syncTopic,
-          JSON.stringify({ t: 'roster', id: me, rev: rosterRev, ids: roster }),
+          // The standing eggs ride with it: a viewer that missed a `hatch`
+          // — or was not open when it went past — reconciles against this
+          // rather than waiting for a moment that has already happened.
+          // Always sent, empty included: absent means "this host does not
+          // talk about eggs" and a viewer changes nothing on it.
+          JSON.stringify({
+            t: 'roster',
+            id: me,
+            rev: rosterRev,
+            ids: roster,
+            eggs: creatures.eggIds(),
+          }),
           { qos: 0 },
         );
       }

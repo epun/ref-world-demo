@@ -48,6 +48,27 @@ export function sanitizeResidents(raw) {
 }
 
 /**
+ * Who opens the eggs in this world?
+ *
+ * `timer` is what a public link has always done: nobody is standing there,
+ * so an egg that never hatched would be a person who drew something and got
+ * nothing back. `manual` is a world with an OPERATOR in front of it — the
+ * demo (user ask, 2026-09-10: *"in the demo let's pause the hatching until
+ * I press h on the keyboard"*). Nothing hatches until somebody presses `h`,
+ * and every screen in the room opens together when they do.
+ */
+export const HATCH_MODES = ['timer', 'manual'];
+
+/**
+ * Only the exact word pauses a world's hatching, for the same reason a typo
+ * cannot empty one: the failure of a misread `manual` is a room of eggs that
+ * never open and an operator with no idea why.
+ */
+export function sanitizeHatch(raw) {
+  return String(raw ?? '').trim().toLowerCase() === 'manual' ? 'manual' : 'timer';
+}
+
+/**
  * The same rule the app sanitises with (docs/PUBLIC.md §urls, and
  * sanitizeWorld in src/main.ts): lowercase letters, digits and hyphens, up
  * to 24 characters. Anything else is stripped rather than refused, so a
@@ -84,6 +105,7 @@ export function readWorlds(file) {
       {
         host: normalizeHost(config?.host),
         residents: sanitizeResidents(config?.residents),
+        hatch: sanitizeHatch(config?.hatch),
         // Does this world's deployment keep the dev surface (the ghost panel
         // and everything behind __IS_DEV__)? Off unless the file says exactly
         // `true`: a client's world is a place people visit, not a workbench,
@@ -122,7 +144,13 @@ export function resolveWorld(env = {}, worlds = {}) {
     productionHost ||
     configured?.host ||
     `ref-world-${name}.vercel.app`;
-  return { name, host, residents: configured?.residents ?? 'shipped', dev: configured?.dev === true };
+  return {
+    name,
+    host,
+    residents: configured?.residents ?? 'shipped',
+    hatch: configured?.hatch ?? 'timer',
+    dev: configured?.dev === true,
+  };
 }
 
 // ── the html transform ───────────────────────────────────────────────────────
@@ -146,8 +174,9 @@ function setMeta(html, attr, key, value) {
  * stays the public frame — it is a real render by the same pipeline, so it
  * is a true picture of what happens in any of these worlds.
  *
- * The residents tag is written ONLY for a world that wants none, so the
- * public html keeps not mentioning a setting it does not have.
+ * The residents tag is written ONLY for a world that wants none, and the
+ * hatch tag ONLY for a world that waits for an operator, so the public html
+ * keeps not mentioning settings it does not have.
  *
  * All lowercase, like every other piece of type here (TASTE §5).
  */
@@ -156,6 +185,7 @@ export function applyWorldToHtml(html, world) {
   const { name, host } = world;
   const description = `a world for ${name}. draw a creature on your phone and it hatches somewhere everyone can see.`;
   const clean = sanitizeResidents(world.residents) === 'none';
+  const manual = sanitizeHatch(world.hatch) === 'manual';
 
   let out = html.replace(
     /([ \t]*)<title>[\s\S]*?<\/title>/i,
@@ -163,6 +193,7 @@ export function applyWorldToHtml(html, world) {
       `${indent}<!-- injected at build time by scripts/world-build.mjs — this deployment's world -->\n` +
       `${indent}<meta name="refworld:world" content="${escapeAttr(name)}" />\n` +
       (clean ? `${indent}<meta name="refworld:residents" content="none" />\n` : '') +
+      (manual ? `${indent}<meta name="refworld:hatch" content="manual" />\n` : '') +
       `${indent}<title>ref world · ${name}</title>`,
   );
   out = setMeta(out, 'property', 'og:title', name);

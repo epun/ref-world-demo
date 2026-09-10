@@ -19,6 +19,15 @@ One page. Read it before the demo, not during.
 ## during
 
 - `h` hatches every waiting egg, staggered.
+- **In a manual world nothing hatches until you press it** (`hatch: manual` in
+  worlds.json — meridian is one). Eggs arrive and stand there, on the
+  projection and on every phone looking at the world, until `h`. The press
+  travels: each phone's world view is its own copy of this page, so the hatch
+  goes out over the world sync topic and every screen opens the same shell at
+  the same moment. A phone that joins after a hatch catches up on the next
+  roster, two seconds at the outside — nobody has to press anything twice.
+  A world on `hatch: timer` (the default, and the public link) is unchanged:
+  eggs open on their own seven seconds in, and `h` still opens them early.
 - `shift+R` is recovery (below). It always reports on screen.
 - `t` toggles the camera tour. `d` opens the local draw overlay.
 - `shift+d` is the ghost panel. It has the moderation list, the session
