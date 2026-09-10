@@ -4,8 +4,13 @@ One page. Read it before the demo, not during.
 
 ## before people arrive
 
-1. Open the world on the projection machine. Note the room code in the corner —
-   it is lowercase, always, and it is what the QR encodes.
+1. Open the world on the projection machine, as `?host=1` (see *sculpting
+   live* — `?mod=` alone now does the same thing). Note the room code in the
+   corner — it is lowercase, always, and it is what the QR encodes.
+   That is what makes this screen the one simulating the room. A page holding
+   the moderator secret or running a dev build takes the same pinned id, and a
+   phone's world view now takes one that sorts LAST, so a handset only ever
+   hosts when it is alone on the link.
 2. Press `h` once with no eggs present. Nothing should happen. That is the check
    that the manual hatch is wired; eggs do **not** hatch on a timer any more
    (`AUTO_HATCH = false`), so `h` is the only thing that opens them.
@@ -42,6 +47,12 @@ One page. Read it before the demo, not during.
   roster, two seconds at the outside — nobody has to press anything twice.
   A world on `hatch: timer` (the default, and the public link) is unchanged:
   eggs open on their own seven seconds in, and `h` still opens them early.
+  `h` works from **any** screen on the link, including a projection that is
+  not the one simulating: the press goes out as a request and the page that
+  is simulating opens the eggs for everybody. It used to open only the eggs
+  on the screen you pressed it on, which in a room of phones meant every
+  handset kept a shell — **and an egg cannot be steered**, which is what the
+  joysticks doing nothing turned out to be (2026-09-10).
 - `shift+R` is recovery (below). It always reports on screen.
 - `t` toggles the camera tour. `d` opens the local draw overlay.
 - `shift+d` is the ghost panel. It has the moderation list, the session
