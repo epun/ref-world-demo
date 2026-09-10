@@ -28,7 +28,9 @@
  * when a projection happens to be running, is a dead link at three in the
  * morning. A projection can still be pinned as host with `?host=1`: it
  * takes an id beginning with '!', which sorts below every generated one,
- * so it wins the same election without a special case anywhere.
+ * so it wins the same election without a special case anywhere. A HANDSET
+ * takes one beginning with '~', which sorts above every generated one, so
+ * it hosts only when there is nothing else on the link (see `HostRole`).
  *
  * ── what ─────────────────────────────────────────────────────────────────
  * Positions, quantized, on a roster of ids sent separately. Ids are much
@@ -132,6 +134,32 @@ export interface HatchMessage {
   who: string;
 }
 
+/**
+ * OPEN THEM ALL — asked by a page that is not the one simulating
+ * (user report, 2026-09-10: *"we have a bug where people can't move around
+ * the map"*).
+ *
+ * `h` and `shift+h` are the operator's keys, and in a manual world they are
+ * the only thing that turns a clutch of eggs into a cast that can be
+ * steered. But the press only ever opened THIS page's eggs, and `hatch`
+ * travels one way — down, from the host. So an operator whose projection
+ * had lost the election (see `HostRole`) pressed `h`, watched its own eggs
+ * open, and every handset in the room kept a shell: an egg has no character
+ * to drive, so `drive` returned false on all of them and nobody could move.
+ *
+ * This is the press travelling UP, like `drive` and for the same reason: it
+ * is a request, not a decision. The host receives it and calls its own
+ * `hatchAll()`, which broadcasts the hatches back down the way every other
+ * hatch already goes. NOT a host claim — asking for the eggs to open is not
+ * a bid to simulate the world — and it carries no `who`, because it is the
+ * whole clutch or nothing, exactly as the key has always meant.
+ */
+export interface HatchAllMessage {
+  t: 'hatchall';
+  /** The page that asked. */
+  id: string;
+}
+
 /** One frame of the world, packed. */
 export interface PoseMessage {
   t: 'poses';
@@ -209,7 +237,8 @@ export type WorldSyncMessage =
   | PoseMessage
   | DriveMessage
   | SceneMessage
-  | HatchMessage;
+  | HatchMessage
+  | HatchAllMessage;
 
 /**
  * How often a held stick repeats its intent.
@@ -243,20 +272,62 @@ export interface Pose {
 }
 
 /**
+ * What kind of page is asking for an id — which is the whole election.
+ *
+ * `forced` is the OPERATOR'S page: pinned with `?host=1`, holding the
+ * moderator secret, or running the dev surface. It is the projection in
+ * front of the room, and the room's world is its to simulate.
+ *
+ * `page` is any other browser on the link — a laptop, a second projection,
+ * somebody's desktop. The ordinary candidate.
+ *
+ * `phone` is a HANDSET looking at the world it drew into. It is a candidate
+ * of last resort: it goes to sleep in a pocket, it walks out of the room,
+ * and its battery saver throttles the timers the whole simulation runs on.
+ * A phone hosting a room of phones is how a projection ends up a viewer —
+ * and then `h` on the projection opens only its own eggs, every handset
+ * keeps a shell it cannot steer, and the room reports that nobody can move
+ * (user report, 2026-09-10).
+ */
+export type HostRole = 'forced' | 'page' | 'phone';
+
+/** The character each role's id is prefixed with, chosen for how it SORTS. */
+const ROLE_PREFIX: Record<HostRole, string> = {
+  // '!' is below every digit and letter.
+  forced: '!',
+  page: '',
+  // '~' is above every digit and letter — 126, past 'z' at 122.
+  phone: '~',
+};
+
+/**
  * A page's own id.
  *
- * A forced host takes an id beginning with '!', which sorts below every
- * digit and letter — so "the smallest live id wins" already prefers it and
- * the election needs no notion of forcing at all.
+ * The role is carried in the id's FIRST CHARACTER and nowhere else, so
+ * "the smallest live id wins" already ranks operator over page over phone
+ * and the election needs no notion of any of them. A phone still wins when
+ * it is the only page on the link — its id is the smallest one there is —
+ * which is what keeps a handset's world alive when nothing else is open.
+ *
+ * `boolean` is still accepted for the old two-way call: true is `forced`.
  */
-export function makeHostId(forced: boolean, random: () => number = Math.random): string {
+export function makeHostId(
+  role: HostRole | boolean,
+  random: () => number = Math.random,
+): string {
+  const kind: HostRole = role === true ? 'forced' : role === false ? 'page' : role;
   const body = random().toString(36).slice(2, 10).padEnd(8, '0');
-  return forced ? `!${body}` : body;
+  return `${ROLE_PREFIX[kind]}${body}`;
 }
 
-/** Is an id one that was pinned with `?host=1`? */
+/** Is an id one that was pinned with `?host=1` (or holds the secret)? */
 export function isForcedId(id: string): boolean {
-  return id.startsWith('!');
+  return id.startsWith(ROLE_PREFIX.forced);
+}
+
+/** Is an id a handset's — the candidate of last resort? */
+export function isPhoneId(id: string): boolean {
+  return id.startsWith(ROLE_PREFIX.phone);
 }
 
 /**
@@ -386,6 +457,12 @@ export function readWorldSyncMessage(value: unknown): WorldSyncMessage | null {
   }
   if (rec['t'] === 'hatch' && typeof rec['who'] === 'string' && rec['who']) {
     return { t: 'hatch', id, who: rec['who'] };
+  }
+  // The whole clutch, asked for from somewhere else. Nothing to validate
+  // past the sender's id: it carries no creature and no number, which is
+  // the point — it is the operator's key, not a list of shells.
+  if (rec['t'] === 'hatchall') {
+    return { t: 'hatchall', id };
   }
   if (rec['t'] === 'drive' && typeof rec['who'] === 'string' && rec['who']) {
     const x = rec['x'];

@@ -43,6 +43,7 @@ import {
   ROSTER_REPEAT_MS,
   eggsOpenedByHost,
   electHost,
+  type HostRole,
   makeHostId,
   packPoses,
   pruneClaims,
@@ -589,6 +590,15 @@ function main(): void {
    */
   let publishHatch: (who: string) => void = () => {};
 
+  /**
+   * Ask whoever IS simulating to open every egg. Wired by `startWorldSync`.
+   *
+   * Returns false when there is nobody to ask — an installation room, or a
+   * page whose sync never came up — and the caller opens its own eggs
+   * instead. See `hatchAllNow` below and `HatchAllMessage`.
+   */
+  let publishHatchAll: () => boolean = () => false;
+
   const recorder = recordCreatures(session);
   const creatures = createCreatureManager(world, {
     autoHatch: isPublic && hatchMode === 'timer',
@@ -675,6 +685,27 @@ function main(): void {
     const push = vec && vec.mag > 0 ? vec : null;
     creatures.drive(id, push);
     session.drive(id, push);
+  };
+
+  /**
+   * `h` — open every egg in the WORLD, not merely on this screen
+   * (user report, 2026-09-10: *"we have a bug where people can't move around
+   * the map"*).
+   *
+   * In a manual world the eggs are the whole cast, and an egg cannot be
+   * driven: `creatures.drive` refuses anything that is not `alive`, so a
+   * room of unhatched shells is a room where every joystick does nothing.
+   * The press therefore has to reach the page that simulates, whichever
+   * page that is.
+   *
+   * On the HOST, straight to the manager — the hatches it makes are already
+   * broadcast to every screen through the observer. On a viewer it goes out
+   * as a request and comes back as the ordinary hatches, so there is still
+   * exactly one page deciding. Only if there is nobody to ask does this page
+   * open its own, which is the installation room and the offline rehearsal.
+   */
+  const hatchAllNow = (): void => {
+    if (isHostNow() || !publishHatchAll()) creatures.hatchAll();
   };
 
   // ── replay (src/session/replay.ts) ────────────────────────────────────────
@@ -2053,6 +2084,44 @@ function main(): void {
    */
   let isHostNow = (): boolean => true;
   /**
+   * This handset's stick, going out to whoever is simulating. Wired by
+   * `startWorldSync`; a no-op until then and on a page that never gets a
+   * socket at all.
+   */
+  let publishDrive: (v: WorldVector) => void = () => {};
+
+  /*
+   * THE STICK'S OWN LOOP, and it lives OUT HERE (user report, 2026-09-10).
+   *
+   * It used to be installed inside `startWorldSync`, which returns early on
+   * an installation room and on any page whose feed or mqtt client did not
+   * come up. On every one of those pages the joystick painted, moved under
+   * the thumb, resumed the follow camera — and drove nothing whatsoever,
+   * because the only code that ever read it had never been installed. A
+   * control that is visible and inert is the worst version of this bug:
+   * there is nothing on screen to tell the person it is not connected.
+   *
+   * So the loop is unconditional and the ROLE decides where the intent
+   * goes. On the page that simulates it is applied directly, because there
+   * is nobody to ask; everywhere else it is published. Both branches are
+   * the same read of the same stick.
+   *
+   * On a timer rather than on every pointermove: a thumb generates events
+   * at the display's rate and most of them say almost the same thing, which
+   * is a lot of packets for a public broker to carry in order to keep
+   * saying "still pushing left".
+   *
+   * Not armed at all without a stick, which is every projection and every
+   * desktop that opened the link.
+   */
+  if (stick && myDrawerId.length > 0) {
+    window.setInterval(() => {
+      const v = worldDrive();
+      if (isHostNow()) applyDrive(myDrawerId, v);
+      else publishDrive(v);
+    }, DRIVE_INTERVAL_MS);
+  }
+  /**
    * The phone's transport, on the world page.
    *
    * Only on a handset, and only for one thing: a person looking at the
@@ -2196,7 +2265,41 @@ function main(): void {
     if (!client?.publish || !client.subscribe || !client.on) return;
 
     const syncTopic = `${handle.topic}/world`;
-    const me = makeHostId(params.get('host') === '1');
+    /*
+     * WHICH KIND OF PAGE IS THIS? (user report, 2026-09-10)
+     *
+     * The election is "smallest live id wins" and nothing else, so the only
+     * place a page's standing can be expressed is in the id it takes
+     * (src/net/worldsync.ts, `HostRole`). Three kinds, in the order they
+     * should win:
+     *
+     *   forced — the OPERATOR'S page. `?host=1` said so, or it is holding
+     *     the moderator secret this room's world is sculpted with, or it is
+     *     the dev build with the ghost panel on it. All three mean the same
+     *     thing: somebody is standing in front of this screen, and in a
+     *     manual world they are the only person who can open the eggs. A
+     *     projection that lost the election hatched only its own clutch and
+     *     left every handset holding a shell it could not steer — which is
+     *     the report this is fixing.
+     *
+     *   page — anybody else's browser.
+     *
+     *   phone — a handset looking at the world. Last, always: it sleeps in
+     *     a pocket, it leaves the room, and its throttled timers are the
+     *     simulation everybody else would be watching. It still hosts when
+     *     it is alone on the link, because then its id is the smallest one
+     *     there is.
+     *
+     * A handset is a phone whichever of the other two it could also claim —
+     * a dev build on a phone is still a phone.
+     */
+    const hostRole: HostRole =
+      handheld || myDrawerId.length > 0
+        ? 'phone'
+        : params.get('host') === '1' || moderatorSecret.length > 0 || __IS_DEV__
+          ? 'forced'
+          : 'page';
+    const me = makeHostId(hostRole);
     /*
      * The scene layer gets its transport (docs/SESSION.md §6).
      *
@@ -2220,6 +2323,18 @@ function main(): void {
      */
     publishHatch = (who: string): void => {
       client.publish?.(syncTopic, JSON.stringify({ t: 'hatch', id: me, who }), { qos: 0 });
+    };
+    /*
+     * And the ASK for a hatch travels the other way (`HatchAllMessage`).
+     *
+     * The mirror of `publishHatch`: that one is the host telling the room a
+     * shell came off, this one is any other page asking the host to take
+     * them off. Returns true only because it went out — the caller falls
+     * back to opening its own eggs when there is nobody listening.
+     */
+    publishHatchAll = (): boolean => {
+      client.publish?.(syncTopic, JSON.stringify({ t: 'hatchall', id: me }), { qos: 0 });
+      return true;
     };
     /** Every claim heard, by id. Pruned, so it cannot grow unbounded. */
     const claims = new Map<string, number>();
@@ -2306,6 +2421,33 @@ function main(): void {
         // APPLIED — on the one page that simulates — rather than on each
         // viewer that happens to overhear the packet.
         applyDrive(msg.who, { x: msg.x, z: msg.z, mag: msg.mag });
+        return;
+      }
+
+      /*
+       * SOMEBODY PRESSED `h` ON ANOTHER SCREEN (2026-09-10).
+       *
+       * Handled here beside `drive`, and for the identical reason: it
+       * travels UP, so hearing it must not enter its sender into the
+       * election — a page asking for the eggs to open is not bidding to
+       * simulate the world.
+       *
+       * Only the page that simulates acts on it, and it acts through the
+       * ordinary `hatchAll()`: the same staggered sequence, the same
+       * recorded `forced` hatches, and the same `hatch` messages back down
+       * to every screen. A viewer that opened its own eggs on hearing this
+       * would be a second page deciding, and the roster's `eggs` would
+       * disagree with it within two seconds.
+       *
+       * Deliberately UNAUTHENTICATED, like a drive: anyone on the room's
+       * topic can ask. The worst it can do is open eggs that were going to
+       * open — the projection's own key does exactly this — and gating it
+       * would mean a projection that lost the election could not ask for
+       * the one thing it exists to do.
+       */
+      if (msg.t === 'hatchall') {
+        if (!hosting) return;
+        creatures.hatchAll();
         return;
       }
 
@@ -2498,30 +2640,21 @@ function main(): void {
     }, DRIVE_STALE_MS);
 
     /*
-     * This handset's own stick, going out.
+     * The transport for this handset's own stick.
      *
-     * On a timer rather than on every pointermove: a thumb generates
-     * events at the display's rate and most of them say almost the same
-     * thing, which is a lot of packets for a public broker to carry in
-     * order to keep saying "still pushing left".
+     * The stick's LOOP is not here — it reads the thumb whether or not a
+     * socket ever came up, and hands the intent to whichever of these two
+     * the page's role calls for (see `publishDrive` above). This is only
+     * the publishing half: everything the loop does on a viewer.
      *
-     * A HOST sends nothing and applies its own stick directly — there is
-     * nobody to ask. Everyone else publishes, including the frame that
-     * says the stick is back at rest, which is what normally ends a drive.
-     * The expiry above is only the backstop for when that packet is lost.
-     *
-     * Not armed at all without a stick, which is every projection and
-     * every desktop that opened the link.
+     * Every frame goes out, including the one that says the stick is back
+     * at rest, which is what normally ends a drive. The expiry above is
+     * only the backstop for when that packet is lost.
      */
-    if (stick && myDrawerId.length > 0) {
+    if (myDrawerId.length > 0) {
       let lastDriveSent = 0;
       let lastDriveMag = 0;
-      window.setInterval(() => {
-        const v = worldDrive();
-        if (hosting) {
-          applyDrive(myDrawerId, v);
-          return;
-        }
+      publishDrive = (v: WorldVector): void => {
         const now = Date.now();
         const holding = v.mag > 0;
         // Repeat while held, so the host's expiry never fires under a live
@@ -2542,7 +2675,7 @@ function main(): void {
           }),
           { qos: 0 },
         );
-      }, DRIVE_INTERVAL_MS);
+      };
     }
 
     // Only the host speaks to the handsets. Every open viewer used to, so
@@ -2608,7 +2741,7 @@ function main(): void {
       (event.key === 'H' || event.key === 'h') &&
       !overlayOpen
     ) {
-      tour.hatchAllMoment(() => creatures.hatchAll());
+      tour.hatchAllMoment(() => hatchAllNow());
       return;
     }
     // shift+R — rebuild the population after the projection was refreshed.
@@ -2665,9 +2798,10 @@ function main(): void {
       tour.setMode(tour.mode() === 'tour' ? 'manual' : 'tour');
       return;
     }
-    // Manual hatch — every ready egg, identical sequence to the timer.
+    // Manual hatch — every ready egg, identical sequence to the timer, and
+    // on every screen rather than only this one (see `hatchAllNow`).
     if (event.key === 'h' && !overlayOpen) {
-      creatures.hatchAll();
+      hatchAllNow();
     }
     // Dev emote keys on the most recent character (PLAN §6.3).
     if (!overlayOpen && event.key >= '1' && event.key <= '7') {

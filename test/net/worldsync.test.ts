@@ -19,6 +19,7 @@ import {
   electHost,
   followFraction,
   isForcedId,
+  isPhoneId,
   makeHostId,
   packPoses,
   pruneClaims,
@@ -62,6 +63,45 @@ describe('who simulates', () => {
     expect(isForcedId(normal)).toBe(false);
     expect(forced < normal).toBe(true);
     expect(electHost(normal, new Map([[forced, 5000]]), 5000)).toBe(forced);
+  });
+
+  it('a handset is the candidate of last resort', () => {
+    // The bug this ranking exists for (user report, 2026-09-10): a phone
+    // won the election, the projection became a viewer, and `h` on the
+    // projection opened only its own eggs — so every handset in the room
+    // held a shell, and an egg cannot be driven. Ranked by the id's first
+    // character and nothing else, so the election itself is untouched.
+    const forced = makeHostId('forced', () => 0.99);
+    const page = makeHostId('page', () => 0.5);
+    const phone = makeHostId('phone', () => 0.01);
+
+    expect(isForcedId(forced)).toBe(true);
+    expect(isPhoneId(phone)).toBe(true);
+    expect(isForcedId(phone)).toBe(false);
+    expect(isPhoneId(page)).toBe(false);
+
+    // Operator below page below phone, whatever the random body says — the
+    // phone here drew the SMALLEST body of the three on purpose.
+    expect(forced < page).toBe(true);
+    expect(page < phone).toBe(true);
+
+    const now = 5000;
+    // All three on the link: the operator's projection simulates.
+    const all = new Map([[forced, now], [page, now], [phone, now]]);
+    for (const me of [forced, page, phone]) {
+      expect(electHost(me, all, now)).toBe(forced);
+    }
+    // The projection goes away and the laptop takes it, not the phone.
+    expect(electHost(phone, new Map([[page, now]]), now)).toBe(page);
+    // ...and a phone alone on the link still hosts its own world, because
+    // its id is then the smallest one there is.
+    expect(electHost(phone, new Map(), now)).toBe(phone);
+  });
+
+  it('the old boolean call still means forced or not', () => {
+    expect(isForcedId(makeHostId(true, () => 0.5))).toBe(true);
+    expect(isForcedId(makeHostId(false, () => 0.5))).toBe(false);
+    expect(isPhoneId(makeHostId(false, () => 0.5))).toBe(false);
   });
 
   it('forgets pages that are long gone', () => {
@@ -119,6 +159,7 @@ describe('reading what arrived', () => {
     expect(readWorldSyncMessage({ t: 'roster', id: 'a', rev: 2, ids: ['x'] })?.t).toBe('roster');
     expect(readWorldSyncMessage({ t: 'poses', id: 'a', rev: 2, p: [1, 2, 3] })?.t).toBe('poses');
     expect(readWorldSyncMessage({ t: 'hatch', id: 'a', who: 'x' })?.t).toBe('hatch');
+    expect(readWorldSyncMessage({ t: 'hatchall', id: 'a' })?.t).toBe('hatchall');
   });
 
   it('rejects anything else, including half-right payloads', () => {
@@ -431,5 +472,34 @@ describe('the drive message — a viewer asking, not telling', () => {
     expect(
       readWorldSyncMessage({ t: 'drive', id: 'page1', who: '', x: 0, z: 1, mag: 1 }),
     ).toBeNull();
+  });
+});
+
+describe('the hatchall ask — `h` on a screen that is not the host', () => {
+  it('reads one, carrying only who asked', () => {
+    // No `who`: it is the whole clutch or nothing, which is what the key
+    // has always meant. Nothing else to validate — and nothing else to get
+    // wrong on a laggy broker.
+    expect(readWorldSyncMessage({ t: 'hatchall', id: 'projector' })).toEqual({
+      t: 'hatchall',
+      id: 'projector',
+    });
+  });
+
+  it('ignores fields it does not have, rather than refusing the ask', () => {
+    // A future sender may say more; an operator pressing `h` in front of a
+    // room must not be defeated by a field this build never heard of.
+    expect(readWorldSyncMessage({ t: 'hatchall', id: 'a', who: 'x', at: 3 })).toEqual({
+      t: 'hatchall',
+      id: 'a',
+    });
+  });
+
+  it('still needs a sender', () => {
+    // The same door every message goes through: an id-less payload is
+    // anonymous traffic on a public topic.
+    expect(readWorldSyncMessage({ t: 'hatchall' })).toBeNull();
+    expect(readWorldSyncMessage({ t: 'hatchall', id: '' })).toBeNull();
+    expect(readWorldSyncMessage({ t: 'hatchAll', id: 'a' })).toBeNull();
   });
 });
