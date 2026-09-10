@@ -233,8 +233,17 @@ export interface PlayHatchOptions {
 }
 
 export interface WaitScreenHandle extends Screen {
-  /** Re-arm the hatch deadline from a fresh StateMsg. */
-  setHatchIn(ms: number): void;
+  /**
+   * Re-arm the hatch deadline from a fresh StateMsg — or take it away.
+   *
+   * `null` is a world that will not open this egg on a clock (a manual
+   * world, waiting on the operator — docs/PUBLIC.md §the hatch key). The
+   * forecast goes rather than freezing: the shell keeps its ambient life
+   * and the brow simply says nothing, which is a state of that slot. A
+   * countdown left running toward a hatch nobody has called would be the
+   * one thing on this screen that was not true.
+   */
+  setHatchIn(ms: number | null): void;
   /**
    * Break the egg open in THIS scene and stand the creature up in it.
    * Resolves when the sequence has played (or at once when there is nothing
@@ -610,8 +619,16 @@ export function mountWaitScreen(
   if (!document.hidden) start();
 
   return {
-    setHatchIn(ms: number): void {
+    setHatchIn(ms: number | null): void {
       if (phase !== 'egg') return; // the shell is already coming off
+      if (ms === null) {
+        // Nobody is counting. The progress the shell reads goes back to
+        // zero with it (hatchProgress returns 0 for a null deadline), so
+        // the wobble eases off rather than stopping where it was.
+        deadline = null;
+        initialMs = null;
+        return;
+      }
       deadline = performance.now() + ms;
       if (initialMs === null || ms > initialMs) initialMs = ms;
       // The world re-armed the timer: arm the deadline again too.

@@ -527,6 +527,19 @@ export interface CreatureManager {
   evictable(): { id: string; order: number; resident: boolean; phase: string }[];
   /** Live creature ids, in a stable order — the roster a host publishes. */
   liveIds(): string[];
+  /**
+   * Ids still standing as eggs — nothing opened, nothing opening.
+   *
+   * The host puts these on its roster so a viewer can tell an egg that is
+   * WAITING from one whose shell it missed the news about
+   * (`eggsOpenedByHost` in src/net/worldsync.ts). A slot already breaking
+   * open is not here: it is on its way to alive and there is nothing left
+   * for anyone to decide about it.
+   *
+   * A plain read of the map, in spawn order, allocating one array — cheap
+   * enough to call on every roster tick.
+   */
+  eggIds(): string[];
   /** Every live creature's place, for a host to publish. */
   poses(): { id: string; x: number; z: number; heading: number }[];
   /** Wander speed multiplier (demo panel tuning). 1 = spec speed. */
@@ -1510,6 +1523,14 @@ export function createCreatureManager(
       const out: string[] = [];
       for (const slot of slots.values()) {
         if (slot.phase === 'alive' && slot.characterRoot) out.push(slot.id);
+      }
+      return out;
+    },
+
+    eggIds(): string[] {
+      const out: string[] = [];
+      for (const slot of slots.values()) {
+        if (slot.phase === 'egg' && !slot.hatch) out.push(slot.id);
       }
       return out;
     },

@@ -408,6 +408,15 @@ would put hundreds of packets a second onto a free public broker — the same
 mistake the recorder refuses to make when it records, one layer out. A
 `pagehide` flushes, so the stroke somebody was in the middle of still lands.
 
+The **hatch** rides the same topic (2026-09-10): in a manual world the host
+publishes `{ "t": "hatch", "id": "<page>", "who": "<creature>" }` as each
+shell opens and every viewer plays the same sequence, and the roster it
+already repeats carries `eggs` — the ids still standing as eggs on the host
+— so a screen that joined after the moment reconciles against a state
+instead of waiting for a moment that has gone. Like `drive` it is not a host
+claim; unlike `scene` it is honoured only FROM the host, because the hatch is
+the host's decision (docs/PUBLIC.md §the map, `hatch`).
+
 ### in the store
 
 `refworld:<world>:scene`, a list, oldest first, behind `/api/scene`

@@ -22,7 +22,12 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import { announceEpochRetained, normalizeDrawing } from '../../src/net/drawFeed';
-import { createPhoneLink, readRecall, readWorldEpoch } from '../../src/net/phoneLink';
+import {
+  createPhoneLink,
+  readRecall,
+  readWorldEpoch,
+  readWorldHatchMs,
+} from '../../src/net/phoneLink';
 import { isStale, type Submission } from '../../src/phone/identity';
 
 /** A stroke in the kit's wire shape, as a handset stores it. */
@@ -86,6 +91,50 @@ describe('the world announces which session it is', () => {
     const { sent, feed } = fakeFeed();
     expect(announceEpochRetained(feed, '')).toBe(false);
     expect(sent).toHaveLength(0);
+  });
+
+  /**
+   * And what it does about eggs (user ask, 2026-09-10: *"in the demo let's
+   * pause the hatching until I press h on the keyboard"*).
+   *
+   * The handset draws the egg's forecast off a number the world gives it.
+   * In a manual world the honest number is zero — nothing here opens on a
+   * clock — and a countdown running down to a hatch that is not coming is
+   * the page telling somebody something untrue about their own creature.
+   */
+  it('carries the egg delay when the world has one to say', () => {
+    const { sent, feed } = fakeFeed();
+    expect(announceEpochRetained(feed, 'newworld', 7000)).toBe(true);
+    expect(JSON.parse(sent[0]!.payload)).toEqual({
+      type: 'world',
+      epoch: 'newworld',
+      hatchMs: 7000,
+    });
+    expect(readWorldHatchMs(JSON.parse(sent[0]!.payload))).toBe(7000);
+  });
+
+  it('carries a zero, which is the manual world saying there is no clock', () => {
+    // the value that matters most, and the one a truthy check would eat.
+    const { sent, feed } = fakeFeed();
+    announceEpochRetained(feed, 'newworld', 0);
+    expect(JSON.parse(sent[0]!.payload)['hatchMs']).toBe(0);
+    expect(readWorldHatchMs(JSON.parse(sent[0]!.payload))).toBe(0);
+  });
+
+  it('leaves the field off entirely when the world says nothing', () => {
+    // a handset that hears nothing behaves exactly as it always did.
+    const { sent, feed } = fakeFeed();
+    announceEpochRetained(feed, 'newworld');
+    expect(JSON.parse(sent[0]!.payload)).toEqual({ type: 'world', epoch: 'newworld' });
+    expect(readWorldHatchMs(JSON.parse(sent[0]!.payload))).toBeNull();
+  });
+
+  it('reads a delay only off a world message, and only a real one', () => {
+    expect(readWorldHatchMs({ type: 'verdict', to: 'a', disposition: 'admitted', hatchMs: 5 })).toBeNull();
+    expect(readWorldHatchMs({ type: 'world', epoch: 'w', hatchMs: '7000' })).toBeNull();
+    expect(readWorldHatchMs({ type: 'world', epoch: 'w', hatchMs: -1 })).toBeNull();
+    expect(readWorldHatchMs({ type: 'world', epoch: 'w', hatchMs: Number.NaN })).toBeNull();
+    expect(readWorldHatchMs(null)).toBeNull();
   });
 });
 
