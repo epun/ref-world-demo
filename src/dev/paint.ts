@@ -25,8 +25,9 @@
  *
  * HOW A WATER STROKE FLOWS, and why it ends somewhere else than a height
  * one. The pond tool writes an absolute surface LEVEL into a second layer
- * whose buffer is `PaintedMap.water`, exactly as the height tools write the
- * first. That layer is a field of numbers and nothing more: what it MEANS —
+ * whose buffer is `PaintedMap.water`, exactly as the sculpt tool writes the
+ * first (and the eraser, or shift, drains it — there is no separate drain
+ * tool any more). That layer is a field of numbers and nothing more: what it MEANS —
  * where one body ends and the next begins, where its shoreline runs — is
  * src/world/painted-water.ts's `deriveWater`, and it is re-derived after
  * every change. The result goes three places in one breath:
@@ -57,11 +58,25 @@
  * rebuild path a live one does.
  *
  * THE BRUSH KIT (2026-09-09, user ask: *"in the collection we should have
- * brushes for trees, rocks, grass, flowers, rivers, clouds, ponds, etc."*).
- * Seven planting brushes stand beside the height tools and the water ones,
- * each writing its own weight layer whose buffer IS the painted map's
+ * brushes for trees, rocks, grass, flowers, rivers, clouds, ponds, etc."*;
+ * then 2026-09-10: *"i want to have the same brushes as env paint but in the
+ * ref style"* and *"let's get rid of any brushes that don't have environment
+ * items"*). The strip is EnvPaint's own — same ids, same order, same hotkeys,
+ * same icons — minus the tools this world has no environment item for:
+ *
+ *   sculpt 0 · mask 9 | grass 1 · flowers w · pond 3 · trees 6 · rocks 7 ·
+ *   clouds c | eraser · home
+ *
+ * The NEXT brushes, in EnvPaint's strip order and holding the keys they
+ * already own there, are path `8`, comb `2`, river `4`, waterfall `5` and
+ * fire `f`. None of them is shown until it has something to place.
+ *
+ * Five planting brushes and the mask stand beside the sculpt tool and the
+ * pond, each writing its own weight layer whose buffer IS the painted map's
  * (src/world/painted.ts `planting`), read by scatter's per-cell roll through
- * `setPaintedPlanting`.
+ * `setPaintedPlanting`. The ids stored scenes and session logs were written
+ * under (`raise`, `lower`, `grove`, `clearing`, `drain`) still apply: they
+ * are translated once, at the replay seam, by paint-tools `LEGACY_TOOLS`.
  *
  * THREE STROKES, THREE REBUILDS [D]. A height stroke moves ground things
  * already stand on: `rebuildTerrain`. A water stroke changes what grows
@@ -90,8 +105,8 @@ import {
   writeLevelDisc,
   DRY as WATER_DRY,
 } from 'envpaint/core';
-import { createToolStrip, type ToolStrip } from 'envpaint/ui';
-import { SURFACE } from '../taste/tokens';
+import { createToolStrip, HOME_ICON, type ToolStrip } from 'envpaint/ui';
+import { WORLD } from '../taste/tokens';
 import {
   paintedWater,
   setPaintedHeight,
@@ -117,22 +132,24 @@ import {
 import {
   clampRadius,
   HEIGHT_LAYER,
-  HEIGHT_TOOL_IDS,
   invertStampMode,
   isPlantTool,
   layerForTool,
   RADIUS_DEFAULT,
   RADIUS_MAX,
   RADIUS_MIN,
+  resolveTool,
+  COMING_TOOL_IDS,
+  isComingTool,
   steppedRadius,
+  STRIP_TOOL_IDS,
+  TOOL_KEYS,
+  WATER_LAYER,
 } from './paint-tools';
 import { deriveWater, type PaintedWaterField } from '../world/painted-water';
 import type { PaintEvent, SessionRecorder } from '../session';
 import type { DevSkillMeta } from './skills-meta';
 
-/** The absolute water surface level in world units, `DRY` where none — the
- * layer the pond and drain tools write. Its buffer is `PaintedMap.water`. */
-const WATER_LAYER = 'water';
 
 /**
  * The ground reference `writeLevelDisc` measures its depth cap against: a
@@ -199,11 +216,95 @@ const STRENGTH_DEFAULT = 0.28;
  */
 const PLANT_STRENGTH_SCALE = 7;
 
-/** Hotkeys 1-6, in strip order: the four height tools, then pond and drain.
- * The seven PLANTING brushes get none — 7 more digits would take the whole
- * keyboard row off the operator, and 5-7 already emote — so the strip is
- * what selects them (2026-09-09, user ask). */
-const TOOL_KEYS = ['1', '2', '3', '4', '5', '6'] as const;
+/**
+ * The `.ep-strip` rules, inlined.
+ *
+ * `envpaint/ui` builds the strip with these class names but does NOT export
+ * the stylesheet that carries them (`src/ui/panel.css.js` is outside the
+ * package's `exports` map), so without this the icons render at ghost-panel's
+ * 14px label size, the hotkey glyphs pile into the middle of their buttons
+ * and nothing shows which tool is in hand. This is the minimum that makes the
+ * strip legible — sizing, the per-tool tint and the active ring — and nothing
+ * else: every background, border and shadow stays ghost-panel's own, which is
+ * the only chrome this panel is allowed (TASTE §4, no new chrome).
+ *
+ * TWO deliberate departures from EnvPaint's own sheet [D]: the tint is the
+ * LIGHT token rather than a hardcoded white (the strip sits on ghost-panel's
+ * dark bar, so an ink glyph would be invisible), and the hotkey glyph is NOT
+ * uppercased — EnvPaint's own rule upper-cases it, and this
+ * product has no uppercase type anywhere (TASTE §5), so `w` stays `w`.
+ */
+const STRIP_CSS = `
+.dui-toolbar.ep-strip {
+  padding: 5px;
+  gap: 2px;
+  /* ghost-panel stacks its panes at 9999 and its own toolbars at 9998; a
+     strip centred in the viewport would otherwise slide under the inspector.
+     Still below popovers and modals at 10001+. */
+  z-index: 10000;
+  cursor: default;
+  --ep-tool: ${WORLD.light};
+}
+.dui-toolbar.ep-strip .ep-strip-grip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 26px;
+  flex: none;
+  opacity: 0.4;
+  cursor: grab;
+}
+.dui-toolbar.ep-strip .ep-strip-grip svg { width: 10px; height: 16px; display: block; }
+.dui-toolbar .ep-strip-btn {
+  position: relative;
+  padding: 4px;
+  min-width: 34px;
+  min-height: 34px;
+  justify-content: center;
+  border-radius: 9px;
+  color: var(--ep-tool);
+}
+.dui-toolbar .ep-strip-icon { width: 24px; height: 24px; }
+.dui-toolbar .ep-strip-icon svg { width: 24px; height: 24px; }
+.dui-toolbar .ep-strip-btn.dui-active {
+  color: var(--ep-tool);
+  box-shadow: inset 0 0 0 1.5px var(--ep-tool);
+}
+.dui-toolbar .ep-strip-key {
+  position: absolute;
+  right: 3px;
+  bottom: 1px;
+  font-size: 9px;
+  line-height: 1;
+  opacity: 0.55;
+  text-transform: none;
+  pointer-events: none;
+}
+/* A tool the world has not built yet: shown in its place in the strip, in
+   EnvPaint's order and holding its own key, but not selectable. */
+.dui-toolbar .ep-strip-btn[disabled] {
+  opacity: 0.32;
+  cursor: default;
+}
+`;
+
+/** Injected once per document, the first time a strip is mounted. */
+let stripStylesInjected = false;
+function injectStripStyles(): void {
+  if (stripStylesInjected || typeof document === 'undefined') return;
+  const style = document.createElement('style');
+  style.setAttribute('data-refworld-strip', '');
+  style.textContent = STRIP_CSS;
+  document.head.appendChild(style);
+  stripStylesInjected = true;
+}
+
+/** The hotkey a tool answers to, or none — EnvPaint's own table
+ * (src/dev/paint-tools.ts `TOOL_KEYS`), read through an accessor because
+ * `noUncheckedIndexedAccess` makes the lookup optional and a tool descriptor
+ * may not carry an explicit `undefined` key. */
+const keyFor = (id: string): string | undefined => TOOL_KEYS[id];
 
 /** The radius keys. EnvPaint binds these itself, but its handler clamps at
  * 12 units — past that the keys would simply stop working in a 400-unit
@@ -249,6 +350,12 @@ export interface PaintHandles {
    * (`WorldHandles.setSoloDrag`). Optional: without it painting still works,
    * it just orbits the camera at the same time. */
   setSoloDrag?(enabled: boolean): void;
+  /**
+   * Slide the camera back to the world's default view — the strip's home
+   * button (`CameraRig.resetView`). Optional: a build that wires no handle
+   * simply shows no home button, rather than one that does nothing.
+   */
+  resetView?(): void;
   /** The presentation tour. Painting takes the camera off it — a stroke
    * cannot land where the ground is sliding out from under it. */
   tour?: { setMode(mode: 'manual' | 'tour'): void; mode(): 'manual' | 'tour' };
@@ -781,65 +888,103 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
     if (rect) waterLayer.markDirtyRect(rect.x0, rect.y0, rect.x1, rect.y1);
   };
 
-  const tools: Tool[] = [
-    recorded(HEIGHT_TOOL_IDS[0], { key: TOOL_KEYS[0], mode: 'raise', eraseMode: 'lower' }),
-    recorded(HEIGHT_TOOL_IDS[1], { key: TOOL_KEYS[1], mode: 'lower', eraseMode: 'raise' }),
-    recorded(HEIGHT_TOOL_IDS[2], {
-      key: TOOL_KEYS[2],
-      mode: 'flatten',
-      altMode: 'smooth',
-      eraseMode: 'smooth',
-    }),
-    recorded(HEIGHT_TOOL_IDS[3], { key: TOOL_KEYS[3], mode: 'smooth', eraseMode: 'smooth' }),
-    {
-      // `mode: 'set'` because a level is a value and not an increment — the
-      // engine's stamp modes are for byte layers, and this tool writes the
-      // layer itself through `writeLevelDisc` anyway. Ctrl/cmd-drag erases,
-      // which for water is a drain: the modifier means the same thing on
-      // every tool in the strip.
-      id: 'pond',
-      label: 'pond',
-      key: TOOL_KEYS[4],
-      layer: WATER_LAYER,
-      mode: 'set',
+  /**
+   * One planting brush: it adds its own weight and the eraser (or shift, or
+   * ctrl) takes it away. The layer is named for the tool (paint-tools), and
+   * the strength is scaled because a weight is not a world unit — see
+   * PLANT_STRENGTH_SCALE.
+   */
+  const plantTool = (id: PlantBrush): Tool =>
+    recorded(id, {
+      ...(keyFor(id) === undefined ? {} : { key: keyFor(id) as string }),
+      layer: id,
+      mode: 'add',
       eraseMode: 'erase',
-      onStamp: (_ctx: unknown, op: StampOp, hit: BrushHit): void => {
-        stampWater(op, hit, op.mode === 'erase', 'pond');
-      },
-    },
-    {
-      id: 'drain',
-      label: 'drain',
-      key: TOOL_KEYS[5],
-      layer: WATER_LAYER,
-      mode: 'erase',
-      eraseMode: 'erase',
-      onStamp: (_ctx: unknown, op: StampOp, hit: BrushHit): void => {
-        stampWater(op, hit, true, 'drain');
-      },
-    },
-  ];
-  for (const tool of tools) {
-    brush.registerTool({ color: SURFACE.ink, ...tool });
-  }
-  // ── the planting brushes ─────────────────────────────────────────────────
-  // One tool per brush, each writing its own weight layer: stamp adds, ctrl
-  // (or shift, which inverts) erases. No hotkey — the strip selects them.
-  // Labels stay lowercase like every other string in this product (TASTE §5).
-  const plantTools: Tool[] = PLANT_BRUSHES.map((id) =>
-    recorded(id, { mode: 'add', eraseMode: 'erase' }),
-  );
-  for (const tool of plantTools) {
-    // The layer a planting tool writes is named for the tool (paint-tools).
-    brush.registerTool({
-      ...tool,
-      layer: tool.id,
-      color: SURFACE.ink,
-      // A weight in [0,1], not world units — see PLANT_STRENGTH_SCALE.
       strengthScale: PLANT_STRENGTH_SCALE,
     });
+
+  /**
+   * The pond: one plane a stroke fills to, drained by the eraser.
+   *
+   * `mode: 'set'` because a level is a value and not an increment — the
+   * engine's stamp modes are for byte layers, and this tool writes the layer
+   * itself through `writeLevelDisc` anyway. There is no `drain` tool beside
+   * it any more (2026-09-10, user ask): the strip's eraser toggle and the
+   * shift-invert already mean "the opposite of this brush" on every other
+   * tool in the strip, and a second button that only did that for water was
+   * the odd one out.
+   */
+  const pondTool: Tool = {
+    id: 'pond',
+    label: 'pond',
+    ...(keyFor('pond') === undefined ? {} : { key: keyFor('pond') as string }),
+    layer: WATER_LAYER,
+    mode: 'set',
+    eraseMode: 'erase',
+    onStamp: (_ctx: unknown, op: StampOp, hit: BrushHit): void => {
+      // Shift inverts here too, exactly as it does on every recorded tool:
+      // a filled dab becomes a drained one and the event says so.
+      const drain = shiftHeld ? op.mode !== 'erase' : op.mode === 'erase';
+      stampWater(drain ? { ...op, mode: 'erase' as StampMode } : op, hit, drain, 'pond');
+    },
+  };
+
+  /**
+   * A tool that is in the strip but has nothing behind it yet: it holds its
+   * place, its icon and its key, and it paints nothing. Its button is
+   * disabled at mount (`mountStrip`), so it cannot be selected either — the
+   * `onStamp` that does nothing is the belt to that pair of braces.
+   */
+  const comingTool = (id: string): Tool => ({
+    id,
+    label: id,
+    ...(keyFor(id) === undefined ? {} : { key: keyFor(id) as string }),
+    onStamp: (): void => {},
+  });
+
+  /**
+   * ── the strip ────────────────────────────────────────────────────────────
+   * EnvPaint's own tool set, in EnvPaint's own order, all thirteen of it
+   * (2026-09-10, user ask: *"i want to match the brushes for env paint
+   * exactly"*). The ids match EnvPaint's, which is also what makes its
+   * `toolIcon` resolve a real glyph for each of them instead of the fallback
+   * dot, and what puts the divider after `path` where EnvPaint puts it.
+   *
+   * The five with no environment item behind them yet — path, comb, river,
+   * waterfall, fire — are `comingTool`s: shown, keyed, disabled, tooltip
+   * "coming", building in that order.
+   *
+   * `sculpt` is the old `raise` under its EnvPaint name and key: shift
+   * inverts it to lower (this module's own rule), ctrl-drag lowers and alt
+   * smooths (EnvPaint's aliases, kept). `lower`, `flatten` and `smooth` are
+   * no longer tools of their own — flatten is gone, the other two are modes
+   * of this one — and their recorded ids still route home through
+   * `LEGACY_TOOLS`.
+   *
+   * Labels stay lowercase like every other string in this product (TASTE §5).
+   */
+  const toolFor = (id: (typeof STRIP_TOOL_IDS)[number]): Tool => {
+    if (isComingTool(id)) return comingTool(id);
+    if (id === 'sculpt') {
+      return recorded('sculpt', {
+        ...(keyFor('sculpt') === undefined ? {} : { key: keyFor('sculpt') as string }),
+        mode: 'raise',
+        eraseMode: 'lower',
+        altMode: 'smooth',
+      });
+    }
+    if (id === 'pond') return pondTool;
+    return plantTool(id as PlantBrush);
+  };
+  const tools: Tool[] = STRIP_TOOL_IDS.map(toolFor);
+  for (const tool of tools) {
+    // The tint the strip paints an icon and its active ring with. The panel's
+    // chrome is ghost-panel's dark bar, not the world's paper, so this is the
+    // LIGHT role from the same token file rather than the ink one — an ink
+    // glyph on that bar is a glyph nobody can see.
+    brush.registerTool({ color: WORLD.light, ...tool });
   }
-  brush.setTool(HEIGHT_TOOL_IDS[0]);
+  brush.setTool(STRIP_TOOL_IDS[0]);
 
   // ── the rebuild, throttled ────────────────────────────────────────────────
   let lastRebuildMs = 0;
@@ -974,16 +1119,45 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
 
   // ── the tool strip ────────────────────────────────────────────────────────
   // EnvPaint's own, built on ghost-panel's Toolbar so the chrome matches the
-  // panel. It is created when painting turns on and disposed when it turns
-  // off: a strip of tools for a brush that cannot paint is a control that
-  // lies. NOTE: `envpaint/ui` does not export the stylesheet that carries its
-  // `.ep-strip` rules (they live in a module outside the package's exports
-  // map), so the strip renders with ghost-panel's plain toolbar chrome and
-  // all six modes share EnvPaint's fallback icon — reported upstream.
+  // panel, and carrying EnvPaint's own tools, order, hotkeys and icons
+  // (2026-09-10, user ask). It is created when painting turns on and disposed
+  // when it turns off: a strip of tools for a brush that cannot paint is a
+  // control that lies.
+  //
+  // The ERASER is the strip's own toggle (`brush.erase`), and it means what
+  // holding shift means: the current tool's opposite. It does not sync itself
+  // after a click, and neither does the tool row, so one delegated listener
+  // pulls the buttons back into step with the brush after any press.
+  //
+  // HOME is an `extras` button: the world's default view, slid into
+  // (`CameraRig.resetView`). Only shown when a build wires the handle.
   let strip: ToolStrip | null = null;
   const mountStrip = (): void => {
     if (strip) return;
-    strip = createToolStrip(brush);
+    injectStripStyles();
+    const reset = handles.resetView;
+    strip = createToolStrip(brush, {
+      ...(reset
+        ? { extras: [{ icon: HOME_ICON, tooltip: 'home', onClick: (): void => reset() }] }
+        : {}),
+    });
+    // The tools with nothing behind them yet: in place, keyed, and not
+    // selectable. `title`/`dataset.tooltip` is ghost-panel's own tooltip
+    // channel, and the word is lowercase like every other string here.
+    for (const id of COMING_TOOL_IDS) {
+      const btn = strip.element.querySelector<HTMLButtonElement>(
+        `.ep-strip-btn[data-tooltip="${id}"]`,
+      );
+      if (!btn) continue;
+      btn.disabled = true;
+      btn.dataset.tooltip = 'coming';
+    }
+    // EnvPaint labels its eraser "Erase (X, or hold Ctrl)". This product has
+    // no uppercase type anywhere (TASTE §5), and shift is what inverts a tool
+    // here, so the tooltip is rewritten rather than inherited.
+    const eraser = strip.element.querySelector<HTMLElement>('.ep-strip-erase');
+    if (eraser) eraser.dataset.tooltip = 'eraser — what holding shift does';
+    strip.element.addEventListener('click', () => strip?.sync());
   };
   const unmountStrip = (): void => {
     strip?.dispose();
@@ -991,13 +1165,16 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
   };
   disposers.push(unmountStrip);
 
-  // ── the digits ────────────────────────────────────────────────────────────
+  // ── the tool keys ─────────────────────────────────────────────────────────
   // 1-7 already emote the most recent character (src/main.ts, PLAN §6.3) and
   // the Brush binds its tool hotkeys on window as well, so with painting on
   // one press would do both. This capture-phase listener runs before either
   // — window is the outermost node, and neither of them captures — so while
-  // painting is on 1-6 select a tool and swallow the key. 7 still emotes, and
-  // every other brush hotkey ([ ] x) is left alone.
+  // painting is ON the strip's keys (0 9 1 w 3 6 7 c) select a tool and are
+  // swallowed, and with painting OFF this returns on its first line and 1-7
+  // emote exactly as they always did. A key no tool on the strip claims —
+  // including 8, 2, 4, 5 and f, which belong to brushes this world has not
+  // built yet — is left alone, as is every other brush hotkey ([ ] x).
   const onKeyCapture = (event: KeyboardEvent): void => {
     if (!painting) return;
     shiftHeld = event.shiftKey;
@@ -1029,13 +1206,29 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
       return;
     }
     if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
-    const index = TOOL_KEYS.indexOf(event.key as (typeof TOOL_KEYS)[number]);
-    if (index < 0) return;
-    const tool = tools[index];
+    // The strip's own keys, EnvPaint's table (paint-tools `TOOL_KEYS`): the
+    // letter ones are matched case-insensitively so caps lock cannot lose a
+    // tool, and only a key some tool on the strip actually claims is
+    // swallowed. The keys of the brushes this world has not built yet stay
+    // free, and with painting OFF this handler has already returned — 1-7
+    // still emote (PLAN §6.3).
+    const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+    const tool = tools.find((t) => t.key === key);
     if (!tool) return;
+    // A key belonging to a tool that has nothing behind it yet is RESERVED,
+    // not free: it is swallowed and does nothing. Letting it fall through
+    // would reach EnvPaint's own window binding — which knows the tool is
+    // registered and would happily select the disabled one — and, with
+    // painting on, the emotes underneath.
+    if (isComingTool(tool.id)) {
+      event.stopImmediatePropagation();
+      event.preventDefault();
+      return;
+    }
     brush.setTool(tool.id);
     strip?.sync();
     event.stopImmediatePropagation();
+    event.preventDefault();
   };
   const onKeyUpCapture = (event: KeyboardEvent): void => {
     shiftHeld = event.shiftKey;
@@ -1145,7 +1338,7 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
   folder.addCheckbox('painting', {
     value: false,
     id: 'paint-on',
-    tooltip: 'drag to sculpt · shift inverts · space+drag orbits · [ ] radius',
+    tooltip: 'drag to paint · shift inverts · space+drag orbits · [ ] radius',
     onChange: setPainting,
   });
   folder.addSlider('radius', {
@@ -1258,6 +1451,14 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
       return;
     }
     if (event.x === undefined || event.z === undefined || event.r === undefined) return;
+    /**
+     * A stored scene or session log carries the ids the strip had when it
+     * was written — `raise`, `lower`, `grove`, `clearing`, `drain` — so the
+     * pair is translated once, here, before anything routes on it
+     * (paint-tools `LEGACY_TOOLS`). An id this build does not know at all
+     * falls through to `stampInto`, which refuses it.
+     */
+    const { tool, mode } = resolveTool(event.tool, event.mode);
     const { u, v } = uvOf(event.x, event.z);
     const op: StampOp = {
       u,
@@ -1265,31 +1466,32 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
       radius: event.r / PAINTED_SIZE,
       ...(event.strength === undefined ? {} : { strength: event.strength }),
       ...(event.hardness === undefined ? {} : { hardness: event.hardness }),
-      ...(event.mode === undefined ? {} : { mode: event.mode as StampMode }),
+      ...(mode === undefined ? {} : { mode: mode as StampMode }),
       ...(event.seed === undefined ? {} : { seed: event.seed }),
       edgeNoise: brush.settings.edgeNoise,
       edgeScale: brush.settings.edgeScale,
       spatter: brush.settings.spatter,
       aspect: brush.settings.aspect,
     };
-    if (event.tool === 'pond' || event.tool === 'drain') {
+    if (tool === 'pond') {
       const held = strokeLevel;
       strokeLevel = event.level ?? null;
       // `mode` says what the dab did, so a ctrl-dragged pond replays as the
-      // drain it was; the tool id is the fallback for an event without one.
-      const drain = event.mode === 'erase' || event.tool === 'drain';
+      // drain it was — and a legacy `drain` dab arrives here already carrying
+      // the erase mode its own entry gave it.
+      const drain = mode === 'erase';
       stampWater(op, { x: event.x, y: 0, z: event.z, u, v }, drain, null);
       strokeLevel = held;
       waterDirty = true;
       return;
     }
-    if (event.mode === 'flatten' && event.flattenTo !== undefined) flattenTo = event.flattenTo;
+    if (mode === 'flatten' && event.flattenTo !== undefined) flattenTo = event.flattenTo;
     // Routed by tool id through the SAME table the live brush stamps
     // through, so a replayed or synced dab lands in the layer it was
     // recorded from, with the recorded rim seed and the recorded MODE — an
     // inverted (shift-held) dab replays inverted without the key.
-    stampInto(event.tool, op);
-    if (isPlantTool(event.tool)) plantingDirty = true;
+    stampInto(tool, op);
+    if (isPlantTool(tool)) plantingDirty = true;
     else terrainDirty = true;
   };
 

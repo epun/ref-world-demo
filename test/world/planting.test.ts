@@ -95,13 +95,13 @@ describe('the planting layers', () => {
   });
 
   it('adopts handed-in buffers by reference, never copying them', () => {
-    const grove = new Float32Array(PLANTING_RES * PLANTING_RES);
-    const map = createPaintedMap(undefined, undefined, undefined, undefined, { grove });
-    expect(map.planting.grove).toBe(grove);
+    const trees = new Float32Array(PLANTING_RES * PLANTING_RES);
+    const map = createPaintedMap(undefined, undefined, undefined, undefined, { trees });
+    expect(map.planting.trees).toBe(trees);
     // The coupling the whole design rests on: a stamp into the layer's own
     // buffer is visible to the next sample with nothing in between.
-    grove[Math.floor(PLANTING_RES / 2) * PLANTING_RES + Math.floor(PLANTING_RES / 2)] = 1;
-    expect(samplePlanting(map, 'grove', 0, 0)).toBeGreaterThan(0);
+    trees[Math.floor(PLANTING_RES / 2) * PLANTING_RES + Math.floor(PLANTING_RES / 2)] = 1;
+    expect(samplePlanting(map, 'trees', 0, 0)).toBeGreaterThan(0);
   });
 
   it('throws on a planting buffer of the wrong length', () => {
@@ -134,10 +134,10 @@ describe('the planting layers', () => {
 
   it('reads back every brush at once through the sampler', () => {
     const map = createPaintedMap();
-    stamp(map, 'grove', 20, 20, 10);
+    stamp(map, 'trees', 20, 20, 10);
     stamp(map, 'clouds', 20, 20, 10, 0.5);
     const at = plantingSampler(map)(20, 20);
-    expect(at.grove).toBeCloseTo(1, 3);
+    expect(at.trees).toBeCloseTo(1, 3);
     expect(at.clouds).toBeCloseTo(0.5, 3);
     expect(at.rocks).toBe(0);
     // A fresh object each call: nobody may mutate a shared sample.
@@ -148,7 +148,7 @@ describe('the planting layers', () => {
     const map = createPaintedMap();
     map.height[1234] = -3.25;
     stamp(map, 'flowers', -40, 15, 12);
-    stamp(map, 'clearing', 60, -60, 8, 0.25);
+    stamp(map, 'mask', 60, -60, 8, 0.25);
     const back = deserializeMap(JSON.parse(JSON.stringify(serializeMap(map))));
     expect(back.plantingRes).toBe(map.plantingRes);
     expect(back.height[1234]).toBe(-3.25);
@@ -170,10 +170,10 @@ describe('the planting layers', () => {
   it('clear map clears the planting as well as the height', () => {
     const map = createPaintedMap();
     map.height[0] = 4;
-    stamp(map, 'grove', 0, 0, 30);
+    stamp(map, 'trees', 0, 0, 30);
     clearPaintedMap(map);
     expect(map.height[0]).toBe(0);
-    expect(samplePlanting(map, 'grove', 0, 0)).toBe(0);
+    expect(samplePlanting(map, 'trees', 0, 0)).toBe(0);
   });
 });
 
@@ -220,7 +220,7 @@ describe('painted placement', () => {
     const a = createPaintedMap();
     const b = createPaintedMap();
     for (const map of [a, b]) {
-      stamp(map, 'grove', 40, 40, 25);
+      stamp(map, 'trees', 40, 40, 25);
       stamp(map, 'flowers', -50, 20, 18);
       stamp(map, 'clouds', 0, -60, 30);
     }
@@ -231,13 +231,13 @@ describe('painted placement', () => {
 
   it('grows what the brush names, and nothing it does not', () => {
     const map = createPaintedMap();
-    stamp(map, 'grove', 60, 60, 30);
+    stamp(map, 'trees', 60, 60, 30);
     const before = computePlacements();
     const after = painted(map, () => computePlacements());
     const count = (ps: Placement[], k: string): number => ps.filter((p) => p.kind === k).length;
     expect(count(after, 'tree')).toBeGreaterThan(count(before, 'tree'));
-    // The grove brush names tree / conifer / bush / tick — and nothing else.
-    expect(Object.keys(PAINT_SEED.grove).sort()).toEqual(['bush', 'conifer', 'tick', 'tree']);
+    // The trees brush names tree / conifer / bush / tick — and nothing else.
+    expect(Object.keys(PAINT_SEED.trees).sort()).toEqual(['bush', 'conifer', 'tick', 'tree']);
     for (const kind of ['rock', 'cactus', 'waterTower', 'flower', 'cloud']) {
       expect(count(after, kind), kind).toBe(count(before, kind));
     }
@@ -248,7 +248,7 @@ describe('painted placement', () => {
     stamp(rocksOnly, 'rocks', -40, 40, 26);
     const both = createPaintedMap();
     stamp(both, 'rocks', -40, 40, 26);
-    stamp(both, 'grove', -40, 40, 26);
+    stamp(both, 'trees', -40, 40, 26);
 
     const rocksBefore = painted(rocksOnly, () =>
       computePlacements().filter((p) => p.kind === 'rock').map(key),
@@ -261,11 +261,11 @@ describe('painted placement', () => {
     for (const k of rocksBefore) expect(rocksAfter.has(k), k).toBe(true);
   });
 
-  it('the clearing brush suppresses the base term without touching a painted one', () => {
-    const grove = createPaintedMap();
-    stamp(grove, 'grove', 60, 60, 30);
+  it('the mask brush suppresses the base term without touching a painted one', () => {
+    const trees = createPaintedMap();
+    stamp(trees, 'trees', 60, 60, 30);
     const cleared = createPaintedMap();
-    stamp(cleared, 'clearing', 0, 0, 60);
+    stamp(cleared, 'mask', 0, 0, 60);
 
     const base = computePlacements().filter((p) => Math.hypot(p.x, p.z) < 45).length;
     const swept = painted(cleared, () =>

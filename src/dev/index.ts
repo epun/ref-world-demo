@@ -157,6 +157,10 @@ export interface DevHandles {
    * on it (2026-09-09, user ask — the environment brush kit).
    */
   refreshScatter?(): void;
+  /** Slide the camera home to the world's default view — the tool strip's
+   * home button (2026-09-10, user ask). Optional: without it the strip shows
+   * no home button rather than one that does nothing. */
+  resetView?(): void;
   /** …and reads them back, so the sliders start where the world is. */
   terrain?(): { elevation: number; tierStep: number; relief: number };
   /**
@@ -1691,6 +1695,7 @@ export async function initDevPanel(
       // a planting stroke moves no vertex and no water level, so it re-rolls
       // the scatter and nothing else.
       ...(handles.refreshScatter ? { rebuildScatter: handles.refreshScatter } : {}),
+      ...(handles.resetView ? { resetView: handles.resetView } : {}),
       // …and the landscape mode RE-APPLIED unchanged is exactly the other
       // rebuild: ground, `scatter.refreshLandscape()`, water levels. It is
       // what a water stroke needs and a height stroke does not — a pond

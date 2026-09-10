@@ -211,23 +211,68 @@ describe('the paint skill is wired the way the port plan asks', () => {
     expect(source).toContain('handles.setSoloDrag?.(!on)');
   });
 
-  it('registers the four height tools and the two water ones, hotkeys 1-6', () => {
-    // The height four are built through `recorded(id, …)` — the helper that
-    // records the dab and then stamps it — so the id is its first argument
-    // rather than a literal field, and the ids come from HEIGHT_TOOL_IDS —
-    // the same table the replay routing reads (src/dev/paint-tools.ts). The
-    // water two carry an `onStamp` of their own (`stampWater`), so they stay
-    // literal descriptors.
-    for (let i = 0; i < 4; i++) {
-      expect(source, `tool ${i}`).toContain(`recorded(HEIGHT_TOOL_IDS[${i}]`);
-    }
-    for (const id of ['pond', 'drain']) {
-      expect(source, id).toContain(`id: '${id}'`);
-    }
-    expect(source).toContain("const TOOL_KEYS = ['1', '2', '3', '4', '5', '6'] as const;");
+  it("registers EnvPaint's own strip — its ids, its order, its hotkeys", () => {
+    // 2026-09-10, user ask: *"i want to match the brushes for env paint
+    // exactly"*. All thirteen, in EnvPaint's order and groups — sculpt 0 ·
+    // mask 9 · path 8 | grass 1 · comb 2 · flowers w · pond 3 · river 4 ·
+    // waterfall 5 · trees 6 · rocks 7 · fire f · clouds c | eraser · home —
+    // with the five that have nothing behind them yet shown, keyed and
+    // disabled. The ids matching EnvPaint's is also what makes its own
+    // `toolIcon` resolve a real glyph for each of them.
+    //
+    // The tools are built from STRIP_TOOL_IDS, in that order, so the strip
+    // and the key table cannot drift apart — which is why this reads the
+    // table rather than the descriptors.
+    expect(source).toContain('const tools: Tool[] = STRIP_TOOL_IDS.map(toolFor);');
+    expect(source).toContain("brush.setTool(STRIP_TOOL_IDS[0]);");
+    expect(source).toContain("recorded('sculpt', {");
+    expect(source).toContain("id: 'pond',");
+    // sculpt keeps EnvPaint's own modifier aliases: ctrl lowers, alt smooths.
+    expect(source).toContain("altMode: 'smooth'");
+    expect(source).toContain("eraseMode: 'lower'");
     expect(source).toContain('layer: HEIGHT_LAYER');
     expect(source).toContain('layer: WATER_LAYER');
-    expect(source).toContain("altMode: 'smooth'");
+    // …and the tools it does NOT register: no drain (the eraser and shift
+    // cover it), no cottages (EnvPaint has no such brush), no lower /
+    // flatten / smooth of their own.
+    for (const gone of ['drain', 'cottages', 'flatten']) {
+      expect(source, gone).not.toContain(`id: '${gone}'`);
+    }
+    // …and the five that are shown but cannot paint yet: a descriptor that
+    // stamps nothing, and a button that is disabled and says so.
+    expect(source).toContain('const comingTool = (id: string): Tool => ({');
+    expect(source).toContain('for (const id of COMING_TOOL_IDS) {');
+    expect(source).toContain('btn.disabled = true;');
+    expect(source).toContain("btn.dataset.tooltip = 'coming';");
+    // …and its key is reserved rather than free: swallowed, doing nothing,
+    // so it cannot fall through to EnvPaint's own binding and select it.
+    expect(source).toContain('if (isComingTool(tool.id)) {');
+  });
+
+  it('reads its keys, its order and its legacy ids from the pure table', () => {
+    // paint-tools owns all three, so the replay routing and the live strip
+    // cannot disagree about what an id means (docs/SESSION.md §4).
+    expect(source).toMatch(/import \{[^}]*\bTOOL_KEYS\b[^}]*\} from '\.\/paint-tools'/);
+    expect(source).toMatch(/import \{[^}]*\bSTRIP_TOOL_IDS\b[^}]*\} from '\.\/paint-tools'/);
+    expect(source).toMatch(/import \{[^}]*\bresolveTool\b[^}]*\} from '\.\/paint-tools'/);
+    // A stored dab is translated once, before anything routes on it.
+    expect(source).toContain('const { tool, mode } = resolveTool(event.tool, event.mode);');
+  });
+
+  it('gives the strip an eraser that syncs and a home button that slides', () => {
+    // The eraser is EnvPaint's own toggle (`brush.erase`) and means what
+    // holding shift means; neither it nor the tool row re-syncs itself after
+    // a click, so the strip is pulled back into step after any press.
+    expect(source).toContain("strip.element.addEventListener('click', () => strip?.sync());");
+    // Home is an `extras` button on the world's own camera reset — optional,
+    // so a build that wires no handle shows no button rather than a dead one.
+    expect(source).toContain('icon: HOME_ICON');
+    expect(source).toContain('const reset = handles.resetView;');
+    // …and the rules that make the strip legible, which `envpaint/ui` does
+    // not export. No uppercase anywhere, hotkey glyphs included (TASTE §5).
+    expect(source).toContain('const STRIP_CSS =');
+    expect(source).toContain('text-transform: none;');
+    expect(source).not.toContain('text-transform: uppercase');
   });
 
   // The water half of the port (plan step 4). Same reading as above: what a

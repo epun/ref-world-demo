@@ -193,6 +193,27 @@ export class CameraRig {
     this.targetZ.reset(Math.min(PAN_LIMIT, Math.max(-PAN_LIMIT, this.targetZ.value + wz)));
   }
 
+  /**
+   * Back to the world's default view: azimuth 45°, the true iso elevation,
+   * zoom 1, look-target on the origin. The strip's home button and the paint
+   * skill's `resetView` handle (src/dev/paint.ts).
+   *
+   * Every axis RETARGETS — it never assigns a value — so the view slides home
+   * on the same ζ≥1 springs and damped follows every other move uses: no cut,
+   * no snap, no overshoot (TASTE §2.1). The azimuth goes to the nearest
+   * equivalent of 45° rather than to 45° itself, so a view that has been
+   * orbited three times round takes the short way home instead of unwinding
+   * every turn.
+   */
+  resetView(): void {
+    const turns = Math.round((this.azimuthTarget - AZIMUTH) / (Math.PI * 2));
+    this.azimuthTarget = AZIMUTH + turns * Math.PI * 2;
+    this.elevationTarget = ELEVATION;
+    this.zoomTo(1);
+    this.targetX.retarget(0);
+    this.targetZ.retarget(0);
+  }
+
   /** Preserve the iso frustum on resize: height fixed, width follows aspect. */
   resize(width: number, height: number): void {
     const aspect = width / Math.max(1, height);

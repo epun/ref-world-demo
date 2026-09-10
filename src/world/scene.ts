@@ -135,6 +135,9 @@ export interface WorldHandles {
    * usable while an audience watches.
    */
   refreshScatter(): void;
+  /** Slide the camera back to the world's default view (`CameraRig.resetView`)
+   * — the tool strip's home button. Never a cut: the rig retargets. */
+  resetView(): void;
   /** True when the authored map is the world on screen. */
   landscape(): boolean;
   /**
@@ -400,6 +403,9 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
     },
     refreshScatter: (): void => {
       scatter.refreshLandscape();
+    },
+    resetView: (): void => {
+      cameraRig.resetView();
     },
     landscape: (): boolean => landscapeMode() === 'landscape',
     setSoloDrag: (enabled: boolean): void => {

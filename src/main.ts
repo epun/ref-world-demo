@@ -1967,6 +1967,8 @@ function main(): void {
         // The cheap half of the same seam: a planting stroke re-rolls the
         // scatter and leaves the ground alone (the environment brush kit).
         refreshScatter: () => world.refreshScatter(),
+        // The strip's home button: the default view, slid into, never cut.
+        resetView: () => world.resetView(),
         // The landscape mode (src/world/landscape.ts): reveal or hide the
         // authored map. Written back into the address as well as applied, so
         // a reload keeps the world the operator is standing in.

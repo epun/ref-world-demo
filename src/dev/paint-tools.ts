@@ -15,30 +15,161 @@
 
 import { PLANT_BRUSHES, type PlantBrush } from '../world/painted';
 
-/** The one height layer, and the id its four tools write. */
+/** The one height layer, and the id the sculpt tool writes. */
 export const HEIGHT_LAYER = 'height';
 
-/** The height tools, in strip order — hotkeys 1-4 (see TOOL_KEYS). */
-export const HEIGHT_TOOL_IDS = ['raise', 'lower', 'flatten', 'smooth'] as const;
+/** The one water level layer, and the id the pond tool writes. */
+export const WATER_LAYER = 'water';
+
+/**
+ * The tools that write the height layer.
+ *
+ * ONE of them on the strip now (`sculpt`, EnvPaint's own id and key `0`,
+ * shift-inverted to lower, ctrl to lower, alt to smooth) — the other three
+ * are the ids the old strip recorded its dabs under, kept here so a stored
+ * scene still routes to the height layer (see `LEGACY_TOOLS`). `flatten` is
+ * gone from the strip entirely and `smooth` is reachable only through alt,
+ * exactly as EnvPaint has it.
+ */
+export const HEIGHT_TOOL_IDS = ['sculpt', 'raise', 'lower', 'flatten', 'smooth'] as const;
 export type HeightToolId = (typeof HEIGHT_TOOL_IDS)[number];
+
+/** The one tool that writes the water level layer. */
+export const WATER_TOOL_ID = 'pond';
+
+/**
+ * The strip, in EnvPaint's own order and with its own hotkeys (2026-09-10,
+ * user ask: *"i want to match the brushes for env paint exactly"*).
+ *
+ *   sculpt 0 · mask 9 · path 8 | grass 1 · comb 2 · flowers w · pond 3 ·
+ *   river 4 · waterfall 5 · trees 6 · rocks 7 · fire f · clouds c
+ *
+ * ALL THIRTEEN are shown, in these three groups — the divider falls after
+ * `path` because EnvPaint's own toolbar groups the ground tools (sculpt,
+ * mask, path) at the head of the strip, and again before the eraser and the
+ * home button that close it. The five this world has not built an
+ * environment item for yet are in their places, holding their own keys, and
+ * DISABLED (`COMING_TOOL_IDS`) rather than absent: the strip is the picture
+ * of the whole kit, and a gap in it would be a different kit.
+ */
+export const TOOL_KEYS: Readonly<Record<string, string>> = {
+  sculpt: '0',
+  mask: '9',
+  path: '8',
+  grass: '1',
+  comb: '2',
+  flowers: 'w',
+  pond: '3',
+  river: '4',
+  waterfall: '5',
+  trees: '6',
+  rocks: '7',
+  fire: 'f',
+  clouds: 'c',
+};
+
+/** The strip's tools in the order they are shown (and registered). */
+export const STRIP_TOOL_IDS = [
+  'sculpt',
+  'mask',
+  'path',
+  'grass',
+  'comb',
+  'flowers',
+  'pond',
+  'river',
+  'waterfall',
+  'trees',
+  'rocks',
+  'fire',
+  'clouds',
+] as const;
+
+/**
+ * The tools that are in the strip but cannot paint yet, in the order they
+ * are being built.
+ *
+ * Each is a real EnvPaint tool with nothing behind it in this world: `path`
+ * wants an ink dirt trail in the ground marks, `comb` a lean-direction layer
+ * the grass shader reads, `river` and `waterfall` the water machinery
+ * carrying a level downhill and marking where it falls, `fire` an ink flame
+ * mark and a scorch. Until one lands its button is disabled and its tooltip
+ * says so; nothing routes to it, and `layerForTool` refuses its id exactly as
+ * it refuses any id it does not know.
+ */
+export const COMING_TOOL_IDS = ['path', 'comb', 'river', 'waterfall', 'fire'] as const;
+
+/** True while a strip tool has nothing behind it yet — see COMING_TOOL_IDS. */
+export function isComingTool(id: string): boolean {
+  return (COMING_TOOL_IDS as readonly string[]).includes(id);
+}
+
+/**
+ * One retired tool id → what it means now.
+ *
+ * Stored scenes and session logs carry the pre-EnvPaint ids
+ * (`raise`/`lower`/`flatten`/`smooth`/`grove`/`clearing`/`drain`), and an
+ * existing scene has to still apply: docs/SESSION.md §4 says a replayed
+ * stamp lands in the layer it was recorded from, and a rename is not
+ * permission to lose one. Each entry names the tool that replaces it and,
+ * where the tool alone no longer says what the dab DID, the mode it did it
+ * in — `drain` is a pond dab that erases, `lower` a sculpt dab that lowers.
+ * A recorded `mode` always wins: the fallback is for a log old enough not to
+ * carry one.
+ *
+ * `cottages` is deliberately absent: the brush and its weight layer are gone
+ * (there is no EnvPaint cottage), so a cottages dab resolves to nothing and
+ * `layerForTool` refuses it, which is the same answer it gives any id it does
+ * not know.
+ */
+export const LEGACY_TOOLS: Readonly<Record<string, { tool: string; mode?: string }>> = {
+  raise: { tool: 'sculpt', mode: 'raise' },
+  lower: { tool: 'sculpt', mode: 'lower' },
+  flatten: { tool: 'sculpt', mode: 'flatten' },
+  smooth: { tool: 'sculpt', mode: 'smooth' },
+  grove: { tool: 'trees' },
+  clearing: { tool: 'mask' },
+  drain: { tool: 'pond', mode: 'erase' },
+};
+
+/**
+ * A recorded (tool, mode) pair as this build understands it.
+ *
+ * The one place a legacy id is translated, so the live brush, the replay and
+ * the sync all agree — and an id that is already current passes through
+ * untouched.
+ */
+export function resolveTool(
+  tool: string,
+  mode?: string,
+): { tool: string; mode: string | undefined } {
+  const legacy = LEGACY_TOOLS[tool];
+  if (!legacy) return { tool, mode };
+  return { tool: legacy.tool, mode: mode ?? legacy.mode };
+}
 
 /**
  * Which layer a tool id writes into.
  *
- * The planting brushes are named for their layer (`grove` writes `grove`),
- * so this is an identity for them and a fan-in for the height four. A tool
- * id nobody knows returns null rather than defaulting to the height layer:
- * a replayed stamp from a future build must not silently sculpt the ground.
+ * The planting brushes are named for their layer (`trees` writes `trees`),
+ * so this is an identity for them and a fan-in for the height ids. Legacy
+ * ids resolve first, so a stored `grove` dab lands in the `trees` layer. A
+ * tool id nobody knows returns null rather than defaulting to the height
+ * layer: a replayed stamp from a future build must not silently sculpt the
+ * ground.
  */
 export function layerForTool(tool: string): string | null {
-  if ((HEIGHT_TOOL_IDS as readonly string[]).includes(tool)) return HEIGHT_LAYER;
-  if ((PLANT_BRUSHES as readonly string[]).includes(tool)) return tool;
+  const id = resolveTool(tool).tool;
+  if ((HEIGHT_TOOL_IDS as readonly string[]).includes(id)) return HEIGHT_LAYER;
+  if (id === WATER_TOOL_ID) return WATER_LAYER;
+  if ((PLANT_BRUSHES as readonly string[]).includes(id)) return id;
   return null;
 }
 
-/** True when a tool id is one of the planting brushes. */
+/** True when a tool id is one of the planting brushes (legacy ids resolved
+ * first, so `grove` counts as the `trees` brush it became). */
 export function isPlantTool(tool: string): tool is PlantBrush {
-  return (PLANT_BRUSHES as readonly string[]).includes(tool);
+  return (PLANT_BRUSHES as readonly string[]).includes(resolveTool(tool).tool);
 }
 
 /**
