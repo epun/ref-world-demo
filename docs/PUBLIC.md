@@ -84,7 +84,7 @@ sees.
     "meridian": {
       "host": "ref-world-meridian.vercel.app",
       "residents": "none",
-      "hatch": "manual"
+      "hatch": "timer"
     }
   }
 }
