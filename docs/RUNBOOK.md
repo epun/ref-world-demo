@@ -39,7 +39,9 @@ One page. Read it before the demo, not during.
 
 - `h` hatches every waiting egg, staggered.
 - **In a manual world nothing hatches until you press it** (`hatch: manual` in
-  worlds.json — meridian is one). Eggs arrive and stand there, on the
+  worlds.json — meridian was one for the demo and is `timer` again since,
+  2026-09-11, user ask: the cast should be out in the world when people load
+  the link). Eggs arrive and stand there, on the
   projection and on every phone looking at the world, until `h`. The press
   travels: each phone's world view is its own copy of this page, so the hatch
   goes out over the world sync topic and every screen opens the same shell at

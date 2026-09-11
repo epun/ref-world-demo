@@ -61,8 +61,11 @@ describe('worlds.json — one entry per deployment', () => {
     expect(WORLDS['meridian']).toEqual({
       host: 'ref-world-meridian.vercel.app',
       residents: 'none',
-      // the demo waits for the operator's `h` (user ask, 2026-09-10).
-      hatch: 'manual',
+      // the demo waited for the operator's `h` (user ask, 2026-09-10); since
+      // 2026-09-11 the cast is out in the world when the link opens (user
+      // ask: "already out there in the world"), so it is a timer world again
+      // and `?hatch=manual` is the override for a run that wants the key.
+      hatch: 'timer',
       dev: true,
     });
     // the public site is absent on purpose: it is the world without an
@@ -94,7 +97,7 @@ describe('resolveWorld — what world is this build for', () => {
       name: 'meridian',
       host: 'ref-world-meridian.vercel.app',
       residents: 'none',
-      hatch: 'manual',
+      hatch: 'timer',
       dev: true,
     });
   });
@@ -107,7 +110,7 @@ describe('resolveWorld — what world is this build for', () => {
       name: 'meridian',
       host: 'ref-world-meridian.vercel.app',
       residents: 'none',
-      hatch: 'manual',
+      hatch: 'timer',
       dev: true,
     });
   });
