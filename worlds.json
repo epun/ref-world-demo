@@ -10,7 +10,6 @@
       "host": "ref-world-valiocon.vercel.app",
       "residents": "none",
       "hatch": "manual",
-      "style": "ghibli",
       "dev": true
     }
   }

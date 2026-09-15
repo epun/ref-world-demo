@@ -2,15 +2,10 @@
  * Sun-driven stamp ellipse tests — pure math from src/world/shadows.ts plus
  * the FlatShadows value/transform behavior (no WebGL: meshes and materials
  * are plain scene-graph objects in node).
- *
- * The whole population lives in ONE InstancedMesh, so a stamp's transform is
- * read back out of the instance matrix rather than off a Mesh of its own.
- * That buffer is Float32Array, so transforms round-trip at float32 precision
- * (~1e-7 relative) — MATRIX_DIGITS, below. The pure math is still exact.
  */
 
 import { describe, expect, it } from 'vitest';
-import { Color, InstancedMesh, Matrix4, Quaternion, Vector3 } from 'three';
+import { Color, Quaternion, Vector3 } from 'three';
 import { SURFACE } from '../../src/taste/tokens';
 import {
   FlatShadows,
@@ -98,100 +93,12 @@ describe('stampEllipse', () => {
   });
 });
 
-/** Precision surviving a round trip through the Float32 instance buffer. */
-const MATRIX_DIGITS = 5;
-
-/** The single InstancedMesh every stamp draws from. */
-const instanced = (shadows: FlatShadows): InstancedMesh =>
-  shadows.group.children[0] as InstancedMesh;
-
-interface Stamp {
-  position: Vector3;
-  quaternion: Quaternion;
-  scale: Vector3;
-}
-
-/** Decompose one instance's matrix back into the transform that composed it. */
-const stampAt = (shadows: FlatShadows, index = 0): Stamp => {
-  const stamp: Stamp = {
-    position: new Vector3(),
-    quaternion: new Quaternion(),
-    scale: new Vector3(),
-  };
-  const m = new Matrix4();
-  instanced(shadows).getMatrixAt(index, m);
-  m.decompose(stamp.position, stamp.quaternion, stamp.scale);
-  return stamp;
-};
-
-describe('FlatShadows is one instanced draw call', () => {
-  it('N stamps → exactly one child in the group, count N', () => {
-    const shadows = new FlatShadows(FLAT_SURFACE);
-    for (let i = 0; i < 5; i += 1) shadows.addShadow(`s${i}`, 1).setPosition(i, 0);
-    expect(shadows.group.children).toHaveLength(1);
-    expect(instanced(shadows).count).toBe(5);
-    expect(instanced(shadows)).toBeInstanceOf(InstancedMesh);
-  });
-
-  it('swap-removes the middle of three; the survivors keep their positions', () => {
-    const shadows = new FlatShadows(FLAT_SURFACE);
-    shadows.addShadow('a', 1).setPosition(1, 1);
-    shadows.addShadow('b', 1).setPosition(2, 2);
-    shadows.addShadow('c', 1).setPosition(3, 3);
-    shadows.removeShadow('b');
-
-    expect(shadows.group.children).toHaveLength(1);
-    expect(instanced(shadows).count).toBe(2);
-    const live = [stampAt(shadows, 0), stampAt(shadows, 1)].map((s) => [
-      s.position.x,
-      s.position.z,
-    ]);
-    expect(live).toContainEqual([1, 1]);
-    expect(live).toContainEqual([3, 3]);
-  });
-
-  it('keeps moving a stamp whose slot changed under it', () => {
-    const shadows = new FlatShadows(FLAT_SURFACE);
-    shadows.addShadow('a', 1).setPosition(1, 1);
-    const c = shadows.addShadow('c', 1);
-    c.setPosition(3, 3);
-    shadows.removeShadow('a'); // 'c' is swapped down into slot 0
-    c.setPosition(7, 8);
-    expect(instanced(shadows).count).toBe(1);
-    expect(stampAt(shadows, 0).position.x).toBeCloseTo(7, MATRIX_DIGITS);
-    expect(stampAt(shadows, 0).position.z).toBeCloseTo(8, MATRIX_DIGITS);
-  });
-
-  it('removing an unknown id is a no-op', () => {
-    const shadows = new FlatShadows(FLAT_SURFACE);
-    shadows.addShadow('a', 1).setPosition(1, 1);
-    shadows.removeShadow('nobody');
-    expect(instanced(shadows).count).toBe(1);
-    expect(stampAt(shadows, 0).position.x).toBeCloseTo(1, MATRIX_DIGITS);
-  });
-
-  it('grows past the initial capacity with every matrix intact', () => {
-    const shadows = new FlatShadows(FLAT_SURFACE);
-    const n = 100; // > the 64-slot starting capacity
-    for (let i = 0; i < n; i += 1) shadows.addShadow(`s${i}`, 1).setPosition(i, -i);
-
-    expect(shadows.group.children).toHaveLength(1);
-    expect(instanced(shadows).count).toBe(n);
-    expect(instanced(shadows).instanceMatrix.count).toBeGreaterThanOrEqual(n);
-
-    const first = stampAt(shadows, 0);
-    expect(first.position.x).toBeCloseTo(0, MATRIX_DIGITS);
-    expect(first.position.z).toBeCloseTo(0, MATRIX_DIGITS);
-    const last = stampAt(shadows, n - 1);
-    expect(last.position.x).toBeCloseTo(n - 1, MATRIX_DIGITS - 1);
-    expect(last.position.z).toBeCloseTo(-(n - 1), MATRIX_DIGITS - 1);
-  });
-});
-
 describe('FlatShadows.setSun', () => {
   const material = (shadows: FlatShadows): Color =>
-    // Every stamp shares the one material — it hangs off the instanced mesh.
-    (instanced(shadows).material as unknown as { color: Color }).color;
+    // Every stamp shares the one material — read it off any stamp mesh.
+    ((shadows.group.children[0] as { material?: { color: Color } }).material as {
+      color: Color;
+    }).color;
 
   it('presence 0 → the stamp value equals the ground (invisible)', () => {
     const shadows = new FlatShadows();
@@ -212,33 +119,29 @@ describe('FlatShadows.setSun', () => {
     const radius = 2;
     const handle = shadows.addShadow('a', radius);
     handle.setPosition(5, -3);
+    const mesh = shadows.group.children[0]!;
 
     const az = 0.8;
     shadows.setSun(az, 0.1, 1);
     const e = stampEllipse(az, 0.1);
-    const low = stampAt(shadows);
-    // The radius rides in the scale now that the geometry is a unit disc.
-    expect(low.scale.x).toBeCloseTo(radius * e.stretch, MATRIX_DIGITS);
-    expect(low.scale.z).toBeCloseTo(radius, MATRIX_DIGITS); // short axis: the plain radius
-    expect(low.position.x).toBeCloseTo(5 + e.dirX * e.offset * radius, MATRIX_DIGITS);
-    expect(low.position.z).toBeCloseTo(-3 + e.dirZ * e.offset * radius, MATRIX_DIGITS);
+    expect(mesh.scale.x).toBeCloseTo(e.stretch, 12);
+    expect(mesh.scale.z).toBe(1); // short axis untouched — radius is baked in
+    expect(mesh.position.x).toBeCloseTo(5 + e.dirX * e.offset * radius, 12);
+    expect(mesh.position.z).toBeCloseTo(-3 + e.dirZ * e.offset * radius, 12);
 
     // Back to the noon reference: the original circle at the caster.
     shadows.setSun(az, STAMP_NOON_ALTITUDE, 1);
-    const noon = stampAt(shadows);
-    expect(noon.scale.x).toBeCloseTo(radius, MATRIX_DIGITS);
-    expect(noon.position.x).toBeCloseTo(5, MATRIX_DIGITS);
-    expect(noon.position.z).toBeCloseTo(-3, MATRIX_DIGITS);
+    expect(mesh.scale.x).toBeCloseTo(1, 12);
+    expect(mesh.position.x).toBeCloseTo(5, 12);
+    expect(mesh.position.z).toBeCloseTo(-3, 12);
   });
 
   it('applies the live ellipse to stamps added after setSun', () => {
     const shadows = new FlatShadows();
     shadows.setSun(2.2, 0.12, 1);
     shadows.addShadow('late', 1);
-    expect(stampAt(shadows).scale.x).toBeCloseTo(
-      stampEllipse(2.2, 0.12).stretch,
-      MATRIX_DIGITS,
-    );
+    const mesh = shadows.group.children[0]!;
+    expect(mesh.scale.x).toBeCloseTo(stampEllipse(2.2, 0.12).stretch, 12);
   });
 });
 
@@ -256,16 +159,16 @@ describe('FlatShadows lies on the ground it is given', () => {
   };
 
   /** The stamp's own up axis in world space — the flat disc's normal. */
-  const upAxis = (stamp: { quaternion: Quaternion }): Vector3 =>
-    new Vector3(0, 1, 0).applyQuaternion(stamp.quaternion);
+  const upAxis = (mesh: { quaternion: Quaternion }): Vector3 =>
+    new Vector3(0, 1, 0).applyQuaternion(mesh.quaternion);
 
   it('a flat surface keeps the old behaviour: at the lift, dead level', () => {
     const shadows = new FlatShadows(FLAT_SURFACE);
     shadows.addShadow('a', 1.5).setPosition(9, -4);
     shadows.setSun(0.8, 0.35, 1);
-    const stamp = stampAt(shadows);
-    expect(stamp.position.y).toBeCloseTo(SHADOW_LIFT, MATRIX_DIGITS);
-    const up = upAxis(stamp);
+    const mesh = shadows.group.children[0]!;
+    expect(mesh.position.y).toBeCloseTo(SHADOW_LIFT, 12);
+    const up = upAxis(mesh);
     expect(Math.abs(up.x)).toBeLessThan(1e-3);
     expect(Math.abs(up.y - 1)).toBeLessThan(1e-3);
     expect(Math.abs(up.z)).toBeLessThan(1e-3);
@@ -275,18 +178,18 @@ describe('FlatShadows lies on the ground it is given', () => {
     const shadows = new FlatShadows(ramp);
     shadows.addShadow('a', 2).setPosition(6, 3);
     shadows.setSun(0.8, 0.2, 1);
-    const stamp = stampAt(shadows);
+    const mesh = shadows.group.children[0]!;
 
     // Sampled where the stamp ACTUALLY lands: the low sun has pushed it off
     // the caster, and on a slope that push changes the height.
-    expect(stamp.position.y).toBeCloseTo(
-      ramp.sampleHeight(stamp.position.x, stamp.position.z) + SHADOW_LIFT,
-      MATRIX_DIGITS,
+    expect(mesh.position.y).toBeCloseTo(
+      ramp.sampleHeight(mesh.position.x, mesh.position.z) + SHADOW_LIFT,
+      12,
     );
-    expect(stamp.position.y).not.toBeCloseTo(SHADOW_LIFT, 6);
+    expect(mesh.position.y).not.toBeCloseTo(SHADOW_LIFT, 6);
 
-    const n = ramp.normalAt(stamp.position.x, stamp.position.z);
-    const up = upAxis(stamp);
+    const n = ramp.normalAt(mesh.position.x, mesh.position.z);
+    const up = upAxis(mesh);
     expect(Math.abs(up.x - n.x)).toBeLessThan(1e-3);
     expect(Math.abs(up.y - n.y)).toBeLessThan(1e-3);
     expect(Math.abs(up.z - n.z)).toBeLessThan(1e-3);
@@ -296,15 +199,15 @@ describe('FlatShadows lies on the ground it is given', () => {
     const radius = 2;
     const shadows = new FlatShadows(ramp);
     shadows.addShadow('a', radius).setPosition(5, -3);
+    const mesh = shadows.group.children[0]!;
 
     const az = 0.8;
     shadows.setSun(az, 0.1, 1);
     const e = stampEllipse(az, 0.1);
-    const stamp = stampAt(shadows);
-    expect(stamp.scale.x).toBeCloseTo(radius * e.stretch, MATRIX_DIGITS);
-    expect(stamp.scale.z).toBeCloseTo(radius, MATRIX_DIGITS); // short axis: the radius
-    expect(stamp.position.x).toBeCloseTo(5 + e.dirX * e.offset * radius, MATRIX_DIGITS);
-    expect(stamp.position.z).toBeCloseTo(-3 + e.dirZ * e.offset * radius, MATRIX_DIGITS);
+    expect(mesh.scale.x).toBeCloseTo(e.stretch, 12);
+    expect(mesh.scale.z).toBe(1); // short axis untouched — radius is baked in
+    expect(mesh.position.x).toBeCloseTo(5 + e.dirX * e.offset * radius, 12);
+    expect(mesh.position.z).toBeCloseTo(-3 + e.dirZ * e.offset * radius, 12);
 
     // ...and the long axis still points away from the sun — now measured in
     // the tilted disc's own plane, which is where the away direction lands
@@ -315,7 +218,7 @@ describe('FlatShadows lies on the ground it is given', () => {
       new Vector3(n.x, n.y, n.z),
     );
     const want = new Vector3(e.dirX, 0, e.dirZ).applyQuaternion(tilt);
-    const got = new Vector3(1, 0, 0).applyQuaternion(stamp.quaternion);
+    const got = new Vector3(1, 0, 0).applyQuaternion(mesh.quaternion);
     expect(got.dot(want)).toBeCloseTo(1, 6);
   });
 
@@ -325,10 +228,10 @@ describe('FlatShadows lies on the ground it is given', () => {
     const shadows = new FlatShadows();
     shadows.addShadow('a', 1).setPosition(18, -9);
     shadows.setSun(0.5, STAMP_NOON_ALTITUDE, 1);
-    const stamp = stampAt(shadows);
-    expect(stamp.position.y).toBeCloseTo(
-      ROLLING_SURFACE.sampleHeight(stamp.position.x, stamp.position.z) + SHADOW_LIFT,
-      MATRIX_DIGITS,
+    const mesh = shadows.group.children[0]!;
+    expect(mesh.position.y).toBeCloseTo(
+      ROLLING_SURFACE.sampleHeight(mesh.position.x, mesh.position.z) + SHADOW_LIFT,
+      12,
     );
   });
 });

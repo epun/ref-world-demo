@@ -69,13 +69,6 @@ export const DEV_SKILLS_META: readonly DevSkillMeta[] = [
       'weather controls — clear/overcast/fog/rain/snow, time of day, intensity, wind override. no-ops gracefully when the world exposes no environment handle.',
   },
   {
-    id: 'refworld.physics',
-    name: 'physics',
-    category: 'refworld',
-    description:
-      'the rigid-body world (plan §7) — how many bodies exist and how many are awake, drop a loose rock above the view to watch it tumble and settle, and wake everything. the terrain collider is sampled from the surface seam, so it follows a sculpt on its own.',
-  },
-  {
     id: 'refworld.character',
     name: 'character',
     category: 'refworld',

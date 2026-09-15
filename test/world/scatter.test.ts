@@ -58,7 +58,6 @@ import {
   WIND_STRENGTH_MIN,
   WIND_SWAY_KINDS,
   windAzimuth,
-  placementKey,
   type Placement,
 } from '../../src/world/scatter';
 // Collider surface (kept as a separate import: the physics workstream).
@@ -70,8 +69,6 @@ import {
 // The ground seam (PLAN §7.2): the scatter samples it and derives no height
 // of its own, so the tests below inject one and read the matrices back.
 import { FLAT_SURFACE, ROLLING_SURFACE } from '../../src/world/surface';
-// The gust-front field the scatter's wind now rides (src/world/wind.ts).
-import { gustAt } from '../../src/world/wind';
 
 /** Collect the named prop InstancedMeshes wherever they sit — variant meshes
  * now live inside per-kind container groups (KIND_GROUP_LABELS), one level
@@ -1320,168 +1317,6 @@ describe('scatter — refreshLandscape switches the map on and off', () => {
         }
       });
       expect(checked).toBeGreaterThan(50);
-    } finally {
-      scatter.dispose();
-    }
-  });
-});
-
-// ── the physics seam (src/world/rocks.ts) ───────────────────────────────────
-// The scatter is the single source for WHERE a placement is drawn; the
-// rigid-body layer writes body transforms into those rows, and asks the
-// scatter to stop drawing anything a creature has carried off. These pin the
-// things that layer depends on: a stable key, a version to watch, and ONE
-// `taken` filter that reaches drawing, colliders and positions alike.
-
-describe('placementKey', () => {
-  it('is stable for the same placement and distinct across kinds/variants', () => {
-    const p: Placement = { kind: 'rock', variant: 1, x: 12.345, z: -6.789, scale: 1, rotY: 0 };
-    expect(placementKey(p)).toBe(placementKey({ ...p }));
-    // Scale and rotation are NOT part of identity: the same stone re-rolled
-    // at a different size is the same stone in the same cell.
-    expect(placementKey({ ...p, scale: 1.2, rotY: 2 })).toBe(placementKey(p));
-    expect(placementKey({ ...p, variant: 0 })).not.toBe(placementKey(p));
-    expect(placementKey({ ...p, kind: 'tree' })).not.toBe(placementKey(p));
-    expect(placementKey({ ...p, x: 12.55 })).not.toBe(placementKey(p));
-  });
-});
-
-describe('rebuildVersion', () => {
-  it('bumps on every rebuild path', () => {
-    const scatter = createScatter();
-    try {
-      const start = scatter.rebuildVersion();
-      scatter.setExclusions([{ x: 0, z: 0, r: 5 }]);
-      const afterExclusions = scatter.rebuildVersion();
-      expect(afterExclusions).toBeGreaterThan(start);
-      scatter.refreshTerrain();
-      expect(scatter.rebuildVersion()).toBeGreaterThan(afterExclusions);
-    } finally {
-      scatter.dispose();
-    }
-  });
-});
-
-describe('instanceRefs', () => {
-  it('reports one row per drawn instance, keyed by placement', () => {
-    const scatter = createScatter();
-    try {
-      const refs = scatter.instanceRefs('rock');
-      expect(refs.length).toBeGreaterThan(0);
-      const keys = new Set(refs.map((r) => r.key));
-      expect(keys.size).toBe(refs.length);
-      const m = new Matrix4();
-      for (const ref of refs.slice(0, 40)) {
-        expect(ref.index).toBeGreaterThanOrEqual(0);
-        expect(ref.index).toBeLessThan(ref.mesh.count);
-        expect(ref.key).toBe(placementKey(ref.placement));
-        expect(ref.radius).toBeGreaterThan(0);
-        // The row really is this placement's: its matrix sits at its x/z.
-        ref.mesh.getMatrixAt(ref.index, m);
-        const at = new Vector3().setFromMatrixPosition(m);
-        expect(at.x).toBeCloseTo(ref.placement.x, 4);
-        expect(at.z).toBeCloseTo(ref.placement.z, 4);
-      }
-      // The radius is the same number positions() reports for that prop.
-      const byPoint = new Map(
-        scatter
-          .positions()
-          .filter((p) => p.kind === 'rock')
-          .map((p) => [`${p.x.toFixed(4)}:${p.z.toFixed(4)}`, p.r]),
-      );
-      for (const ref of refs.slice(0, 40)) {
-        const r = byPoint.get(
-          `${ref.placement.x.toFixed(4)}:${ref.placement.z.toFixed(4)}`,
-        );
-        expect(r).toBeDefined();
-        expect(r!).toBeCloseTo(ref.radius, 6);
-      }
-    } finally {
-      scatter.dispose();
-    }
-  });
-
-  it('gives the swaying kinds a zeroed aBend row and the rigid kinds none', () => {
-    const scatter = createScatter();
-    try {
-      const trees = scatter.instanceRefs('tree');
-      expect(trees.length).toBeGreaterThan(0);
-      for (const ref of trees.slice(0, 5)) {
-        const bend = ref.mesh.geometry.getAttribute('aBend');
-        expect(bend).toBeDefined();
-        expect(bend!.itemSize).toBe(2);
-        expect(bend!.getX(ref.index)).toBe(0);
-        expect(bend!.getY(ref.index)).toBe(0);
-      }
-      for (const ref of scatter.instanceRefs('rock').slice(0, 5)) {
-        expect(ref.mesh.geometry.getAttribute('aBend')).toBeUndefined();
-      }
-    } finally {
-      scatter.dispose();
-    }
-  });
-});
-
-describe('geometryFor', () => {
-  it('hands back the authored variant geometry, and null for a bad index', () => {
-    const scatter = createScatter();
-    try {
-      const g = scatter.geometryFor('rock', 0);
-      expect(g).not.toBeNull();
-      expect(g!.getAttribute('position').count).toBeGreaterThan(0);
-      expect(scatter.geometryFor('rock', 999)).toBeNull();
-    } finally {
-      scatter.dispose();
-    }
-  });
-});
-
-describe('setTaken', () => {
-  it('removes a placement from positions(), colliders() and instanceRefs()', () => {
-    const scatter = createScatter();
-    try {
-      const refs = scatter.instanceRefs('rock');
-      expect(refs.length).toBeGreaterThan(0);
-      const victim = refs[0]!;
-      const key = victim.key;
-      const at = { x: victim.placement.x, z: victim.placement.z };
-      const here = <T extends { x: number; z: number }>(list: T[]): T[] =>
-        list.filter((c) => c.x === at.x && c.z === at.z);
-      expect(scatter.instanceRefs('rock').filter((r) => r.key === key).length).toBe(1);
-      expect(here(scatter.positions()).length).toBe(1);
-      expect(here(scatter.colliders()).length).toBe(1);
-
-      const version = scatter.rebuildVersion();
-      scatter.setTaken(new Set([key]));
-      expect(scatter.rebuildVersion()).toBeGreaterThan(version);
-
-      expect(scatter.instanceRefs('rock').filter((r) => r.key === key).length).toBe(0);
-      expect(here(scatter.positions()).length).toBe(0);
-      expect(here(scatter.colliders()).length).toBe(0);
-
-      // Put it back: taken is a live set, not a graveyard.
-      scatter.setTaken(new Set());
-      expect(scatter.instanceRefs('rock').filter((r) => r.key === key).length).toBe(1);
-      expect(here(scatter.positions()).length).toBe(1);
-    } finally {
-      scatter.dispose();
-    }
-  });
-});
-
-describe('windField', () => {
-  it('reports the live wind as the gust-front field wants it', () => {
-    const scatter = createScatter();
-    try {
-      scatter.setWind(0.8, 4321);
-      const f = scatter.windField();
-      expect(f.strength).toBeCloseTo(0.8, 6);
-      expect(Math.hypot(f.dirX, f.dirZ)).toBeCloseTo(1, 6);
-      expect(f.dirX).toBeCloseTo(Math.cos(windAzimuth(4321)), 6);
-      expect(f.dirZ).toBeCloseTo(Math.sin(windAzimuth(4321)), 6);
-      // The same gust value the vertex shader is drawing with.
-      expect(f.gust).toBeCloseTo(gustAt(4.321), 12);
-      expect(f.speed).toBeGreaterThan(0);
     } finally {
       scatter.dispose();
     }

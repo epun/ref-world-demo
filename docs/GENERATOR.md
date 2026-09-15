@@ -148,36 +148,6 @@ since ruled: no color at all — the whole experience is black and white for now
 Under a future chromatic Ref collection, color re-enters through the ref-config layer,
 not through per-creature inputs.
 
-### 1b. The creature brief — Pikmin-inspired rig *(2026-09-15, user ask; supersedes 1a in part)*
-
-> User: *"keep the same mechanics for character generation … the drawing can inform the
-> color of the character as well as the silhouette … heavy inspiration from Pikmin … the
-> drawing or the shape of that drawing be the flower … maintain this kind of sketchy
-> doodle-toon shader aesthetic."* Brief: [`taste/creature.md`](./taste/creature.md).
-> Arbitration: [`TASTE.md` §8](./TASTE.md).
-
-The mechanics are unchanged: draw → the drawing is projected onto an egg → hatch → creature,
-all through the same pure, deterministic pipeline. What the creature IS changed:
-
-- **Body** — the §1a processed drawing blended `BODY_OVOID` of the way toward an egg of its
-  own bounds (`ovoidBlend`, `src/character/interpret.ts`), crown narrowed by `OVOID_TAPER`,
-  base flattened by `OVOID_FLAT_BOTTOM` so the two stubby legs stand under it. A wide
-  drawing is still wider than a tall one; a drawn triangle at the shipped amount still
-  shows shoulders; at 1 every drawing is the same egg. Tuned in the ghost panel.
-- **Colourway** — `src/character/palette.ts`. Six types, one hue each, chosen from the
-  drawing's motifs in a fixed order: bird → pink; two or more crown protrusions → purple;
-  quadruped → yellow; tall → blue; lumpy → grey (the rock type); otherwise → red. Topper
-  and stalk are tints of the body toward the brief's light and dark-neutral tokens.
-- **Stalk and topper** — `src/character/topper.ts`. A thin curved stalk from the crown of
-  the head; on it, the drawing itself, thinly inflated so it reads from every angle. The
-  topper is the brief's species marker; the egg still wears the drawing; the back marking
-  stays.
-- **Eyes** — two, wide-set, light ovals with dark pupils (`src/character/eyes.ts`). The
-  one-eye ruling in `reference/character-designs.md` is superseded.
-- **Render** — the ink pass is unchanged and is the "sketchy doodle-toon" layer: its toon
-  quantize rescales luma and keeps hue, so a coloured body comes out as flat cel bands of
-  its own hue with the wobbled contour on top, which is the board's line.
-
 ## New systems (wave 2)
 
 ### Behavior (`src/behavior/`)

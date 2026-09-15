@@ -29,15 +29,7 @@
  * handed a brush of radius one thousand, whatever sent it.
  */
 
-import type {
-  DropEvent,
-  LooseEvent,
-  PaintEvent,
-  SessionEvent,
-  SettleEvent,
-  StickEvent,
-  WorldEvent,
-} from './events';
+import type { PaintEvent, SessionEvent, WorldEvent } from './events';
 
 /**
  * The `world` fields that describe the GROUND rather than the light or the
@@ -56,23 +48,8 @@ export type SceneWorldField = (typeof SCENE_WORLD_FIELDS)[number];
  *
  * A `WorldEvent` is only a scene event when its `field` is one of
  * SCENE_WORLD_FIELDS — the type cannot say that, so `isSceneEvent` does.
- *
- * THE FOUR KATAMARI KINDS ARE IN HERE (2026-09-15) and it is worth saying
- * why, because they are the first CREATURE kinds in the scene layer and the
- * rule until now was "the ground, not the cast".
- *
- * They are not about the cast. `stick`, `drop`, `loose` and `settle` say
- * where the world's props have got to — which stone is on which creature,
- * which tree is lying down, where it came to rest. A phone watching the
- * room has to see the same pile and the same fallen tree as the projection
- * or it is watching a different world, and unlike a creature's path these
- * CANNOT be re-derived: they depend on a rapier simulation that runs on
- * exactly one page and is not bit-identical anywhere else
- * (src/physics/world.ts's determinism note). So they travel, on the same
- * outbox and the same topic and into the same store as a dab of the brush —
- * no second channel, which is the rule this layer exists to keep.
  */
-export type SceneEvent = WorldEvent | PaintEvent | StickEvent | DropEvent | LooseEvent | SettleEvent;
+export type SceneEvent = WorldEvent | PaintEvent;
 
 /**
  * Ceiling on stored events, past which the list is compacted rather than
@@ -152,25 +129,6 @@ export const SCENE_MAX_TEXEL = 4095;
  */
 export const SCENE_MAX_PATCH_TEXELS = 4096;
 
-/**
- * [D] An ITEM id: a placement key (`rock:2:11.50:-8.25`), a dev-dropped
- * rock (`spawn:3`), or a creature riding another (`creature:<drawer id>`).
- *
- * Shape-checked and bounded, never interpreted — the receiving page looks
- * it up and does nothing when it finds nothing, exactly as the layer id
- * below is checked here and resolved there. The bound is what stops a
- * public broker posting a megabyte of key.
- */
-const ITEM_ID = /^[A-Za-z0-9][A-Za-z0-9:.\-_]{0,63}$/;
-
-/** [D] Bound on a clump-local offset, world units. A pile is a few units
- * across and the biggest creature in the world is not twenty; 64 is the
- * door's bound, wide enough never to argue with a real pickup. */
-const MAX_OFFSET = 64;
-
-/** [D] Longest prop kind name. The longest real one is `picnicTable`. */
-const MAX_KIND = 24;
-
 /** A layer id: a short lowercase identifier. The layer must also EXIST on
  * the receiving page — `src/dev/paint.ts` looks it up and refuses an unknown
  * one — so this is the wire's shape check, not the world's truth. */
@@ -221,14 +179,6 @@ function readPatchScene(rec: Record<string, unknown>, t: number): SceneEvent | n
 /** Is this recorded event one the whole room has to see? */
 export function isSceneEvent(event: SessionEvent): event is SceneEvent {
   if (event.k === 'paint') return true;
-  if (
-    event.k === 'stick' ||
-    event.k === 'drop' ||
-    event.k === 'loose' ||
-    event.k === 'settle'
-  ) {
-    return true;
-  }
   if (event.k !== 'world') return false;
   return (SCENE_WORLD_FIELDS as readonly string[]).includes(event.field);
 }
@@ -347,115 +297,6 @@ function readPaintScene(rec: Record<string, unknown>, t: number): SceneEvent | n
 }
 
 /**
- * A unit quaternion, or null.
- *
- * NORMALISED rather than clamped, because a quaternion's four components
- * are not independent: clamping one of them to [-1, 1] leaves a rotation
- * that is still not a rotation, and three.js will happily apply it as a
- * shear. Anything that will not normalise (all zeros, an infinity) is
- * refused — there is no "closest rotation" to nothing.
- */
-function quat(
-  rec: Record<string, unknown>,
-): { qx: number; qy: number; qz: number; qw: number } | null {
-  const qx = num(rec['qx']);
-  const qy = num(rec['qy']);
-  const qz = num(rec['qz']);
-  const qw = num(rec['qw']);
-  if (qx === null || qy === null || qz === null || qw === null) return null;
-  const len = Math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw);
-  if (!(len > 1e-6)) return null;
-  return { qx: qx / len, qy: qy / len, qz: qz / len, qw: qw / len };
-}
-
-/** An item id, shape-checked and bounded (see ITEM_ID). */
-function itemId(value: unknown): string | null {
-  if (typeof value !== 'string' || !ITEM_ID.test(value)) return null;
-  return value;
-}
-
-/** A ground point, clamped to the map exactly like a dab's. */
-function ground(rec: Record<string, unknown>): { x: number; z: number } | null {
-  const x = num(rec['x']);
-  const z = num(rec['z']);
-  if (x === null || z === null) return null;
-  return {
-    x: clamp(x, -SCENE_EXTENT, SCENE_EXTENT),
-    z: clamp(z, -SCENE_EXTENT, SCENE_EXTENT),
-  };
-}
-
-function readStickScene(rec: Record<string, unknown>, t: number): SceneEvent | null {
-  const id = itemId(rec['id']);
-  if (id === null) return null;
-  const key = itemId(rec['item']);
-  if (key === null) return null;
-  const ox = num(rec['ox']);
-  const oy = num(rec['oy']);
-  const oz = num(rec['oz']);
-  if (ox === null || oy === null || oz === null) return null;
-  const q = quat(rec);
-  if (!q) return null;
-  // The mesh hints, all three or none of them: half a description would
-  // draw a tree at a bush's scale on a page that never had the placement.
-  const kindRaw = rec['kind'];
-  const variant = rec['variant'] === undefined ? null : num(rec['variant']);
-  const scale = rec['scale'] === undefined ? null : num(rec['scale']);
-  let mesh = {};
-  if (kindRaw !== undefined) {
-    if (typeof kindRaw !== 'string' || kindRaw.length === 0 || kindRaw.length > MAX_KIND) {
-      return null;
-    }
-    if (variant === null || !Number.isInteger(variant) || variant < 0 || variant > 255) {
-      return null;
-    }
-    if (scale === null || !(scale > 0)) return null;
-    mesh = { kind: kindRaw, variant, scale: Math.min(scale, MAX_OFFSET) };
-  }
-  return {
-    k: 'stick',
-    t,
-    id,
-    item: key,
-    ...mesh,
-    ox: clamp(ox, -MAX_OFFSET, MAX_OFFSET),
-    oy: clamp(oy, -MAX_OFFSET, MAX_OFFSET),
-    oz: clamp(oz, -MAX_OFFSET, MAX_OFFSET),
-    ...q,
-  };
-}
-
-function readDropScene(rec: Record<string, unknown>, t: number): SceneEvent | null {
-  const id = itemId(rec['id']);
-  if (id === null) return null;
-  const key = itemId(rec['item']);
-  if (key === null) return null;
-  const at = ground(rec);
-  if (!at) return null;
-  const q = quat(rec);
-  if (!q) return null;
-  return { k: 'drop', t, id, item: key, x: at.x, z: at.z, ...q };
-}
-
-function readLooseScene(rec: Record<string, unknown>, t: number): SceneEvent | null {
-  const key = itemId(rec['item']);
-  if (key === null) return null;
-  const at = ground(rec);
-  if (!at) return null;
-  return { k: 'loose', t, item: key, x: at.x, z: at.z };
-}
-
-function readSettleScene(rec: Record<string, unknown>, t: number): SceneEvent | null {
-  const key = itemId(rec['item']);
-  if (key === null) return null;
-  const at = ground(rec);
-  if (!at) return null;
-  const q = quat(rec);
-  if (!q) return null;
-  return { k: 'settle', t, item: key, x: at.x, z: at.z, ...q };
-}
-
-/**
  * Narrow an arbitrary parsed value to a scene event, clamped.
  *
  * Returns null for anything malformed rather than a half-read event: a dab
@@ -469,10 +310,6 @@ export function readSceneEvent(value: unknown): SceneEvent | null {
   if (t === null) return null;
   if (rec['k'] === 'world') return readWorldScene(rec, t);
   if (rec['k'] === 'paint') return readPaintScene(rec, t);
-  if (rec['k'] === 'stick') return readStickScene(rec, t);
-  if (rec['k'] === 'drop') return readDropScene(rec, t);
-  if (rec['k'] === 'loose') return readLooseScene(rec, t);
-  if (rec['k'] === 'settle') return readSettleScene(rec, t);
   return null;
 }
 
@@ -512,21 +349,6 @@ export function readSceneBatch(value: unknown, cap: number = MAX_SCENE_BATCH): S
  *   fresh map would put back a map somebody deleted. The clear itself goes
  *   with them: a page that never stamped anything has nothing to clear.
  *
- *   A DROP CANCELS THE STICK BEFORE IT, for the same carrier and the same
- *   item. A stone picked up and put down again is a stone lying on the
- *   ground, and a fresh page that replayed both would put it onto the pile
- *   and then take it off — which is visible, because the entrance slides
- *   (src/creatures/clump.ts). One drop cancels one stick, so a stone picked
- *   up twice and dropped once is still being carried.
- *
- *   A SETTLE ONLY HAS ITS LAST VALUE, per item — it is where the thing
- *   ended up, and every earlier answer to that question was superseded by
- *   the body coming to rest again. The same argument as a dial.
- *
- * `loose` events all survive: each one is the moment a different prop left
- * the ground, and a page that missed one would still be drawing that prop
- * standing where the scatter put it.
- *
  * Relative order is preserved for everything that survives, because a
  * flatten depends on the ground it is flattening and a landscape switch
  * decides what a dab is landing on.
@@ -541,43 +363,12 @@ export function compactScene(events: readonly SceneEvent[]): SceneEvent[] {
     }
   }
   const seen = new Set<string>();
-  /** Carrier+item pairs whose LATER drop is still looking for its stick. */
-  const dropped = new Map<string, number>();
   const out: SceneEvent[] = [];
   // Backwards, so "the last one wins" is simply "the first one seen".
   for (let i = events.length - 1; i >= 0; i--) {
     const event = events[i]!;
-    // A clear is a horizon for the props as much as for the paint: the map
-    // it threw away is the map those stones were standing on.
-    if (i <= lastClear && event.k !== 'world') continue;
     if (event.k === 'paint') {
-      out.push(event);
-      continue;
-    }
-    if (event.k === 'drop') {
-      const key = `${event.id}:${event.item}`;
-      dropped.set(key, (dropped.get(key) ?? 0) + 1);
-      out.push(event);
-      continue;
-    }
-    if (event.k === 'stick') {
-      const key = `${event.id}:${event.item}`;
-      const pending = dropped.get(key) ?? 0;
-      if (pending > 0) {
-        dropped.set(key, pending - 1);
-        continue;
-      }
-      out.push(event);
-      continue;
-    }
-    if (event.k === 'settle') {
-      const key = `settle:${event.item}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push(event);
-      continue;
-    }
-    if (event.k === 'loose') {
+      if (i <= lastClear) continue;
       out.push(event);
       continue;
     }

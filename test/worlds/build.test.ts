@@ -21,19 +21,16 @@ import { describe, expect, it } from 'vitest';
 import {
   HATCH_MODES,
   RESIDENTS,
-  WORLD_STYLES,
   applyWorldToHtml,
   normalizeHost,
   readWorlds,
   resolveWorld,
   sanitizeHatch,
   sanitizeResidents,
-  sanitizeStyle,
   sanitizeWorldName,
 } from '../../scripts/world-build.mjs';
 import { residentsFrom } from '../../src/world/residents';
 import { hatchModeFrom, readHatchMode } from '../../src/world/hatchmode';
-import { readWorldStyle, sanitizeStyle as sanitizeStyleApp } from '../../src/world/style';
 
 const ROOT = resolve(__dirname, '..', '..');
 const INDEX = readFileSync(join(ROOT, 'index.html'), 'utf8');
@@ -52,7 +49,6 @@ describe('worlds.json — one entry per deployment', () => {
       expect(config.host).toContain('.');
       expect(RESIDENTS).toContain(config.residents);
       expect(HATCH_MODES).toContain(config.hatch);
-      expect(WORLD_STYLES).toContain(config.style);
     }
   });
 
@@ -70,21 +66,11 @@ describe('worlds.json — one entry per deployment', () => {
       // ask: "already out there in the world"), so it is a timer world again
       // and `?hatch=manual` is the override for a run that wants the key.
       hatch: 'timer',
-      // the shipped look. only the world that ASKED for the override has it.
-      style: 'ink',
       dev: true,
     });
     // the public site is absent on purpose: it is the world without an
     // entry, and nothing a client adds may change what it builds.
     expect(Object.values(WORLDS).some((w) => w.host === 'ref-world-demo.vercel.app')).toBe(false);
-  });
-
-  it('knows valiocon asked for the ghibli look, and nobody else did', () => {
-    // docs/TASTE.md §9: a recorded user override on ONE world. Every other
-    // deployment, the public one first, renders the shipped ink look.
-    expect(WORLDS['valiocon']?.style).toBe('ghibli');
-    const styled = Object.entries(WORLDS).filter(([, w]) => w.style !== 'ink');
-    expect(styled.map(([name]) => name)).toEqual(['valiocon']);
   });
 });
 
@@ -112,7 +98,6 @@ describe('resolveWorld — what world is this build for', () => {
       host: 'ref-world-meridian.vercel.app',
       residents: 'none',
       hatch: 'timer',
-      style: 'ink',
       dev: true,
     });
   });
@@ -126,7 +111,6 @@ describe('resolveWorld — what world is this build for', () => {
       host: 'ref-world-meridian.vercel.app',
       residents: 'none',
       hatch: 'timer',
-      style: 'ink',
       dev: true,
     });
   });
@@ -140,9 +124,6 @@ describe('resolveWorld — what world is this build for', () => {
       // a world the file never heard of hatches on the clock, like the
       // public link. only a world that ASKED to be paused is paused.
       hatch: 'timer',
-      // …and a world the file never heard of renders the taste, not an
-      // override it never asked for.
-      style: 'ink',
       dev: false,
     });
   });
@@ -260,39 +241,6 @@ describe('hatch — who opens the eggs, the clock or a person', () => {
   });
 });
 
-describe('style — only the world that asked for it renders the override', () => {
-  it('reads the tag, and its absence', () => {
-    // the public build injects no tag at all, so absent has to mean the
-    // shipped look: the taste is the default and an override is opted into.
-    expect(sanitizeStyleApp('ghibli')).toBe('ghibli');
-    expect(sanitizeStyleApp(' GHIBLI ')).toBe('ghibli');
-    expect(sanitizeStyleApp(null)).toBe('ink');
-    expect(sanitizeStyleApp('')).toBe('ink');
-    expect(sanitizeStyleApp('ink')).toBe('ink');
-  });
-
-  it('a typo renders the taste rather than a palette nobody chose', () => {
-    expect(sanitizeStyleApp('ghibl')).toBe('ink');
-    expect(sanitizeStyleApp('toon')).toBe('ink');
-    expect(sanitizeStyle('ghibl')).toBe('ink');
-    expect(sanitizeStyle(undefined)).toBe('ink');
-    expect(sanitizeStyle('ghibli')).toBe('ghibli');
-  });
-
-  it('the two sides agree about every value either can produce', () => {
-    for (const value of [...WORLD_STYLES, 'nonsense', '']) {
-      expect(sanitizeStyleApp(value)).toBe(sanitizeStyle(value));
-    }
-  });
-
-  it('lets the address override the baked tag, both ways', () => {
-    expect(readWorldStyle('?style=ghibli', null)).toBe('ghibli');
-    expect(readWorldStyle('?style=ink', 'ghibli')).toBe('ink');
-    expect(readWorldStyle('', 'ghibli')).toBe('ghibli');
-    expect(readWorldStyle('', null)).toBe('ink');
-  });
-});
-
 describe('the html transform', () => {
   it('leaves the public build byte-identical', () => {
     // the property this whole design rests on: adding a client cannot
@@ -331,42 +279,6 @@ describe('the html transform', () => {
     );
     // and no uppercase in it, like everything else a build injects.
     expect(/refworld:hatch" content="([^"]*)"/.exec(manual)?.[1]).not.toMatch(/[A-Z]/);
-  });
-
-  it('tells a world with a style override which look to render', () => {
-    const styled = applyWorldToHtml(INDEX, {
-      name: 'valiocon',
-      host: 'ref-world-valiocon.vercel.app',
-      residents: 'none',
-      hatch: 'manual',
-      style: 'ghibli',
-      dev: true,
-    });
-    expect(styled).toContain('<meta name="refworld:style" content="ghibli" />');
-    expect(readWorldStyle('', /refworld:style" content="([^"]*)"/.exec(styled)?.[1] ?? null)).toBe(
-      'ghibli',
-    );
-    // and no uppercase in it, like everything else a build injects.
-    expect(/refworld:style" content="([^"]*)"/.exec(styled)?.[1]).not.toMatch(/[A-Z]/);
-    // still one document.
-    expect(styled.match(/<title>/g)).toHaveLength(1);
-  });
-
-  it('says nothing about the style for a world on the shipped look', () => {
-    // an absent tag is the taste, so the public html keeps not mentioning a
-    // setting it does not have — `out` above asks for no style at all, and a
-    // typo cannot inject one either.
-    expect(out).not.toContain('refworld:style');
-    for (const style of [undefined, 'ink', 'ghibl']) {
-      const plain = applyWorldToHtml(INDEX, {
-        name: 'harbour',
-        host: 'ref-world-harbour.vercel.app',
-        residents: 'shipped',
-        ...(style === undefined ? {} : { style }),
-        dev: false,
-      });
-      expect(plain).not.toContain('refworld:style');
-    }
   });
 
   it('says nothing about hatching for a world on the clock', () => {
@@ -467,7 +379,6 @@ describe('scripts/new-world.mjs — the worlds.json entry is the only file it wr
           host: 'ref-world-harbour.vercel.app',
           residents: 'shipped',
           hatch: 'timer',
-          style: 'ink',
           dev: false,
         },
       });
@@ -485,7 +396,6 @@ describe('scripts/new-world.mjs — the worlds.json entry is the only file it wr
           host: 'ref-world-harbour.vercel.app',
           residents: 'shipped',
           hatch: 'timer',
-          style: 'ink',
           dev: false,
         },
       });
@@ -502,13 +412,7 @@ describe('scripts/new-world.mjs — the worlds.json entry is the only file it wr
       const { status, out } = run(['meridian', '--clean', '--host', 'meridian.example', '--file', file]);
       expect(status).toBe(0);
       expect(readWorlds(file)).toEqual({
-        meridian: {
-          host: 'meridian.example',
-          residents: 'none',
-          hatch: 'timer',
-          style: 'ink',
-          dev: false,
-        },
+        meridian: { host: 'meridian.example', residents: 'none', hatch: 'timer', dev: false },
       });
       expect(out).toContain('none');
       expect(out).toContain('nothing to seed');

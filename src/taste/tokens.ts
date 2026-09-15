@@ -44,29 +44,6 @@ export const CHARACTER = {
   accent: '#fb5429',
 } as const;
 
-// ── Creature palette (creature brief, 2026-09-15) ────────────────────────────
-// docs/taste/creature.md — TASTE §8. The brief's own tokens [M] are the
-// sheets' palette (paper, neutrals, one dark ground); the six body hues are
-// ours [D], pitched at its measured saturation (0.609, vivid, warm). One hue
-// per creature, never mixed; topper and stalk are tints of the body toward
-// `light` and `darkNeutral` (src/character/palette.ts).
-
-export const CREATURE = {
-  /** [M] Highlights and light-struck surfaces — the eye white, the topper tint. */
-  light: '#f7f4f1',
-  /** [M] The dark supporting tone — what the stalk is tinted toward. */
-  darkNeutral: '#544c50',
-  /** [M] The brief's ground token — the pupil, the one dark on the figure. */
-  ground: '#1a1717',
-  /** [D] The six types. */
-  red: '#d9483b',
-  blue: '#4f86c6',
-  yellow: '#e9b93a',
-  purple: '#8b63b8',
-  pink: '#e58aae',
-  grey: '#9b9591',
-} as const;
-
 // ── Applied surfaces [D] ─────────────────────────────────────────────────────
 // Assignments are ours (TASTE §6); the values they point at are measured.
 
@@ -158,72 +135,3 @@ export const GRAIN = {
 
 export const MARK_KINDS = ['icon', 'ruleLine', 'border'] as const;
 export type MarkKind = (typeof MARK_KINDS)[number];
-
-// ── Ghibli style — user override (2026-09-15) [D] ────────────────────────────
-// Ported verbatim from envpaint's `ghibli-toon` style (src/styles/ghibli-toon.js
-// and src/core/Sun.js). NOT a measured taste value, and not attributable to
-// either brief: a single world (valiocon) opts into a saturated cel palette
-// instead of the near-achromatic one. Everything above stays the default and
-// every other deployment keeps rendering from it. See docs/TASTE.md §9.
-//
-// Nothing here may leak into a world on the `ink` style — it is reached only
-// through src/world/style.ts, and only when that resolves to `ghibli`.
-
-export const GHIBLI = {
-  /** Warm key. */
-  sun: '#fff3d6',
-  /** Cool hemisphere sky. */
-  sky: '#dcecff',
-  /** Hemisphere bounce off the meadow. */
-  hemiGround: '#9cb07a',
-  /** Scene background — envpaint's skyTop. */
-  background: '#bfe0ff',
-  fog: '#e9f0f6',
-  /** Contour/ink colour: a violet-blue, never black. */
-  ink: '#2a2340',
-  // terrain albedos
-  meadow: '#8fcf5a',
-  lush: '#6ab545',
-  dirt: '#c69a63',
-  dirtEdge: '#a57b4d',
-  /** Steep-slope rock on the ground shader. */
-  rock: '#9a9aa6',
-  snow: '#f6f9ff',
-  ash: '#4a4643',
-  char: '#2f2a27',
-  // grass marks
-  grassBase: '#5aa845',
-  grassTip: '#cfe872',
-  // rocks and built things
-  rockBody: '#8f8c88',
-  /** The warm paper of built props. */
-  rockWarm: '#bfb8ab',
-  rockCool: '#5f7396',
-  moss: '#6fa04a',
-  // clouds
-  cloudLit: '#ffffff',
-  cloudShade: '#b9c8e6',
-  // trees
-  canopyShade: '#3f7d34',
-  canopyLight: '#9ad35a',
-  canopyHighlight: '#d8f08a',
-  trunk: '#7a5a3a',
-  // water
-  waterDeep: '#2b6ec2',
-  waterMid: '#3d8fe0',
-  waterShallow: '#79c6f4',
-  foam: '#f7ffff',
-  /**
-   * Cool violet-blue shadow multiplier, LINEAR — set straight onto a Color's
-   * components, never through the srgb transfer curve.
-   */
-  shadowTint: [0.5, 0.66, 0.82] as [number, number, number],
-  /** n·l where lit flips to shadow. */
-  bandEdge: 0.22,
-  /** Terminator softness. */
-  bandSoft: 0.04,
-  /** Strength of the thin mid band; 0 is a pure two-tone. */
-  halfTone: 0.35,
-  /** Silhouette edge light on the shade side. */
-  rim: 0.18,
-} as const;

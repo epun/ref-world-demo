@@ -38,12 +38,9 @@ import {
   type HatchCause,
   type KeepAction,
   type KeepSource,
-  type DropEvent,
   type OperatorAction,
   type PaintEvent,
   type RetireCause,
-  type SettleEvent,
-  type StickEvent,
   type SessionConfig,
   type SessionEvent,
   type SessionLog,
@@ -125,13 +122,6 @@ export type DrawingRecord = Omit<DrawingEvent, 't' | 'k'>;
  * a caller hands over whatever the brush gave it. */
 export type PaintRecord = Omit<PaintEvent, 't' | 'k'> & { tool: string };
 
-/** One pickup, one drop, one settle — minus the offset the recorder
- * stamps. Rounding happens in here, so a caller hands over whatever the
- * solver gave it. */
-export type StickRecord = Omit<StickEvent, 't' | 'k'>;
-export type DropRecord = Omit<DropEvent, 't' | 'k'>;
-export type SettleRecord = Omit<SettleEvent, 't' | 'k'>;
-
 /** A steering intent on the ground plane. `null` (or `mag: 0`) is the
  * release — the same shape `CreatureManager.drive` takes. */
 export interface DriveVector {
@@ -160,21 +150,6 @@ export interface SessionRecorder {
   keep(id: string, action: KeepAction, source?: KeepSource): void;
   operator(action: OperatorAction, id: string | null, on?: boolean): void;
   world(field: string, value: number | string | boolean | null, kind?: string): void;
-  /**
-   * The katamari four (src/creatures/sticky.ts, docs/SESSION.md §6).
-   *
-   * Discrete seams, every one of them, which is what keeps this module's
-   * promise that nothing in it is a per-frame sample: an item sticks once,
-   * comes off once, a prop leaves the ground once, and a body reports
-   * coming to rest only after it has MOVED and only once per
-   * `MOTION.secondaryMs` (the rate cap is on the host's side, in
-   * src/world/rocks.ts, because it is the thing that knows a body went to
-   * sleep). Rounded here, like every other geometry in this file.
-   */
-  stick(record: StickRecord): void;
-  drop(record: DropRecord): void;
-  loose(item: string, x: number, z: number): void;
-  settle(record: SettleRecord): void;
   /** Live view of the events — do not mutate. */
   events(): readonly SessionEvent[];
   count(): number;
@@ -326,49 +301,6 @@ export function createSessionRecorder(opts: RecorderOptions): SessionRecorder {
         return;
       }
       push({ k: 'world', t, field, value, ...(kind === undefined ? {} : { kind }) });
-    },
-    stick(record: StickRecord): void {
-      push({
-        ...record,
-        k: 'stick',
-        t: stamp(),
-        ox: round3(record.ox),
-        oy: round3(record.oy),
-        oz: round3(record.oz),
-        qx: round6(record.qx),
-        qy: round6(record.qy),
-        qz: round6(record.qz),
-        qw: round6(record.qw),
-      });
-    },
-    drop(record: DropRecord): void {
-      push({
-        ...record,
-        k: 'drop',
-        t: stamp(),
-        x: round3(record.x),
-        z: round3(record.z),
-        qx: round6(record.qx),
-        qy: round6(record.qy),
-        qz: round6(record.qz),
-        qw: round6(record.qw),
-      });
-    },
-    loose(item: string, x: number, z: number): void {
-      push({ k: 'loose', t: stamp(), item, x: round3(x), z: round3(z) });
-    },
-    settle(record: SettleRecord): void {
-      push({
-        ...record,
-        k: 'settle',
-        t: stamp(),
-        x: round3(record.x),
-        z: round3(record.z),
-        qx: round6(record.qx),
-        qy: round6(record.qy),
-        qz: round6(record.qz),
-        qw: round6(record.qw),
-      });
     },
     events: () => events,
     count: () => events.length,

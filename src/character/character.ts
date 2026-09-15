@@ -30,12 +30,9 @@ import { runEmote, type EmoteRun } from './emotes';
 import { createGait } from './gait';
 import { applyEyes } from './eyes';
 import type { Expression, ExpressionName } from './expressions';
-import { identitySeedOf, interpretDrawing, strokeSeed } from './interpret';
+import { identitySeedOf, interpretDrawing } from './interpret';
 import { applyMarking } from './marking';
 import { createCharacterMaterial, deformFrameOf, toBufferGeometry } from './mesh';
-import { paletteFor, paletteNamed, type CreaturePalette, type PaletteName } from './palette';
-import { createTopper } from './topper';
-import { applyToon } from '../world/toon';
 
 /** Target character height in world units. Characters render small —
  * "scale is the subject" (PLAN §7). */
@@ -44,25 +41,6 @@ export const CHARACTER_HEIGHT = 3.5;
 /** Shadow stamp sits a touch inside the footprint, like the test blob's. */
 const SHADOW_FIT = 0.85;
 
-/**
- * Dev-only colourway override (src/dev/index.ts, `character` folder). null =
- * auto, i.e. the colourway the drawing's own motifs measure out. Module-level
- * and mutable on purpose: the panel writes it, creatures built afterwards
- * read it. Nothing in the shipping paths ever sets it.
- */
-let paletteOverride: PaletteName | null = null;
-
-/** Dev only: pin every creature built afterwards to one colourway, or null
- * to hand the choice back to the drawing. */
-export function setPaletteOverride(name: PaletteName | null): void {
-  paletteOverride = name;
-}
-
-/** Dev only: the current override (the panel seeds its select from this). */
-export function paletteOverrideName(): PaletteName | null {
-  return paletteOverride;
-}
-
 export interface Character {
   /** Add to the scene; position/rotation are owned by update(). */
   group: Group;
@@ -70,9 +48,6 @@ export interface Character {
   radius: number;
   /** The shape analysis, kept for later modules (eyes, gait). */
   analysis: ShapeAnalysis;
-  /** The creature's colourway (./palette.ts), read off the drawing's own
-   * motifs — the brief's *"color itself signals identity"*. Read-only. */
-  readonly palette: CreaturePalette;
   /** Glide the eyes to an expression (springs retarget, never snap). */
   setExpression(e: ExpressionName | Expression): void;
   /**
@@ -135,12 +110,6 @@ export interface CharacterOptions {
    */
   fidelity?: number;
   /**
-   * Marking texture edge in texels (src/character/marking.ts). Unset keeps
-   * the 512 the phone portrait wants; the world passes 256, where a creature
-   * is a few percent of the frame and the population is large.
-   */
-  markingSize?: number;
-  /**
    * Body construction (docs/BLENDSHELL.md step 6): 'inflate' (default,
    * shipping) inflates the synthesized silhouette; 'blendshell' builds the
    * SDF blend-shell body with IK stepping — behind this flag until visual
@@ -193,11 +162,6 @@ export function createCharacter(
   // the silhouette that actually exists.
   const analysis = interpreted.analysis;
 
-  // The colourway: measured off the drawing's motifs, unless the dev panel
-  // has pinned one.
-  const palette =
-    paletteOverride === null ? paletteFor(interpreted.motifs) : paletteNamed(paletteOverride);
-
   const geometry = toBufferGeometry(inflate(analysis));
   const box = geometry.boundingBox;
   if (!box || box.isEmpty()) {
@@ -210,31 +174,20 @@ export function createCharacter(
   const height = Math.max(box.max.y - box.min.y, 1e-6);
   const scale = (CHARACTER_HEIGHT / height) * worldScale;
 
-  const material = createCharacterMaterial(palette.body);
+  const material = createCharacterMaterial();
   // Whole-body deformation (PLAN §3.5): squash/lean/twist/reach uniforms
   // injected into the vertex shader, bending the mesh about its base.
   const frame = deformFrameOf(geometry);
   const deform = applyDeform(material, frame);
   // Recognition channel 2: the ORIGINAL drawing, painted on the BACK as a
   // quiet light knockout. Chains onto the deform hook — order matters.
-  const marking = applyMarking(material, strokes, box, identitySeed, {
-    ...(options.markingSize ? { size: options.markingSize } : {}),
-  });
+  const marking = applyMarking(material, strokes, box, identitySeed);
   // The eye: painted INTO the same material (no cap geometry to catch the
   // free-orbit camera edge-on). Chained after deform + marking; because its
   // projection reads the undeformed position, it rides every squash / lean /
   // twist / gait exactly where the vertex shader puts the surface. The two
   // marks never meet: the eye fades in on +normal.z, the marking on −.
-  const eyes = applyEyes(material, analysis, identitySeed, undefined, {
-    eye: palette.eye,
-    pupil: palette.pupil,
-  });
-
-  // Cel lighting (src/world/toon.ts), chained LAST — after deform → marking →
-  // eye, so it wraps that chain instead of replacing it. Inert until a world
-  // on the ghibli style switches it on, and it is the same shared uniform set
-  // the ground and the props carry, so the creature lights with them.
-  applyToon(material);
+  const eyes = applyEyes(material, analysis, identitySeed);
 
   const mesh = new Mesh(geometry, material);
   mesh.scale.setScalar(scale);
@@ -243,33 +196,6 @@ export function createCharacter(
 
   const group = new Group();
   group.add(mesh);
-
-  // The creature brief's rig: a stalk from the crown ending in a topper that
-  // IS the drawing (./topper.ts). Parented to the body MESH so it inherits
-  // the mesh's scale and ground lift and needs no second transform. Its
-  // geometry is baked into the body's object space, and the body's deform
-  // handles attach to its materials below, so every squash, lean, twist,
-  // reach and gait step the body takes carries up the stalk to the topper
-  // (user ask, 2026-09-15). The body stays the group's first Mesh child.
-  // Same recipe as the interpretation seed: the strokes, salted by identity
-  // when there is one, so two hatchlings of one drawing lean their stalks
-  // differently while either one is identical on the phone and in the world.
-  const topperSeed =
-    identitySeed === undefined ? strokeSeed(strokes) : (strokeSeed(strokes) ^ identitySeed) >>> 0;
-  const topper = createTopper({
-    body: geometry,
-    analysis,
-    source: interpreted.source,
-    palette,
-    seed: topperSeed,
-  });
-  mesh.add(topper.group);
-  for (const m of topper.materials) {
-    // `deform.attach` ASSIGNS onBeforeCompile rather than chaining it, so the
-    // toon wrap has to come after it on every topper material too.
-    deform.attach(m);
-    applyToon(m);
-  }
 
   // One ζ≥1 spring per deform channel. Squash is the attack channel (the
   // quick dip in happy/angry) and settles a step faster; the rest drift at
@@ -312,11 +238,8 @@ export function createCharacter(
 
   return {
     group,
-    // The BODY's footprint: the shadow stamp and collision are the body's,
-    // never the topper's — the stalk casts no ground presence of its own.
     radius,
     analysis,
-    palette,
     setExpression(e: ExpressionName | Expression): void {
       eyes.setExpression(e);
     },
@@ -377,8 +300,6 @@ export function createCharacter(
         bubble.dispose();
       }
       eyes.dispose();
-      mesh.remove(topper.group);
-      topper.dispose();
       group.remove(mesh);
       geometry.dispose();
       material.dispose();

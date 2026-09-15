@@ -39,7 +39,6 @@ import { Spring } from '../motion/spring';
 import type { StrokeList } from '../shape/types';
 import { MOTION, SURFACE } from '../taste/tokens';
 import { applyCrackShader } from './crack';
-import { applyToon } from '../world/toon';
 
 /** Egg height in world units, resting on the ground. */
 export const EGG_HEIGHT = 2.6;
@@ -66,14 +65,7 @@ const WOBBLE_RATIO = Math.SQRT2;
  */
 const FACE_CAMERA_Y = -Math.PI / 4;
 
-/**
- * Shell texture edge. 1024 → 512 (2026-09-15, the crowd work): an egg is a
- * few percent of the frame and a manual world stands its whole clutch at
- * once, so at two hundred eggs the shells were ~800MB of RGBA on the GPU
- * before a single one hatched. Half the edge is a quarter of that, and the
- * paint-on strokes are drawn at STAMP_SIZE and scaled onto it as before.
- */
-const TEX_SIZE = 512;
+const TEX_SIZE = 1024;
 const STAMP_SIZE = 512;
 
 /** A partial-shell range, used by the hatch to split the egg into pieces. */
@@ -353,11 +345,6 @@ export function createEgg(strokes: StrokeList, options: EggOptions = {}): Egg {
     clearcoatRoughness: 0.25,
   });
   const crackHandle = applyCrackShader(material, seed);
-  // Cel lighting, chained on top of the crack injection (src/world/toon.ts):
-  // the shell is a lit MeshPhysicalMaterial, so a world on the ghibli style
-  // has to light it with everything else or the eggs stay smooth-shaded lumps
-  // on a cel field. Inert on every other world.
-  applyToon(material);
 
   const mesh = new Mesh(geometry, material);
   const group = new Group();

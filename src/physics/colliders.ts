@@ -26,35 +26,6 @@ export interface Collider {
   /** Footprint radius, world units. */
   r: number;
   hard: boolean;
-  /**
-   * Which prop published it, when a prop did.
-   *
-   * Two callers need it and neither of them is the resolve sweep. The
-   * creature layer uses it to hand a rooted prop to `src/creatures/sticky.ts`
-   * (a bush yields at a nudge, a monolith does not), and the same layer
-   * SKIPS `rock` once rapier is simulating — a loose stone is a rigid body
-   * from that moment, and resolving a creature against both its body and its
-   * old footprint circle would push the creature out of a stone that is no
-   * longer there (src/creatures/manager.ts `gatherNear`).
-   *
-   * Optional because the water circles the landscape appends carry no kind,
-   * and neither does a test's hand-built collider. A string rather than the
-   * `PropKind` union so this module keeps importing nothing.
-   */
-  kind?: string;
-  /**
-   * The placement it came from (`src/world/scatter.ts` `placementKey`), when
-   * a placement published it.
-   *
-   * The resolve sweep never reads it either. It is how a caller that has been
-   * handed a contact can act on the PROP rather than on a circle: kick its
-   * recoil spring, ask how sticky it is, knock it out of the ground. Without
-   * it the creature layer would have to re-derive a key from a position,
-   * which is re-deriving an identity the scatter already had in hand.
-   *
-   * Optional for the same reasons `kind` is.
-   */
-  key?: string;
 }
 
 /** Grid cell edge, world units. Props are 0.5–2.5u circles and creatures

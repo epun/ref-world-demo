@@ -7,9 +7,6 @@
 
 import { describe, expect, it } from 'vitest';
 import {
-  ovoidBlend,
-  OVOID_TAPER,
-  BODY_OVOID,
   CHUNK_FLOOR,
   SPECIES_ASPECT_MAX,
   SPECIES_ASPECT_MIN,
@@ -196,14 +193,10 @@ describe('corner preservation', () => {
     expect(corners).toBeLessThanOrEqual(5);
   });
 
-  it('a square-ish drawing keeps its four corners (the §1a body, ovoid 0)', () => {
-    const raw = interpretDrawing(squareOutline, 1, { ...OPTS, ovoid: 0 })!.analysis;
-    const corners = dominantConvexCorners(raw);
+  it('a square-ish drawing keeps its four corners', () => {
+    const corners = dominantConvexCorners(interpret(squareOutline));
     expect(corners).toBeGreaterThanOrEqual(4);
     expect(corners).toBeLessThanOrEqual(6);
-    // At the shipped ovoid the base is rounded (creature brief: soft-bodied,
-    // flat-based) but the shoulders still read — the drawing informs.
-    expect(dominantConvexCorners(interpret(squareOutline))).toBeGreaterThanOrEqual(2);
   });
 
   it('an outline circle stays smooth — no invented corners', () => {
@@ -420,66 +413,5 @@ describe('identity salt', () => {
         }
       }
     }
-  });
-});
-
-// ── the creature brief's constant body (docs/taste/creature.md) ──────────────
-
-describe('ovoid blend', () => {
-  const at = (strokes: StrokeList, ovoid: number): ShapeAnalysis =>
-    interpretDrawing(strokes, 1, { ...OPTS, ovoid })!.analysis;
-
-  function solidity(a: ShapeAnalysis): number {
-    // Ink area over its bounding box: an egg is ~0.78, a sprawling drawing less.
-    const { minX, minY, maxX, maxY } = a.bounds;
-    let ink = 0;
-    for (let y = minY; y <= maxY; y++)
-      for (let x = minX; x <= maxX; x++) ink += a.mask.data[y * a.mask.size + x]!;
-    return ink / ((maxX - minX + 1) * (maxY - minY + 1));
-  }
-
-  it('the shipped amount is a real blend, not either extreme', () => {
-    expect(BODY_OVOID).toBeGreaterThan(0);
-    expect(BODY_OVOID).toBeLessThan(1);
-    expect(OVOID_TAPER).toBeGreaterThan(0);
-  });
-
-  it('0 is the §1a body untouched; 1 rounds everything toward one egg', () => {
-    for (const fixture of [triangleOutline, snowman, bird]) {
-      const raw = at(fixture, 0);
-      const egg = at(fixture, 1);
-      expect(solidity(egg)).toBeGreaterThanOrEqual(solidity(raw) - 0.02);
-    }
-    // A drawn triangle at full ovoid loses its shoulders.
-    expect(dominantConvexCorners(at(triangleOutline, 1))).toBeLessThan(
-      dominantConvexCorners(at(triangleOutline, 0)),
-    );
-  });
-
-  it('the drawing still informs the body at the shipped amount', () => {
-    // A wide hat stays wider than a tall snowman — the rig holds, the
-    // drawing informs (user ask, 2026-09-15).
-    const wide = extractMotifs(at(hat, BODY_OVOID)).aspect;
-    const tall = extractMotifs(at(snowman, BODY_OVOID)).aspect;
-    expect(wide).toBeLessThan(tall);
-  });
-
-  it('keeps the two stubby legs under the egg (flat base)', () => {
-    for (const fixture of [snowman, circleBlob, quadruped]) {
-      expect(extractMotifs(at(fixture, BODY_OVOID)).feet.length).toBe(2);
-    }
-  });
-
-  it('is deterministic and pure', () => {
-    const a = at(snowman, BODY_OVOID);
-    const b = at(snowman, BODY_OVOID);
-    expect(Array.from(a.mask.data)).toEqual(Array.from(b.mask.data));
-    const mask = { size: 16, data: new Uint8Array(256) };
-    for (let y = 4; y < 12; y++) for (let x = 6; x < 10; x++) mask.data[y * 16 + x] = 1;
-    const once = ovoidBlend(mask, 0.5);
-    const twice = ovoidBlend(mask, 0.5);
-    expect(Array.from(once.data)).toEqual(Array.from(twice.data));
-    // Amount 0 hands the mask back as is.
-    expect(ovoidBlend(mask, 0)).toBe(mask);
   });
 });

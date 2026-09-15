@@ -13,7 +13,7 @@
  * creature sinks and fades out over t.primary, then disposes.
  */
 
-import { Frustum, Group, Matrix4, Mesh, Quaternion, Sphere, Vector3 } from 'three';
+import { Group, Mesh, Vector3 } from 'three';
 import type { Object3D } from 'three';
 import {
   BehaviorAgent,
@@ -36,8 +36,6 @@ import {
   stepCreatures,
   type CreatureBody,
 } from '../physics/resolve';
-import { SpatialHash } from '../physics/spatial';
-import { NOTICE_RADIUS } from '../behavior/states';
 import { VARIATION_BULGE, VARIATION_SCALE_XZ } from '../world/scatter';
 import { createEgg, EGG_RADIUS, type Egg } from '../egg/egg';
 import { startHatch, type HatchHandle } from '../egg/hatch';
@@ -48,25 +46,7 @@ import { FOLLOW_TAU_MS, followFraction, shortestAngle } from '../net/worldsync';
 import type { WorldHandles } from '../world/scene';
 import type { ShadowHandle } from '../world/shadows';
 import { ROLLING_SURFACE, type Surface } from '../world/surface';
-import { isWater } from '../world/landscape';
 import { resolveName } from './naming';
-import { createClump, type Clump, type StuckItem } from './clump';
-import {
-  carryLimit,
-  clumpLocalOffset,
-  clumpLocalRotation,
-  decideContact,
-  CONTACT_PAD,
-  DROP_MIN_GAP_MS,
-  impactOf,
-  shouldDrop,
-  STICKY,
-  STUCK_COLLIDERS_MAX,
-} from './sticky';
-import type { LooseMeshes } from '../world/loose';
-import type { LooseItem, PropBodies } from '../world/rocks';
-import { placementKey } from '../world/scatter';
-import type { PropKind } from '../world/props';
 
 /** Shipped wander-speed multiplier (panel export, user ask): a touch
  * brisker than spec pace. The panel slider starts here. */
@@ -112,62 +92,8 @@ export const DRIVE_TURN_TAU_MS = 90;
  */
 export const DRIVE_IDLE_MS = MOTION.primaryMs;
 
-/**
- * Practical demo guard, not a design cap (see header).
- *
- * 96 → 256 (2026-09-15, user ask: *"support 100-200 players at one time"*).
- * The guard is a frame-rate guarantee, and what made it affordable to lift
- * is the crowd-engine work that landed with it: the per-frame neighbour
- * gather and the pair separation both went from all-pairs to a spatial
- * hash (src/physics/spatial.ts), off-screen creatures update their
- * presentation on a stride (`OFFSCREEN_STRIDE`), and the shadow stamps
- * draw as one instanced mesh (src/world/shadows.ts).
- */
-export const MAX_POPULATION = 256;
-
-/**
- * How far an agent looks for company, world units. **[D]**
- *
- * The behaviour model only ever asks two things of its peers: who is the
- * nearest, and is anyone within NOTICE_RADIUS (src/behavior/states.ts).
- * Twice that radius is far enough that a creature an agent has decided to
- * approach stays resolvable while it walks over, and near enough that a
- * field of two hundred hands each agent a handful of peers instead of the
- * whole cast. A creature with nobody inside it reads as alone, which at
- * that distance it is.
- */
-export const PEER_RADIUS = NOTICE_RADIUS * 2;
-
-/**
- * Every Nth frame, an OFF-SCREEN creature refreshes its presentation. **[D]**
- *
- * The port of the reference crowd engine's amortised update: it advances
- * physics for a quarter of its crowd per frame and rewrites matrices for
- * far characters one frame in four. Here the SIMULATION still runs every
- * frame for every creature — the host's positions are the truth every
- * phone follows, and a creature nobody is looking at is still walking
- * somewhere — but the part only a viewer can see (gait and emote springs,
- * eye state, the name bubble, the shadow stamp on the terrain) is refreshed
- * one frame in four while it is outside the camera's frustum, with the
- * skipped frames' dt handed over in one piece. The springs are critically
- * damped and substep internally, so a bigger dt is the same curve, not a
- * different one; and there is no visible step, because nothing was visible.
- * The tour camera frames a small piece of a huge map (PLAN §7.1), so at
- * two hundred creatures this is most of them, most of the time.
- */
-export const OFFSCREEN_STRIDE = 4;
-
-/** Cap on the dt handed over after a run of skipped frames, ms — a tab
- * that was hidden for a minute does not owe the springs a minute. */
-const OFFSCREEN_DT_CAP = 250;
-
-/**
- * Marking texture edge for a WORLD creature, texels. **[D]** A creature is
- * 1-3% of the frame here (PLAN §7, "scale is the subject"), so 256² is
- * already more texels than it ever covers; the phone portrait keeps the
- * 512 default. At the cap this is a quarter of the texture memory.
- */
-const WORLD_MARKING_SIZE = 256;
+/** Practical demo guard, not a design cap (see header). */
+export const MAX_POPULATION = 96;
 
 /** The eviction decision, as little of a slot as it actually needs. */
 export interface Evictable {
@@ -235,68 +161,14 @@ const HATCH_STAGGER_MS = MOTION.tertiaryMs;
 const CRACK_TEASER = 0.3;
 
 /**
- * How far from the origin a creature may spawn, world units. **[D]**
- *
- * Inside `TERRAIN.farStart` (150), where the authored geography is still at
- * full height, with a margin so a spot never lands on the ramp down to the
- * flat outer disc. Wide on purpose: the point is a population that reads as
- * scattered over the whole field, not a clutch at the hatch clearing.
+ * Deterministic spawn spot for the nth creature: a golden-angle spiral
+ * around the origin, so any population reads as a loose organic scatter —
+ * never a row, never a grid (grid governs placement of props, not beings).
  */
-export const SPAWN_RADIUS = 120;
-
-/** How many candidate spots one id tries before settling for the last. */
-const SPAWN_ATTEMPTS = 8;
-
-/** A spot this close to a shoreline is refused — an egg on the bank, never
- * in the shallows. Egg footprint plus the clearance a rock gets. */
-const SPAWN_WATER_PAD = EGG_RADIUS + 0.25 + 1;
-
-/** fnv-1a over a string, then one round of mixing — a seed, not a hash
- * anyone reads. Same string → same number on every device. */
-function hashId(id: string, salt: number): number {
-  let h = 2166136261 ^ salt;
-  for (let i = 0; i < id.length; i++) {
-    h ^= id.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  h ^= h >>> 15;
-  h = Math.imul(h, 2246822507);
-  h ^= h >>> 13;
-  return h >>> 0;
-}
-
-/**
- * Deterministic spawn spot for a creature, anywhere on the map.
- *
- * User ask, 2026-09-15: *"we should spawn randomly on the map not in one
- * place"*. It used to be a golden-angle spiral out from the origin, so a
- * room of two hundred was a disc of eggs around the hatch clearing and
- * everybody's creature woke up in the same crowd.
- *
- * RANDOM TO THE EYE, DETERMINISTIC IN FACT. Every phone's world view builds
- * its own copy of the eggs from the same drawing ids (src/net/worldsync.ts:
- * poses only place creatures that are alive, an egg stands where it was
- * built), so a spot has to come from the id and nothing else — no
- * `Math.random`, no clock, no arrival order. The id is hashed to a point
- * drawn uniformly over the spawn disc (√ on the radius, so the density is
- * even rather than bunched at the centre), and a candidate that lands in
- * water is skipped for the next hash in the sequence. The same id always
- * walks the same sequence, so every device settles on the same bank.
- *
- * Never a row, never a grid (grid governs placement of props, not beings).
- * Props and standing residents are cleared afterwards by `clearSpawnSpot`.
- */
-export function spawnSpot(id: string): { x: number; z: number } {
-  let spot = { x: 0, z: 0 };
-  for (let attempt = 0; attempt < SPAWN_ATTEMPTS; attempt++) {
-    const u = hashId(id, attempt * 2 + 1) / 0x100000000;
-    const v = hashId(id, attempt * 2 + 2) / 0x100000000;
-    const radius = SPAWN_RADIUS * Math.sqrt(u);
-    const angle = v * Math.PI * 2;
-    spot = { x: Math.cos(angle) * radius, z: Math.sin(angle) * radius };
-    if (!isWater(spot.x, spot.z, SPAWN_WATER_PAD)) return spot;
-  }
-  return spot;
+export function spawnSpot(index: number): { x: number; z: number } {
+  const angle = index * 2.39996322972865332; // golden angle, radians
+  const radius = 3.2 + 2.1 * Math.sqrt(index);
+  return { x: Math.cos(angle) * radius, z: Math.sin(angle) * radius };
 }
 
 function smoothstep(edge0: number, edge1: number, x: number): number {
@@ -420,43 +292,7 @@ export function measureBodyRadius(character: Character): number {
 /** Speed floor (units/s) under which brushing a bush stops kicking sway. */
 const NUDGE_MIN_SPEED = 0.15;
 
-/** No rotation. Shared, and never mutated — an item set down with nothing
- * to say about its attitude gets this rather than four literals. */
-const IDENTITY_Q = { x: 0, y: 0, z: 0, w: 1 } as const;
-
 type Phase = 'egg' | 'hatching' | 'alive' | 'retiring';
-
-/**
- * Type-only, exactly as `src/world/rocks.ts` does it: the wasm module is a
- * dynamic import on the host's path alone, and a static type import compiles
- * to nothing — so a viewer's bundle never pulls it in.
- */
-type RapierRigidBody = import('@dimforge/rapier3d-compat').RigidBody;
-type RapierCollider = import('@dimforge/rapier3d-compat').Collider;
-
-/**
- * A creature's stand-in inside the rigid-body world, on the HOST only.
- *
- * Kinematic and position-based: the creature's movement is decided by its
- * agent and the pure substepped resolve (`stepCreatures`), exactly as before
- * — rapier is not allowed an opinion about where a creature goes. What the
- * body buys is CONTACT: a stuck bench swinging into a tree, a pile
- * shouldering a stone downhill, and the contact events that tell a carrier it
- * has been hit hard enough to shed something.
- */
-interface KinematicHandle {
-  body: RapierRigidBody;
-  /** Its own ball collider, resized as the pile grows. */
-  ball: RapierCollider | null;
-  /**
-   * Ball colliders standing in for the nearest `STUCK_COLLIDERS_MAX` stuck
-   * items, by item key. Re-seated every frame at the item's current world
-   * offset, so a swinging bench actually sweeps.
-   */
-  stuck: Map<string, RapierCollider>;
-}
-
-
 
 interface Slot {
   id: string;
@@ -494,41 +330,8 @@ interface Slot {
   characterRoot: Group | null;
   characterShadow: ShadowHandle | null;
   /** Collision radius measured from the hatched character's real mesh
-   * footprint (measureBodyRadius); 0 until hatch.
-   *
-   * GROWS with the pile (src/creatures/sticky.ts `growth`): this is
-   * `baseR × clump.growth()`, rewritten every frame, and it is read by the
-   * resolve pass, the pickup reach and `positions()` — which is where the
-   * scatter's exclusion radius comes from, so a creature the size of a
-   * building clears props out of its way as it goes. */
+   * footprint (measureBodyRadius); 0 until hatch. */
   bodyR: number;
-  /** The measured radius BEFORE any pile. The growth curve's denominator,
-   * and what the creature goes back to if its pile is taken off it. */
-  baseR: number;
-  /**
-   * The pile (src/creatures/clump.ts). Created at `becomeAlive`, on the
-   * ROOT — never on the character's own group, which the deform shader
-   * rewrites every frame. Null while this is still an egg.
-   */
-  clump: Clump | null;
-  /**
-   * The id of the creature CARRYING this one, or null.
-   *
-   * A carried creature is out of the physics pass, its agent is paused, its
-   * shadow is gone and its follow is cleared — its world position is
-   * whatever its carrier's pile puts it at. Its phone still owns it, though:
-   * emotes play, `poses()` reports its WORLD position so the minimap follows
-   * the pile, and a drive on it is ignored rather than refused.
-   */
-  carriedBy: string | null;
-  /** Ids of the creatures riding on THIS one. Set down free if it leaves. */
-  passengers: Set<string>;
-  /** When this carrier last shed something, on the loop's clock. Null until
-   * it has. The `DROP_MIN_GAP_MS` gate, so a pile does not unravel in one
-   * frame against a tree. */
-  lastDropMs: number | null;
-  /** The kinematic rapier body standing in for this creature, host only. */
-  kinematic: KinematicHandle | null;
   /** Audience answer, held until hatch mints the behavior agent. */
   personalityChoice: PersonalityChoice;
   /** Autonomous behavior — created on hatch, null before. */
@@ -562,15 +365,6 @@ interface Slot {
    * — including the pause between two pushes of the same gesture.
    */
   drivenAtMs: number | null;
-  /**
-   * Presentation bookkeeping for the off-screen stride (OFFSCREEN_STRIDE):
-   * how many frames this creature has been outside the frustum, and the dt
-   * its presentation has not yet been told about.
-   */
-  offscreenFrames: number;
-  pendingDt: number;
-  /** Set each frame: is the presentation being refreshed this frame? */
-  present: boolean;
 }
 
 export interface SpawnOptions {
@@ -628,65 +422,6 @@ export interface CreatureObserver {
   hatch(id: string, cause: 'timer' | 'forced'): void;
   retire(id: string, cause: 'population' | 'operator' | 'replaced' | 'cleared'): void;
   emote(id: string, emote: EmoteName, source: 'phone' | 'key' | 'panel'): void;
-  /**
-   * THE KATAMARI FOUR (src/creatures/sticky.ts, docs/SESSION.md §6).
-   *
-   * Only the page that SIMULATES ever calls these. They are the only
-   * creature decisions in the whole project that cannot be re-derived from
-   * (strokes, id) — they depend on where a stone had rolled to, off a rapier
-   * simulation that runs on exactly one page — so the one page that knows
-   * has to say, and every other page applies what it says and decides
-   * nothing (`applyStick` and friends below).
-   */
-  stick(record: StickRecord): void;
-  drop(record: DropRecord): void;
-  loose(item: string, x: number, z: number): void;
-  settle(record: SettleRecord): void;
-}
-
-/** What the observer is handed for a pickup. Structurally the `stick` event
- * minus the two fields the recorder stamps (`k` and `t`) — spelled out here
- * rather than imported, because this module must not depend on the session
- * layer to describe its own decisions. */
-export interface StickRecord {
-  /** The carrier. */
-  id: string;
-  /** A placement key, a `spawn:n`, or `creature:<id>`. */
-  item: string;
-  /** Mesh hints, for a page that never had the placement drawn. Absent for a
-   * creature passenger, which already has a mesh of its own. */
-  kind?: string;
-  variant?: number;
-  scale?: number;
-  /** Its seat in the clump's local frame, and its attitude there. */
-  ox: number;
-  oy: number;
-  oz: number;
-  qx: number;
-  qy: number;
-  qz: number;
-  qw: number;
-}
-
-export interface DropRecord {
-  id: string;
-  item: string;
-  x: number;
-  z: number;
-  qx: number;
-  qy: number;
-  qz: number;
-  qw: number;
-}
-
-export interface SettleRecord {
-  item: string;
-  x: number;
-  z: number;
-  qx: number;
-  qy: number;
-  qz: number;
-  qw: number;
 }
 
 export interface CreatureManagerOptions {
@@ -708,16 +443,6 @@ export interface CreatureManagerOptions {
    * source, and the manager asking the scene for one would be a second.
    */
   surface?: Surface;
-  /**
-   * Where a knocked-over prop gets drawn (src/world/loose.ts).
-   *
-   * Needed on EVERY page, host or viewer: the scatter stops drawing a
-   * placement the moment it comes out of the ground, and this is the only
-   * thing that then draws it. Optional because a headless caller (the tests)
-   * has no scene to draw into — a manager without it still decides
-   * everything correctly, it simply shows no fallen trees.
-   */
-  loose?: LooseMeshes;
 }
 
 export interface CreatureManager {
@@ -829,27 +554,6 @@ export interface CreatureManager {
    */
   beginManualMove(root: Object3D): boolean;
   endManualMove(root: Object3D): void;
-  /**
-   * Is this page the one deciding? True only when the rigid-body world is
-   * loaded (which happens on host election alone — docs/PLAN.md §7.6) AND
-   * the agents are running. Both halves matter: a page that hosted a second
-   * ago still has its bodies.
-   */
-  simulating(): boolean;
-  /**
-   * PRESENTATION ONLY — the viewer's half of the katamari rules, and the
-   * host's own apply path too, so there is exactly one of them.
-   *
-   * These decide nothing, run no physics and record nothing. They take the
-   * offsets and rotations the host already worked out and put the world into
-   * that state: hide the placement, seat the item on the pile at the GIVEN
-   * offset, grow the carrier. A `stick` for an unknown carrier, or a `drop`
-   * for an item nobody is carrying, is ignored rather than guessed at.
-   */
-  applyStick(record: StickRecord): void;
-  applyDrop(record: DropRecord): void;
-  applyLoose(item: string, x: number, z: number): void;
-  applySettle(record: SettleRecord): void;
 }
 
 export function createCreatureManager(
@@ -876,16 +580,6 @@ export function createCreatureManager(
   let eggColliderCount = 0;
   const bodyPool: CreatureBody[] = [];
   const stepBodies: CreatureBody[] = [];
-  // Peer lookup (src/physics/spatial.ts): every alive root indexed once a
-  // frame, queried once per agent. Points are reused, never reallocated.
-  const peerGrid = new SpatialHash(PEER_RADIUS);
-  const peerSlots: Slot[] = [];
-  const peerPoints: { x: number; z: number }[] = [];
-  const peersScratch: AgentPeer[] = [];
-  // Frustum test for the off-screen stride. Scratch only.
-  const frustum = new Frustum();
-  const frustumMatrix = new Matrix4();
-  const boundsSphere = new Sphere();
   const aliveScratch: {
     slot: Slot;
     root: Group;
@@ -971,38 +665,10 @@ export function createCreatureManager(
   function worldPositionOf(slot: Slot): Vector3 | null {
     const root: Object3D | null = slot.characterRoot ?? slot.egg?.group ?? null;
     if (!root) return null;
-    // Carried: `root.position` is a seat on a pile, not a place on the map.
-    if (slot.carriedBy) {
-      const at = root.getWorldPosition(new Vector3());
-      return new Vector3(at.x, 0, at.z);
-    }
     return new Vector3(root.position.x, 0, root.position.z);
   }
 
   function disposeSlot(slot: Slot): void {
-    /*
-     * WHAT IT WAS CARRYING IS NOT ITS TO TAKE.
-     *
-     * Every passenger is set down free where it actually is and every prop is
-     * left lying there, each with a `drop` recorded — so a person whose
-     * creature was riding on the one that just retired gets their creature
-     * back, standing in the field, rather than watching it vanish with
-     * somebody else's. And if this one was itself being carried, it comes off
-     * its carrier's pile first, or the carrier would go on growing from a
-     * volume that no longer exists.
-     */
-    releaseAll(slot);
-    if (slot.carriedBy) {
-      const carrier = slots.get(slot.carriedBy);
-      if (carrier && slot.characterRoot) {
-        slot.characterRoot.getWorldPosition(scratchVec);
-        unseat(carrier, `creature:${slot.id}`, scratchVec.x, scratchVec.z, IDENTITY_Q);
-      }
-      slot.carriedBy = null;
-    }
-    removeKinematic(slot);
-    slot.clump?.dispose();
-    slot.clump = null;
     slot.agent?.dispose();
     slot.agent = null;
     if (slot.hatch) slot.hatch.dispose();
@@ -1047,19 +713,6 @@ export function createCreatureManager(
     // Collision circle from the REAL mesh footprint (wide fish ≠ narrow
     // triangle) — never the tucked-in shadow radius.
     slot.bodyR = measureBodyRadius(character);
-    slot.baseR = slot.bodyR;
-    /*
-     * The pile, from this moment on (src/creatures/clump.ts).
-     *
-     * On the ROOT and never on `character.group`: the body's local transform
-     * is rewritten every frame by the gait and its mesh is deformed in a
-     * vertex shader, so anything hung underneath would be squashed and
-     * bobbed along with it. The clump is created empty on every page —
-     * a viewer needs it too, because a viewer is the page the pile has to be
-     * DRAWN on.
-     */
-    slot.clump = createClump(slot.baseR);
-    root.add(slot.clump.group);
     world.shadows.removeShadow(`egg-${slot.id}`);
     slot.eggShadow = null;
     slot.egg = null;
@@ -1088,13 +741,8 @@ export function createCreatureManager(
       {
         onBurst: (root) => {
           becomeAlive(slot, root, next);
-          // the egg's disposal belongs to the hatch from here.
-          // The camera stays where it is (user ask, 2026-09-15: *"we
-          // shouldn't have the camera follow the spawn, it should be in one
-          // place"*). It used to slide to every shell that broke; at two
-          // hundred hatches that is a camera that never rests. The tour and
-          // the operator's `h` moment (src/world/tour.ts) still frame what
-          // they choose to.
+          // the egg's disposal belongs to the hatch from here
+          world.cameraRig.frameAt(root.position);
         },
         onDone: () => {
           slot.hatch = null;
@@ -1146,798 +794,12 @@ export function createCreatureManager(
     return true;
   }
 
-  // ── the sticky world (src/creatures/sticky.ts, docs/PLAN.md §7.6) ─────────
-  /*
-   * WHO DECIDES, AND WHO DRAWS.
-   *
-   * Everything below splits in two along one line. `simulateSticky` runs on
-   * the page that holds the rigid-body world and nowhere else: it is the only
-   * thing that ever calls `decideContact` or `shouldDrop`, and every decision
-   * it makes leaves through the observer as a `stick`, `drop`, `loose` or
-   * `settle` scene event. `applyStick` and its three siblings are the other
-   * half — presentation from an event, on a page that ran no physics and
-   * decided nothing.
-   *
-   * The host does NOT go round through its own events (main.ts's
-   * `applyingScene` guard swallows them on the way out): it applies its own
-   * decision as it makes it, through the same `seat`/`unseat` helpers the
-   * apply path uses, so there is exactly one way an item gets onto a pile.
-   */
-
-  const looseMeshes = options.loose ?? null;
-  const bodiesOf = (): PropBodies | null => world.bodies?.() ?? null;
-  const scratchVec = new Vector3();
-  const scratchQ = new Quaternion();
-
-  /**
-   * Placements THIS page has hidden, on a page with no `PropBodies`.
-   *
-   * `scatter.setTaken` takes the whole set, so it has exactly one owner. On
-   * the host that owner is `src/world/rocks.ts`, which is holding the bodies
-   * anyway; on a viewer there is no rocks layer at all and this is it.
-   */
-  const viewerTaken = new Set<string>();
-
-  /** Stop the scatter drawing a placement, through whichever owner exists. */
-  function hidePlacement(key: string): void {
-    const bodies = bodiesOf();
-    if (bodies) {
-      bodies.take(key);
-      return;
-    }
-    const scatter = (world as { scatter?: { setTaken?(keys: ReadonlySet<string>): void } })
-      .scatter;
-    if (!scatter?.setTaken) return;
-    viewerTaken.add(key);
-    scatter.setTaken(new Set(viewerTaken));
-  }
-
-  /**
-   * The kind and variant a placement key spells out.
-   *
-   * `placementKey` is `kind:variant:x:z` (src/world/scatter.ts), which is why
-   * a `loose` event needs no mesh hints of its own — the key already says
-   * what the thing is. A `spawn:n` rock or a `creature:<id>` parses to null,
-   * and both are meant to.
-   */
-  function parseItemKey(key: string): { kind: PropKind; variant: number } | null {
-    const parts = key.split(':');
-    if (parts.length < 2) return null;
-    const kind = parts[0] as PropKind;
-    if (!Object.prototype.hasOwnProperty.call(STICKY, kind)) return null;
-    const variant = Number(parts[1]);
-    if (!Number.isInteger(variant) || variant < 0) return null;
-    return { kind, variant };
-  }
-
-  /**
-   * The drawn scale and footprint of a STANDING placement, off the scatter's
-   * own instance row.
-   *
-   * Exact rather than assumed: a viewer hiding a tree has to draw the fallen
-   * one at the size the standing one was, and the row is where that number
-   * already lives. Null once the placement is gone, which is why a `stick`
-   * event carries the scale as well — by the time a phone applies one the
-   * row it came from has been rebuilt away.
-   */
-  function placementDrawn(key: string, kind: PropKind): { scale: number; r: number } | null {
-    const scatter = (
-      world as {
-        scatter?: {
-          instanceRefs?(k: PropKind): { key: string; scale: number; radius: number }[];
-        };
-      }
-    ).scatter;
-    const refs = scatter?.instanceRefs?.(kind);
-    if (!refs) return null;
-    for (const ref of refs) {
-      if (ref.key === key) return { scale: ref.scale, r: ref.radius };
-    }
-    return null;
-  }
-
-  /** `creature:<id>` → the slot, if it is one and it exists. */
-  function passengerOf(item: string): Slot | null {
-    if (!item.startsWith('creature:')) return null;
-    return slots.get(item.slice('creature:'.length)) ?? null;
-  }
-
-  /**
-   * Where an item slides IN from, in clump-local space: wherever it actually
-   * is at this instant.
-   *
-   * Entrances slide and never pop (TASTE §2.1, confidence 1.00) — there is no
-   * `scale: 0 → 1` path in this project and a stone appearing at full size on
-   * a pile is exactly the hard cut the motion law forbids. The item was
-   * struck a little outside its seat, so this is a short travel over
-   * `MOTION.secondaryMs`. On a viewer applying a restored log the object has
-   * no world transform yet, so the seat itself is used and nothing moves —
-   * which is right, because nothing arrived.
-   */
-  function enterFrom(
-    carrier: Slot,
-    object: Object3D,
-    offset: { x: number; y: number; z: number },
-  ): { x: number; y: number; z: number } {
-    const group = carrier.clump?.group;
-    if (!group || !object.parent) return offset;
-    object.getWorldPosition(scratchVec);
-    group.worldToLocal(scratchVec);
-    if (!Number.isFinite(scratchVec.x + scratchVec.y + scratchVec.z)) return offset;
-    return { x: scratchVec.x, y: scratchVec.y, z: scratchVec.z };
-  }
-
-  /**
-   * Put one item onto a carrier's pile, at the offset and rotation GIVEN.
-   *
-   * Never computed here: on the host they came out of `clumpLocalOffset` a
-   * few lines before the observer call, and on a viewer they came off the
-   * wire. Three floats and four floats, and every screen seats the thing
-   * identically from them — which is the whole reason that geometry is pure.
-   *
-   * `group.add` and not `Object3D.attach`: attach preserves a world transform
-   * this overwrites anyway, and the continuity attach would have bought is
-   * what the entrance slide is for.
-   */
-  function seat(carrier: Slot, record: StickRecord, opts: { slide?: boolean } = {}): boolean {
-    const clump = carrier.clump;
-    if (!clump || carrier.phase !== 'alive') return false;
-    if (clump.items.has(record.item)) return false;
-    const rotation = { x: record.qx, y: record.qy, z: record.qz, w: record.qw };
-    const offset = { x: record.ox, y: record.oy, z: record.oz };
-
-    const rider = passengerOf(record.item);
-    if (rider) {
-      if (!rider.characterRoot || rider.phase !== 'alive' || rider.carriedBy) return false;
-      if (rider === carrier) return false;
-      /*
-       * A CARRIED CREATURE. Its phone still owns it — emotes play, and
-       * `poses()` reports where it has been carried TO, so the person
-       * watching their minimap follows the pile rather than losing their
-       * creature, which is the whole joke. What it loses is its own
-       * locomotion: out of the physics pass, agent stood down, shadow gone
-       * (the pile casts one), and whatever host pose it was following
-       * dropped — a viewer easing a passenger toward the host's old answer
-       * would drag it out of the pile it is sitting in.
-       */
-      rider.carriedBy = carrier.id;
-      carrier.passengers.add(rider.id);
-      rider.follow = null;
-      rider.drive = null;
-      world.shadows.removeShadow(`char-${rider.id}`);
-      rider.characterShadow = null;
-      removeKinematic(rider);
-      clump.add({
-        key: record.item,
-        object: rider.characterRoot,
-        r: rider.bodyR,
-        offset,
-        rotation,
-        from: enterFrom(carrier, rider.characterRoot, offset),
-        // Transitive: a passenger goes on collecting, and its carrier has to
-        // keep growing as it does.
-        nested: () => rider.clump?.volumes() ?? [],
-      });
-      return true;
-    }
-
-    // A prop. It stops being scenery and becomes a mesh of its own.
-    const parsed = parseItemKey(record.item);
-    const kind = (record.kind as PropKind | undefined) ?? parsed?.kind;
-    if (!kind || !Object.prototype.hasOwnProperty.call(STICKY, kind)) return false;
-    const measured = placementDrawn(record.item, kind);
-    const variant = record.variant ?? parsed?.variant ?? 0;
-    const scale = record.scale ?? measured?.scale ?? 1;
-    hidePlacement(record.item);
-    if (!looseMeshes) return false;
-    const object = looseMeshes.show(record.item, kind, variant, scale);
-    /*
-     * WHERE IT SLIDES IN FROM, and why a prop is the one case that has to ask.
-     *
-     * A creature passenger is standing somewhere real on every page, so its
-     * slide is always a short travel from where it was. A prop's mesh is
-     * created HERE — and on the host `stickItem` has already moved it to the
-     * stone's live transform, so sliding from it is the stone being scooped
-     * up. On a viewer applying a `stick` there is no live transform to slide
-     * from: the mesh is brand new at the origin, and sliding from there would
-     * fly a tree across the map. So the viewer seats it and nothing moves,
-     * which is right — nothing arrived, the world simply is like this.
-     */
-    clump.add({
-      key: record.item,
-      object,
-      r: measured?.r ?? scale,
-      kind,
-      variant,
-      scale,
-      offset,
-      rotation,
-      ...(opts.slide === true ? { from: enterFrom(carrier, object, offset) } : {}),
-    });
-    return true;
-  }
-
-  /**
-   * Take one item off a carrier and put it back in the world at (x, z).
-   *
-   * The height is the seam's, never world-space Y (PLAN §7.2). A passenger
-   * walks away free — agent back, shadow back, into the physics pass again.
-   * A prop becomes a loose mesh lying where it fell, and on the host a
-   * dynamic body under it.
-   */
-  function unseat(
-    carrier: Slot,
-    item: string,
-    x: number,
-    z: number,
-    q: { x: number; y: number; z: number; w: number },
-  ): boolean {
-    const stuck = carrier.clump?.remove(item);
-    if (!stuck) return false;
-    const y = surface.sampleHeight(x, z);
-
-    const rider = passengerOf(item);
-    if (rider && rider.characterRoot === stuck.object) {
-      carrier.passengers.delete(rider.id);
-      rider.carriedBy = null;
-      // `scene.attach` and not `add`: it is standing somewhere in the world
-      // already and it stays exactly there, rather than jumping by the
-      // pile's whole transform — which would be the hard cut the motion law
-      // forbids at confidence 1.00.
-      world.scene.attach(rider.characterRoot);
-      rider.characterRoot.position.set(x, y, z);
-      // Its own pile is its own; the carrier's scale and the pile's tilt are
-      // not its to keep. The heading survives, because a creature set down
-      // is facing whichever way it was.
-      rider.characterRoot.scale.setScalar(rider.clump?.growth() ?? 1);
-      rider.characterRoot.rotation.set(0, rider.characterRoot.rotation.y, 0);
-      if (rider.character) {
-        rider.characterShadow = world.shadows.addShadow(
-          `char-${rider.id}`,
-          rider.character.radius,
-        );
-      }
-      rider.spot = { x, z };
-      return true;
-    }
-
-    world.scene.attach(stuck.object);
-    // Out of the carrier's scale and back to its own drawn one.
-    stuck.object.scale.setScalar(stuck.scale ?? 1);
-    looseMeshes?.move(item, x, y, z, q);
-    const bodies = bodiesOf();
-    if (bodies && stuck.kind) {
-      bodies.restore(
-        {
-          key: item,
-          kind: stuck.kind,
-          variant: stuck.variant ?? 0,
-          scale: stuck.scale ?? 1,
-          r: stuck.r,
-        },
-        x,
-        z,
-        q,
-      );
-    }
-    return true;
-  }
-
-  /** Start drawing a prop that has left the ground, at the ground height
-   * under it. Shared by `loosen` on the host and `applyLoose` everywhere. */
-  function showLoose(item: string, x: number, z: number, scaleHint?: number): void {
-    if (!looseMeshes) return;
-    const parsed = parseItemKey(item);
-    if (!parsed) return;
-    const measured = placementDrawn(item, parsed.kind);
-    looseMeshes.show(item, parsed.kind, parsed.variant, scaleHint ?? measured?.scale ?? 1);
-    looseMeshes.move(item, x, surface.sampleHeight(x, z), z, IDENTITY_Q);
-  }
-
-  // ── the carrier's kinematic stand-in (host only) ──────────────────────────
-
-  /** Collider handle → the slot whose impacts it counts as. Creature balls
-   * and the stuck-item balls hanging off them alike, so a bench swinging into
-   * a tree is the CARRIER being hit. */
-  const colliderSlot = new Map<number, string>();
-
-  function removeKinematic(slot: Slot): void {
-    const handle = slot.kinematic;
-    if (!handle) return;
-    if (handle.ball) colliderSlot.delete(handle.ball.handle);
-    for (const collider of handle.stuck.values()) colliderSlot.delete(collider.handle);
-    handle.stuck.clear();
-    slot.kinematic = null;
-    const physics = world.physics?.() ?? null;
-    physics?.remove(handle.body);
-  }
-
-  /**
-   * Install the ONE contact-pair filter (`PhysicsWorld.setHooks`).
-   *
-   * A creature meeting an item small enough to carry returns `null` — no
-   * contact at all, because the pickup is a decision this layer makes a few
-   * lines later and a solver impulse arriving first would knock the thing
-   * away before it could be taken. Everything else gets ordinary impulses:
-   * a stone too big to carry is shoved, which is the stone rolling away, and
-   * that is the rapier layer doing its job for free.
-   */
-  let hooksInstalled = false;
-  function ensureHooks(): void {
-    if (hooksInstalled) return;
-    const physics = world.physics?.() ?? null;
-    const bodies = bodiesOf();
-    if (!physics || !bodies) return;
-    hooksInstalled = true;
-    const flags = physics.rapier.SolverFlags.COMPUTE_IMPULSE;
-    physics.setHooks({
-      // `PhysicsHooks` declares both halves, and only one of them is ours:
-      // an intersection pair is a sensor question and nothing here is a
-      // sensor, so it answers yes and gets out of the way.
-      filterIntersectionPair: (): boolean => true,
-      filterContactPair: (c1: number, c2: number): number | null => {
-        const aSlot = colliderSlot.get(c1);
-        const bSlot = colliderSlot.get(c2);
-        // Creature-vs-creature and item-vs-item are not this filter's
-        // business: the pure resolve separates creature pairs, and two
-        // stones colliding is what rapier is for.
-        if ((aSlot === undefined) === (bSlot === undefined)) return flags;
-        const slot = slots.get((aSlot ?? bSlot)!);
-        const item = bodies.itemByCollider(aSlot === undefined ? c1 : c2);
-        if (!slot || !item) return flags;
-        return item.r <= carryLimit(slot.bodyR) ? null : flags;
-      },
-    });
-  }
-
-  /** Create or refresh a creature's kinematic body and its ball. */
-  function syncKinematic(slot: Slot, root: Group): void {
-    const physics = world.physics?.() ?? null;
-    if (!physics) return;
-    const rapier = physics.rapier;
-    const y = surface.sampleHeight(root.position.x, root.position.z) + slot.bodyR;
-    if (!slot.kinematic) {
-      const body = physics.addRigidBody(
-        rapier.RigidBodyDesc.kinematicPositionBased().setTranslation(
-          root.position.x,
-          y,
-          root.position.z,
-        ),
-        rapier.ColliderDesc.ball(Math.max(0.05, slot.bodyR))
-          .setActiveHooks(rapier.ActiveHooks.FILTER_CONTACT_PAIRS)
-          .setActiveEvents(rapier.ActiveEvents.COLLISION_EVENTS)
-          .setRestitution(0),
-      );
-      const ball = body.collider(0);
-      slot.kinematic = { body, ball, stuck: new Map() };
-      if (ball) colliderSlot.set(ball.handle, slot.id);
-      return;
-    }
-    slot.kinematic.body.setNextKinematicTranslation({ x: root.position.x, y, z: root.position.z });
-    // The ball grows with the pile: a creature the size of a house that
-    // still shouldered stones aside on its drawn radius would read as a
-    // creature walking through the world rather than into it.
-    slot.kinematic.ball?.setRadius(Math.max(0.05, slot.bodyR));
-  }
-
-  /**
-   * Re-seat the carrier's stuck-item colliders at their CURRENT world
-   * offsets, keeping the nearest `STUCK_COLLIDERS_MAX`.
-   *
-   * This is where the brief's instability comes from: a bench stuck to a
-   * rolling pile sweeps a real circle through the world and hits real trees,
-   * and the contact is attributed to the carrier so the impact counts
-   * against what it is holding. A cap because a pile of eighty stones does
-   * not need eighty colliders — the outermost are the ones that hit things,
-   * and `outermost` order is exactly what a distance sort gives.
-   */
-  function syncStuckColliders(slot: Slot): void {
-    const handle = slot.kinematic;
-    const clump = slot.clump;
-    const physics = world.physics?.() ?? null;
-    if (!handle || !clump || !physics) return;
-    const rapier = physics.rapier;
-    const wanted = [...clump.items.values()]
-      .sort((a, b) => {
-        const da = a.offset.x ** 2 + a.offset.y ** 2 + a.offset.z ** 2;
-        const db = b.offset.x ** 2 + b.offset.y ** 2 + b.offset.z ** 2;
-        // Deterministic: distance, then key, so two frames agree and the set
-        // does not flicker under a tie.
-        return db - da || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
-      })
-      .slice(0, STUCK_COLLIDERS_MAX);
-    const keep = new Set(wanted.map((item) => item.key));
-    for (const [key, collider] of handle.stuck) {
-      if (keep.has(key)) continue;
-      colliderSlot.delete(collider.handle);
-      physics.world.removeCollider(collider, false);
-      handle.stuck.delete(key);
-    }
-    const g = clump.growth();
-    for (const item of wanted) {
-      let collider = handle.stuck.get(item.key);
-      if (!collider) {
-        collider = physics.world.createCollider(
-          rapier.ColliderDesc.ball(Math.max(0.05, item.r)).setRestitution(0),
-          handle.body,
-        );
-        handle.stuck.set(item.key, collider);
-        colliderSlot.set(collider.handle, slot.id);
-      }
-      // The clump's own rotation, applied to the stored local offset: the
-      // pile rolls, so the bench is somewhere different every frame.
-      scratchVec.set(item.offset.x, item.offset.y, item.offset.z).multiplyScalar(g);
-      scratchVec.applyQuaternion(clump.worldQ);
-      // Plus the clump group's own lift off the creature's middle.
-      collider.setTranslationWrtParent({
-        x: scratchVec.x,
-        y: scratchVec.y,
-        z: scratchVec.z,
-      });
-      collider.setRadius(Math.max(0.05, item.r * g));
-    }
-  }
-
-  // ── decisions (host only) ────────────────────────────────────────────────
-
-  /** Every loose body, re-indexed each frame — they move, so there is nothing
-   * to keep. One pass over a handful of items. */
-  const itemGrid = new SpatialHash(PEER_RADIUS);
-  const itemList: LooseItem[] = [];
-  const itemPoints: { x: number; z: number }[] = [];
-
-  /**
-   * Decide one pickup and tell the room.
-   *
-   * The offset and rotation come out of the item's LIVE transform — where the
-   * stone actually is at the instant of contact, not where its placement was
-   * — which is what makes the pile look assembled by running into things.
-   */
-  function stickItem(carrier: Slot, item: LooseItem, root: Group): void {
-    const clump = carrier.clump;
-    if (!clump) return;
-    const t = item.body.translation();
-    const r = item.body.rotation();
-    clump.group.getWorldPosition(scratchVec);
-    const offset = clumpLocalOffset({
-      itemX: t.x,
-      itemY: t.y,
-      itemZ: t.z,
-      centreX: scratchVec.x,
-      centreY: scratchVec.y,
-      centreZ: scratchVec.z,
-      headingX: Math.sin(root.rotation.y),
-      headingZ: Math.cos(root.rotation.y),
-      R: clump.R(),
-      itemR: item.r,
-      clumpWorldQ: clump.worldQ,
-      growth: clump.growth(),
-    });
-    const rotation = clumpLocalRotation(r, clump.worldQ);
-    const record: StickRecord = {
-      id: carrier.id,
-      item: item.key,
-      kind: item.kind,
-      variant: item.variant,
-      scale: item.scale,
-      ox: offset.x,
-      oy: offset.y,
-      oz: offset.z,
-      qx: rotation.x,
-      qy: rotation.y,
-      qz: rotation.z,
-      qw: rotation.w,
-    };
-    // The mesh goes where the stone ACTUALLY is first, so the entrance slide
-    // below is the short travel from the hit point to the seat rather than a
-    // flight from the origin. `show` is idempotent, so `seat` finds this one.
-    if (looseMeshes && item.kind) {
-      looseMeshes.show(item.key, item.kind, item.variant, item.scale);
-      looseMeshes.move(item.key, t.x, t.y, t.z, r);
-    }
-    if (!seat(carrier, record, { slide: true })) return;
-    observer?.stick(record);
-  }
-
-  /** Stick creature B to creature A. Same seam, same event. */
-  function stickCreature(carrier: Slot, rider: Slot, root: Group): void {
-    const clump = carrier.clump;
-    if (!clump || !rider.characterRoot) return;
-    clump.group.getWorldPosition(scratchVec);
-    const at = rider.characterRoot.position;
-    const offset = clumpLocalOffset({
-      itemX: at.x,
-      itemY: at.y + rider.bodyR,
-      itemZ: at.z,
-      centreX: scratchVec.x,
-      centreY: scratchVec.y,
-      centreZ: scratchVec.z,
-      headingX: Math.sin(root.rotation.y),
-      headingZ: Math.cos(root.rotation.y),
-      R: clump.R(),
-      itemR: rider.bodyR,
-      clumpWorldQ: clump.worldQ,
-      growth: clump.growth(),
-    });
-    rider.characterRoot.getWorldQuaternion(scratchQ);
-    const rotation = clumpLocalRotation(scratchQ, clump.worldQ);
-    const record: StickRecord = {
-      id: carrier.id,
-      item: `creature:${rider.id}`,
-      ox: offset.x,
-      oy: offset.y,
-      oz: offset.z,
-      qx: rotation.x,
-      qy: rotation.y,
-      qz: rotation.z,
-      qw: rotation.w,
-    };
-    if (!seat(carrier, record)) return;
-    observer?.stick(record);
-  }
-
-  /** Shed the outermost thing on a carrier's pile, and tell the room. */
-  function dropOutermost(carrier: Slot, nowMs: number): void {
-    const clump = carrier.clump;
-    if (!clump) return;
-    if (carrier.lastDropMs !== null && nowMs - carrier.lastDropMs < DROP_MIN_GAP_MS) return;
-    const stuck = clump.outermost();
-    if (!stuck) return;
-    stuck.object.getWorldPosition(scratchVec);
-    stuck.object.getWorldQuaternion(scratchQ);
-    const x = scratchVec.x;
-    const z = scratchVec.z;
-    const q = { x: scratchQ.x, y: scratchQ.y, z: scratchQ.z, w: scratchQ.w };
-    if (!unseat(carrier, stuck.key, x, z, q)) return;
-    carrier.lastDropMs = nowMs;
-    observer?.drop({
-      id: carrier.id,
-      item: stuck.key,
-      x,
-      z,
-      qx: q.x,
-      qy: q.y,
-      qz: q.z,
-      qw: q.w,
-    });
-  }
-
-  /** Set every passenger down free, and record a drop for each. What a
-   * carrier leaving the world owes the people whose creatures were on it. */
-  function releaseAll(carrier: Slot): void {
-    const clump = carrier.clump;
-    if (!clump) return;
-    for (const stuck of [...clump.items.values()]) {
-      stuck.object.getWorldPosition(scratchVec);
-      stuck.object.getWorldQuaternion(scratchQ);
-      const x = scratchVec.x;
-      const z = scratchVec.z;
-      const q = { x: scratchQ.x, y: scratchQ.y, z: scratchQ.z, w: scratchQ.w };
-      if (!unseat(carrier, stuck.key, x, z, q)) continue;
-      observer?.drop({
-        id: carrier.id,
-        item: stuck.key,
-        x,
-        z,
-        qx: q.x,
-        qy: q.y,
-        qz: q.z,
-        qw: q.w,
-      });
-    }
-  }
-
-  /** `bodies.onSettle` → the room, once. Wired on the first host frame,
-   * because the bodies do not exist before then. */
-  let settleWired = false;
-  function ensureSettle(): void {
-    if (settleWired) return;
-    const bodies = bodiesOf();
-    if (!bodies) return;
-    settleWired = true;
-    bodies.onSettle((item) => {
-      const t = item.body.translation();
-      const r = item.body.rotation();
-      if (item.meshDrawn) looseMeshes?.move(item.key, t.x, t.y, t.z, r);
-      observer?.settle({
-        item: item.key,
-        x: t.x,
-        z: t.z,
-        qx: r.x,
-        qy: r.y,
-        qz: r.z,
-        qw: r.w,
-      });
-    });
-  }
-
-  /**
-   * What holds an item on. A prop's own `attachmentStrength`; a creature
-   * passenger holds on like a medium prop does — [D], and it has to be
-   * *something*: a creature has no `PropKind` and so no row of its own.
-   */
-  function attachmentOf(stuck: StuckItem): number {
-    return stuck.kind ? STICKY[stuck.kind].attachmentStrength : STICKY.tree.attachmentStrength;
-  }
-
-  /**
-   * Each alive body's speed as it ENTERED this frame's resolve, by the same
-   * index `onContact` reports. Reused; see the note where it is filled.
-   */
-  const preSpeed: number[] = [];
-
-  /** One contact this frame, kept for the sticky pass. Reused. */
-  interface ContactReport {
-    slot: Slot;
-    collider: Collider;
-    nx: number;
-    nz: number;
-    speed: number;
-  }
-  const contacts: ContactReport[] = [];
-
-  /**
-   * THE HOST'S FRAME (docs/PLAN.md §7.6) — after `stepCreatures`, before the
-   * ground pass.
-   *
-   * Four decisions, in this order, and the order is the game: what the
-   * creature ran INTO is settled first (a tree either comes out of the ground
-   * or stops you), then what it can pick up, then whether it picked up another
-   * creature, then whether the impact knocked something off. Deciding pickups
-   * before impacts would let a creature eat the tree that just stopped it.
-   */
-  function simulateSticky(nowMs: number): void {
-    const bodies = bodiesOf();
-    if (!bodies) return;
-    ensureHooks();
-    ensureSettle();
-
-    // ── 4. what we ran into ────────────────────────────────────────────────
-    for (const report of contacts) {
-      const key = report.collider.key;
-      const kind = report.collider.kind as PropKind | undefined;
-      if (!key || !kind || !Object.prototype.hasOwnProperty.call(STICKY, kind)) continue;
-      const props = STICKY[kind];
-      const impact = impactOf(report.speed, report.slot.bodyR);
-      // ALWAYS the recoil, whatever the verdict: running into a tree bends
-      // it even when it holds, and that flinch is the read that the world is
-      // being pushed around. `/6` puts a walking creature at a gentle lean
-      // and a loaded pile at the `BEND_MAX` cap. **[D]**
-      bodies.bump(key, -report.nx, -report.nz, Math.min(1, impact / 6));
-      const outcome = decideContact({
-        itemR: report.collider.r,
-        rooted: props.rooted,
-        props,
-        impact,
-        carrierR: report.slot.bodyR,
-      });
-      if (outcome === 'loose') {
-        const item = bodies.loosen(key);
-        if (item) {
-          showLoose(key, item.x, item.z, item.scale);
-          observer?.loose(key, item.x, item.z);
-        }
-      }
-      // ── 6. and whether it knocked something off ──────────────────────────
-      const stuck = report.slot.clump?.outermost();
-      if (stuck && shouldDrop({ ...props, attachmentStrength: attachmentOf(stuck) }, impact)) {
-        dropOutermost(report.slot, nowMs);
-      }
-    }
-    contacts.length = 0;
-
-    // ── 3. pickups ─────────────────────────────────────────────────────────
-    itemList.length = 0;
-    itemPoints.length = 0;
-    for (const item of bodies.items()) {
-      const t = item.body.translation();
-      // The host draws its loose props through the same layer a viewer does,
-      // so the two cannot disagree about where a fallen tree is lying.
-      if (item.meshDrawn) looseMeshes?.move(item.key, t.x, t.y, t.z, item.body.rotation());
-      itemList.push(item);
-      itemPoints.push({ x: t.x, z: t.z });
-    }
-    itemGrid.rebuild(itemPoints);
-
-    for (const entry of aliveScratch) {
-      const { slot, root } = entry;
-      if (slot.carriedBy) continue;
-      const reach = slot.bodyR;
-      const nearIdx = itemGrid.near(root.position.x, root.position.z, reach + itemGrid.cellSize);
-      for (let k = 0; k < nearIdx.length; k++) {
-        const item = itemList[nearIdx[k]!];
-        if (!item) continue;
-        const props = STICKY[item.kind];
-        const point = itemPoints[nearIdx[k]!]!;
-        const d = Math.hypot(point.x - root.position.x, point.z - root.position.z);
-        // `CONTACT_PAD`, because nothing in this world is ever exactly
-        // touching: every solver here holds a skin.
-        if (d > reach + item.r + CONTACT_PAD) continue;
-        // Units: world units per second, raw off the body — see the note on
-        // `preSpeed` in the resolve block.
-        const speed = Math.hypot(entry.body.vx, entry.body.vz);
-        const outcome = decideContact({
-          itemR: item.r,
-          rooted: false,
-          props,
-          impact: impactOf(speed, slot.bodyR),
-          carrierR: slot.bodyR,
-        });
-        if (outcome !== 'stick') continue;
-        // `take` first: it drops the body and hides the placement, so the
-        // mesh the clump then holds is the only copy of the thing.
-        if (!bodies.take(item.key)) continue;
-        stickItem(slot, item, root);
-      }
-    }
-
-    // ── 5. creature onto creature ──────────────────────────────────────────
-    /*
-     * `aliveScratch` is sorted by slot id (the resolve pass needs it to be),
-     * so a fixed i < j walk is deterministic: the same two creatures meeting
-     * on two different pages reach the same verdict about which one is
-     * carrying which. Symmetric in the sense that matters — whichever is
-     * BIGGER does the carrying, whichever order they are visited in.
-     */
-    for (let i = 0; i < aliveScratch.length; i++) {
-      const a = aliveScratch[i]!;
-      for (let j = i + 1; j < aliveScratch.length; j++) {
-        const b = aliveScratch[j]!;
-        if (a.slot.carriedBy || b.slot.carriedBy) continue;
-        // A creature already carrying the other's carrier is not a case: a
-        // pile cannot be inside itself.
-        if (a.slot.passengers.has(b.slot.id) || b.slot.passengers.has(a.slot.id)) continue;
-        const dx = a.root.position.x - b.root.position.x;
-        const dz = a.root.position.z - b.root.position.z;
-        if (Math.hypot(dx, dz) > a.slot.bodyR + b.slot.bodyR + CONTACT_PAD) continue;
-        if (b.slot.bodyR <= carryLimit(a.slot.bodyR)) stickCreature(a.slot, b.slot, a.root);
-        else if (a.slot.bodyR <= carryLimit(b.slot.bodyR)) stickCreature(b.slot, a.slot, b.root);
-      }
-    }
-
-    // The carrier's stand-in and its stuck colliders, once everything is
-    // where it is going to be this frame.
-    for (const entry of aliveScratch) {
-      if (entry.slot.carriedBy) continue;
-      syncKinematic(entry.slot, entry.root);
-      syncStuckColliders(entry.slot);
-    }
-  }
-
-  /**
-   * THE PILE'S PRESENTATION — on every page, host or viewer.
-   *
-   * The growth is applied to the ROOT's uniform scale, which is why the
-   * clump had to hang there: one write grows the creature and everything
-   * stuck to it together. `bodyR` follows, and with it the resolve radius,
-   * the pickup reach and `positions()` — which is where the scatter's
-   * exclusion radius comes from, so a big enough creature clears props out
-   * of its own way.
-   *
-   * SPEED IS DELIBERATELY UNCHANGED. This is a katamari: bigger is not
-   * slower. A creature that bogged down as it grew would make the last
-   * twenty seconds calmer than the first ten, which is the opposite of what
-   * the brief asks for.
-   */
-  function growPass(dt: number): void {
-    for (const slot of slots.values()) {
-      const clump = slot.clump;
-      const root = slot.characterRoot;
-      if (!clump || !root || slot.phase !== 'alive') continue;
-      clump.update(dt);
-      const g = clump.growth();
-      root.scale.setScalar(g);
-      slot.bodyR = slot.baseR * g;
-      if (slot.character) slot.characterShadow?.setRadius?.(slot.character.radius * g);
-    }
-  }
-
   const manager: CreatureManager = {
     spawn(id, strokes, opts): boolean {
       // The slot id is the creature's identity: it salts the within-band
       // synthesis so the same drawing submitted twice hatches two visibly
       // distinct individuals, and it matches the phone portrait (same id).
-      const next = createCharacter(strokes, 1, { identity: id, markingSize: WORLD_MARKING_SIZE });
+      const next = createCharacter(strokes, 1, { identity: id });
       if (!next) return false;
 
       const existing = slots.get(id);
@@ -1959,7 +821,7 @@ export function createCreatureManager(
        * arrival, and the only thing left was whoever had just walked in.
        *
        * Two passes, not a sort — this runs on the spawn path with a full
-       * pipeline behind it, and the cap is MAX_POPULATION.
+       * pipeline behind it, and the cap is 96.
        *
        * Residents are the fallback, not an exemption. If a world is
        * somehow ALL residents the oldest of them still goes: the cap is a
@@ -1970,10 +832,12 @@ export function createCreatureManager(
         if (going) beginRetire(going, performance.now());
       }
 
-      // Its own spot on the map, from its id (see `spawnSpot`), then
-      // projected clear of props and residents — an egg never incubates
-      // half-inside a rock.
-      const spot = clearSpawnSpot(spawnSpot(id));
+      // Projected clear of props and residents — an egg never incubates
+      // half-inside a rock (the raw spiral can reach planted ground).
+      // Wrap at the population cap, not below it: at `% 64` a room of 68
+      // put four creatures on EXACTLY the spot of the first four, which no
+      // separation pass can undo cleanly (zero distance has no direction).
+      const spot = clearSpawnSpot(spawnSpot(orderCounter % MAX_POPULATION));
       /*
        * A creature that is ALREADY HERE never had an egg here.
        *
@@ -2016,12 +880,6 @@ export function createCreatureManager(
         characterRoot: null,
         characterShadow: null,
         bodyR: 0,
-        baseR: 0,
-        clump: null,
-        carriedBy: null,
-        passengers: new Set<string>(),
-        lastDropMs: null,
-        kinematic: null,
         personalityChoice: opts.personality ?? null,
         follow: null,
         agent: null,
@@ -2032,9 +890,6 @@ export function createCreatureManager(
         resident: opts.resident === true,
         drive: null,
         drivenAtMs: null,
-        offscreenFrames: 0,
-        pendingDt: 0,
-        present: true,
       };
       slots.set(id, slot);
 
@@ -2060,8 +915,7 @@ export function createCreatureManager(
       // reads as one thing across both phases.
       egg.group.name = `egg ${slot.name}`;
       world.scene.add(egg.group);
-      // No reframe on arrival — see `onBurst` above for why. An egg lands
-      // where its id puts it, and the camera is somebody else's to move.
+      world.cameraRig.frameAt(new Vector3(spot.x, 0, spot.z));
       observer?.egg(id, spot.x, spot.z);
       return true;
     },
@@ -2135,10 +989,7 @@ export function createCreatureManager(
           out.push({
             x: p.x,
             z: p.z,
-            // The GROWN radius when there is a pile: this is what the scatter
-            // reads for its exclusion radius, so a creature that has eaten
-            // half a forest clears the rest of it out of its own way.
-            r: slot.bodyR > 0 ? slot.bodyR : (slot.character?.radius ?? slot.egg?.radius ?? 1),
+            r: slot.character?.radius ?? slot.egg?.radius ?? 1,
             kind: slot.characterRoot ? 'character' : 'egg',
           });
         }
@@ -2195,73 +1046,10 @@ export function createCreatureManager(
       }
       aliveScratch.length = 0;
 
-      // The camera's frustum, when there is a real camera to read one off
-      // (a stub world in a test has none — then everything is on screen
-      // and the stride never engages). Last frame's view matrix is fine:
-      // the camera drifts, it never cuts.
-      let culling = false;
-      if (
-        camera &&
-        camera.projectionMatrix &&
-        camera.matrixWorldInverse &&
-        Array.isArray(camera.projectionMatrix.elements)
-      ) {
-        frustumMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
-        frustum.setFromProjectionMatrix(frustumMatrix);
-        culling = true;
-      }
-
-      // Index every alive root once, so each agent's peer query is a walk
-      // over the few cells around it rather than the whole cast.
-      peerSlots.length = 0;
-      for (const s of slots.values()) {
-        if (s.phase !== 'alive' || !s.characterRoot) continue;
-        const i = peerSlots.length;
-        let pt = peerPoints[i];
-        if (!pt) {
-          pt = { x: 0, z: 0 };
-          peerPoints[i] = pt;
-        }
-        pt.x = s.characterRoot.position.x;
-        pt.z = s.characterRoot.position.z;
-        peerSlots.push(s);
-      }
-      peerPoints.length = peerSlots.length;
-      peerGrid.rebuild(peerPoints);
-
       for (const slot of [...slots.values()]) {
-        /*
-         * Is this one being LOOKED AT this frame? On screen: refreshed
-         * every frame, as ever. Off screen: one frame in OFFSCREEN_STRIDE,
-         * and the skipped dt rides along (see the constant). Retiring and
-         * hatching creatures are exempt — their animations are timed
-         * against the clock and the tour is on its way to a hatch anyway.
-         */
-        slot.pendingDt += dt;
-        let present = true;
-        if (culling && !slot.hatch && slot.phase !== 'retiring') {
-          const root: Object3D | null = slot.characterRoot ?? slot.egg?.group ?? null;
-          if (root) {
-            const reach = slot.character ? slot.character.radius * 3 + 1 : EGG_RADIUS * 3 + 1;
-            boundsSphere.center.copy(root.position);
-            boundsSphere.radius = reach;
-            if (frustum.intersectsSphere(boundsSphere)) {
-              slot.offscreenFrames = 0;
-            } else {
-              present = slot.offscreenFrames % OFFSCREEN_STRIDE === 0;
-              slot.offscreenFrames++;
-            }
-          }
-        }
-        slot.present = present;
-        const presentDt = Math.min(slot.pendingDt, OFFSCREEN_DT_CAP);
-        if (present) slot.pendingDt = 0;
-
         if (slot.egg) {
-          if (present) {
-            slot.egg.update(presentDt, nowMs);
-            slot.eggShadow?.setPosition(slot.egg.group.position.x, slot.egg.group.position.z);
-          }
+          slot.egg.update(dt, nowMs);
+          slot.eggShadow?.setPosition(slot.egg.group.position.x, slot.egg.group.position.z);
           if (!slot.hatch && slot.phase === 'egg' && !timersPaused) {
             const total = slot.hatchAtMs - slot.bornMs;
             const p = total <= 0 ? 1 : Math.min(1, (nowMs - slot.bornMs) / total);
@@ -2280,25 +1068,13 @@ export function createCreatureManager(
         slot.hatch?.update(dt, nowMs);
 
         if (slot.character) {
-          if (present) {
-            if (worldUnitsPerPx > 0) slot.character.setWorldUnitsPerPixel?.(worldUnitsPerPx);
-            slot.character.update(presentDt, nowMs);
-          }
+          if (worldUnitsPerPx > 0) slot.character.setWorldUnitsPerPixel?.(worldUnitsPerPx);
+          slot.character.update(dt, nowMs);
 
           // Autonomous behavior: the agent owns the root's x/z and heading.
           // Never world-space Y — locomotion stays on the Surface seam.
           const root = slot.characterRoot;
-          if (root && slot.phase === 'alive' && slot.carriedBy) {
-            /*
-             * BEING CARRIED. Out of the physics pass entirely — its position
-             * is the pile's, and a second solver underneath would fight the
-             * clump for the same three floats, which is exactly the mistake
-             * the two-level rig exists to prevent. The agent is stood down
-             * the same way a driven one is; the gait sees speed 0 and drifts
-             * out to the ambient floor rather than freezing.
-             */
-            slot.character.setLocomotion(0, root.rotation.y);
-          } else if (root && slot.phase === 'alive' && slot.manualHold) {
+          if (root && slot.phase === 'alive' && slot.manualHold) {
             // Gizmo-held (dev panel): the dragged root position is the
             // truth. The body still enters the physics pass, motionless, so
             // neighbors part around it — but nothing writes it back. The
@@ -2371,26 +1147,24 @@ export function createCreatureManager(
             // does — because it is moving — rather than being told to.
             const moved = Math.hypot(root.position.x - beforeX, root.position.z - beforeZ);
             slot.character.setLocomotion(dt > 0 ? (moved / dt) * 1000 : 0, root.rotation.y);
-            if (present) {
-              slot.characterShadow?.setPosition(
-                root.position.x + slot.character.group.position.x,
-                root.position.z + slot.character.group.position.z,
-              );
-            }
+            slot.characterShadow?.setPosition(
+              root.position.x + slot.character.group.position.x,
+              root.position.z + slot.character.group.position.z,
+            );
             // Deliberately NOT entered into the physics pass: the host has
             // already resolved every overlap, and a second solver running
             // on top of the answer would fight it.
           } else if (root && slot.agent && slot.phase === 'alive' && !aiPaused) {
-            // Company within PEER_RADIUS, in roster order (the grid
-            // answers ascending, and it was filled in slot order).
-            const peers = peersScratch;
-            peers.length = 0;
-            const nearIdx = peerGrid.near(root.position.x, root.position.z, PEER_RADIUS);
-            for (let k = 0; k < nearIdx.length; k++) {
-              const other = peerSlots[nearIdx[k]!]!;
-              if (other === slot) continue;
-              const pt = peerPoints[nearIdx[k]!]!;
-              peers.push({ x: pt.x, z: pt.z, id: other.id });
+            const peers: AgentPeer[] = [];
+            for (const other of slots.values()) {
+              if (other === slot || other.phase !== 'alive' || !other.characterRoot) {
+                continue;
+              }
+              peers.push({
+                x: other.characterRoot.position.x,
+                z: other.characterRoot.position.z,
+                id: other.id,
+              });
             }
             /*
              * A PERSON IS STEERING THIS ONE (src/world/joystick.ts).
@@ -2454,34 +1228,6 @@ export function createCreatureManager(
             // scatter's wind path. That sway is the soft-body read.
             const soft = deepestSoftOverlap(root.position.x, root.position.z, bodyR, near);
             if (soft) {
-              /*
-               * A SOFT PROP REPORTS A CONTACT TOO, and it has to, because the
-               * bush is the only soft kind in the world and it is the one
-               * `STICKY` gives the deliberately tiny `breakStrength` of 0.6 —
-               * "a walk into it". But `resolveHard` skips soft colliders by
-               * construction and `onContact` hangs off it, so a bush could
-               * never be knocked out of the ground at all: the rule was
-               * written and the code could not reach it.
-               *
-               * The normal is OUTWARD, the same convention `resolveHard`
-               * uses: from the prop toward the creature, so the sticky pass
-               * negates it to shove the bush the way it was pushed.
-               *
-               * The speed reported is the UNDAMPED one, before
-               * `SOFT_SPEED_FACTOR` is applied below. What the bush is worth
-               * is the effort the creature walked in with — the damping is
-               * the bush resisting, and charging it for its own resistance
-               * would make a bush harder to flatten the better it worked.
-               */
-              const intent = Math.hypot(vx, vz);
-              if (soft.key !== undefined && bodiesOf() !== null && intent > 0) {
-                const dx = root.position.x - soft.x;
-                const dz = root.position.z - soft.z;
-                const d = Math.hypot(dx, dz);
-                const nx = d > 1e-9 ? dx / d : 1;
-                const nz = d > 1e-9 ? dz / d : 0;
-                contacts.push({ slot, collider: soft, nx, nz, speed: intent });
-              }
               vx *= SOFT_SPEED_FACTOR;
               vz *= SOFT_SPEED_FACTOR;
               const speed = Math.hypot(vx, vz);
@@ -2555,7 +1301,7 @@ export function createCreatureManager(
             slot.character.setLocomotion(0, root?.rotation.y ?? 0);
           }
 
-          if (present && slot.characterRoot && slot.characterShadow) {
+          if (slot.characterRoot && slot.characterShadow) {
             slot.characterShadow.setPosition(
               slot.characterRoot.position.x + slot.character.group.position.x,
               slot.characterRoot.position.z + slot.character.group.position.z,
@@ -2591,91 +1337,18 @@ export function createCreatureManager(
         );
         stepBodies.length = 0;
         for (const entry of aliveScratch) stepBodies.push(entry.body);
-        /*
-         * TWO NEW OPTIONS, and both of them exist because rapier now owns
-         * part of this world (src/physics/resolve.ts `HardOptions`).
-         *
-         * `skipKind: 'rock'` — every scattered stone is a DYNAMIC body once
-         * physics is loaded, and the creature's kinematic circle meets it
-         * through the solver. Its old footprint circle is still in
-         * `scatter.colliders()` (one spatial index for everything, by
-         * design), so without this a creature would be pushed out of a stone
-         * the solver has already rolled somewhere else.
-         *
-         * `onContact` — WHICH prop we just ran into, which the sticky pass
-         * needs to flinch a tree's recoil spring and to ask whether the tree
-         * came out of the ground. Recovering that from positions afterwards
-         * would be re-deriving a contact the sweep already had in hand. The
-         * strongest per collider survives, because a corner pocket sweeps
-         * more than once.
-         */
-        const physicsOn = bodiesOf() !== null;
-        /*
-         * HOW FAST IT WAS GOING WHEN IT HIT THE THING — captured BEFORE the
-         * step, and that is the whole point.
-         *
-         * `resolveHard` drops the inward component of the velocity as part of
-         * the correction and reports the contact AFTER doing so, so a
-         * creature walking straight into a trunk has almost no velocity left
-         * by the time the listener is called. Reading `body.vx` there scored
-         * every head-on collision — the only kind that matters here — as
-         * nearly nothing, so nothing was ever hard enough to knock a prop
-         * over. What a contact is worth is the speed the creature carried
-         * into it.
-         *
-         * UNITS: `stepCreatures` integrates `x += vx * subDt / 1000` with
-         * `subDt` in MILLISECONDS, so `vx` is world units per SECOND — the
-         * same scale as `MAX_SPEED` (1.2), which is how the soft-body nudge
-         * below reads it. `impactOf` takes it raw.
-         */
-        if (physicsOn) {
-          preSpeed.length = 0;
-          for (const entry of aliveScratch) {
-            preSpeed.push(Math.hypot(entry.body.vx, entry.body.vz));
-          }
-        }
-        stepCreatures(stepBodies, dt, gatherNear, {
-          hardPadFrac: HARD_PAD_FRAC,
-          ...(physicsOn ? { skipKind: 'rock' } : {}),
-          ...(physicsOn
-            ? {
-                onContact: (index, collider, nx, nz): void => {
-                  const entry = aliveScratch[index];
-                  if (!entry || entry.held) return;
-                  const speed = preSpeed[index] ?? 0;
-                  for (const seen of contacts) {
-                    if (seen.slot !== entry.slot || seen.collider !== collider) continue;
-                    if (speed > seen.speed) {
-                      seen.speed = speed;
-                      seen.nx = nx;
-                      seen.nz = nz;
-                    }
-                    return;
-                  }
-                  contacts.push({ slot: entry.slot, collider, nx, nz, speed });
-                },
-              }
-            : {}),
-        });
+        stepCreatures(stepBodies, dt, gatherNear, { hardPadFrac: HARD_PAD_FRAC });
         for (const entry of aliveScratch) {
           const { slot, root, body } = entry;
           if (entry.held) {
             // The gizmo owns this root; the resolved body position is
             // discarded (neighbors carried their half of any separation).
-            if (slot.present) slot.characterShadow?.setPosition(
+            slot.characterShadow?.setPosition(
               root.position.x + (slot.character?.group.position.x ?? 0),
               root.position.z + (slot.character?.group.position.z ?? 0),
             );
             continue;
           }
-          /*
-           * THE PILE ROLLS, off the displacement the resolve actually
-           * produced — not the velocity the agent asked for. A creature
-           * pinned against a trunk has a velocity and no displacement, and a
-           * pile that kept turning while its carrier stood still would read
-           * as wheels spinning on ice.
-           */
-          slot.clump?.roll(body.x - root.position.x, body.z - root.position.z);
           root.position.x = body.x;
           root.position.z = body.z;
           const character = slot.character;
@@ -2683,12 +1356,10 @@ export function createCreatureManager(
           // The gait reads the RESOLVED ground speed — walk cycles blend in
           // with actual movement and drift out to the ambient floor.
           character.setLocomotion(Math.hypot(body.vx, body.vz), entry.heading);
-          if (slot.present) {
-            slot.characterShadow?.setPosition(
-              body.x + character.group.position.x,
-              body.z + character.group.position.z,
-            );
-          }
+          slot.characterShadow?.setPosition(
+            body.x + character.group.position.x,
+            body.z + character.group.position.z,
+          );
         }
       }
 
@@ -2717,29 +1388,8 @@ export function createCreatureManager(
         const root = slot.characterRoot;
         if (!root || slot.phase !== 'alive') continue;
         if (slot.manualHold || slot.hatch) continue;
-        // A CARRIED creature is not standing on the ground — it is sitting
-        // on a pile, and its root's position is the clump's local offset, not
-        // a world one. Sampling the terrain into it would drag it out of the
-        // pile by whatever the ground happens to be under the origin.
-        if (slot.carriedBy) continue;
         root.position.y = surface.sampleHeight(root.position.x, root.position.z);
       }
-
-      /*
-       * The pile. DECISIONS FIRST, then size — so a creature that picked
-       * something up this frame is already bigger this frame. The other way
-       * round it grew one frame late, which is a frame of a stone sitting on
-       * a creature that has not noticed.
-       *
-       * `simulateSticky` runs on the page that simulates and nowhere else
-       * (docs/PLAN.md §7.6); `growPass` runs on every page, because the pile
-       * has to be DRAWN on all of them. A page that is not simulating drops
-       * the frame's contact reports on the floor rather than keeping a list
-       * nothing will ever read.
-       */
-      if (manager.simulating()) simulateSticky(nowMs);
-      else contacts.length = 0;
-      growPass(dt);
     },
 
     has(id): boolean {
@@ -2836,11 +1486,6 @@ export function createCreatureManager(
     drive(id: string, vec: { x: number; z: number; mag: number } | null): boolean {
       const slot = slots.get(id);
       if (!slot || slot.phase !== 'alive') return false;
-      // IGNORED, not refused, while it is stuck to somebody else. The stick
-      // still works and the creature still answers to its phone the moment
-      // it is set down — a `false` here would have the handset's joystick
-      // report the creature gone, which it is not: it is on a pile.
-      if (slot.carriedBy) return true;
       slot.drive = vec && vec.mag > 0 ? { x: vec.x, z: vec.z, mag: vec.mag } : null;
       return true;
     },
@@ -2895,24 +1540,6 @@ export function createCreatureManager(
       for (const slot of slots.values()) {
         const root = slot.characterRoot;
         if (slot.phase !== 'alive' || !root) continue;
-        /*
-         * A CARRIED creature's `root.position` is a clump-local offset, not a
-         * place in the world. Its phone still owns it and is still drawing a
-         * minimap, so what goes out is where it has actually been carried TO
-         * — otherwise the person watching sees their creature parked a few
-         * units from the origin while the pile it is stuck in rolls across
-         * the field, which is the whole joke and would read as a bug.
-         */
-        if (slot.carriedBy) {
-          root.getWorldPosition(scratchVec);
-          out.push({
-            id: slot.id,
-            x: scratchVec.x,
-            z: scratchVec.z,
-            heading: root.rotation.y,
-          });
-          continue;
-        }
         out.push({ id: slot.id, x: root.position.x, z: root.position.z, heading: root.rotation.y });
       }
       return out;
@@ -2937,49 +1564,6 @@ export function createCreatureManager(
         }
       }
       return false;
-    },
-
-    simulating(): boolean {
-      // BOTH halves. The bodies exist only on a page that was elected host
-      // (docs/PLAN.md §7.6), and a page that lost the election a second ago
-      // still has them — `aiPaused` is what that page set on the way down.
-      return bodiesOf() !== null && !aiPaused;
-    },
-
-    applyStick(record): void {
-      const carrier = slots.get(record.id);
-      if (!carrier) return;
-      seat(carrier, record);
-    },
-
-    applyDrop(record): void {
-      const carrier = slots.get(record.id);
-      if (!carrier) return;
-      unseat(carrier, record.item, record.x, record.z, {
-        x: record.qx,
-        y: record.qy,
-        z: record.qz,
-        w: record.qw,
-      });
-    },
-
-    applyLoose(item, x, z): void {
-      hidePlacement(item);
-      showLoose(item, x, z);
-    },
-
-    applySettle(record): void {
-      // Where the thing ACTUALLY came to rest, which is the one position in
-      // the whole format (docs/SESSION.md §2): a viewer runs no physics, so
-      // without this it would have a tree lying wherever the host last said
-      // and no way to find out where it stopped. The height is the seam's.
-      looseMeshes?.move(
-        record.item,
-        record.x,
-        surface.sampleHeight(record.x, record.z),
-        record.z,
-        { x: record.qx, y: record.qy, z: record.qz, w: record.qw },
-      );
     },
 
     endManualMove(root): void {

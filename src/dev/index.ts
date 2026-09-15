@@ -35,9 +35,6 @@ import type { CreatureManager } from '../creatures/manager';
 import type { GateEntry, ModerationConsole } from '../moderation/gate';
 import type { InkParams } from '../world/ink';
 import { EMOTE_NAMES } from '../net/protocol';
-import { paletteOverrideName, setPaletteOverride } from '../character/character';
-import { PALETTE_NAMES } from '../character/palette';
-import { setTopperTunables, topperTunables } from '../character/topper';
 import { springRegistry } from '../motion/spring';
 import {
   achromaticGate,
@@ -54,13 +51,11 @@ import { DEFAULT_KIND_DENSITY, SCATTER_SEED, SCATTER_STEP } from '../world/scatt
 import { TERRAIN_DEFAULTS, TERRAIN_LIMITS, terrainHeight } from '../world/landscape';
 import type { PaintedWaterField } from '../world/painted-water';
 import { ROLLING_SURFACE } from '../world/surface';
-import { WORLD_STYLES, sanitizeStyle, type WorldStyle } from '../world/style';
 import { GRAIN, MOTION, SURFACE } from '../taste/tokens';
 import { countByKind } from '../session';
 import type { SessionRecorder } from '../session';
 import { FALLBACK_DRAWINGS, FALLBACK_HATCH_MS } from './fixtures';
 import { DEV_SKILLS_META } from './skills-meta';
-import { FRAME_RING_SIZE, createFrameRing, formatPerfLine } from './perf';
 
 export { FALLBACK_DRAWINGS, FALLBACK_HATCH_MS } from './fixtures';
 export { DEV_SKILLS_META } from './skills-meta';
@@ -85,18 +80,6 @@ export interface DevScatterApi {
    * material's token lightness. Saturation 0 restores the exact greys. */
   setTint?(hue: number, saturation: number): void;
   group?: Object3D;
-}
-
-/**
- * The rigid-body layer's dev surface — matches src/world/rocks.ts's
- * `PropBodies`. Structural, like every other handle in this module, so the
- * dev surface keeps importing from node and never drags the physics wasm
- * into a test.
- */
-export interface DevPropBodiesApi {
-  counts(): { bodies: number; awake: number; springs: number };
-  spawnRock(x: number, y: number, z: number): string | null;
-  wakeAll(): void;
 }
 
 /** Presentation-tour surface — matches src/world/tour.ts's Tour handle.
@@ -152,11 +135,6 @@ export interface DevHandles {
   tour?: DevTourApi;
   ink?: DevInkApi;
   scatter?: DevScatterApi;
-  /** The rigid-body layer (`WorldHandles.bodies`), or null until the physics
-   * wasm chunk has loaded. */
-  bodies?(): DevPropBodiesApi | null;
-  /** Where the camera is looking — what `drop rock` aims at. */
-  cameraTarget?(): { x: number; y: number; z: number };
   /** WorldHandles.environment when the weather workstream has landed —
    * passed through as unknown and feature-detected here. */
   environment?: unknown;
@@ -166,13 +144,6 @@ export interface DevHandles {
   /** Color grade for the paper field (scene background + ground disc):
    * a css color string from the panel's picker. */
   setBackgroundColor?(color: string): void;
-  /**
-   * The per-world LOOK (`WorldHandles.setStyle`, docs/TASTE.md §9) and a
-   * readback of it. Optional like every other handle here: without them the
-   * panel shows no style select rather than one that does nothing.
-   */
-  setStyle?(style: WorldStyle): void;
-  style?(): WorldStyle;
   /**
    * Live terrain dials (src/world/landscape.ts `TerrainParams`, applied
    * through WorldHandles.setTerrain, which rebuilds the ground field, the
@@ -463,24 +434,6 @@ const MODERATION_ROWS = 12;
 /** How many fallback creatures one button press spawns. */
 const FALLBACK_SPAWN_COUNT = 3;
 
-/** …and how many the stress button spawns, for watching the frame line move. */
-const FALLBACK_STRESS_COUNT = 200;
-
-/**
- * Creatures built per animation frame while a stress spawn runs.
- *
- * Same number and the same reason as `SPAWN_PER_FRAME` in src/main.ts:
- * building a creature is the whole pure pipeline on the main thread, and two
- * hundred of them in one loop is a frozen tab, not a slow one. Yielding
- * between slices costs a little total time and keeps the world on screen
- * while its population arrives.
- */
-const STRESS_SPAWN_PER_FRAME = 3;
-
-/** How often the perf readout redraws. Slow enough to read, fast enough to
- * see a spike land. */
-const PERF_READOUT_MS = 250;
-
 /**
  * Mount the ghost-panel dev surface. Resolves to a disposer, or null when
  * there is no DOM (node) — in which case nothing was imported or mounted.
@@ -730,33 +683,6 @@ export async function initDevPanel(
       }
     });
 
-  /*
-   * The stress spawn, A FEW PER FRAME.
-   *
-   * Both spawnFallback implementations (the handle main.ts passes and the
-   * local fallback above) already cycle FALLBACK_DRAWINGS and derive a fresh
-   * id from an incrementing counter, so ids never collide past the fixture
-   * count and two hundred distinct creatures land. Neither yields, though —
-   * so the pacing lives here, in slices, rather than in either of them.
-   *
-   * Re-entrant presses are ignored while a run is in flight: a second run
-   * interleaved with the first would double the per-frame cost, which is the
-   * one thing this button exists to measure.
-   */
-  let stressRunning = false;
-  const spawnFallbackPaced = async (total: number): Promise<void> => {
-    if (stressRunning) return;
-    stressRunning = true;
-    try {
-      for (let done = 0; done < total; done += STRESS_SPAWN_PER_FRAME) {
-        spawnFallback(Math.min(STRESS_SPAWN_PER_FRAME, total - done));
-        await new Promise((resolve) => requestAnimationFrame(resolve));
-      }
-    } finally {
-      stressRunning = false;
-    }
-  };
-
   // ── frame readback for the pixel gates ────────────────────────────────────
   // The renderer's buffer is not preserved between frames, so the readback
   // waits for the next animation frame: our one-shot rAF is queued after the
@@ -807,9 +733,6 @@ export async function initDevPanel(
     apply: (panelUi) => {
       const folder = panelUi.addFolder('demo');
       folder.addButton('spawn fallback creatures', () => spawnFallback(FALLBACK_SPAWN_COUNT));
-      folder.addButton(`spawn ${FALLBACK_STRESS_COUNT} (stress)`, () => {
-        void spawnFallbackPaced(FALLBACK_STRESS_COUNT);
-      });
       folder.addButton('hatch all', () => creatures.hatchAll());
       folder.addButtonRow([
         { label: 'pause ai', onClick: () => creatures.pauseAi(true) },
@@ -861,58 +784,9 @@ export async function initDevPanel(
           tour.hatchAllMoment(() => creatures.hatchAll()),
         );
       }
-
-      // ── the perf line ────────────────────────────────────────────────────
-      // `frame 16.4ms (p95 22.1) · draw calls 213 · tris 1.2m · creatures 200`
-      // — the same live line the crowd reference demo carries, rendered
-      // through the panel's info control like every other readout here.
-      //
-      // Frame time comes from rAF deltas rather than the world's per-frame
-      // dt, so it measures the whole frame (post chain and all) and keeps
-      // ticking while the sim is paused. The renderer's counters are read as
-      // they stand: `info.autoReset` is on by default, so the custom pipeline
-      // in src/world/scene.ts accumulates every pass into one frame's totals
-      // and clears them itself on the next.
-      folder.addInfo('', 'perf-readout');
-      const ring = createFrameRing(FRAME_RING_SIZE);
-      let lastFrameMs: number | null = null;
-      let frameHandle = 0;
-      const sampleFrame = (nowMs: number): void => {
-        if (lastFrameMs !== null) ring.push(nowMs - lastFrameMs);
-        lastFrameMs = nowMs;
-        frameHandle = requestAnimationFrame(sampleFrame);
-      };
-      frameHandle = requestAnimationFrame(sampleFrame);
-
-      const renderPerf = (): void => {
-        const info = handles.renderer?.info.render;
-        folder.get('perf-readout')?.setText?.(
-          formatPerfLine({
-            frames: ring.stats(),
-            ...(info ? { calls: info.calls, triangles: info.triangles } : {}),
-            creatures: creatures.count(),
-          }),
-        );
-      };
-      renderPerf();
-      const perfTimer = window.setInterval(renderPerf, PERF_READOUT_MS);
-
-      const stopPerf = (): void => {
-        window.clearInterval(perfTimer);
-        cancelAnimationFrame(frameHandle);
-        window.removeEventListener('beforeunload', stopPerf);
-      };
-      // Belt and braces: the skill teardown below is the real stop, but a
-      // reload that never tears the panel down should not leave a timer
-      // holding the folder's dom.
-      window.addEventListener('beforeunload', stopPerf);
-
-      return { folder, stopPerf };
+      return { folder };
     },
-    teardown: (panelUi, handle) => {
-      (handle as { stopPerf?: () => void } | undefined)?.stopPerf?.();
-      panelUi.panel.removeFolder('demo');
-    },
+    teardown: (panelUi) => panelUi.panel.removeFolder('demo'),
   });
 
   // ── refworld.moderation — the operator layer (docs/MODERATION.md) ────────
@@ -1412,21 +1286,6 @@ export async function initDevPanel(
           },
         });
       }
-      // The per-world look (docs/TASTE.md §9). A live switch, because the
-      // override is a user decision and an operator has to be able to put the
-      // two frames side by side rather than take a deploy's word for it.
-      const setWorldStyle = handles.setStyle;
-      if (setWorldStyle) {
-        style.addSelect('style', {
-          options: [...WORLD_STYLES],
-          value: handles.style?.() ?? 'ink',
-          id: 'world-style',
-          tooltip: 'the shipped ink look, or the ghibli cel override',
-          onChange: (v) => {
-            setWorldStyle(sanitizeStyle(v));
-          },
-        });
-      }
       // Background color: a real picker (swatch + popover + hex field).
       // Starts on the ground token; picking it again restores the shipped
       // achromatic look exactly.
@@ -1715,62 +1574,6 @@ export async function initDevPanel(
     teardown: (panelUi) => panelUi.panel.removeFolder('weather'),
   });
 
-  // ── refworld.physics — the rigid-body world (src/physics/world.ts) ────────
-  // Small on purpose: a body count, a way to make one stone visibly tumble,
-  // and a wake-all. Everything here is feature-detected, and since the
-  // katamari rules that is not merely about timing: physics loads on HOST
-  // ELECTION and nowhere else (docs/PLAN.md §7.6), so on a page that is only
-  // watching the room there are no bodies to talk to and never will be. The
-  // readout says which of the two it is.
-
-  ui.skills.register({
-    ...metaOf('refworld.physics'),
-    apply: (panelUi) => {
-      const folder = panelUi.addFolder('physics', { collapsed: true });
-      const readout = folder.addInfo('', 'physics-readout');
-      const setReadout = (text: string): void => {
-        (readout as { setText?: (t: string) => void }).setText?.(text);
-      };
-      const bodiesOf = (): DevPropBodiesApi | null => handles.bodies?.() ?? null;
-      const refresh = (): void => {
-        const bodies = bodiesOf();
-        if (!bodies) {
-          setReadout('not simulating — this page runs no rigid bodies');
-          return;
-        }
-        const counts = bodies.counts();
-        setReadout(
-          `bodies ${counts.bodies} · awake ${counts.awake} · recoil springs ${counts.springs}`,
-        );
-      };
-      refresh();
-      folder.addButton('refresh counts', refresh);
-      folder.addButton('drop rock', () => {
-        const bodies = bodiesOf();
-        if (!bodies) {
-          setReadout('not simulating — nothing here to drop a rock into');
-          return;
-        }
-        // Three units above what the camera is looking at, so it lands in
-        // frame and the tumble is the thing you see.
-        const at = handles.cameraTarget?.() ?? { x: 0, y: 0, z: 0 };
-        const key = bodies.spawnRock(at.x, at.y + 3, at.z);
-        setReadout(key === null ? 'the dropped-rock mesh is full' : `dropped ${key}`);
-      });
-      folder.addButton('wake all', () => {
-        const bodies = bodiesOf();
-        if (!bodies) {
-          setReadout('not simulating — no rigid bodies to wake');
-          return;
-        }
-        bodies.wakeAll();
-        refresh();
-      });
-      return { folder };
-    },
-    teardown: (panelUi) => panelUi.panel.removeFolder('physics'),
-  });
-
   // ── refworld.character — emotes on the latest hatched character ───────────
 
   ui.skills.register({
@@ -1778,43 +1581,6 @@ export async function initDevPanel(
     apply: (panelUi) => {
       const folder = panelUi.addFolder('character');
       folder.addInfo('emotes target the most recently hatched character', 'character-hint');
-      // ── the creature rig (docs/taste/creature.md, src/character/topper.ts).
-      // There is no rebuild hook for a creature that already exists — its
-      // mesh, stalk and colourway are built once at spawn — so these three
-      // dials only affect creatures built AFTERWARDS. The fastest way to see
-      // one land is `clear creatures` then `spawn fallback creatures` in the
-      // demo folder.
-      folder.addInfo('rig dials apply to creatures spawned afterwards', 'rig-hint');
-      const dials = topperTunables();
-      folder.addSlider('stalk length', {
-        min: 0.1,
-        max: 1,
-        step: 0.01,
-        value: dials.stalkLength,
-        id: 'stalk-length',
-        tooltip: 'stalk reach as a fraction of body height — applies to creatures spawned afterwards',
-        onChange: (v) => setTopperTunables({ stalkLength: v }),
-      });
-      folder.addSlider('topper size', {
-        min: 0.1,
-        max: 0.8,
-        step: 0.01,
-        value: dials.topperSize,
-        id: 'topper-size',
-        tooltip: 'topper extent as a fraction of body height — applies to creatures spawned afterwards',
-        onChange: (v) => setTopperTunables({ topperSize: v }),
-      });
-      folder.addSelect('palette override', {
-        options: ['auto', ...PALETTE_NAMES],
-        value: paletteOverrideName() ?? 'auto',
-        id: 'palette-override',
-        tooltip: 'pin every new creature to one colourway; auto reads it off the drawing',
-        onChange: (name) => {
-          setPaletteOverride(
-            name === 'auto' ? null : (name as (typeof PALETTE_NAMES)[number]),
-          );
-        },
-      });
       const rows: (typeof EMOTE_NAMES)[number][][] = [
         EMOTE_NAMES.slice(0, 4),
         EMOTE_NAMES.slice(4),
@@ -1861,26 +1627,7 @@ export async function initDevPanel(
         setReadout(`damping audit — ${result.pass ? 'pass' : 'fail'}: ${result.detail}`);
         refreshStillness();
       });
-      /**
-       * The two PALETTE gates measure the achromatic taste (TASTE §7), and the
-       * ghibli style is a recorded user override of exactly that — a saturated
-       * cel palette and no six-luma snap (docs/TASTE.md §9). Running them
-       * there would print a failure for a decision that was made on purpose,
-       * which is worse than printing nothing: an operator would go looking for
-       * a bug. So they report `n/a` and pass, and every other gate — damping,
-       * stillness, density, mark set, grain — still runs, because the override
-       * relaxes nothing those measure.
-       */
-      const paletteGateWaived = (): boolean => handles.style?.() === 'ghibli';
-      const waivedReadout = (name: string): void => {
-        setReadout(`${name} — pass: n/a — ghibli style (user override)`);
-        refreshStillness();
-      };
       folder.addButton('achromatic', () => {
-        if (paletteGateWaived()) {
-          waivedReadout('achromatic');
-          return;
-        }
         void readFramePixels().then((pixels) => {
           const result = achromaticGate(pixels);
           setReadout(`achromatic — ${result.pass ? 'pass' : 'fail'}: ${result.detail}`);
@@ -1888,10 +1635,6 @@ export async function initDevPanel(
         });
       });
       folder.addButton('value histogram', () => {
-        if (paletteGateWaived()) {
-          waivedReadout('value histogram');
-          return;
-        }
         void readFramePixels().then((pixels) => {
           const result = valueHistogramGate(pixels);
           setReadout(`value histogram — ${result.pass ? 'pass' : 'fail'}: ${result.detail}`);

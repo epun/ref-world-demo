@@ -75,7 +75,7 @@ import {
   ShapeGeometry,
   type WebGLProgramParametersWithUniforms,
 } from 'three';
-import { GHIBLI, MOTION, SURFACE, WORLD } from '../taste/tokens';
+import { MOTION, SURFACE, WORLD } from '../taste/tokens';
 import {
   ISLAND_OUTLINE_POINTS,
   OUTLINE_POINTS,
@@ -92,7 +92,6 @@ import {
   type WaterBody,
 } from './landscape';
 import type { PaintedWaterField } from './painted-water';
-import type { WorldStyle } from './style';
 
 // ── lifts [D] ────────────────────────────────────────────────────────────────
 // Three hairs above the paper, in drawing order, and all of them UNDER the
@@ -487,16 +486,6 @@ export interface Water {
    * `paintedGroup` is NOT touched: it is a sibling rather than a child for
    * exactly this reason, so painted water stands in the plain world.
    */
-  /**
-   * Recolour water for a per-world style override (docs/TASTE.md §9).
-   *
-   * THREE materials and no geometry: the flat fill, the drawn shore ribbons
-   * and the drifting ripple marks. That is the whole of water's colour — the
-   * ripples are vertex-displaced ink marks, not a shader with a palette in it
-   * — so this is three `Color.set` calls and nothing rebuilds. `ink` restores
-   * the shipped tokens exactly.
-   */
-  setStyle(style: WorldStyle): void;
   setVisible(on: boolean): void;
   /**
    * Draw the painted water a person has laid down, replacing whatever
@@ -704,15 +693,6 @@ export function createWater(): Water {
       rippleUniforms.uTime.value = nowMs / 1000;
     },
     fills: (): [number, number][][] => outlines.map((poly) => poly.map((p) => [p[0], p[1]])),
-    setStyle: (style: WorldStyle): void => {
-      const ghibli = style === 'ghibli';
-      // The sheet takes envpaint's mid water; the shore ribbon and the ripple
-      // marks become foam, which is what draws a cel waterline — an ink line
-      // on blue water reads as a crack in it.
-      fillMaterial.color.set(ghibli ? GHIBLI.waterMid : WORLD.neutralMid);
-      shoreMaterial.color.set(ghibli ? GHIBLI.foam : SURFACE.ink);
-      rippleMaterial.color.set(ghibli ? GHIBLI.foam : SURFACE.ink);
-    },
     setVisible: (on: boolean): void => {
       // `paintedGroup` on purpose untouched — see the interface.
       group.visible = on;

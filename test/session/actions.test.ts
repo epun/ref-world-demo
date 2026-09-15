@@ -34,7 +34,6 @@ import {
   type ReplayDriver,
   type SessionLog,
   type SessionRecorder,
-  SESSION_SCHEMA_VERSION,
 } from '../../src/session';
 
 const read = (p: string): string => readFileSync(join(process.cwd(), p), 'utf8');
@@ -281,10 +280,7 @@ describe('paint and keep — the shapes', () => {
     const rec = recorder(clock().now);
     rec.keep('a', 'link');
     const raw = JSON.parse(rec.toJson()) as { version: number };
-    // The CURRENT version, not a number spelled out here: the point of this
-    // test is the bump mechanism, and a literal would have to be edited on
-    // every additive kind (`stick` and its three siblings made that three).
-    expect(raw.version).toBe(SESSION_SCHEMA_VERSION);
+    expect(raw.version).toBe(2);
     // A reader that only knows v1 refuses this file — which is exactly what
     // the bump is for: a plain "junk in the events" would be the alternative.
     expect(parseSessionLog(JSON.stringify({ ...raw, version: 99 }))).toBeNull();
