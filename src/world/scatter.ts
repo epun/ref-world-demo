@@ -40,7 +40,7 @@ import {
   Vector4,
 } from 'three';
 import type { Collider } from '../physics/colliders';
-import { MOTION, SURFACE, WORLD } from '../taste/tokens';
+import { GHIBLI, MOTION, SURFACE, WORLD } from '../taste/tokens';
 import {
   activeWaterBodies,
   isWater,
@@ -68,12 +68,15 @@ import {
   type PropKind,
 } from './props';
 import { stampEllipse, stampRotationY, type StampEllipse } from './shadows';
+import type { WorldStyle } from './style';
 import { ROLLING_SURFACE, type Surface } from './surface';
+import { applyToon } from './toon';
 import {
   buildWaterfallGeometries,
   WATERFALL_VARIANTS,
   waterfallPlacements,
 } from './waterfall-marks';
+import { gustAt, WIND_FIELD_GLSL, type WindField } from './wind';
 
 export type MarkKind = 'tick' | 'reed' | 'grass' | 'flower' | 'flame' | 'waterfall';
 export type ScatterKind = PropKind | MarkKind;
@@ -131,6 +134,40 @@ export interface Exclusion {
   x: number;
   z: number;
   r: number;
+}
+
+/**
+ * Stable identity for a placement — the key the physics layer
+ * (src/world/rocks.ts) files a rigid body under, and the key
+ * `Scatter.setTaken` removes one by.
+ *
+ * Keyed off the PLACEMENT, never a live body: a rock that has been shoved
+ * twenty units downhill is still the same rock, and a rebuild that re-rolls
+ * the world must be able to tell which placements survived it. Position is
+ * quantized to 2dp because placement x/z are pure functions of (cell, seed,
+ * density) — the same roll produces bit-identical coordinates on every
+ * device, and 2dp is far finer than the 6u grid step can ever place two
+ * instances apart.
+ */
+export function placementKey(p: Placement): string {
+  return `${p.kind}:${p.variant}:${p.x.toFixed(2)}:${p.z.toFixed(2)}`;
+}
+
+/**
+ * Where one placement is DRAWN: which instanced mesh holds it and at what
+ * row. The physics layer writes a loose rock's body transform straight into
+ * this slot, and the recoil spring writes a tree's bend into the matching
+ * row of the same mesh's `aBend`.
+ */
+export interface InstanceRef {
+  key: string;
+  placement: Placement;
+  mesh: InstancedMesh;
+  index: number;
+  /** The uniform instance scale actually used (placement × per-kind dial). */
+  scale: number;
+  /** Footprint radius at that scale — the same number `positions()` reports. */
+  radius: number;
 }
 
 // ── placement (pure) ─────────────────────────────────────────────────────────
@@ -1216,12 +1253,32 @@ export function colliderFor(
   if (p.kind === 'cloud') return null;
   const s = p.scale * kindScaleMult;
   if (p.kind === 'bush') {
-    return { x: p.x, z: p.z, r: BUSH_SOFT_FOOTPRINT * s, hard: false };
+    return {
+      x: p.x,
+      z: p.z,
+      r: BUSH_SOFT_FOOTPRINT * s,
+      hard: false,
+      kind: p.kind,
+      key: placementKey(p),
+    };
   }
   const trunk = TRUNK_FOOTPRINT[p.kind];
   // Rocks render widened (ROCK_WIDEN_XZ) — the collider follows the visual.
   const widen = p.kind === 'rock' ? ROCK_WIDEN_XZ : 1;
-  return { x: p.x, z: p.z, r: (trunk ?? baseRadius) * s * widen, hard: true };
+  // The kind rides along (src/physics/colliders.ts `Collider.kind`): the
+  // creature layer needs it to ask how sticky a prop is, and to drop rocks
+  // out of the kinematic set once rapier owns them.
+  return {
+    x: p.x,
+    z: p.z,
+    r: (trunk ?? baseRadius) * s * widen,
+    hard: true,
+    kind: p.kind,
+    // The identity, not merely the shape (src/physics/colliders.ts
+    // `Collider.key`): the creature layer needs it to bump this prop's
+    // recoil spring and to knock it out of the ground.
+    key: placementKey(p),
+  };
 }
 
 // ── tick geometry ────────────────────────────────────────────────────────────
@@ -1710,6 +1767,26 @@ interface WindProfile {
    * than radians (2026-09-09, user ask: clouds drift, slower than trees).
    */
   factorExpr?: string;
+  /**
+   * Whether this profile's gust comes from the GUST-FRONT field
+   * (src/world/wind.ts `refWindAt`) instead of the old two-octave value
+   * noise in time.
+   *
+   * Every rooted kind is on the front: the front is the difference between
+   * a field that breathes in place and one that reads as blown, and a
+   * rooted kind's gust drives an ANGULAR lean, which a sharpened front
+   * turns into a crown ducking and recovering — exactly the read wanted.
+   *
+   * CLOUDS ARE DELIBERATELY NOT (2026-09-15). A cloud's `factorExpr` is a
+   * constant, so its gust drives a LATERAL DRIFT in world units rather than
+   * a lean, and the front field's whole character is a hard-edged
+   * smoothstep (0.30 → 0.62) with calm paper between fronts. On a lean that
+   * reads as a gust arriving; on a position it reads as a shove and a stop,
+   * which is an abrupt start and an abrupt arrest — both forbidden at
+   * confidence 1.00 (TASTE §2.1). A cloud crosses its own width over
+   * minutes; it keeps the smooth field it was tuned on. **[D]**
+   */
+  frontField?: boolean;
 }
 
 /** Trees / conifers / bushes: slow crown sway, small amplitude — the gust
@@ -1724,6 +1801,7 @@ const WIND_PROFILE_SWAY: WindProfile = {
   flutterHz: 0.7,
   phaseJitter: 1.6,
   heightExpr: 'aWindHeight',
+  frontField: true,
 };
 
 /** Grass ticks: tiny marks, so they carry the wind read — ~2× the trees'
@@ -1735,6 +1813,7 @@ const WIND_PROFILE_TICK: WindProfile = {
   flutterHz: 1.5,
   phaseJitter: 2.4,
   heightExpr: '1.0',
+  frontField: true,
 };
 
 /** Palms: the fronds carry the strongest sway in the frame — over twice
@@ -1747,6 +1826,7 @@ const WIND_PROFILE_PALM: WindProfile = {
   flutterHz: 0.9,
   phaseJitter: 1.9,
   heightExpr: 'aWindHeight',
+  frontField: true,
 };
 
 /** Cacti: barely — a column of water hardly acknowledges the gust, but the
@@ -1758,6 +1838,7 @@ const WIND_PROFILE_CACTUS: WindProfile = {
   flutterHz: 0.5,
   phaseJitter: 1.2,
   heightExpr: 'aWindHeight',
+  frontField: true,
 };
 
 /**
@@ -1780,13 +1861,25 @@ const WIND_PROFILE_CLOUD: WindProfile = {
 
 const glslFloat = (v: number): string => v.toFixed(5);
 
-/** Top-level declarations appended after <common>. */
-function windCommonGlsl(declareHeightAttr: boolean): string {
+/** Top-level declarations appended after <common>.
+ *
+ * `aBend` rides beside `aWindHeight` — it is the tree-recoil channel
+ * (src/world/rocks.ts), a per-instance world-axis lean written by a ζ=1
+ * angular spring on the CPU. Zero on every instance until something hits
+ * the tree, so a world with no creatures in it draws exactly as before.
+ *
+ * `refWindAt` (the gust-front field, src/world/wind.ts) is injected only
+ * for the profiles that ride it — see `WindProfile.frontField`. Its noise
+ * chain is namespaced `wind*21`/`windVnoise`/`windFbm` so it never collides
+ * with the `windHash`/`windNoise` pair below. */
+function windCommonGlsl(declareHeightAttr: boolean, declareField: boolean): string {
   return `
 uniform float uWindTime;
 uniform vec2 uWindDir;
 uniform float uWindStrength;
-${declareHeightAttr ? 'attribute float aWindHeight;' : ''}
+uniform float uWindGust;
+${declareHeightAttr ? 'attribute float aWindHeight;\nattribute vec2 aBend;' : ''}
+${declareField ? WIND_FIELD_GLSL : ''}
 float windHash(float n) { return fract(sin(n) * 43758.5453123); }
 float windNoise(float t, float seed) {
   float i = floor(t);
@@ -1819,14 +1912,31 @@ function windBeginGlsl(p: WindProfile): string {
   #endif
   float windPhase = dot(windCell, uWindDir) * -0.05
     + windHash(dot(windCell, vec2(127.1, 311.7))) * ${glslFloat(p.phaseJitter)};
-  float windT = uWindTime * ${glslFloat(p.gustHz)} + windPhase;
-  float windGust = 0.72 * windNoise(windT, 17.3) + 0.28 * windNoise(windT * 2.3 + 5.1, 29.7);
+  ${
+    p.frontField
+      ? // The gust-front field: cells stretched along the wind racing downwind,
+        // sampled at this instance's own cell. `length()` of the push, remapped
+        // to the [-1, 1] the bend envelope below was tuned against.
+        `float windGust = length(refWindAt(windCell, uWindTime * ${glslFloat(p.gustHz)},
+    uWindDir, 1.0, uWindGust)) * 2.0 - 1.0;`
+      : `float windT = uWindTime * ${glslFloat(p.gustHz)} + windPhase;
+  float windGust = 0.72 * windNoise(windT, 17.3) + 0.28 * windNoise(windT * 2.3 + 5.1, 29.7);`
+  }
   float windBend = ${glslFloat(p.bend)} * uWindStrength * (0.45 + 0.55 * windGust);
   float windFlut = ${glslFloat(p.flutter)} * uWindStrength
     * windNoise(uWindTime * ${glslFloat(p.flutterHz)} + windPhase * 1.7, 47.9);
   vec2 windLean = uWindDir * windBend + vec2(-uWindDir.y, uWindDir.x) * windFlut;
   vec3 windWorld = vec3(windLean.x, 0.0, windLean.y)
     * (${p.factorExpr ?? `${p.heightExpr} * position.y`});
+${
+  p.heightExpr === 'aWindHeight'
+    ? `  // Tree recoil (src/world/rocks.ts): a per-instance world-axis lean from
+  // a ζ=1 angular spring, riding the SAME height factor as the wind so a
+  // struck trunk pivots at its root exactly as a gust bends it.
+  windWorld += vec3(aBend.x, 0.0, aBend.y)
+    * (${p.factorExpr ?? `${p.heightExpr} * position.y`});`
+    : ''
+}
   transformed += (windWorld * windRot) * inversesqrt(windS2);
 }`;
 }
@@ -1935,6 +2045,25 @@ export interface Scatter {
    */
   setSun(azimuth: number, altitude: number, presence: number): void;
   /**
+   * Recolour every prop albedo for a per-world style override
+   * (docs/TASTE.md §9) — the shipped achromatic tokens, or envpaint's ghibli
+   * palette: canopy green on the swaying kinds, warm paper on built things,
+   * stone on the rocks, white on the clouds, grass green on the marks.
+   *
+   * Value STRUCTURE is what this moves, so the dev tint's captured lightnesses
+   * are re-read here: the panel's hue/saturation grade keeps working on top of
+   * whichever palette is current instead of dragging the old one's values
+   * back. `ink` restores the tokens exactly.
+   */
+  setStyle(style: WorldStyle): void;
+  /**
+   * Retarget the two ends of the shadow stamps' presence lerp — the paper the
+   * stamp vanishes into, and the flat value it reaches in full sun. Same
+   * handle as `FlatShadows.setPalette`, for the same reason: a style override
+   * changes the ground the props stand on.
+   */
+  setShadowPalette(ground: Color | string, ink: Color | string): void;
+  /**
    * Drive the vertex wind. Call once per frame with the environment's live
    * (spring-glided) wind strength and the frame time; strength is clamped to
    * [WIND_STRENGTH_MIN, WIND_STRENGTH_MAX] and the heading drifts on its own
@@ -1943,6 +2072,46 @@ export interface Scatter {
   setWind(strength: number, timeMs: number): void;
   /** Live wind values (dev panel / tests). */
   windState(): { strength: number; azimuth: number; timeMs: number };
+  /**
+   * The live wind as the GUST-FRONT field wants it (src/world/wind.ts), so
+   * a CPU consumer samples the identical field the vertex shader draws.
+   * src/world/rocks.ts pushes small stones with it.
+   */
+  windField(): WindField;
+  /**
+   * Where every visible placement of a kind is DRAWN — mesh + row + scale.
+   * Rebuilt in `rebuild()`, so a consumer re-reads it whenever
+   * `rebuildVersion()` moves. The physics layer writes body transforms into
+   * these rows (src/world/rocks.ts).
+   */
+  instanceRefs(kind: PropKind): InstanceRef[];
+  /** The authored geometry behind one (kind, variant) — for building a
+   * collider hull from the shape actually on screen. */
+  geometryFor(kind: PropKind, variant: number): BufferGeometry | null;
+  /**
+   * The albedo this kind's instances are drawn with — the SAME object, not
+   * a copy.
+   *
+   * For `src/world/loose.ts`, which draws a prop that has come out of the
+   * ground as a mesh of its own. Sharing the material is the point: a style
+   * override, a dev tint or the ghibli recolour reaches the fallen tree and
+   * the standing ones in one write, and a fallen tree can never be a
+   * different green from its neighbours. The material already carries the
+   * wind injection and the toon chain; a non-instanced draw on it compiles
+   * one extra program variant without `USE_INSTANCING`, which is one
+   * compile and no per-frame cost.
+   */
+  materialFor(kind: PropKind): MeshStandardMaterial;
+  /** Bumps on every `rebuild()`. Cheap to compare once a frame. */
+  rebuildVersion(): number;
+  /**
+   * Placements a creature has PICKED UP. They are filtered out of the
+   * rebuild exactly like an exclusion — and out of `positions()` and
+   * `colliders()` with it, so nothing resolves against a prop that is no
+   * longer standing there. Not drawn, not collided, not re-derived
+   * anywhere: taken is taken.
+   */
+  setTaken(keys: ReadonlySet<string>): void;
   /**
    * Physics colliders for the currently visible props: hard bodies block,
    * soft bodies (bush) damp + sway; the ink marks have none. The
@@ -2137,6 +2306,9 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
     uWindTime: { value: 0 },
     uWindDir: { value: new Vector2(1, 0) },
     uWindStrength: { value: WIND_STRENGTH_MIN },
+    // The slow wandering gust envelope (src/world/wind.ts `gustAt`), pure in
+    // time so every device's weather agrees. Written in setWind.
+    uWindGust: { value: gustAt(0) },
   };
   let windTimeMs = 0;
 
@@ -2150,7 +2322,10 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
       shader.vertexShader = shader.vertexShader
         .replace(
           '#include <common>',
-          `#include <common>\n${windCommonGlsl(profile.heightExpr === 'aWindHeight')}`,
+          `#include <common>\n${windCommonGlsl(
+            profile.heightExpr === 'aWindHeight',
+            profile.frontField === true,
+          )}`,
         )
         .replace('#include <begin_vertex>', windBeginGlsl(profile));
     };
@@ -2256,9 +2431,48 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
   chainVariation(cactusMaterial);
   chainVariation(cloudMaterial);
 
+  // Cel lighting, chained LAST so it wraps the wind / nudge / variation stack
+  // above rather than replacing it (src/world/toon.ts). Inert — one uniform at
+  // 0 — until a world on the ghibli style turns it on, so every other
+  // deployment renders exactly as before.
+  for (const m of [
+    propMaterial,
+    rockMaterial,
+    swayMaterial,
+    palmMaterial,
+    cactusMaterial,
+    cloudMaterial,
+    tickMaterial,
+  ]) {
+    applyToon(m);
+  }
+
   // Bake the height-fraction attribute the sway shader bends by. Rigid kinds
   // deliberately never get this attribute (taste guard: tests assert it).
   const swayKindSet = new Set<PropKind>(WIND_SWAY_KINDS);
+
+  /**
+   * The ONE place a kind's albedo is chosen (see `Scatter.materialFor`).
+   *
+   * Pulled out of the rebuild loop because a second consumer arrived:
+   * `src/world/loose.ts` draws a prop that has been knocked out of the
+   * ground as a non-instanced mesh, and it has to be the SAME material
+   * object — so a style override, a dev tint or a ghibli recolour lands on
+   * the fallen tree and the standing ones together, with no code knowing
+   * there are two kinds of draw.
+   */
+  const materialFor = (kind: PropKind): MeshStandardMaterial =>
+    kind === 'cloud'
+      ? cloudMaterial
+      : kind === 'rock' || kind === 'monolith'
+        ? rockMaterial
+        : kind === 'palm'
+          ? palmMaterial
+          : kind === 'cactus'
+            ? cactusMaterial
+            : swayKindSet.has(kind)
+              ? swayMaterial
+              : propMaterial;
   for (const kind of WIND_SWAY_KINDS) {
     for (const variant of geometries.get(kind)!) {
       const position = variant.geometry.getAttribute('position');
@@ -2307,6 +2521,21 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
   let placements = computePlacements();
   let exclusions: Exclusion[] = [];
   let meshes: InstancedMesh[] = [];
+  /** Placements a creature is carrying — see `setTaken`. */
+  let taken: ReadonlySet<string> = new Set<string>();
+  /** Where each visible prop placement is drawn, per kind (see `instanceRefs`). */
+  let instanceRefsByKind = new Map<PropKind, InstanceRef[]>();
+  /** Bumped by rebuild(); the physics layer's cue to re-sync its bodies. */
+  let rebuildCount = 0;
+
+  /** Visible placements, minus the exclusion circles and minus anything
+   * carried off. ONE filter, read by rebuild(), positions() and colliders()
+   * alike — a prop that is not drawn must not be collided with either. */
+  const standing = (): Placement[] => {
+    const visible = filterExcluded(placements, exclusions);
+    if (taken.size === 0) return visible;
+    return visible.filter((p) => !taken.has(placementKey(p)));
+  };
 
   // Collider cache — invalidated by rebuild() (every placement / exclusion /
   // scale mutation funnels through it), rebuilt lazily on colliders().
@@ -2385,6 +2614,11 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
     // Colliders track visible placements: drop the cache, bump the version.
     colliderCache = null;
     colliderVersion++;
+    // The instanced rows move with the meshes, so the physics layer's map of
+    // them is stale the instant this runs. Rebuilt below; `rebuildVersion`
+    // is what tells it to re-read.
+    instanceRefsByKind = new Map<PropKind, InstanceRef[]>();
+    rebuildCount++;
     // The painted marks ride in AFTER the exclusion filter, and after the
     // roll rather than inside it (2026-09-10, user ask: the waterfall tool).
     // Two reasons, and they are the cloud's and the mountain's: somebody put
@@ -2392,9 +2626,7 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
     // out (TASTE §2.3 is a character's negative space on the ground), and its
     // height spans the ground the Surface reports RIGHT NOW, so it is read
     // fresh on every rebuild rather than frozen into a placement list.
-    const visible = filterExcluded(placements, exclusions).concat(
-      waterfallPlacements(surface),
-    );
+    const visible = standing().concat(waterfallPlacements(surface));
 
     // One InstancedMesh per (kind, variant) — ~30 draws total.
     for (const kind of PROP_KINDS) {
@@ -2402,18 +2634,7 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
       for (let v = 0; v < variants.length; v++) {
         const of = visible.filter((p) => p.kind === kind && p.variant === v);
         if (of.length === 0) continue;
-        const material =
-          kind === 'cloud'
-            ? cloudMaterial
-            : kind === 'rock' || kind === 'monolith'
-            ? rockMaterial
-            : kind === 'palm'
-              ? palmMaterial
-              : kind === 'cactus'
-                ? cactusMaterial
-                : swayKindSet.has(kind)
-                  ? swayMaterial
-                  : propMaterial;
+        const material = materialFor(kind);
         const mesh = new InstancedMesh(variants[v]!.geometry, material, of.length);
         // Named so the ghost-panel scene outliner represents environment
         // objects legibly, like it does each created character (user ask).
@@ -2428,7 +2649,17 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
         // rebuilt alongside the matrices so attribute rows always pair with
         // their instances.
         const variation = new Float32Array(of.length * 4);
+        // Where each of these instances is drawn, for the physics layer.
+        const refs = instanceRefsByKind.get(kind) ?? [];
         of.forEach((p, i) => {
+          refs.push({
+            key: placementKey(p),
+            placement: p,
+            mesh,
+            index: i,
+            scale: p.scale * kMult,
+            radius: variants[v]!.radius * p.scale * kMult * widenXZ,
+          });
           quat.setFromAxisAngle(axisY, p.rotY);
           // Seated on the ground, standing straight up: a tree grows toward
           // the sky on a hillside, it does not lean out normal to the slope.
@@ -2447,6 +2678,17 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
           variation.set(instanceVariation(p.x, p.z), i * 4);
         });
         mesh.geometry.setAttribute('aVariation', new InstancedBufferAttribute(variation, 4));
+        // The tree-recoil channel: zero everywhere until something hits a
+        // trunk (src/world/rocks.ts writes it). Only the swaying kinds carry
+        // it, because only their materials declare the attribute — the rigid
+        // ones deliberately have no wind block at all.
+        if (swayKindSet.has(kind)) {
+          mesh.geometry.setAttribute(
+            'aBend',
+            new InstancedBufferAttribute(new Float32Array(of.length * 2), 2),
+          );
+        }
+        instanceRefsByKind.set(kind, refs);
         mesh.instanceMatrix.needsUpdate = true;
         meshes.push(mesh);
         groupFor(kind).add(mesh);
@@ -2555,7 +2797,7 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
   return {
     group,
     positions() {
-      return filterExcluded(placements, exclusions)
+      return standing()
         .filter((p) => !isMark(p.kind))
         .map((p) => ({
           x: p.x,
@@ -2628,8 +2870,23 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
       windTimeMs = timeMs;
       windUniforms.uWindStrength.value = clampWindStrength(strength);
       windUniforms.uWindTime.value = timeMs / 1000;
+      windUniforms.uWindGust.value = gustAt(timeMs / 1000);
       const azimuth = windAzimuth(timeMs);
       windUniforms.uWindDir.value.set(Math.cos(azimuth), Math.sin(azimuth));
+    },
+    windField(): WindField {
+      const dir = windUniforms.uWindDir.value;
+      return {
+        dirX: dir.x,
+        dirZ: dir.y,
+        strength: windUniforms.uWindStrength.value,
+        // The tempo the ROOTED kinds ride (`WIND_PROFILE_SWAY.gustHz`): a
+        // rock skittering in a gust has to be pushed by the same front that
+        // is bending the grass beside it, or the two read as separate
+        // weathers.
+        speed: WIND_PROFILE_SWAY.gustHz,
+        gust: windUniforms.uWindGust.value,
+      };
     },
     windState(): { strength: number; azimuth: number; timeMs: number } {
       return {
@@ -2641,7 +2898,7 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
     colliders(): Collider[] {
       if (!colliderCache) {
         colliderCache = [];
-        for (const p of filterExcluded(placements, exclusions)) {
+        for (const p of standing()) {
           if (isMark(p.kind)) continue;
           const c = colliderFor(p, variantOf(p).radius, scaleOf(p.kind));
           if (c) colliderCache.push(c);
@@ -2657,6 +2914,18 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
       return colliderCache;
     },
     collidersVersion: (): number => colliderVersion,
+    instanceRefs(kind: PropKind): InstanceRef[] {
+      return instanceRefsByKind.get(kind) ?? [];
+    },
+    materialFor,
+    geometryFor(kind: PropKind, variant: number): BufferGeometry | null {
+      return geometries.get(kind)?.[variant]?.geometry ?? null;
+    },
+    rebuildVersion: (): number => rebuildCount,
+    setTaken(keys: ReadonlySet<string>): void {
+      taken = keys;
+      rebuild();
+    },
     nudge(x: number, z: number, strength: number): void {
       const s = Math.min(1.5, Math.max(0, strength));
       if (s <= 0) return;
@@ -2682,6 +2951,31 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
       return nudgeUniforms.uNudge.value
         .filter((v) => v.z > 0)
         .map((v) => ({ x: v.x, z: v.y, strength: v.z, t0: v.w }));
+    },
+    setStyle(style: WorldStyle): void {
+      const ghibli = style === 'ghibli';
+      propMaterial.color.set(ghibli ? GHIBLI.rockWarm : WORLD.light);
+      rockMaterial.color.set(ghibli ? GHIBLI.rockBody : WORLD.neutral);
+      swayMaterial.color.set(ghibli ? GHIBLI.canopyLight : WORLD.light);
+      palmMaterial.color.set(ghibli ? GHIBLI.canopyLight : WORLD.light);
+      cactusMaterial.color.set(ghibli ? GHIBLI.canopyLight : WORLD.light);
+      tickMaterial.color.set(ghibli ? GHIBLI.grassBase : WORLD.ink);
+      cloudMaterial.color.set(ghibli ? GHIBLI.cloudLit : WORLD.light);
+      // Re-capture each material's lightness so the dev tint slider grades the
+      // palette that is actually on screen (see `setTint`). A live tint is
+      // dropped by the recolour above, which is the honest outcome: the grade
+      // was a grade of the old palette.
+      gradedMaterials.forEach((m, i) => {
+        const hsl = { h: 0, s: 0, l: 0 };
+        m.color.getHSL(hsl);
+        gradeLightness[i] = hsl.l;
+      });
+      tintHue = 0;
+      tintSaturation = 0;
+    },
+    setShadowPalette(ground: Color | string, ink: Color | string): void {
+      shadowGroundValue.set(ground);
+      shadowInkValue.set(ink);
     },
     setTint(hue: number, saturation: number): void {
       tintHue = ((hue % 1) + 1) % 1;

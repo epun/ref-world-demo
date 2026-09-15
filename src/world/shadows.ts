@@ -132,6 +132,18 @@ export interface ShadowHandle {
   /** Move the stamp on the ground plane. Height and tilt are owned by the
    * pass, which samples them from the Surface — a caster never says y. */
   setPosition(x: number, z: number): void;
+  /**
+   * Resize the stamp, re-laying it where it already is.
+   *
+   * For a caster whose footprint CHANGES while it stands there, which
+   * until the katamari rules nothing did: a creature carrying a pile grows
+   * (src/creatures/sticky.ts `growth`), and a shadow that kept the drawn
+   * creature's radius would read as a big creature hovering over a small
+   * mark. Removing and re-adding the stamp would do it too — and would
+   * swap-remove somebody else's matrix for nothing, every frame the pile
+   * changed size.
+   */
+  setRadius(radius: number): void;
 }
 
 interface Stamp {
@@ -190,6 +202,11 @@ export class FlatShadows {
    * resized) when it runs out of slots. */
   private mesh: InstancedMesh;
 
+  // The pair the presence lerp runs between: at presence 0 a stamp equals the
+  // paper under it and disappears, at 1 it is the flat shadow value. Both are
+  // swappable, because a per-world style override changes the paper as well as
+  // the shadow it takes (docs/TASTE.md §9) — the LOOK is unchanged either way:
+  // one flat value, shared by every stamp, cut sharp.
   private readonly groundValue = new Color(SURFACE.ground);
   private readonly shadowValue = new Color(SURFACE.shadow);
 
@@ -227,6 +244,16 @@ export class FlatShadows {
     this.mesh.dispose();
     this.mesh = next;
     this.group.add(next);
+  }
+
+  /**
+   * Retarget the two ends of the presence lerp. Defaults to today's pair
+   * (`SURFACE.ground` → `SURFACE.shadow`), so a caller that never calls this
+   * gets exactly the shipped behaviour.
+   */
+  setPalette(ground: Color | string = SURFACE.ground, ink: Color | string = SURFACE.shadow): void {
+    this.groundValue.set(ground);
+    this.shadowValue.set(ink);
   }
 
   /**
@@ -291,6 +318,11 @@ export class FlatShadows {
       setPosition: (x: number, z: number): void => {
         stamp.x = x;
         stamp.z = z;
+        this.lay(stamp);
+      },
+      setRadius: (next: number): void => {
+        if (!(next > 0) || next === stamp.radius) return;
+        stamp.radius = next;
         this.lay(stamp);
       },
     };

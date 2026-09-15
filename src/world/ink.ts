@@ -52,9 +52,10 @@ import {
   WebGLRenderTarget,
 } from 'three';
 import type { Camera, Texture, WebGLRenderer } from 'three';
-import { CHARACTER, MOTION, SURFACE, WORLD } from '../taste/tokens';
+import { CHARACTER, GHIBLI, MOTION, SURFACE, WORLD } from '../taste/tokens';
 import { OVERLAY_LAYER } from './layers';
 import { KEY_DIRECTION } from './lighting';
+import type { WorldStyle } from './style';
 
 /**
  * Per-frame environment drive (src/world/environment.ts). All values arrive
@@ -143,6 +144,12 @@ uniform float uRainAmt;
 uniform float uSnowAmt;
 uniform vec3 uLight;
 uniform float uEnvTime;
+// 1 snaps every luma onto one of the six measured palette anchors. The ghibli
+// style (docs/TASTE.md §9) sets it to 0: its cel bands come from the material
+// lighting, and a six-grey snap on top of them would flatten the palette the
+// override exists to show. Everything else in this pass — exposure, hatch,
+// contours, fog, streaks — runs either way.
+uniform float uQuantize;
 
 varying vec2 vUv;
 
@@ -200,15 +207,17 @@ void main() {
 
   // ── toon quantize: snap to the nearest palette luma (cel bands) ──────────
   float l = luma(col);
-  float dith = (fbm(sp * 0.045 + 11.3) - 0.5) * 0.045;
-  float lq = l + dith;
-  float band = uAnchors[0];
-  float bestD = abs(lq - band);
-  for (int i = 1; i < 6; i++) {
-    float d = abs(lq - uAnchors[i]);
-    if (d < bestD) { bestD = d; band = uAnchors[i]; }
+  if (uQuantize > 0.5) {
+    float dith = (fbm(sp * 0.045 + 11.3) - 0.5) * 0.045;
+    float lq = l + dith;
+    float band = uAnchors[0];
+    float bestD = abs(lq - band);
+    for (int i = 1; i < 6; i++) {
+      float d = abs(lq - uAnchors[i]);
+      if (d < bestD) { bestD = d; band = uAnchors[i]; }
+    }
+    col *= band / max(l, 1e-4);
   }
-  col *= band / max(l, 1e-4);
 
   if (depth < 0.9999) {
     // ── hatching: faces turned from the key read as parallel ink strokes ──
@@ -313,6 +322,12 @@ void main() {
 }
 `;
 
+/**
+ * [D] Hatch weight under the ghibli override. The material cel bands already
+ * carry the shading there, so the pen only has to suggest it.
+ */
+const GHIBLI_HATCH_MUL = 0.6;
+
 /** [D] Base hatch stroke period in device pixels (landed by screenshot
  * iteration — the day look at DPR 1). */
 const HATCH_PERIOD_PX = 7;
@@ -354,6 +369,13 @@ export class InkPass {
   private readonly keyDirection = KEY_DIRECTION.clone();
   private readonly normalClear = new Color(0.5, 0.5, 1);
   private readonly params: InkParams = { ...DEFAULTS };
+  /** Which look this pass composites for (src/world/style.ts). */
+  private style: WorldStyle = 'ink';
+  /**
+   * The environment's own hatch multiplier, remembered so a style switch can
+   * re-apply its own factor on top without waiting for the next frame.
+   */
+  private envHatchMul = 1;
 
   constructor() {
     this.depthTexture = new DepthTexture(1, 1);
@@ -384,6 +406,7 @@ export class InkPass {
         uSnowAmt: { value: 0 },
         uLight: { value: linearColor(WORLD.light) },
         uEnvTime: { value: 0 },
+        uQuantize: { value: 1 },
       },
       vertexShader: VERTEX,
       fragmentShader: FRAGMENT,
@@ -435,6 +458,31 @@ export class InkPass {
     return { ...this.params };
   }
 
+  /**
+   * Switch the composite between the two looks (docs/TASTE.md §9).
+   *
+   * `ghibli` turns the six-luma quantize off, inks the contours in envpaint's
+   * violet-blue rather than the palette floor, and thins the hatch: the cel
+   * bands now come from the materials, so full-weight hatching on top of them
+   * reads as dirt. Everything the taste is certain about is untouched — the
+   * lines still wobble, the fog still bands, nothing cuts.
+   *
+   * `ink` restores the shipped values exactly.
+   */
+  setStyle(style: WorldStyle): void {
+    this.style = style;
+    const u = this.material.uniforms;
+    const ghibli = style === 'ghibli';
+    u.uQuantize!.value = ghibli ? 0 : 1;
+    (u.uInk!.value as Color).set(ghibli ? GHIBLI.ink : WORLD.ink);
+    u.uHatchMul!.value = this.envHatchMul * this.styleHatchMul();
+  }
+
+  /** [D] Hatch weight under the current style. */
+  private styleHatchMul(): number {
+    return this.style === 'ghibli' ? GHIBLI_HATCH_MUL : 1;
+  }
+
   /** Point the hatch/shading key. Called per frame by the environment engine
    * so the hatch threshold follows the sun. */
   setKeyDirection(direction: Vector3): void {
@@ -445,7 +493,8 @@ export class InkPass {
   setEnvironment(env: InkEnvironment): void {
     const u = this.material.uniforms;
     u.uExposure!.value = env.exposure;
-    u.uHatchMul!.value = env.hatchMul;
+    this.envHatchMul = env.hatchMul;
+    u.uHatchMul!.value = env.hatchMul * this.styleHatchMul();
     u.uFogAmt!.value = env.fogAmt;
     u.uRainAmt!.value = env.rainAmt;
     u.uSnowAmt!.value = env.snowAmt;

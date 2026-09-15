@@ -335,3 +335,124 @@ describe('stepCreatures — the per-frame movement law', () => {
     expect(run()).toEqual(run());
   });
 });
+
+// ── the katamari options (HardOptions) ──────────────────────────────────────
+// Two additions, and neither of them is a force: a filter and a report. The
+// sweep's arithmetic must be identical with and without a listener, because
+// the whole point is that the creature layer can find out WHICH prop it hit
+// without the sweep behaving differently for being watched.
+
+describe('HardOptions.onContact', () => {
+  it('fires for a hard correction, with the collider and the outward normal', () => {
+    const c: Collider = { x: 0, z: 0, r: 1, hard: true, kind: 'tree', key: 'tree:0:0.00:0.00' };
+    const body: KinematicBody = { x: 0.5, z: 0, vx: 0, vz: 0 };
+    const seen: { collider: Collider; nx: number; nz: number }[] = [];
+    expect(
+      resolveHard(body, R, [c], undefined, 0, {
+        onContact: (collider, nx, nz) => seen.push({ collider, nx, nz }),
+      }),
+    ).toBe(true);
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen[0]!.collider).toBe(c);
+    // OUTWARD: the direction the BODY was pushed. The caller negates it to
+    // get the direction the prop was shoved in.
+    expect(seen[0]!.nx).toBeCloseTo(1, 6);
+    expect(seen[0]!.nz).toBeCloseTo(0, 6);
+    expect(Math.hypot(seen[0]!.nx, seen[0]!.nz)).toBeCloseTo(1, 9);
+  });
+
+  it('does not fire when nothing was corrected', () => {
+    const c: Collider = { x: 10, z: 10, r: 1, hard: true, kind: 'tree' };
+    const body: KinematicBody = { x: 0, z: 0, vx: 0, vz: 0 };
+    let fired = 0;
+    expect(resolveHard(body, R, [c], undefined, 0, { onContact: () => fired++ })).toBe(false);
+    expect(fired).toBe(0);
+  });
+
+  it('does not fire for a SOFT collider — a bush damps, it does not stop you', () => {
+    const bush: Collider = { x: 0, z: 0, r: 1, hard: false, kind: 'bush' };
+    const body: KinematicBody = { x: 0.2, z: 0, vx: 0, vz: 0 };
+    let fired = 0;
+    resolveHard(body, R, [bush], undefined, 0, { onContact: () => fired++ });
+    expect(fired).toBe(0);
+  });
+
+  it('changes nothing about where the body ends up', () => {
+    const c: Collider = { x: 0, z: 0, r: 1, hard: true, kind: 'tree' };
+    const quiet: KinematicBody = { x: 0.5, z: 0.1, vx: 1, vz: 0, r: R } as KinematicBody;
+    const watched: KinematicBody = { x: 0.5, z: 0.1, vx: 1, vz: 0, r: R } as KinematicBody;
+    resolveHard(quiet, R, [c]);
+    resolveHard(watched, R, [c], undefined, 0, { onContact: () => {} });
+    expect(watched).toEqual(quiet);
+  });
+
+  it('reports through stepCreatures by BODY INDEX', () => {
+    const tree: Collider = { x: 2, z: 0, r: 1, hard: true, kind: 'tree', key: 'tree:0:2.00:0.00' };
+    const near = (): readonly Collider[] => [tree];
+    const bodies: CreatureBody[] = [
+      { x: -4, z: 0, vx: 0, vz: 0, r: R },
+      { x: 0.6, z: 0, vx: 2, vz: 0, r: R },
+    ];
+    const seen: number[] = [];
+    for (let frame = 0; frame < 30; frame++) {
+      bodies[1]!.vx = 2;
+      stepCreatures(bodies, 16, near, {
+        onContact: (index) => {
+          if (!seen.includes(index)) seen.push(index);
+        },
+      });
+    }
+    // Only the one that walked into the tree, and identified by its row in
+    // the array the caller handed over.
+    expect(seen).toEqual([1]);
+  });
+});
+
+describe('HardOptions.skipKind', () => {
+  it('ignores every collider of that kind when the option says so', () => {
+    // Once rapier owns the stones, a creature meets them through the solver;
+    // resolving against their stale footprint circles too would push it out
+    // of a stone that has already rolled somewhere else.
+    const rock: Collider = { x: 0, z: 0, r: 1, hard: true, kind: 'rock' };
+    const body: KinematicBody = { x: 0.5, z: 0, vx: 1, vz: 0 };
+    expect(resolveHard(body, R, [rock], undefined, 0, { skipKind: 'rock' })).toBe(false);
+    expect(body.x).toBe(0.5);
+    expect(body.vx).toBe(1);
+  });
+
+  it('still resolves every OTHER kind, and a collider with no kind at all', () => {
+    const rock: Collider = { x: 0, z: 0, r: 1, hard: true, kind: 'rock' };
+    const tree: Collider = { x: 0, z: 0, r: 1, hard: true, kind: 'tree' };
+    // The landscape's water circles carry no kind, and a test's hand-built
+    // collider does not either. Neither may be swept away by this filter.
+    const water: Collider = { x: 0, z: 0, r: 1, hard: true };
+    for (const c of [tree, water]) {
+      const body: KinematicBody = { x: 0.5, z: 0, vx: 1, vz: 0 };
+      expect(resolveHard(body, R, [rock, c], undefined, 0, { skipKind: 'rock' })).toBe(true);
+      expect(Math.hypot(body.x, body.z)).toBeGreaterThanOrEqual(1.5);
+    }
+  });
+
+  it('carries through stepCreatures, substeps and backstop alike', () => {
+    const rock: Collider = { x: 2, z: 0, r: 1, hard: true, kind: 'rock' };
+    const near = (): readonly Collider[] => [rock];
+    const body: CreatureBody = { x: 0, z: 0, vx: 2, vz: 0, r: R };
+    for (let frame = 0; frame < 100; frame++) {
+      body.vx = 2;
+      stepCreatures([body], 16, near, { skipKind: 'rock' });
+    }
+    // Straight through where the footprint circle used to be.
+    expect(body.x).toBeGreaterThan(rock.x + rock.r);
+  });
+
+  it('is the default OFF: with no option a rock still stops a creature', () => {
+    const rock: Collider = { x: 2, z: 0, r: 1, hard: true, kind: 'rock' };
+    const near = (): readonly Collider[] => [rock];
+    const body: CreatureBody = { x: 0, z: 0, vx: 2, vz: 0, r: R };
+    for (let frame = 0; frame < 100; frame++) {
+      body.vx = 2;
+      stepCreatures([body], 16, near);
+    }
+    expect(body.x).toBeLessThan(rock.x - rock.r);
+  });
+});

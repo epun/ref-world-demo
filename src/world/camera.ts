@@ -65,6 +65,16 @@ export class CameraRig {
   private readonly lookTarget = new Vector3();
   private readonly offset = new Vector3();
 
+  /**
+   * Where the rig is looking right now — a COPY, so no caller can move the
+   * rig by writing to it. What the dev panel's `drop rock` aims at (it wants
+   * the stone to land in frame), and nothing more: the ground under it still
+   * comes from the Surface seam.
+   */
+  lookAtPoint(): { x: number; y: number; z: number } {
+    return { x: this.lookTarget.x, y: this.lookTarget.y, z: this.lookTarget.z };
+  }
+
   constructor(aspect: number) {
     const halfH = FRUSTUM_HEIGHT / 2;
     const halfW = halfH * aspect;
