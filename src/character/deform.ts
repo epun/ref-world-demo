@@ -128,6 +128,15 @@ export interface DeformHandles {
   setGait(state: GaitState): void;
   /** Current gait values, as last pushed. */
   getGait(): GaitState;
+  /**
+   * Deform ANOTHER material with the same uniforms — the stalk and topper
+   * (src/character/topper.ts), whose geometry lives in the body's object
+   * space. One set of uniform objects, several programs: whatever the
+   * springs push into `set` / `setGait` moves every attached surface in the
+   * same frame, so the rig bends with the head instead of standing still
+   * while the body leans away from it (user ask, 2026-09-15).
+   */
+  attach(material: MeshPhysicalMaterial): void;
 }
 
 // ── shared math (GLSL + CPU keep these in lockstep) ─────────────────────────
@@ -289,24 +298,28 @@ export function applyDeform(material: MeshPhysicalMaterial, frame: DeformFrame):
     reach: uniforms.uReach,
   };
 
-  material.onBeforeCompile = (shader) => {
-    Object.assign(shader.uniforms, uniforms);
-    shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', `#include <common>\n${DEFORM_GLSL}`)
-      .replace(
-        '#include <beginnormal_vertex>',
-        '#include <beginnormal_vertex>\n\tobjectNormal = gaitBodyNormal(deformBodyNormal(objectNormal, position));',
-      )
-      .replace(
-        '#include <begin_vertex>',
-        '#include <begin_vertex>\n\ttransformed = gaitBody(deformBody(transformed));',
-      );
+  const attach = (target: MeshPhysicalMaterial): void => {
+    target.onBeforeCompile = (shader) => {
+      Object.assign(shader.uniforms, uniforms);
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', `#include <common>\n${DEFORM_GLSL}`)
+        .replace(
+          '#include <beginnormal_vertex>',
+          '#include <beginnormal_vertex>\n\tobjectNormal = gaitBodyNormal(deformBodyNormal(objectNormal, position));',
+        )
+        .replace(
+          '#include <begin_vertex>',
+          '#include <begin_vertex>\n\ttransformed = gaitBody(deformBody(transformed));',
+        );
+    };
+    // The injected chunks change the program — never share a cache slot with
+    // a stock MeshPhysicalMaterial.
+    target.customProgramCacheKey = () => 'character-body-deform-v2';
   };
-  // The injected chunks change the program — never share a cache slot with a
-  // stock MeshPhysicalMaterial.
-  material.customProgramCacheKey = () => 'character-body-deform-v2';
+  attach(material);
 
   return {
+    attach,
     set(state: Partial<DeformState>): void {
       for (const channel of DEFORM_CHANNELS) {
         const v = state[channel];

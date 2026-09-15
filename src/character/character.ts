@@ -239,11 +239,11 @@ export function createCharacter(
 
   // The creature brief's rig: a stalk from the crown ending in a topper that
   // IS the drawing (./topper.ts). Parented to the body MESH so it inherits
-  // the mesh's scale and ground lift and needs no second transform — which
-  // also means it does NOT follow the body's squash/lean/twist/gait: those
-  // live in the body material's vertex shader and a child mesh has its own
-  // material. Accepted for v1; carrying the deform up the stalk is future
-  // work. The body stays the group's first Mesh child either way.
+  // the mesh's scale and ground lift and needs no second transform. Its
+  // geometry is baked into the body's object space, and the body's deform
+  // handles attach to its materials below, so every squash, lean, twist,
+  // reach and gait step the body takes carries up the stalk to the topper
+  // (user ask, 2026-09-15). The body stays the group's first Mesh child.
   // Same recipe as the interpretation seed: the strokes, salted by identity
   // when there is one, so two hatchlings of one drawing lean their stalks
   // differently while either one is identical on the phone and in the world.
@@ -257,6 +257,7 @@ export function createCharacter(
     seed: topperSeed,
   });
   mesh.add(topper.group);
+  for (const m of topper.materials) deform.attach(m);
 
   // One ζ≥1 spring per deform channel. Squash is the attack channel (the
   // quick dip in happy/angry) and settles a step faster; the rest drift at

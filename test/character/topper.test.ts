@@ -96,3 +96,19 @@ describe('creature topper', () => {
     }
   });
 });
+
+describe('the topper rides the body deform', () => {
+  it('bakes its transforms into geometry so the vertex deform sees body space', () => {
+    const character = createCharacter(snowman, 1, { identity: 'rig-deform' });
+    expect(character).not.toBeNull();
+    const rig = character!.group.children[0]!.children.find((o) => o.name === 'topper')!;
+    for (const child of rig.children) {
+      expect(child.position.lengthSq()).toBe(0);
+      expect(child.scale.x).toBe(1);
+      expect(child.scale.y).toBe(1);
+      expect(child.scale.z).toBe(1);
+      expect(child.rotation.x).toBe(0);
+    }
+    character!.dispose();
+  });
+});

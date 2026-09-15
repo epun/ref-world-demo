@@ -108,6 +108,16 @@ export interface TopperArgs {
 export interface TopperHandle {
   /** A Group named `topper`: the stalk tube plus the topper mesh. */
   group: Group;
+  /**
+   * The stalk's and the topper's materials, for the body's deform handles to
+   * attach to (src/character/deform.ts `attach`). Both geometries are baked
+   * into the BODY's object space with identity mesh transforms, which is
+   * what lets the body's vertex deformation — squash, lean, twist, reach,
+   * gait — run on them unchanged: a vertex above the head takes the full
+   * bend the head takes, so the stalk follows the head and the topper rides
+   * the stalk.
+   */
+  materials: MeshPhysicalMaterial[];
   /** Where the stalk leaves the body, in body object space. */
   base: Vector3;
   /** Where the topper sits, in body object space. */
@@ -232,16 +242,23 @@ export function createTopper(args: TopperArgs): TopperHandle {
     clearcoat: 0.5,
     clearcoatRoughness: 0.3,
   });
-  const topperMesh = new Mesh(topperGeometry, topperMaterial);
-  topperMesh.scale.setScalar(topperScale);
   // Centred over the tip in x/z, sitting ON the tip in y — the flower rests
   // on the stalk rather than being skewered by it. Faces +z, the creature's
   // front, which is the inflated drawing's own facing.
-  topperMesh.position.set(
+  //
+  // BAKED into the geometry rather than set on the mesh: the body's vertex
+  // deformation reads `transformed` in the mesh's own local space, so for
+  // the topper to bend with the head its vertices have to already be where
+  // they stand in the body's frame. The mesh stays at identity.
+  topperGeometry.scale(topperScale, topperScale, topperScale);
+  topperGeometry.translate(
     tip.x - ((tb.min.x + tb.max.x) / 2) * topperScale,
     tip.y - tb.min.y * topperScale,
     tip.z - ((tb.min.z + tb.max.z) / 2) * topperScale,
   );
+  topperGeometry.computeBoundingBox();
+  topperGeometry.computeBoundingSphere();
+  const topperMesh = new Mesh(topperGeometry, topperMaterial);
 
   const group = new Group();
   group.name = 'topper';
@@ -250,6 +267,7 @@ export function createTopper(args: TopperArgs): TopperHandle {
 
   return {
     group,
+    materials: [stalkMaterial, topperMaterial],
     base,
     tip,
     dispose(): void {
