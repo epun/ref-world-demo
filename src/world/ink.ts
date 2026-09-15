@@ -150,6 +150,12 @@ uniform float uEnvTime;
 // override exists to show. Everything else in this pass — exposure, hatch,
 // contours, fog, streaks — runs either way.
 uniform float uQuantize;
+// Cracked props: screen-space disc per prop (x px, y px, radius px) and one
+// seed each. A fixed-length array with a live count, because GLSL ES 1.00
+// wants a constant loop bound (see CRACK_MAX in the pass below).
+uniform int uCrackCount;
+uniform vec3 uCracks[16];
+uniform float uCrackSeeds[16];
 
 varying vec2 vUv;
 
@@ -318,9 +324,70 @@ void main() {
     }
   }
 
+  // ── cracks: a few wobbled pen lines inside a screen-projected disc around
+  // a prop that has been hit but is still standing (src/world/wreck.ts).
+  //
+  // Screen-space and in the ink pass on purpose. The alternative is a decal
+  // or a second material on the prop, and a crack drawn into a material
+  // would be shaded, quantized and lit like a surface — while what the taste
+  // asks for is a MARK: the same pen, the same wobble field the contours
+  // already ride, drawn over the form rather than into it.
+  for (int ci = 0; ci < 16; ci++) {
+    if (ci >= uCrackCount) break;
+    vec3 disc = uCracks[ci];
+    if (disc.z <= 0.5) continue;
+    vec2 d = sp - disc.xy;
+    float rr = length(d) / disc.z;
+    if (rr > 1.0) continue;
+    float seed = uCrackSeeds[ci];
+    // Three strokes, fanned by the seed, each a line through the middle of
+    // the disc whose distance field is wobbled by the pen noise — so it
+    // breaks and thickens along its length like a drawn crack and never
+    // reads as a ruled radius.
+    for (int k = 0; k < 3; k++) {
+      float a = seed + float(k) * 2.1;
+      vec2 dir = vec2(cos(a), sin(a));
+      vec2 nrm = vec2(-dir.y, dir.x);
+      float along = dot(d, dir) / disc.z;
+      float across = dot(d, nrm);
+      float wob = (fbm(sp * 0.07 + vec2(seed * 3.3, float(k) * 5.1)) - 0.5) * uWobble * 2.2;
+      float line = abs(across + wob * (0.4 + abs(along)));
+      // Tapered: full weight in the middle of the prop, nothing at the rim,
+      // and only across the half of the disc this stroke fans into.
+      float taper = (1.0 - smoothstep(0.1, 0.95, abs(along))) * step(0.0, along);
+      float ink = (1.0 - smoothstep(0.4, uLineWidth * 0.9, line)) * taper;
+      col = mix(col, uInk, clamp(ink, 0.0, 1.0) * 0.85);
+    }
+  }
+
   gl_FragColor = vec4(col, 1.0);
 }
 `;
+
+/**
+ * [D] Most cracked props the pass will draw at once.
+ *
+ * Sixteen is a uniform array of sixteen vec3s and sixteen floats — nothing,
+ * next to the four full-frame passes around it — and more than a room can
+ * have standing at once: a prop only holds a crack while it is still
+ * standing, and by the third hit it is rubble and has stopped being one of
+ * these (src/world/wreck.ts). The caller keeps the NEAREST when there are
+ * more, so the one being hit is never the one dropped.
+ */
+export const CRACK_MAX = 16;
+
+/** A cracked prop, in world units. `y` defaults to 0 for a caller that has
+ * only a ground position — the ground has height and the manager samples the
+ * seam for it (PLAN §7.2), so it is passed in rather than derived here. */
+export interface CrackMark {
+  x: number;
+  z: number;
+  /** World radius of the disc the cracks are drawn inside. */
+  r: number;
+  /** Per-prop seed, so two cracked buildings are not cracked identically. */
+  seed: number;
+  y?: number;
+}
 
 /**
  * [D] Hatch weight under the ghibli override. The material cel bands already
@@ -376,6 +443,12 @@ export class InkPass {
    * re-apply its own factor on top without waiting for the next frame.
    */
   private envHatchMul = 1;
+  /** Cracked props in WORLD space; projected to the screen each frame by
+   * `render`, which is the one place with a camera. */
+  private cracks: CrackMark[] = [];
+  private readonly crackWorld = new Vector3();
+  private readonly crackEdge = new Vector3();
+  private readonly crackRight = new Vector3();
 
   constructor() {
     this.depthTexture = new DepthTexture(1, 1);
@@ -407,6 +480,9 @@ export class InkPass {
         uLight: { value: linearColor(WORLD.light) },
         uEnvTime: { value: 0 },
         uQuantize: { value: 1 },
+        uCrackCount: { value: 0 },
+        uCracks: { value: Array.from({ length: CRACK_MAX }, () => new Vector3()) },
+        uCrackSeeds: { value: new Array<number>(CRACK_MAX).fill(0) },
       },
       vertexShader: VERTEX,
       fragmentShader: FRAGMENT,
@@ -483,6 +559,59 @@ export class InkPass {
     return this.style === 'ghibli' ? GHIBLI_HATCH_MUL : 1;
   }
 
+  /**
+   * Which props are cracked, in world units (src/world/wreck.ts stage 1).
+   *
+   * Replaces the whole list — it is a state, not an event, and the caller
+   * already holds the one copy of it. Past `CRACK_MAX` the nearest to the
+   * camera are kept, which is decided in `render` where there is a camera to
+   * be near.
+   */
+  setCracks(marks: readonly CrackMark[]): void {
+    this.cracks = marks.slice(0, CRACK_MAX * 2).map((mark) => ({ ...mark }));
+  }
+
+  /**
+   * Project the cracked props into the screen-space discs the shader wants.
+   *
+   * A disc and not a projected mesh: the marks are drawn in the composite,
+   * so what the fragment stage needs is where on the screen the prop is and
+   * how big it reads there. The radius is measured by projecting a second
+   * point one world radius along the camera's own right axis, which is
+   * correct under any projection the rig can be in without this pass
+   * knowing which one that is.
+   */
+  private projectCracks(camera: Camera): void {
+    const u = this.material.uniforms;
+    const discs = u.uCracks!.value as Vector3[];
+    const seeds = u.uCrackSeeds!.value as number[];
+    // The camera's right axis, off its world matrix (column 0).
+    const e = camera.matrixWorld.elements;
+    this.crackRight.set(e[0]!, e[1]!, e[2]!).normalize();
+    let count = 0;
+    for (const mark of this.cracks) {
+      if (count >= CRACK_MAX) break;
+      this.crackWorld.set(mark.x, mark.y ?? 0, mark.z);
+      this.crackEdge
+        .copy(this.crackWorld)
+        .addScaledVector(this.crackRight, Math.max(1e-3, mark.r));
+      this.crackWorld.project(camera);
+      // Behind the camera, or off the frame by more than its own width:
+      // nothing to draw, and a projected point behind the eye lands
+      // somewhere arbitrary.
+      if (this.crackWorld.z > 1 || Math.abs(this.crackWorld.x) > 2) continue;
+      this.crackEdge.project(camera);
+      const cx = (this.crackWorld.x * 0.5 + 0.5) * this.resolution.x;
+      const cy = (this.crackWorld.y * 0.5 + 0.5) * this.resolution.y;
+      const ex = (this.crackEdge.x * 0.5 + 0.5) * this.resolution.x;
+      const ey = (this.crackEdge.y * 0.5 + 0.5) * this.resolution.y;
+      discs[count]!.set(cx, cy, Math.hypot(ex - cx, ey - cy));
+      seeds[count] = mark.seed;
+      count++;
+    }
+    u.uCrackCount!.value = count;
+  }
+
   /** Point the hatch/shading key. Called per frame by the environment engine
    * so the hatch threshold follows the sun. */
   setKeyDirection(direction: Vector3): void {
@@ -508,6 +637,8 @@ export class InkPass {
     // Slow shared drift — the same pacing as the grain's paper slide.
     const t = (nowMs % (MOTION.ambientMs * 4096)) / MOTION.ambientMs;
     this.material.uniforms.uTime!.value = t * 0.05;
+    // Before the composite, because the composite is what draws them.
+    this.projectCracks(camera);
     // Streak clock in seconds — slow, measured drift for rain/snow. Wrapped
     // on the same long period as the other clocks so precision holds.
     this.material.uniforms.uEnvTime!.value = (nowMs % (MOTION.ambientMs * 4096)) / 1000;

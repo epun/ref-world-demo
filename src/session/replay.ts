@@ -19,6 +19,8 @@
  *   stick | drop            → put that item on, or take it off, that
  *                             carrier's pile — if the carrier is standing
  *   loose | settle          → that prop is off the ground / lying here
+ *   crack | shatter         → that prop is cracked to this stage / has come
+ *                             apart into its chunks
  *   keep                    → nothing. Informational, like `egg`
  *
  * TWO of those only mean anything IN TIME. A drive is "push, hold, let go"
@@ -38,6 +40,7 @@
 
 import type { StrokeList } from '../shape/types';
 import type {
+  CrackEvent,
   DropEvent,
   LooseEvent,
   OperatorAction,
@@ -45,6 +48,7 @@ import type {
   SessionEvent,
   SessionLog,
   SettleEvent,
+  ShatterEvent,
   StickEvent,
 } from './events';
 
@@ -103,6 +107,17 @@ export interface ReplayDriver {
   drop?(event: DropEvent): void;
   loose?(event: LooseEvent): void;
   settle?(event: SettleEvent): void;
+  /**
+   * The two destruction states (src/world/wreck.ts).
+   *
+   * STATE, like the four above, and more plainly so: a `crack` says which
+   * stage of its collapse a building has reached and a `shatter` says a prop
+   * is now its own chunks. `replayNow` applies both — a restored world whose
+   * buildings stood back up would be a different world, not a less paced
+   * one.
+   */
+  crack?(event: CrackEvent): void;
+  shatter?(event: ShatterEvent): void;
 }
 
 /** How a log is being applied. The kinds that only mean something in time
@@ -229,6 +244,16 @@ export function applyEvent(
     }
     case 'settle': {
       driver.settle?.(event);
+      return;
+    }
+    case 'crack': {
+      // No carrier to be alive, exactly like a `loose`: a building is the
+      // world's, and which creature wore it down is not replayed.
+      driver.crack?.(event);
+      return;
+    }
+    case 'shatter': {
+      driver.shatter?.(event);
       return;
     }
     case 'keep': {

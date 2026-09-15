@@ -19,6 +19,8 @@ import { Vector3, type Texture } from 'three';
 import { installHoverNames } from './creatures/hover';
 import { createCreatureManager } from './creatures/manager';
 import { createLooseMeshes } from './world/loose';
+import { buildChunkGeometries, type Chunk, type ChunkKind } from './world/chunks';
+import { createDebris } from './world/debris';
 import {
   announceEpochRetained,
   connectWorldFeed,
@@ -626,10 +628,39 @@ function main(): void {
    * does. It is the same mesh a pickup then hangs on a creature's pile, so
    * there is one object per fallen thing however it ends up.
    */
-  const looseMeshes = createLooseMeshes(world.scatter, world.scene);
+  /**
+   * The chunk set, built on FIRST DEMAND (src/world/chunks.ts).
+   *
+   * `buildChunkGeometries()` re-runs the prop pipeline for every breakable
+   * variant, and most pages never break anything — a room can run all
+   * evening without a single building coming down. So it is a getter, and
+   * the first crack or shatter pays for it once.
+   */
+  let chunkSet: Map<ChunkKind, Chunk[][]> | null = null;
+  const chunks = (): Map<ChunkKind, Chunk[][]> => (chunkSet ??= buildChunkGeometries());
+  const looseMeshes = createLooseMeshes(world.scatter, world.scene, () => chunkSet);
+  /**
+   * Where the pieces of a broken prop go (src/world/debris.ts).
+   *
+   * On EVERY page, like the loose meshes and for the same reason: the host
+   * builds bodies for its fragments and a phone watching the room draws
+   * them where the event said, through one layer. The physics and the body
+   * registry are passed as getters because they arrive on host election and
+   * never on a viewer (docs/PLAN.md §7.6).
+   */
+  const debris = createDebris({
+    physics: () => world.physics(),
+    bodies: () => world.bodies(),
+    loose: looseMeshes,
+    surface: world.surface,
+    chunks,
+    tier: world.tier,
+  });
   const creatures = createCreatureManager(world, {
     autoHatch: isPublic && hatchMode === 'timer',
     loose: looseMeshes,
+    debris,
+    chunks: () => chunkSet,
     observer: {
       ...recorder,
       /**
@@ -791,6 +822,24 @@ function main(): void {
     drop: (event) => creatures.applyDrop(event),
     loose: (event) => creatures.applyLoose(event.item, event.x, event.z),
     settle: (event) => creatures.applySettle(event),
+    /*
+     * …AND THE TWO DESTRUCTION STATES, applied the same way. A `crack`
+     * brings a prop up to a stage of its collapse and a `shatter` replaces
+     * it with its chunks; both decide nothing, and both build the chunk set
+     * on demand (see `chunks` above) because a page that hears one is a page
+     * that is about to need it.
+     */
+    crack: (event) => creatures.applyCrack(event.item, event.stage),
+    shatter: (event) =>
+      creatures.applyShatter({
+        item: event.item,
+        x: event.x,
+        z: event.z,
+        rotY: event.rotY,
+        scale: event.scale,
+        kind: event.kind,
+        variant: event.variant,
+      }),
     // The operator state a replayed world should stand in: hold mode and the
     // block list. Removals are driven by replay itself, above.
     operator: (action, id, on) => {
@@ -1338,6 +1387,14 @@ function main(): void {
         replayDriver.settle?.(event);
         continue;
       }
+      if (event.k === 'crack') {
+        replayDriver.crack?.(event);
+        continue;
+      }
+      if (event.k === 'shatter') {
+        replayDriver.shatter?.(event);
+        continue;
+      }
       replayDriver.world?.(event.field, event.value, event.kind);
       reflectScene(event);
     }
@@ -1359,6 +1416,8 @@ function main(): void {
       else if (event.k === 'drop') session.drop(event);
       else if (event.k === 'loose') session.loose(event.item, event.x, event.z);
       else if (event.k === 'settle') session.settle(event);
+      else if (event.k === 'crack') session.crack(event);
+      else if (event.k === 'shatter') session.shatter(event);
       else session.paint(event);
     } finally {
       applyingScene = false;
@@ -2022,6 +2081,15 @@ function main(): void {
 
   world.onFrame((dt, nowMs) => {
     creatures.update(dt, nowMs);
+    /*
+     * The debris, in the ONE per-frame block on this page (src/world/debris.ts).
+     *
+     * On every page: the sinks that carry an expired fragment out of the
+     * world run everywhere, and on the host the fragments' transforms are
+     * written out of their bodies. After the creatures, because a fragment a
+     * creature has just picked up stops being debris in that call.
+     */
+    debris.update(dt, nowMs);
     /*
      * The handset camera goes where its creature goes.
      *

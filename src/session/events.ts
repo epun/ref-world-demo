@@ -48,8 +48,13 @@ export const SESSION_SCHEMA = 'refworld.session';
  * it would call the file junk rather than call it newer. The version is what
  * tells those two apart. Reading DOWN is unaffected — a v1 or v2 log parses
  * here exactly as it always did.
+ *
+ * 4 — `crack` and `shatter` (2026-09-15, the destruction runtime). Same
+ * argument a third time: two more additive kinds, and a v3 reader handed a
+ * log with a collapsed building in it would refuse the whole file rather
+ * than the event it does not know.
  */
-export const SESSION_SCHEMA_VERSION = 3;
+export const SESSION_SCHEMA_VERSION = 4;
 
 // ── event kinds ─────────────────────────────────────────────────────────────
 
@@ -384,6 +389,57 @@ export interface SettleEvent extends EventBase {
   qw: number;
 }
 
+/**
+ * A staged prop advanced one stage of its collapse (src/creatures/sticky.ts
+ * `stages`, src/world/wreck.ts).
+ *
+ * A STATE, not a blow: `stage` is where the prop has GOT to — 1 is cracked,
+ * 2 is a section gone, 3 is collapsed into rubble — and it is absolute
+ * rather than a delta, so a page that missed the first two hits still ends
+ * up looking at the same ruin. Which is also why `compactScene` keeps only
+ * the last one per item.
+ *
+ * The damage that produced it is not in the log at all. It is a running
+ * total on the host (a `Map<key, number>`, docs/PLAN.md §7.6) and no other
+ * page has a use for it: what a viewer has to know is what the building
+ * looks like now.
+ */
+export interface CrackEvent extends EventBase {
+  k: 'crack';
+  /** The placement key of the prop that took the damage. */
+  item: string;
+  /** 1 cracks, 2 a section gone, 3 rubble. */
+  stage: number;
+}
+
+/**
+ * A `large` prop broke into all of its chunks at once — the `break` outcome
+ * (src/creatures/sticky.ts `shatterStrength`).
+ *
+ * Unlike a `crack` this carries the prop's own pose and mesh hints: by the
+ * time a phone hears it the placement has been hidden from the scatter, and
+ * the chunk set has to be built and seated from the event alone
+ * (src/world/chunks.ts `buildChunkGeometries`, whose offsets are in the
+ * prop's object space at scale 1).
+ *
+ * The chunks themselves are LOCAL debris on every page — they are secondary,
+ * there can be a lot of them, and the brief asks for exactly that split
+ * (*"the server syncs only destruction states and major transforms"*). The
+ * ones that come to matter travel anyway: as a `settle` (where a piece ended
+ * up) or as a `stick` whose `item` is `<placementKey>#<chunkIndex>` (a
+ * creature picked a piece up).
+ */
+export interface ShatterEvent extends EventBase {
+  k: 'shatter';
+  item: string;
+  x: number;
+  z: number;
+  rotY: number;
+  scale: number;
+  kind: string;
+  variant: number;
+}
+
 /** A world-level control an operator changed — weather, time of day, density,
  * grain, paper colour. Discrete samples only: nothing here is read per frame. */
 export interface WorldEvent extends EventBase {
@@ -408,7 +464,9 @@ export type SessionEvent =
   | StickEvent
   | DropEvent
   | LooseEvent
-  | SettleEvent;
+  | SettleEvent
+  | CrackEvent
+  | ShatterEvent;
 
 export type SessionEventKind = SessionEvent['k'];
 
@@ -460,6 +518,8 @@ const EVENT_KINDS = new Set<string>([
   'drop',
   'loose',
   'settle',
+  'crack',
+  'shatter',
 ]);
 
 function isStrokeList(value: unknown): value is StrokeList {
@@ -506,6 +566,16 @@ function isEvent(value: unknown): value is SessionEvent {
     return typeof rec['id'] === 'string' && typeof rec['item'] === 'string';
   }
   if (kind === 'loose' || kind === 'settle') return typeof rec['item'] === 'string';
+  // The two destruction kinds are addressed by the item as well — a building
+  // cracks because something hit it, and which something is no more
+  // replayable than it is for a `loose`. A `crack` needs its stage: the
+  // event IS the state, and a stage nobody can read is not a state.
+  if (kind === 'crack') {
+    return typeof rec['item'] === 'string' && typeof rec['stage'] === 'number';
+  }
+  if (kind === 'shatter') {
+    return typeof rec['item'] === 'string' && typeof rec['kind'] === 'string';
+  }
   return typeof rec['id'] === 'string';
 }
 

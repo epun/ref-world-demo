@@ -28,8 +28,36 @@
  */
 
 import { BufferAttribute, Mesh, type BufferGeometry, type Object3D, type Scene } from 'three';
+import type { Chunk, ChunkKind } from './chunks';
 import type { PropKind } from './props';
 import type { Scatter } from './scatter';
+
+/**
+ * Where a chunk set comes from, when there is one.
+ *
+ * A GETTER rather than the map, because `buildChunkGeometries()` re-runs the
+ * whole prop pipeline and most pages never break anything: the destruction
+ * layer builds the map the first time something comes apart
+ * (src/world/scene.ts), and this asks for it only when it is handed a chunk
+ * id to draw.
+ */
+export type ChunkSource = () => Map<ChunkKind, Chunk[][]> | null;
+
+/**
+ * The `#` in `<placementKey>#<chunkIndex>` — one item id shape for a
+ * fragment, shared by the wire (src/session/scene.ts `ITEM_ID`), the debris
+ * layer and this one.
+ */
+export const CHUNK_SEPARATOR = '#';
+
+/** The chunk index an item id names, or null when it names a whole thing. */
+export function chunkIndexOf(item: string): number | null {
+  const at = item.lastIndexOf(CHUNK_SEPARATOR);
+  if (at < 0) return null;
+  const index = Number(item.slice(at + 1));
+  if (!Number.isInteger(index) || index < 0) return null;
+  return index;
+}
 
 /** The rotation a loose item is drawn at. Plain floats, the same four the
  * `drop`/`settle` scene events carry — never a `Quaternion`, so a caller
@@ -96,12 +124,59 @@ function nonInstanced(source: BufferGeometry): BufferGeometry {
   return geometry;
 }
 
-export function createLooseMeshes(scatter: Scatter, scene: Scene): LooseMeshes {
+export function createLooseMeshes(
+  scatter: Scatter,
+  scene: Scene,
+  chunks: ChunkSource = () => null,
+): LooseMeshes {
   const meshes = new Map<string, Mesh>();
-  /** One clone per (kind, variant), shared by every item of that shape. */
+  /** One clone per (kind, variant) — or per (kind, variant, chunk) — shared
+   * by every item of that shape. */
   const geometries = new Map<string, BufferGeometry>();
 
-  const geometryFor = (kind: PropKind, variant: number): BufferGeometry | null => {
+  /**
+   * ONE CHUNK of a broken prop, as a drawable geometry.
+   *
+   * The same two fixes `nonInstanced` makes, plus a third: `aWindHeight` is
+   * baked per vertex by the scatter for its swaying kinds and a chunk never
+   * went through that bake, so it is laid down as ZEROES — which is not a
+   * fallback but the truth. A branch torn off a tree is lying on the ground
+   * with no root to sway from, exactly as `aBend` is zero for the same
+   * reason.
+   */
+  const chunkGeometry = (
+    kind: PropKind,
+    variant: number,
+    index: number,
+  ): BufferGeometry | null => {
+    const cacheKey = `${kind}:${variant}#${index}`;
+    const cached = geometries.get(cacheKey);
+    if (cached) return cached;
+    const set = chunks()?.get(kind as ChunkKind);
+    const chunk = set?.[variant]?.[index];
+    if (!chunk) return null;
+    const geometry = chunk.geometry.clone();
+    const count = geometry.getAttribute('position')?.count ?? 0;
+    geometry.setAttribute(
+      'aVariation',
+      new BufferAttribute(new Float32Array(count * 4).fill(VARIATION_NEUTRAL), 4),
+    );
+    geometry.setAttribute('aBend', new BufferAttribute(new Float32Array(count * 2), 2));
+    geometry.setAttribute('aWindHeight', new BufferAttribute(new Float32Array(count), 1));
+    geometries.set(cacheKey, geometry);
+    return geometry;
+  };
+
+  const geometryFor = (
+    kind: PropKind,
+    variant: number,
+    item: string,
+  ): BufferGeometry | null => {
+    // A chunk id is the one case where the ITEM says which geometry, not the
+    // kind: the parent's kind and variant pick the chunk SET, the suffix
+    // picks the piece out of it (src/world/chunks.ts).
+    const index = chunkIndexOf(item);
+    if (index !== null) return chunkGeometry(kind, variant, index);
     const cacheKey = `${kind}:${variant}`;
     const cached = geometries.get(cacheKey);
     if (cached) return cached;
@@ -116,7 +191,7 @@ export function createLooseMeshes(scatter: Scatter, scene: Scene): LooseMeshes {
     show(item, kind, variant, scale): Object3D {
       const existing = meshes.get(item);
       if (existing) return existing;
-      const geometry = geometryFor(kind, variant);
+      const geometry = geometryFor(kind, variant, item);
       const mesh = new Mesh(geometry ?? undefined, scatter.materialFor(kind));
       // Named so the ghost-panel outliner lists it legibly, the same way the
       // scatter names its batches and the manager names each creature.

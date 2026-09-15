@@ -13,7 +13,8 @@
 import { BufferAttribute, BufferGeometry, InstancedBufferAttribute, Mesh, Scene } from 'three';
 import { MeshStandardMaterial } from 'three';
 import { describe, expect, it } from 'vitest';
-import { createLooseMeshes } from '../../src/world/loose';
+import { chunkIndexOf, createLooseMeshes } from '../../src/world/loose';
+import type { Chunk, ChunkKind } from '../../src/world/chunks';
 import type { PropKind } from '../../src/world/props';
 import type { Scatter } from '../../src/world/scatter';
 
@@ -155,5 +156,87 @@ describe('createLooseMeshes', () => {
     loose.dispose();
     expect(scene.children.length).toBe(0);
     expect(loose.get('tree:0:1.00:2.00')).toBeUndefined();
+  });
+});
+
+/**
+ * Chunk ids (`<placementKey>#<chunkIndex>`) — the destruction runtime's
+ * fragments, drawn through the same layer as everything else that stopped
+ * being scenery.
+ *
+ * ONE mesh per fragment is the point. A piece of debris is collectable, and a
+ * pickup hangs the item's EXISTING mesh on the creature's pile
+ * (src/creatures/manager.ts) — so if the debris layer drew its own the world
+ * would end up with two of every collected chunk.
+ */
+describe('chunk item ids', () => {
+  function chunkSet(): Map<ChunkKind, Chunk[][]> {
+    const geometry = new BufferGeometry();
+    geometry.setAttribute(
+      'position',
+      new BufferAttribute(new Float32Array([0, 0, 0, 2, 0, 0, 0, 2, 0]), 3),
+    );
+    const chunk: Chunk = { geometry, offset: { x: 1, y: 2, z: 3 }, radius: 0.7, stage: 0 };
+    const out = new Map<ChunkKind, Chunk[][]>();
+    out.set('tree', [[chunk, { ...chunk, stage: 2 }]]);
+    return out;
+  }
+
+  it('reads a chunk index off an item id, and nothing off a whole thing', () => {
+    expect(chunkIndexOf('tree:0:1.00:2.00#3')).toBe(3);
+    expect(chunkIndexOf('tree:0:1.00:2.00')).toBeNull();
+    expect(chunkIndexOf('creature:abc')).toBeNull();
+    expect(chunkIndexOf('tree:0:1.00:2.00#x')).toBeNull();
+    expect(chunkIndexOf('tree:0:1.00:2.00#-1')).toBeNull();
+  });
+
+  it('draws the CHUNK geometry, not the whole prop, for a `#` id', () => {
+    const scene = new Scene();
+    const { scatter, source } = stubScatter();
+    const loose = createLooseMeshes(scatter, scene, chunkSet);
+    const whole = loose.show('tree:0:1.00:2.00', 'tree', 0, 1) as Mesh;
+    const piece = loose.show('tree:0:1.00:2.00#1', 'tree', 0, 1) as Mesh;
+    expect(whole.geometry.getAttribute('position').count).toBe(
+      source.getAttribute('position').count,
+    );
+    expect(piece.geometry).not.toBe(whole.geometry);
+    // The chunk's own positions, and the three channels a plain mesh needs
+    // over the scatter's instanced names — `aWindHeight` zeroed, because a
+    // fragment lying on the ground has no root to sway from.
+    expect(piece.geometry.getAttribute('aVariation').count).toBe(3);
+    expect(piece.geometry.getAttribute('aBend').count).toBe(3);
+    const wind = piece.geometry.getAttribute('aWindHeight');
+    for (let i = 0; i < wind.count; i++) expect(wind.getX(i)).toBe(0);
+    // Same material as the prop it broke off: a fragment can never be a
+    // different green from the tree beside it.
+    expect(piece.material).toBe(whole.material);
+    loose.dispose();
+  });
+
+  it('caches one geometry per chunk, and never mixes two indices up', () => {
+    const scene = new Scene();
+    const { scatter } = stubScatter();
+    const loose = createLooseMeshes(scatter, scene, chunkSet);
+    const a = loose.show('tree:0:1.00:2.00#0', 'tree', 0, 1) as Mesh;
+    const b = loose.show('tree:0:9.00:9.00#0', 'tree', 0, 1) as Mesh;
+    const c = loose.show('tree:0:1.00:2.00#1', 'tree', 0, 1) as Mesh;
+    expect(b.geometry).toBe(a.geometry);
+    expect(c.geometry).not.toBe(a.geometry);
+    loose.dispose();
+  });
+
+  it('draws nothing for a chunk this page has no set for', () => {
+    const scene = new Scene();
+    const { scatter } = stubScatter();
+    // The default source is "no chunk map at all", which is every page that
+    // has not yet had to break anything.
+    const loose = createLooseMeshes(scatter, scene);
+    const mesh = loose.show('tree:0:1.00:2.00#0', 'tree', 0, 1) as Mesh;
+    expect(mesh.geometry.getAttribute('position')).toBeUndefined();
+    const past = createLooseMeshes(scatter, scene, chunkSet);
+    const none = past.show('tree:0:1.00:2.00#9', 'tree', 0, 1) as Mesh;
+    expect(none.geometry.getAttribute('position')).toBeUndefined();
+    loose.dispose();
+    past.dispose();
   });
 });

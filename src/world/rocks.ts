@@ -163,6 +163,34 @@ export interface LooseItem {
   awake: boolean;
 }
 
+/**
+ * One side of a contact, named.
+ *
+ * The seam's whole job is to say WHAT hit WHAT: rapier reports two collider
+ * handles, and the only module that can turn a handle into a thing is this
+ * one (it owns the map). `kind` is a `PropKind` for a prop or a loose item,
+ * `'chunk'` for a fragment of a broken one (whose key is
+ * `<placementKey>#<index>`) and `'creature'` for a collider the creature
+ * layer registered — its kinematic ball, or one of the balls hanging off it
+ * for a stuck item, which is how a stuck bench swinging into a sign gets to
+ * count as the CARRIER hitting the sign.
+ *
+ * `rooted` is the field the routing actually turns on, and it is here rather
+ * than looked up from `STICKY[kind]` because the same kind is both: a
+ * standing tree is rooted and the tree lying next to it is not.
+ */
+export interface ImpactSide {
+  /** Placement key, chunk key, or — for a creature — its slot id. */
+  key: string;
+  kind: PropKind | 'creature' | 'chunk';
+  /** Footprint radius as drawn, world units. */
+  r: number;
+  x: number;
+  z: number;
+  /** Still in the ground. False for every loose item, chunk and creature. */
+  rooted: boolean;
+}
+
 export interface PropBodies {
   /** True once the bodies for the current scatter exist. */
   readonly ready: boolean;
@@ -232,6 +260,54 @@ export interface PropBodies {
    * reports nothing at all.
    */
   onSettle(cb: (item: LooseItem) => void): void;
+  /**
+   * Called for every STARTED contact in which at least one side is a loose
+   * item, a chunk, or a collider the creature layer registered — the seam
+   * the destruction rules hang on (docs/PLAN.md §7.6).
+   *
+   * WHY IT HAD TO EXIST. Until this, a prop came out of the ground only off
+   * the pure resolve's own hard contacts — which is a creature walking into
+   * a trunk, and nothing else. Everything the brief asks for beyond that is
+   * one thing hitting another thing: *"attached objects stay dangerous (a
+   * stuck bench swinging into a sign knocks it loose)"*, and a falling chunk
+   * landing on a bush. Those contacts exist in rapier and nowhere else, and
+   * `update()` was already draining the event queue to kick tree recoils.
+   *
+   * `speed` is the RELATIVE speed of the two bodies. A creature's stand-in
+   * is kinematic and reports a `linvel` of zero, so what this reports is the
+   * item's own speed — which is the right number either way: what matters is
+   * how fast the gap between them was closing.
+   */
+  onImpact(cb: (a: ImpactSide, b: ImpactSide, speed: number) => void): void;
+  /** Called when `take` removes an item — what the debris layer listens to,
+   * so a fragment a creature has just picked up stops being debris. */
+  onTake(cb: (key: string) => void): void;
+  /**
+   * Name a collider this module did not create, so `onImpact` can report it.
+   *
+   * The creature layer's kinematic balls live on bodies it owns
+   * (src/creatures/manager.ts), and it is the only thing that knows which
+   * slot one belongs to. The side object is held BY REFERENCE and read at
+   * fire time, so a caller that keeps its `r`/`x`/`z` up to date as the pile
+   * grows and rolls gets a truthful report without re-registering.
+   */
+  registerForeign(handle: number, side: ImpactSide): void;
+  unregisterForeign(handle: number): void;
+  /**
+   * Take ownership of a body somebody else built — how a piece of debris
+   * becomes collectable (src/world/debris.ts).
+   *
+   * An adopted item is in `items()`, so the katamari pickup pass sees it; it
+   * gets the settle report and the resurface safety net like any stone; and
+   * it SURVIVES a scatter rebuild, because it never was a placement and its
+   * absence from `instanceRefs` means nothing. It is drawn by
+   * `src/world/loose.ts` (`meshDrawn`), never by an instance row.
+   */
+  adopt(item: LooseItem): void;
+  /** Let an adopted item go WITHOUT hiding a placement — the expiry path.
+   * `take` is the pickup path and hides the placement it came from; a chunk
+   * has no placement, so the two cannot be the same call. */
+  release(key: string): boolean;
   dispose(): void;
   // ── the dev surface (src/dev/index.ts `physics` folder) ─────────────────
   /** How many bodies exist, and how many are awake right now. */
@@ -331,6 +407,18 @@ export function createPropBodies(opts: PropBodiesOptions): PropBodies {
   /** Per item: where its rest was last reported, and when. */
   const settleState = new Map<string, { x: number; z: number; atMs: number }>();
   const settleListeners: ((item: LooseItem) => void)[] = [];
+  /** The impact seam's listeners and the foreign colliders it can name. */
+  const impactListeners: ((a: ImpactSide, b: ImpactSide, speed: number) => void)[] = [];
+  const takeListeners: ((key: string) => void)[] = [];
+  const foreign = new Map<number, ImpactSide>();
+  /**
+   * Items somebody else built and handed over (`adopt`).
+   *
+   * Kept apart from `rocks` for exactly one reason: `sync` deletes a body
+   * whose placement has vanished from the scatter, and an adopted item never
+   * was a placement — its absence from `instanceRefs` is not news.
+   */
+  const adopted = new Set<string>();
 
   const itemList: LooseItem[] = [];
   let itemsDirty = true;
@@ -534,7 +622,14 @@ export function createPropBodies(opts: PropBodiesOptions): PropBodies {
       // `instanceRefs` on purpose and a rebuild must not read that absence
       // as "this placement is gone" and delete the body under a tree that
       // is lying in the field.
-      if (seenRocks.has(key) || key.startsWith('spawn') || takenKeys.has(key)) continue;
+      if (
+        seenRocks.has(key) ||
+        key.startsWith('spawn') ||
+        takenKeys.has(key) ||
+        adopted.has(key)
+      ) {
+        continue;
+      }
       removeBody(item.body, item.colliderHandle);
       rocks.delete(key);
       rockState.delete(key);
@@ -581,6 +676,77 @@ export function createPropBodies(opts: PropBodiesOptions): PropBodies {
     recoil.x.retarget((dirX / len) * mag);
     recoil.z.retarget((dirZ / len) * mag);
     recoil.holdMs = BEND_HOLD_MS;
+  };
+
+  /**
+   * What the collider with this handle IS, or null when nothing here knows.
+   *
+   * Three answers in order of who owns the handle: a collider the creature
+   * layer registered, a loose body of ours, or a standing placement. A
+   * handle belonging to the terrain heightfield — or to a placement whose
+   * ref went stale in a rebuild — is nobody's and reports nothing, which is
+   * the right outcome: a rule that fired on "something unknown" would fire
+   * on the ground.
+   */
+  const sideOf = (handle: number): ImpactSide | null => {
+    const registered = foreign.get(handle);
+    if (registered) return registered;
+    const key = byCollider.get(handle);
+    if (key === undefined) return null;
+    const item = rocks.get(key);
+    if (item) {
+      const t = item.body.translation();
+      return {
+        key,
+        // A chunk's key carries the `#index` suffix its parent's does not —
+        // that IS the distinction, and it is the same one the item ids on
+        // the wire make (src/session/scene.ts `ITEM_ID`).
+        kind: key.includes('#') ? 'chunk' : item.kind,
+        r: item.r,
+        x: t.x,
+        z: t.z,
+        rooted: false,
+      };
+    }
+    const ref = propRefs.get(key);
+    if (!ref) return null;
+    return {
+      key,
+      kind: ref.placement.kind as PropKind,
+      r: ref.radius,
+      x: ref.placement.x,
+      z: ref.placement.z,
+      rooted: true,
+    };
+  };
+
+  /** A loose body's own velocity; zero for anything that is not one (a
+   * standing prop, and a creature's kinematic stand-in, which reports zero
+   * anyway). */
+  const velocityOf = (handle: number): { x: number; y: number; z: number } => {
+    const key = byCollider.get(handle);
+    const item = key === undefined ? undefined : rocks.get(key);
+    if (!item) return { x: 0, y: 0, z: 0 };
+    return item.body.linvel();
+  };
+
+  /**
+   * Report one contact to the impact seam.
+   *
+   * The gate is "at least one side is something that MOVED" — a loose item,
+   * a chunk, or a creature's collider. Two standing props cannot hit each
+   * other, and the terrain is not a side at all.
+   */
+  const reportImpact = (a: number, b: number): void => {
+    if (impactListeners.length === 0) return;
+    const sideA = sideOf(a);
+    const sideB = sideOf(b);
+    if (!sideA || !sideB) return;
+    if (sideA.rooted && sideB.rooted) return;
+    const va = velocityOf(a);
+    const vb = velocityOf(b);
+    const speed = Math.hypot(va.x - vb.x, va.y - vb.y, va.z - vb.z);
+    for (const cb of impactListeners) cb(sideA, sideB, speed);
   };
 
   /** A contact between a rock and a swaying prop kicks the prop. */
@@ -727,6 +893,11 @@ export function createPropBodies(opts: PropBodiesOptions): PropBodies {
     for (const event of events) {
       if (!event.started) continue;
       handleContact(event.a, event.b);
+      // The same queue, read once more: the recoil above is presentation and
+      // the seam below is where the destruction rules get their contacts
+      // (docs/PLAN.md §7.6). Both off one drain — a second `step` would be a
+      // second simulation.
+      reportImpact(event.a, event.b);
     }
 
     const field = scatter.windField ? scatter.windField() : opts.wind;
@@ -843,6 +1014,22 @@ export function createPropBodies(opts: PropBodiesOptions): PropBodies {
     take(key: string): boolean {
       const item = rocks.get(key);
       const prop = fixed.get(key);
+      /*
+       * AN ADOPTED ITEM HAS NO PLACEMENT. A chunk of a broken building is
+       * not in the scatter and never was, so there is nothing for `setTaken`
+       * to hide — and putting a chunk key into the taken set would rebuild
+       * the whole scatter on every fragment somebody picks up, for no
+       * change in what is drawn.
+       */
+      if (item && adopted.has(key)) {
+        removeBody(item.body, item.colliderHandle);
+        rocks.delete(key);
+        rockState.delete(key);
+        adopted.delete(key);
+        itemsDirty = true;
+        for (const cb of takeListeners) cb(key);
+        return true;
+      }
       // A swaying prop with no hard footprint (a bush) has no body at all
       // and is still takeable — it is a placement the scatter draws.
       if (!item && !prop && !swayRefs.has(key)) return false;
@@ -861,6 +1048,7 @@ export function createPropBodies(opts: PropBodiesOptions): PropBodies {
       // The scatter stops drawing it AND stops reporting it as a collider or
       // a position — one filter, no second path.
       scatter.setTaken(new Set(takenKeys));
+      for (const cb of takeListeners) cb(key);
       return true;
     },
     bump,
@@ -916,6 +1104,44 @@ export function createPropBodies(opts: PropBodiesOptions): PropBodies {
     },
     onSettle(cb): void {
       settleListeners.push(cb);
+    },
+    onImpact(cb): void {
+      impactListeners.push(cb);
+    },
+    onTake(cb): void {
+      takeListeners.push(cb);
+    },
+    registerForeign(handle, side): void {
+      foreign.set(handle, side);
+    },
+    unregisterForeign(handle): void {
+      foreign.delete(handle);
+    },
+    adopt(item): void {
+      if (rocks.has(item.key)) return;
+      rocks.set(item.key, item);
+      byCollider.set(item.colliderHandle, item.key);
+      // `landed: false`, like anything that arrives in the air: the settle
+      // damping waits until the piece has come down, so a fragment thrown
+      // out of a collapse travels rather than being braked mid-flight.
+      rockState.set(item.key, {
+        landed: false,
+        damped: false,
+        scl: new Vector3(item.scale, item.scale, item.scale),
+      });
+      adopted.add(item.key);
+      itemsDirty = true;
+    },
+    release(key): boolean {
+      const item = rocks.get(key);
+      if (!item) return false;
+      removeBody(item.body, item.colliderHandle);
+      rocks.delete(key);
+      rockState.delete(key);
+      settleState.delete(key);
+      adopted.delete(key);
+      itemsDirty = true;
+      return true;
     },
     counts(): { bodies: number; awake: number; springs: number } {
       let awake = 0;
@@ -1009,6 +1235,10 @@ export function createPropBodies(opts: PropBodiesOptions): PropBodies {
       propRefs.clear();
       settleState.clear();
       settleListeners.length = 0;
+      impactListeners.length = 0;
+      takeListeners.length = 0;
+      foreign.clear();
+      adopted.clear();
       byCollider.clear();
       for (const recoil of recoils.values()) {
         recoil.x.dispose();

@@ -60,11 +60,15 @@ import {
   DROP_MIN_GAP_MS,
   impactOf,
   shouldDrop,
+  stageFor,
   STICKY,
   STUCK_COLLIDERS_MAX,
 } from './sticky';
 import type { LooseMeshes } from '../world/loose';
-import type { LooseItem, PropBodies } from '../world/rocks';
+import type { Chunk, ChunkKind } from '../world/chunks';
+import type { Debris } from '../world/debris';
+import { advance, createWreck, fragmentSpread, type WreckState } from '../world/wreck';
+import type { ImpactSide, LooseItem, PropBodies } from '../world/rocks';
 import { placementKey } from '../world/scatter';
 import type { PropKind } from '../world/props';
 
@@ -454,6 +458,16 @@ interface KinematicHandle {
    * offset, so a swinging bench actually sweeps.
    */
   stuck: Map<string, RapierCollider>;
+  /**
+   * The same colliders, NAMED for the impact seam (src/world/rocks.ts
+   * `registerForeign`), by collider handle.
+   *
+   * Held by reference and rewritten in place every frame: the ball grows
+   * with the pile and a stuck bench is somewhere different each frame, and
+   * the seam reads these at the moment of a contact rather than at the
+   * moment of registration.
+   */
+  sides: Map<number, ImpactSide>;
 }
 
 
@@ -642,6 +656,16 @@ export interface CreatureObserver {
   drop(record: DropRecord): void;
   loose(item: string, x: number, z: number): void;
   settle(record: SettleRecord): void;
+  /**
+   * THE TWO DESTRUCTION STATES (src/world/wreck.ts, docs/SESSION.md §6).
+   *
+   * Same rule as the four above, and the same reason: what a building looks
+   * like is a running total of impacts on a rapier world that exists on one
+   * page, so the page that keeps the total says, and every other page
+   * presents (`applyCrack`, `applyShatter`).
+   */
+  crack(record: CrackRecord): void;
+  shatter(record: ShatterRecord): void;
 }
 
 /** What the observer is handed for a pickup. Structurally the `stick` event
@@ -689,6 +713,26 @@ export interface SettleRecord {
   qw: number;
 }
 
+/** A staged prop reached `stage` (1 cracks, 2 a section gone, 3 rubble). */
+export interface CrackRecord {
+  item: string;
+  stage: number;
+}
+
+/** A large prop came apart into every one of its chunks at once. The pose
+ * and the mesh hints travel because the placement is hidden the moment this
+ * is decided, and a page that never had it drawn has nothing else to build
+ * the chunk set from. */
+export interface ShatterRecord {
+  item: string;
+  x: number;
+  z: number;
+  rotY: number;
+  scale: number;
+  kind: string;
+  variant: number;
+}
+
 export interface CreatureManagerOptions {
   /** Session recorder (or any witness). Optional. */
   observer?: CreatureObserver;
@@ -718,6 +762,27 @@ export interface CreatureManagerOptions {
    * everything correctly, it simply shows no fallen trees.
    */
   loose?: LooseMeshes;
+  /**
+   * The debris layer (src/world/debris.ts) — where the fragments of a
+   * broken prop go.
+   *
+   * On EVERY page, like `loose`: the host builds bodies for its fragments
+   * and a viewer draws them where the event said, through the one layer.
+   * Optional because a headless caller (the tests) has nothing to draw into
+   * — a manager without it still decides everything correctly and shows no
+   * rubble.
+   */
+  debris?: Debris;
+  /**
+   * The chunk set, as a getter (src/world/chunks.ts).
+   *
+   * A getter because `buildChunkGeometries()` re-runs the prop pipeline and
+   * most pages never break anything: the caller builds it the first time
+   * something comes apart. Returning null is the answer a page with no
+   * chunk set gives, and it means the staged presentation is skipped rather
+   * than faked.
+   */
+  chunks?: () => Map<ChunkKind, Chunk[][]> | null;
 }
 
 export interface CreatureManager {
@@ -850,6 +915,26 @@ export interface CreatureManager {
   applyDrop(record: DropRecord): void;
   applyLoose(item: string, x: number, z: number): void;
   applySettle(record: SettleRecord): void;
+  /**
+   * PRESENTATION ONLY, again — the two destruction states.
+   *
+   * `applyCrack` brings a prop up to a stage: 1 puts cracks on it (the ink
+   * pass draws them), 2 hides the placement and draws the prop as its chunk
+   * set minus the section that has gone, 3 lets the rest go as rubble.
+   * Bringing a prop straight to 3 passes through the same code, because a
+   * restored log carries only the last crack per item.
+   *
+   * `applyShatter` is the whole-prop version: hide the placement, and every
+   * chunk at once.
+   *
+   * On the HOST these also build the bodies, because the host is a page too
+   * — there is one presentation path and it asks whether it has physics
+   * rather than there being two.
+   */
+  applyCrack(item: string, stage: number): void;
+  applyShatter(record: ShatterRecord): void;
+  /** Live wreck states, for the ghost panel and the tests. */
+  wrecks(): { item: string; stage: number; removed: number }[];
 }
 
 export function createCreatureManager(
@@ -1166,6 +1251,16 @@ export function createCreatureManager(
 
   const looseMeshes = options.loose ?? null;
   const bodiesOf = (): PropBodies | null => world.bodies?.() ?? null;
+  /**
+   * The frame time this module was last given.
+   *
+   * The impact seam fires from inside `PropBodies.update` — rapier's own
+   * contact events, drained a step after this module's frame callback has
+   * run — so a rule that reaches it has no `nowMs` of its own. The drop rate
+   * cap needs one (`DROP_MIN_GAP_MS`), and the honest answer is "the frame
+   * we are in", which is this.
+   */
+  let lastNowMs = 0;
   const scratchVec = new Vector3();
   const scratchQ = new Quaternion();
 
@@ -1200,14 +1295,23 @@ export function createCreatureManager(
    * what the thing is. A `spawn:n` rock or a `creature:<id>` parses to null,
    * and both are meant to.
    */
-  function parseItemKey(key: string): { kind: PropKind; variant: number } | null {
+  function parseItemKey(
+    key: string,
+  ): { kind: PropKind; variant: number; x: number; z: number } | null {
     const parts = key.split(':');
     if (parts.length < 2) return null;
     const kind = parts[0] as PropKind;
     if (!Object.prototype.hasOwnProperty.call(STICKY, kind)) return null;
     const variant = Number(parts[1]);
     if (!Number.isInteger(variant) || variant < 0) return null;
-    return { kind, variant };
+    // The place, when the key carries one. A full placement key is
+    // `kind:variant:x:z` and the two coordinates are the only description of
+    // WHERE a prop stood that survives the scatter forgetting about it —
+    // which is exactly the moment the destruction layer needs it.
+    const x = Number(parts[2]);
+    const z = Number(parts[3]);
+    const placed = Number.isFinite(x) && Number.isFinite(z);
+    return { kind, variant, x: placed ? x : 0, z: placed ? z : 0 };
   }
 
   /**
@@ -1220,18 +1324,31 @@ export function createCreatureManager(
    * event carries the scale as well — by the time a phone applies one the
    * row it came from has been rebuilt away.
    */
-  function placementDrawn(key: string, kind: PropKind): { scale: number; r: number } | null {
+  function placementDrawn(
+    key: string,
+    kind: PropKind,
+  ): { scale: number; r: number; rotY: number } | null {
     const scatter = (
       world as {
         scatter?: {
-          instanceRefs?(k: PropKind): { key: string; scale: number; radius: number }[];
+          instanceRefs?(k: PropKind): {
+            key: string;
+            scale: number;
+            radius: number;
+            placement?: { rotY?: number };
+          }[];
         };
       }
     ).scatter;
     const refs = scatter?.instanceRefs?.(kind);
     if (!refs) return null;
     for (const ref of refs) {
-      if (ref.key === key) return { scale: ref.scale, r: ref.radius };
+      // The yaw as well, for the destruction layer: a chunk's offset is in
+      // the prop's own object space, so seating it needs the turn the
+      // placement was drawn at (src/world/chunks.ts).
+      if (ref.key === key) {
+        return { scale: ref.scale, r: ref.radius, rotY: ref.placement?.rotY ?? 0 };
+      }
     }
     return null;
   }
@@ -1434,6 +1551,237 @@ export function createCreatureManager(
     looseMeshes.move(item, x, surface.sampleHeight(x, z), z, IDENTITY_Q);
   }
 
+  // ── destruction (src/world/wreck.ts, src/world/debris.ts) ────────────────
+  /*
+   * WHO DECIDES, AND WHO PRESENTS — the same line the katamari rules draw.
+   *
+   * The host accumulates damage and calls `decideContact`; what leaves is a
+   * `crack` or a `shatter`, both of them STATES. Every page — the host
+   * included, through the same functions — turns a state into a picture: the
+   * ink pass draws cracks on a prop that is still standing, the chunk set is
+   * drawn where the prop stood once a section has gone, and the pieces that
+   * have been let go are debris.
+   *
+   * WHY THE PRESENTATION IS HERE and not in the debris layer. It needs the
+   * scatter (to hide a placement), the loose meshes (to draw a ruin), the
+   * surface seam (for the one height in the world) and the observer (to say
+   * what it decided) — which is this module's whole set of collaborators. The
+   * debris layer below it owns exactly one thing: a piece of a prop with a
+   * lifetime and maybe a body.
+   */
+
+  const debris = options.debris ?? null;
+  const chunkSource = options.chunks ?? ((): null => null);
+  /**
+   * Cumulative impact per placement, HOST ONLY.
+   *
+   * The brief's *"initially resist, can become loose after repeated
+   * impact"*: a building wears down rather than answering each hit on its
+   * own. It is not in the log and it is not on the wire — what a viewer
+   * needs is the stage, and the stage is the event.
+   *
+   * Bounded by the number of staged props anybody has ever hit, which is
+   * bounded by the placements on the map.
+   */
+  const damage = new Map<string, number>();
+  /** What has broken, on EVERY page. Keyed by placement key. */
+  const wrecks = new Map<string, WreckState>();
+
+  /** The chunk set for one (kind, variant), or null when this page has none
+   * (no chunk map, an unbreakable kind, a variant past the end). */
+  function chunksFor(kind: PropKind, variant: number): Chunk[] | null {
+    const set = chunkSource()?.get(kind as ChunkKind);
+    return set?.[variant] ?? null;
+  }
+
+  /**
+   * The ink pass's crack list, rebuilt from the wrecks that are still
+   * standing.
+   *
+   * Rebuilt rather than appended to because it is a state and the pass takes
+   * the whole of it (`InkPass.setCracks`) — and because a wreck stops being
+   * a cracked prop the moment it collapses, which no append could express.
+   * Only stages 1 and 2 are in it: stage 3 is rubble, and there is nothing
+   * left to draw a crack on.
+   */
+  function refreshCracks(): void {
+    const ink = (
+      world as { ink?: { setCracks?(marks: readonly { x: number; z: number; r: number; seed: number; y?: number }[]): void } }
+    ).ink;
+    if (!ink?.setCracks) return;
+    const marks: { x: number; z: number; r: number; seed: number; y: number }[] = [];
+    for (const state of wrecks.values()) {
+      if (state.stage < 1 || state.stage >= 3) continue;
+      const measured = placementDrawn(state.key, state.kind);
+      // A prop the scatter has stopped drawing has no row to measure, so the
+      // radius falls back to the scale it was recorded at. CRACK_RADIUS is
+      // the disc the marks are drawn inside: a touch wider than the
+      // footprint, so the cracks run onto the form rather than stopping
+      // short of its silhouette. **[D]**
+      const r = (measured?.r ?? state.scale) * 1.6;
+      const spread = fragmentSpread(state.key, 0);
+      marks.push({
+        x: state.x,
+        z: state.z,
+        r,
+        // An angle out of the same deterministic fold the fragments use, so
+        // two cracked buildings are not cracked identically and the same one
+        // is cracked the same way on every screen.
+        seed: Math.atan2(spread.z, spread.x),
+        // The seam owns every height in the world (PLAN §7.2).
+        y: surface.sampleHeight(state.x, state.z),
+      });
+    }
+    ink.setCracks(marks);
+  }
+
+  /** The record for a broken placement, made on first sight. `hint` is a
+   * `shatter` event's own pose, for a page whose scatter row is already
+   * gone. */
+  function ensureWreck(
+    item: string,
+    hint?: { kind: PropKind; variant: number; scale: number; x: number; z: number; rotY: number },
+  ): WreckState | null {
+    const existing = wrecks.get(item);
+    if (existing) return existing;
+    const parsed = parseItemKey(item);
+    const kind = hint?.kind ?? parsed?.kind;
+    if (!kind) return null;
+    const variant = hint?.variant ?? parsed?.variant ?? 0;
+    const measured = placementDrawn(item, kind);
+    const state = createWreck({
+      key: item,
+      kind,
+      variant,
+      scale: hint?.scale ?? measured?.scale ?? 1,
+      x: hint?.x ?? parsed?.x ?? 0,
+      z: hint?.z ?? parsed?.z ?? 0,
+      rotY: hint?.rotY ?? measured?.rotY ?? 0,
+    });
+    wrecks.set(item, state);
+    return state;
+  }
+
+  /** A wreck as the debris layer wants a parent described. */
+  function parentOf(state: WreckState): {
+    key: string;
+    kind: PropKind;
+    variant: number;
+    scale: number;
+    x: number;
+    z: number;
+    rotY: number;
+  } {
+    return {
+      key: state.key,
+      kind: state.kind,
+      variant: state.variant,
+      scale: state.scale,
+      x: state.x,
+      z: state.z,
+      rotY: state.rotY,
+    };
+  }
+
+  /**
+   * Draw the part of a broken prop that is STILL THERE.
+   *
+   * One mesh per surviving chunk, seated where that chunk sits inside the
+   * prop: the offset is in the prop's object space at scale 1, so it scales
+   * by the instance and turns by the placement's yaw, and the height under
+   * it comes off the seam. Static — a ruin does not move, and on the host
+   * these are deliberately NOT bodies: the placement's own collider went
+   * with `take`, so a creature can drive into the ruin and bring the rest of
+   * it down, which is the point of a staged collapse.
+   */
+  function showRuin(state: WreckState, standing: readonly number[]): void {
+    if (!looseMeshes) return;
+    const chunks = chunksFor(state.kind, state.variant);
+    if (!chunks) return;
+    const cos = Math.cos(state.rotY);
+    const sin = Math.sin(state.rotY);
+    const baseY = surface.sampleHeight(state.x, state.z);
+    const q = { x: 0, y: Math.sin(state.rotY / 2), z: 0, w: Math.cos(state.rotY / 2) };
+    for (const index of standing) {
+      const chunk = chunks[index];
+      if (!chunk) continue;
+      const key = `${state.key}#${index}`;
+      looseMeshes.show(key, state.kind, state.variant, state.scale);
+      const ox = chunk.offset.x * state.scale;
+      const oz = chunk.offset.z * state.scale;
+      looseMeshes.move(
+        key,
+        state.x + ox * cos + oz * sin,
+        baseY + chunk.offset.y * state.scale,
+        state.z - ox * sin + oz * cos,
+        q,
+      );
+    }
+  }
+
+  /**
+   * Bring a prop up to `stage` — the presentation half, on every page.
+   *
+   * Written as "up to", not "one more": a `crack` carries an absolute stage,
+   * `compactScene` keeps only the last one per item, and a page that hears
+   * 3 having missed 1 and 2 has to land where a page that heard all three
+   * did (src/world/wreck.ts `advance`).
+   */
+  function applyCrackLocal(item: string, stage: number): void {
+    const clamped = (stage < 1 ? 1 : stage > 3 ? 3 : Math.floor(stage)) as 1 | 2 | 3;
+    const state = ensureWreck(item);
+    if (!state) return;
+    const chunks = chunksFor(state.kind, state.variant);
+    if (!chunks) {
+      // No chunk set on this page: the stage is still recorded (so the ink
+      // can crack it and a later event is not a surprise), and there is
+      // simply nothing to take apart.
+      if (clamped > state.stage) state.stage = clamped;
+      refreshCracks();
+      return;
+    }
+    const before = state.stage;
+    const change = advance(state, clamped, chunks);
+    // Stage 2 is where the prop stops being scenery: the placement is hidden
+    // and what is drawn from here is the chunk set.
+    if (state.stage >= 2 && before < 2) hidePlacement(item);
+    if (state.stage >= 2) showRuin(state, change.standing);
+    if (change.freed.length > 0 && debris) {
+      // The pieces that have gone: thrown outward, and downward when the
+      // whole thing is coming down.
+      debris.spawnFragments(parentOf(state), change.freed, {
+        impact: damage.get(item) ?? 0,
+        down: state.stage >= 3,
+      });
+    }
+    refreshCracks();
+  }
+
+  /** The whole-prop version: every chunk at once (the `break` outcome). */
+  function applyShatterLocal(record: ShatterRecord, impact: number): void {
+    const kind = record.kind as PropKind;
+    if (!Object.prototype.hasOwnProperty.call(STICKY, kind)) return;
+    const state = ensureWreck(record.item, {
+      kind,
+      variant: record.variant,
+      scale: record.scale,
+      x: record.x,
+      z: record.z,
+      rotY: record.rotY,
+    });
+    if (!state) return;
+    hidePlacement(record.item);
+    const chunks = chunksFor(state.kind, state.variant);
+    if (!chunks) {
+      state.stage = 3;
+      refreshCracks();
+      return;
+    }
+    const change = advance(state, 3, chunks);
+    if (debris) debris.spawnFragments(parentOf(state), change.freed, { impact });
+    refreshCracks();
+  }
+
   // ── the carrier's kinematic stand-in (host only) ──────────────────────────
 
   /** Collider handle → the slot whose impacts it counts as. Creature balls
@@ -1444,8 +1792,11 @@ export function createCreatureManager(
   function removeKinematic(slot: Slot): void {
     const handle = slot.kinematic;
     if (!handle) return;
+    const bodies = bodiesOf();
     if (handle.ball) colliderSlot.delete(handle.ball.handle);
     for (const collider of handle.stuck.values()) colliderSlot.delete(collider.handle);
+    for (const registered of handle.sides.keys()) bodies?.unregisterForeign(registered);
+    handle.sides.clear();
     handle.stuck.clear();
     slot.kinematic = null;
     const physics = world.physics?.() ?? null;
@@ -1509,8 +1860,22 @@ export function createCreatureManager(
           .setRestitution(0),
       );
       const ball = body.collider(0);
-      slot.kinematic = { body, ball, stuck: new Map() };
-      if (ball) colliderSlot.set(ball.handle, slot.id);
+      slot.kinematic = { body, ball, stuck: new Map(), sides: new Map() };
+      if (ball) {
+        colliderSlot.set(ball.handle, slot.id);
+        // Named for the impact seam: a contact on this collider is THIS
+        // creature hitting something, whatever it is holding.
+        const side: ImpactSide = {
+          key: slot.id,
+          kind: 'creature',
+          r: slot.bodyR,
+          x: root.position.x,
+          z: root.position.z,
+          rooted: false,
+        };
+        slot.kinematic.sides.set(ball.handle, side);
+        bodiesOf()?.registerForeign(ball.handle, side);
+      }
       return;
     }
     slot.kinematic.body.setNextKinematicTranslation({ x: root.position.x, y, z: root.position.z });
@@ -1518,6 +1883,15 @@ export function createCreatureManager(
     // still shouldered stones aside on its drawn radius would read as a
     // creature walking through the world rather than into it.
     slot.kinematic.ball?.setRadius(Math.max(0.05, slot.bodyR));
+    const ballHandle = slot.kinematic.ball?.handle;
+    const ballSide = ballHandle === undefined ? undefined : slot.kinematic.sides.get(ballHandle);
+    if (ballSide) {
+      // The registration is by reference, so keeping it truthful is three
+      // writes rather than a re-register.
+      ballSide.r = slot.bodyR;
+      ballSide.x = root.position.x;
+      ballSide.z = root.position.z;
+    }
   }
 
   /**
@@ -1547,9 +1921,12 @@ export function createCreatureManager(
       })
       .slice(0, STUCK_COLLIDERS_MAX);
     const keep = new Set(wanted.map((item) => item.key));
+    const bodies = bodiesOf();
     for (const [key, collider] of handle.stuck) {
       if (keep.has(key)) continue;
       colliderSlot.delete(collider.handle);
+      bodies?.unregisterForeign(collider.handle);
+      handle.sides.delete(collider.handle);
       physics.world.removeCollider(collider, false);
       handle.stuck.delete(key);
     }
@@ -1563,6 +1940,19 @@ export function createCreatureManager(
         );
         handle.stuck.set(item.key, collider);
         colliderSlot.set(collider.handle, slot.id);
+        // A stuck item's ball is named as the CARRIER too: a bench swinging
+        // into a sign is the creature hitting the sign, and the impact is
+        // measured against the pile that swung it.
+        const side: ImpactSide = {
+          key: slot.id,
+          kind: 'creature',
+          r: item.r,
+          x: 0,
+          z: 0,
+          rooted: false,
+        };
+        handle.sides.set(collider.handle, side);
+        bodies?.registerForeign(collider.handle, side);
       }
       // The clump's own rotation, applied to the stored local offset: the
       // pile rolls, so the bench is somewhere different every frame.
@@ -1575,6 +1965,15 @@ export function createCreatureManager(
         z: scratchVec.z,
       });
       collider.setRadius(Math.max(0.05, item.r * g));
+      const side = handle.sides.get(collider.handle);
+      if (side) {
+        side.r = item.r * g;
+        // The collider's offset is relative to the carrier's body, so the
+        // world place is that body's translation plus it.
+        const at = handle.body.translation();
+        side.x = at.x + scratchVec.x;
+        side.z = at.z + scratchVec.z;
+      }
     }
   }
 
@@ -1777,6 +2176,195 @@ export function createCreatureManager(
   const contacts: ContactReport[] = [];
 
   /**
+   * ONE ROOTED PROP, HIT — the whole rule, in one place (host only).
+   *
+   * Two callers reach it and that is the point. The pure resolve's own hard
+   * contacts are a creature walking into a trunk; the impact seam
+   * (src/world/rocks.ts `onImpact`) is everything else the brief asks for —
+   * *"a stuck bench swinging into a sign knocks it loose"*, a rolling stone
+   * hitting a tree, a falling chunk landing on a bush. Two entry points, one
+   * verdict, or the world would answer the same question differently
+   * depending on which collider reported it.
+   *
+   * `carrierR` is what the impact was measured against: a creature's body
+   * radius when a creature hit it, and the ITEM's own radius when a loose
+   * thing did — the currency is `speed x radius` either way
+   * (src/creatures/sticky.ts `impactOf`).
+   *
+   * `dirX`/`dirZ` is the direction the prop leans, which is away from
+   * whatever hit it.
+   */
+  function hitRooted(
+    bodies: PropBodies,
+    prop: { key: string; kind: PropKind; r: number; x: number; z: number },
+    impact: number,
+    carrierR: number,
+    dirX: number,
+    dirZ: number,
+  ): void {
+    const props = STICKY[prop.kind];
+    if (!props) return;
+    // ALWAYS the recoil, whatever the verdict: running into a tree bends it
+    // even when it holds, and that flinch is the read that the world is
+    // being pushed around. `/6` puts a walking creature at a gentle lean and
+    // a loaded pile at the `BEND_MAX` cap. **[D]**
+    bodies.bump(prop.key, dirX, dirZ, Math.min(1, impact / 6));
+    const outcome = decideContact({
+      itemR: prop.r,
+      rooted: true,
+      props,
+      impact,
+      carrierR,
+    });
+    if (outcome === 'break') {
+      shatterProp(prop.key, prop.kind, impact);
+      return;
+    }
+    if (outcome === 'loose') {
+      const item = bodies.loosen(prop.key);
+      if (item) {
+        showLoose(prop.key, item.x, item.z, item.scale);
+        observer?.loose(prop.key, item.x, item.z);
+      }
+      return;
+    }
+    // It held. A STAGED kind wears down anyway — that is the difference
+    // between a building and a monolith, and the reason `breakStrength`
+    // stays `Infinity` for one of them.
+    if (props.stages) accumulate(prop.key, impact);
+  }
+
+  /**
+   * Add to a staged prop's damage and, if that crossed a threshold, say so.
+   *
+   * The accumulation is the brief's *"repeated impact"*; the event is the
+   * only part of it that leaves this page.
+   */
+  function accumulate(key: string, impact: number): void {
+    if (!(impact > 0)) return;
+    const parsed = parseItemKey(key);
+    if (!parsed) return;
+    const props = STICKY[parsed.kind];
+    if (!props?.stages) return;
+    const total = (damage.get(key) ?? 0) + impact;
+    damage.set(key, total);
+    const stage = stageFor(props, total);
+    const current = wrecks.get(key)?.stage ?? 0;
+    if (stage <= current) return;
+    applyCrackLocal(key, stage);
+    observer?.crack({ item: key, stage });
+  }
+
+  /** A large prop past its `shatterStrength`: it comes apart, and the room
+   * is told what it was and where it stood. */
+  function shatterProp(key: string, kind: PropKind, impact: number): void {
+    if (wrecks.has(key)) return;
+    const parsed = parseItemKey(key);
+    // Measured BEFORE it is hidden: `applyShatterLocal` drops the
+    // placement's collider and stops the scatter drawing it, and the row is
+    // the only thing that knows what scale and yaw it stood at.
+    const measured = placementDrawn(key, kind);
+    if (!parsed) return;
+    const record: ShatterRecord = {
+      item: key,
+      x: parsed.x,
+      z: parsed.z,
+      rotY: measured?.rotY ?? 0,
+      scale: measured?.scale ?? 1,
+      kind,
+      variant: parsed.variant,
+    };
+    applyShatterLocal(record, impact);
+    observer?.shatter(record);
+  }
+
+  /**
+   * The impact seam, wired once on the first simulating frame
+   * (src/world/rocks.ts `onImpact`).
+   *
+   * THREE ROUTES, and each of them is a line in the brief:
+   *
+   *   a creature's own collider — its ball, or one of the balls standing in
+   *   for what it is CARRYING — meeting a rooted prop. That is the stuck
+   *   bench knocking a sign loose, and it is the gap the katamari work left:
+   *   drops and looses fired off the pure resolve's hard contacts, which a
+   *   bench hanging off a pile never produces.
+   *
+   *   a loose item or a chunk meeting a rooted prop, measured against the
+   *   ITEM's radius. That is the chain reaction — a stone shoved into a
+   *   tree, a falling section landing on a bush.
+   *
+   *   a loose item meeting a carrier. A pile sheds from being HIT, not only
+   *   from hitting, which is the other half of *"attached objects stay
+   *   dangerous"*.
+   */
+  let impactWired = false;
+  function ensureImpact(): void {
+    if (impactWired) return;
+    const bodies = bodiesOf();
+    if (!bodies) return;
+    impactWired = true;
+    bodies.onImpact((a, b, speed) => {
+      // A page that lost the election a moment ago still holds its bodies
+      // (see `simulating`), and a page that is not deciding must not decide.
+      if (!manager.simulating()) return;
+      const live = bodiesOf();
+      if (!live || !(speed > 0)) return;
+      routeImpact(live, a, b, speed);
+    });
+  }
+
+  function routeImpact(
+    bodies: PropBodies,
+    a: ImpactSide,
+    b: ImpactSide,
+    speed: number,
+  ): void {
+    const creature = a.kind === 'creature' ? a : b.kind === 'creature' ? b : null;
+    if (creature) {
+      const other = creature === a ? b : a;
+      const slot = slots.get(creature.key);
+      if (!slot || slot.phase !== 'alive') return;
+      if (other.rooted) {
+        const impact = impactOf(speed, slot.bodyR);
+        // Away from the creature: the prop leans off the thing that hit it.
+        hitRooted(
+          bodies,
+          { key: other.key, kind: other.kind as PropKind, r: other.r, x: other.x, z: other.z },
+          impact,
+          slot.bodyR,
+          other.x - creature.x,
+          other.z - creature.z,
+        );
+        return;
+      }
+      // Hit BY a loose thing: measured against the thing that arrived, not
+      // against the pile it landed on.
+      const stuck = slot.clump?.outermost();
+      if (!stuck) return;
+      const impact = impactOf(speed, other.r);
+      if (shouldDrop({ ...STICKY.tree, attachmentStrength: attachmentOf(stuck) }, impact)) {
+        dropOutermost(slot, lastNowMs);
+      }
+      return;
+    }
+    // Neither side is a creature. Exactly one rooted side is a thing hitting
+    // a standing prop; two loose ones are just two stones, which rapier has
+    // already dealt with.
+    if (a.rooted === b.rooted) return;
+    const rooted = a.rooted ? a : b;
+    const item = a.rooted ? b : a;
+    hitRooted(
+      bodies,
+      { key: rooted.key, kind: rooted.kind as PropKind, r: rooted.r, x: rooted.x, z: rooted.z },
+      impactOf(speed, item.r),
+      item.r,
+      rooted.x - item.x,
+      rooted.z - item.z,
+    );
+  }
+
+  /**
    * THE HOST'S FRAME (docs/PLAN.md §7.6) — after `stepCreatures`, before the
    * ground pass.
    *
@@ -1791,6 +2379,7 @@ export function createCreatureManager(
     if (!bodies) return;
     ensureHooks();
     ensureSettle();
+    ensureImpact();
 
     // ── 4. what we ran into ────────────────────────────────────────────────
     for (const report of contacts) {
@@ -1799,24 +2388,18 @@ export function createCreatureManager(
       if (!key || !kind || !Object.prototype.hasOwnProperty.call(STICKY, kind)) continue;
       const props = STICKY[kind];
       const impact = impactOf(report.speed, report.slot.bodyR);
-      // ALWAYS the recoil, whatever the verdict: running into a tree bends
-      // it even when it holds, and that flinch is the read that the world is
-      // being pushed around. `/6` puts a walking creature at a gentle lean
-      // and a loaded pile at the `BEND_MAX` cap. **[D]**
-      bodies.bump(key, -report.nx, -report.nz, Math.min(1, impact / 6));
-      const outcome = decideContact({
-        itemR: report.collider.r,
-        rooted: props.rooted,
-        props,
-        impact,
-        carrierR: report.slot.bodyR,
-      });
-      if (outcome === 'loose') {
-        const item = bodies.loosen(key);
-        if (item) {
-          showLoose(key, item.x, item.z, item.scale);
-          observer?.loose(key, item.x, item.z);
-        }
+      // The verdict, the recoil and the staged damage are `hitRooted`'s —
+      // one rule, whether the contact came from the pure resolve (here) or
+      // from rapier's own events (the impact seam above).
+      if (props.rooted) {
+        hitRooted(
+          bodies,
+          { key, kind, r: report.collider.r, x: report.collider.x, z: report.collider.z },
+          impact,
+          report.slot.bodyR,
+          -report.nx,
+          -report.nz,
+        );
       }
       // ── 6. and whether it knocked something off ──────────────────────────
       const stuck = report.slot.clump?.outermost();
@@ -2154,6 +2737,7 @@ export function createCreatureManager(
     count: () => slots.size,
 
     update(dt, nowMs): void {
+      lastNowMs = nowMs;
       // Environmental affordances, sampled once per frame for every agent.
       const props = readProps(world);
 
@@ -2964,8 +3548,47 @@ export function createCreatureManager(
     },
 
     applyLoose(item, x, z): void {
-      hidePlacement(item);
-      showLoose(item, x, z);
+      /*
+       * ON A HOST, THE BODY TOO — and this was a gap, not a choice.
+       *
+       * `applyLoose` runs on the host in exactly one situation: a restore or
+       * a replay of its own log (docs/SESSION.md §4a), where every `loose`
+       * in the session is applied at once. It used to only `take` the
+       * placement, which hides it and drops its fixed collider — leaving a
+       * tree lying in the field with nothing under it: a creature rolled
+       * through it, nothing could be picked up off it, and the prop had
+       * quietly left the simulation while staying in the picture.
+       *
+       * `loosen` is the same call the live decision makes, so a restored
+       * world is a simulating world. It returns null when the placement is
+       * not a standing prop any more (already taken, already loose, never
+       * existed), and the plain hide is then the right fallback — there is
+       * nothing to build a body from.
+       */
+      const bodies = bodiesOf();
+      const built = bodies ? bodies.loosen(item) : null;
+      if (!built) hidePlacement(item);
+      showLoose(item, x, z, built?.scale);
+    },
+
+    applyCrack(item, stage): void {
+      applyCrackLocal(item, stage);
+    },
+
+    applyShatter(record): void {
+      // No impact: a page applying somebody else's shatter was not there for
+      // the hit, and the fragments are secondary debris either way (the
+      // pieces that matter arrive as `settle`). So they are laid out where
+      // their chunks sat rather than thrown at a speed nobody recorded.
+      applyShatterLocal(record, 0);
+    },
+
+    wrecks(): { item: string; stage: number; removed: number }[] {
+      const out: { item: string; stage: number; removed: number }[] = [];
+      for (const state of wrecks.values()) {
+        out.push({ item: state.key, stage: state.stage, removed: state.removed.size });
+      }
+      return out;
     },
 
     applySettle(record): void {

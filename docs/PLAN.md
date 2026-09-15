@@ -802,21 +802,101 @@ real circle and shove real debris. The single contact-pair hook returns `null` f
 meeting an item small enough to carry — no contact at all, because the pickup is a decision
 made a few lines later and a solver impulse arriving first would knock the thing away.
 
-#### seams left for the destruction task
+#### destruction — *(shipped 2026-09-15)*
 
-- `STICKY[kind].tier === 'building'` (`building`, `mountain`) and `'large'` (`monolith`,
-  `waterTower`) with their `breakStrength`. The two buildings are `Infinity` **for now** — a
-  building is currently the thing you cannot eat, and staged collapse is what replaces those
-  two numbers.
-- `DEBRIS_CAP` in `src/world/device.ts` (96 / 24) — exported and read by nothing yet. Breaking
-  a building into chunks is the one thing here that can multiply the world's object count
-  without anybody asking, and the cap is what stops a watching phone deciding how much of the
-  room there is.
-- `LooseMeshes` already draws anything that is not scenery, so it draws chunks: `show`,
-  `move`, `remove`, one mesh each, material shared with the kind they broke off.
-- `src/world/chunks.ts` already provides the chunk geometry, and `PropBodies.restore` already
-  takes a `{ kind, variant, scale, r }` seed rather than a placement key — precisely so a
-  fragment that never was a placement can enter the world as a body.
+> User brief, 2026-09-15: *"objects can bounce, knock loose, drag, stick, BREAK. large props
+> break into major chunks that become independent debris. buildings use STAGED destruction:
+> impact 1 → cracks, impact 2 → a section removed, impact 3 → collapse into rubble. attached
+> objects stay dangerous (a stuck bench swinging into a sign knocks it loose). debris is
+> lightweight, has LIFETIMES, never grows without bound. the server syncs only destruction
+> STATES and major transforms; secondary debris is local. the look should be more physically
+> complex than it is: big readable reactions, chain reactions."*
+
+**Bounce is the one line of that brief we did not build.** Restitution stays 0 on every
+collider in the project: a rebound is forbidden at confidence 1.00 (TASTE §2.1) and the taste
+arbitration wins over a feature request. What replaces it is the settle trick already in
+`rocks.ts` — a thing that is hit travels and beds down rather than springing back.
+
+**`PropBodies.onImpact(cb)`** (`src/world/rocks.ts`) — the seam the whole runtime hangs on.
+`update()` already drained rapier's contact events to kick tree recoils; the same drain now
+names both sides of every started contact in which at least one side moved
+(`ImpactSide { key, kind, r, x, z, rooted }`) and reports the relative speed. `kind` is a
+`PropKind`, or `'chunk'` for a fragment, or `'creature'` for a collider the creature layer
+registered through `registerForeign` — its kinematic ball, or one of the balls standing in for
+what it is carrying, both named as the CARRIER. Which is what closes the gap the katamari work
+left: drops and looses used to fire only off the pure resolve's hard contacts, and a bench
+hanging off a pile never produces one of those. `rooted` is on the side rather than looked up
+per kind because a standing tree and the fallen tree beside it are the same kind.
+
+**One rule, two entry points.** `hitRooted` in `src/creatures/manager.ts` is reached from the
+pure resolve's contacts and from the impact seam alike: recoil always, then `decideContact`,
+then the staged damage. Impact is `speed × radius` in both — the creature's body radius when a
+creature hit it, the item's own radius when a stone or a chunk did.
+
+**Two ways a prop comes apart** (`src/creatures/sticky.ts`):
+
+- **whole** — `shatterStrength` (monolith, waterTower: **11** [D], above their `breakStrength`
+  of 8). `decideContact` gains `'break'`, asked before the loose test so it takes precedence:
+  a prop hit that hard comes apart instead of being lifted onto a pile.
+- **staged** — `stages`, cumulative impact thresholds (building **6 / 9 / 12**, mountain
+  **9 / 13 / 18**, both [D]). `breakStrength` stays `Infinity`: a building is never carried,
+  it wears down. Damage ACCUMULATES in a `Map<key, number>` on the host alone — the brief's
+  *"initially resist, can become loose after repeated impact"* — and `stageFor` turns the
+  total into 0…3.
+
+**`src/world/wreck.ts`** — pure-ish bookkeeping of what has broken: `WreckState`
+(`key`, kind, variant, scale, place, yaw, `stage`, `removed`), `advance` and `freedAtStage`.
+`advance` is **monotonic and idempotent**, which the event format depends on: a `crack` carries
+an absolute stage, `compactScene` keeps only the last one per item, and a phone that hears
+stage 3 alone has to land exactly where the projection that heard all three did. Which chunk
+goes when comes off `Chunk.stage` (authored per family in `chunks.ts` — a mountain's summit
+before its shoulders before its foot), never off an index.
+
+**`src/world/debris.ts`** — one chunk geometry, drawn through `LooseMeshes` like everything
+else that stopped being scenery, plus a dynamic body on the HOST only (convex hull of the
+fragment, ball fallback, restitution 0, the rock damping/settle trick). Drawn through the loose
+layer rather than a group of its own because a fragment is **collectable**: a pickup hangs the
+item's existing mesh on the pile, so a debris renderer would leave two of every collected
+chunk. A host's fragments go to `PropBodies.adopt`, which puts them in `items()` — the pickup
+pass sees them, the settle report fires for them, and they survive a scatter rebuild (they
+never were placements). Fragment directions are seeded from the parent's placement key and the
+chunk index (`fragmentSpread`), never `Math.random`.
+
+**The two bounds are different bounds.** A LIFETIME keeps the field tidy — `debrisLifetimeMs`
+off the motion tokens: small `ambientMs × 2` (7.3s), medium `× 4` (14.6s), large and building
+chunks **persistent**, because a fallen section is a record of what happened in the room. An
+expiring piece **sinks** into the ground over `MOTION.primaryMs` and is then disposed; nothing
+in this project is allowed to blink out. A CAP keeps the page alive — `DEBRIS_CAP` (96
+projection / 24 phone), oldest first, preferring to dispose a piece that is already half
+underground. Under a flood the cap wins over the slide, deliberately.
+
+**What the host decides and what travels** (docs/SESSION.md §6, schema **v4**):
+
+| event | carries | meaning |
+|---|---|---|
+| `crack` | `item`, `stage` | a staged prop has reached this stage: 1 cracked, 2 a section gone, 3 rubble |
+| `shatter` | `item`, `x`, `z`, `rotY`, `scale`, `kind`, `variant` | a large prop came apart into all its chunks; the pose travels because the placement is hidden the moment it is decided |
+
+Chunks themselves are **local** — the brief's own split. The ones that come to matter travel
+anyway: a piece coming to rest is a `settle`, and a piece a creature picks up is a `stick`
+whose `item` is `<placementKey>#<chunkIndex>` (the `#` form is in the door's `ITEM_ID`, and
+`LooseMeshes` builds the mesh for it out of `buildChunkGeometries()`).
+
+**Every page presents; the host is a page too.** `applyCrack` / `applyShatter` (and so the
+replay driver, the scene apply path and the host's own decision) run the same code: stage 1
+puts the prop on the ink pass's crack list (`InkPass.setCracks` — a screen-projected disc per
+prop, three wobbled pen strokes on the noise field the contours already ride, max 16); stage 2
+hides the placement and draws the prop as its chunk set minus the section that has gone; stage
+3 lets the rest go with an outward and downward velocity. A shatter is stage 3 in one call.
+
+**Known edge:** the standing part of a staged ruin is drawn but has no collider — the
+placement's own cylinder went with `take` at stage 2. A creature drives into the ruin and
+brings the rest down, which is the point of a staged collapse, but it does not shoulder against
+it on the way.
+
+**`applyLoose` on a host now builds the body** (`bodies.loosen`, falling back to the plain hide
+when the placement is no longer standing). It used only to `take`, which on a restore left a
+tree lying in the field with nothing under it: in the picture, out of the simulation.
 
 ---
 
