@@ -37,12 +37,23 @@ import {
   WATER_BODIES,
   coastOutline,
   islandOutline,
+  setIslandMode,
   setLandscapeMode,
   waterOutline,
 } from '../../src/world/landscape';
 
-beforeAll(() => setLandscapeMode('landscape'));
-afterAll(() => setLandscapeMode('plain'));
+/* The island is the katamari world's map and ships OFF (src/world/game.ts).
+ * The sea over the whole field and the coast drawn back over it are what this
+ * file measures, so it switches the island on with the mode and puts both
+ * back — the plain-mode block below is unaffected either way. */
+beforeAll(() => {
+  setLandscapeMode('landscape');
+  setIslandMode(true);
+});
+afterAll(() => {
+  setLandscapeMode('plain');
+  setIslandMode(false);
+});
 
 const frame: MapFrame = { w: 200, h: 200, inset: 14 };
 

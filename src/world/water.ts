@@ -94,6 +94,7 @@ import {
   coastOutline,
   islandOutline,
   isAuthoredWater,
+  islandMode,
   landscapeMode,
   paintedRippleSpots,
   rippleSpots,
@@ -810,6 +811,23 @@ export function createWater(): Water {
     seaSheets.push({ mesh: foamMesh, lift: RIPPLE_LIFT });
     group.add(foamMesh);
   }
+  /**
+   * THE SEA'S OWN VISIBILITY (src/world/game.ts, 2026-09-15 user ruling).
+   *
+   * The island — its coast, its ocean and its beach — is the katamari world's
+   * map, so the three sheets above are hidden on every other world while the
+   * lake and the ponds beside them are not. Built either way and then hidden,
+   * exactly like the whole group in the plain mode and for the same reason:
+   * the coast is authored geography, the meshes are the same on every device
+   * forever, and a renderer that builds once and hides has no rebuild path to
+   * get wrong. Re-read on `setVisible`, which is what `WorldHandles.
+   * setLandscape` calls, so a live switch of the map re-asks.
+   */
+  const showSea = (): void => {
+    const on = islandMode();
+    for (const sheet of seaSheets) sheet.mesh.visible = on;
+  };
+  showSea();
 
   // ── painted water ─────────────────────────────────────────────────────────
   // Rebuilt whole on every `setPainted`, into `paintedGroup`. Same three
@@ -846,6 +864,9 @@ export function createWater(): Water {
     setVisible: (on: boolean): void => {
       // `paintedGroup` on purpose untouched — see the interface.
       group.visible = on;
+      // The sea rides the island flag as well as the mode: a world without
+      // the island has no ocean to show even in the landscape mode.
+      showSea();
     },
     setPainted: (field: PaintedWaterField | null): void => {
       clearPainted();

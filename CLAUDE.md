@@ -78,13 +78,27 @@ The traps, in order of how easily they get violated:
 - **Physics runs only on the simulating page; every decision about what is stuck, loose or
   settled travels as a scene event.** `world.enablePhysics()` is called on host election and
   nowhere else — a viewer holds no rapier world and decides nothing (docs/PLAN.md §7.6).
+- **The katamari is a PER-WORLD GAME (user ruling, 2026-09-15). `worlds.json`
+  `game: katamari` is the only switch; meridian and the public world are byte-identical and
+  behaviourally unchanged by it.** The default branch builds every world's deployment at
+  once, so nothing about the game may be unconditional. The seam copies `style`'s discipline
+  — `src/world/game.ts`, `sanitizeGame` in `scripts/world-build.mjs`, a `<meta>` injected
+  only when it is not `none`, read once in `src/main.ts`, default = the shipped behaviour.
+  The flag gates: `WorldHandles.enablePhysics()` (rapier is never imported without it),
+  `createLooseMeshes`/`createDebris` and the debris frame block, the replay driver's
+  `stick`/`drop`/`loose`/`settle`/`crack`/`shatter` (not installed, so those scene events are
+  ignored), the creature manager's `simulating()`, clumps, kinematic bodies, growth and all
+  six `apply*`, and **the island** — `setIslandMode` in `src/world/landscape.ts`, off by
+  default, so the coast, the sea and the beach do not exist on any other world. Don't make
+  any of it unconditional again. The creature LOOK is not part of this gate.
 - **The geography is authored in `src/world/landscape.ts`** and is the single source every
   system samples — placement, colliders, water, minimap. Never re-derive a shoreline
   elsewhere, and the map does not ride the scatter seed. The ground has height: sample it
   through `src/world/surface.ts` only, never derive a height elsewhere. Locomotion never
-  writes Y. **The map is an island; the sea is the complement of the authored coast** —
-  everything outside `ISLAND_LOBES` is water, so nothing else needs to know where the edge of
-  the world is (PLAN §7).
+  writes Y. **On the katamari world the map is an island; the sea is the complement of the
+  authored coast** — everything outside `ISLAND_LOBES` is water, so nothing else needs to know
+  where the edge of the world is (PLAN §7). It is behind `setIslandMode`, off by default: every
+  other world's map is the one that shipped before the island landed.
 
 ## Running the room
 

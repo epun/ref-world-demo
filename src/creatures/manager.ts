@@ -49,6 +49,7 @@ import type { WorldHandles } from '../world/scene';
 import type { ShadowHandle } from '../world/shadows';
 import { ROLLING_SURFACE, type Surface } from '../world/surface';
 import { isWater } from '../world/landscape';
+import { sanitizeGame, type WorldGame } from '../world/game';
 import { resolveName } from './naming';
 import { createClump, type Clump, type StuckItem } from './clump';
 import {
@@ -783,6 +784,22 @@ export interface CreatureManagerOptions {
    * than faked.
    */
   chunks?: () => Map<ChunkKind, Chunk[][]> | null;
+  /**
+   * The GAME this world runs (src/world/game.ts). Defaults to `'none'`.
+   *
+   * `'katamari'` is what turns this manager's second half on: the sticky
+   * simulation, the clumps a pile is seated in, the kinematic bodies a
+   * carrier stands in the rigid-body world as, the growth curve, and the six
+   * `apply*` presentations. In every other world — meridian, the public one,
+   * and every headless test that says nothing — none of them exist: no clump
+   * is created, no kinematic body is added, `simulating()` is false forever
+   * and the `apply*` methods return without touching the scene.
+   *
+   * Not read off the world handle, and that is deliberate: the tests build
+   * managers against stub worlds, and an option keeps the seam one value
+   * rather than a duck-typed method. `src/main.ts` passes `world.game()`.
+   */
+  game?: WorldGame;
 }
 
 export interface CreatureManager {
@@ -910,6 +927,14 @@ export interface CreatureManager {
    * that state: hide the placement, seat the item on the pile at the GIVEN
    * offset, grow the carrier. A `stick` for an unknown carrier, or a `drop`
    * for an item nobody is carrying, is ignored rather than guessed at.
+   *
+   * ALL SIX NO-OP IN A WORLD WITHOUT THE GAME (src/world/game.ts, 2026-09-15
+   * user ruling). Ignored for the same reason an unknown carrier is: a world
+   * with no pickups has no pile to seat anything on and no loose layer to draw
+   * a fallen prop in, so an event of one of these kinds off the wire or out of
+   * a restored log describes a world this page is not running. `src/main.ts`
+   * also leaves the six off its replay driver there, so in practice nothing
+   * even reaches them — this is the second lock, not the first.
    */
   applyStick(record: StickRecord): void;
   applyDrop(record: DropRecord): void;
@@ -943,6 +968,13 @@ export function createCreatureManager(
 ): CreatureManager {
   const observer = options.observer;
   const autoHatch = options.autoHatch ?? AUTO_HATCH;
+  /**
+   * Does this manager play the katamari? (src/world/game.ts, 2026-09-15 user
+   * ruling.) Off unless a caller says the exact word, like every other
+   * per-world switch in this project — the shipped world is the default, and
+   * a game that switched itself on by mistake is a world nobody asked for.
+   */
+  const katamari = sanitizeGame(options.game) === 'katamari';
   const surface = options.surface ?? ROLLING_SURFACE;
   const slots = new Map<string, Slot>();
   let orderCounter = 0;
@@ -1142,9 +1174,18 @@ export function createCreatureManager(
      * bobbed along with it. The clump is created empty on every page —
      * a viewer needs it too, because a viewer is the page the pile has to be
      * DRAWN on.
+     *
+     * …in the KATAMARI world and nowhere else (src/world/game.ts). A world
+     * with no pickups has no pile, so there is no clump on the root, no growth
+     * curve reading off it, and `bodyR` stays the measured footprint for the
+     * life of the creature. Guarded HERE, at the creation point, rather than
+     * only in the frame: a clump that exists is a clump something can seat an
+     * item into.
      */
-    slot.clump = createClump(slot.baseR);
-    root.add(slot.clump.group);
+    if (katamari) {
+      slot.clump = createClump(slot.baseR);
+      root.add(slot.clump.group);
+    }
     world.shadows.removeShadow(`egg-${slot.id}`);
     slot.eggShadow = null;
     slot.egg = null;
@@ -1843,6 +1884,12 @@ export function createCreatureManager(
 
   /** Create or refresh a creature's kinematic body and its ball. */
   function syncKinematic(slot: Slot, root: Group): void {
+    // The KATAMARI world only (src/world/game.ts). A creature stands in the
+    // rigid-body world so the props it rolls into can be knocked over and
+    // picked up; with no game there are no rigid bodies to stand in, and the
+    // guard is here at the creation point rather than only where the frame
+    // calls it.
+    if (!katamari) return;
     const physics = world.physics?.() ?? null;
     if (!physics) return;
     const rapier = physics.rapier;
@@ -3524,19 +3571,26 @@ export function createCreatureManager(
     },
 
     simulating(): boolean {
-      // BOTH halves. The bodies exist only on a page that was elected host
+      // THREE halves now. The game first (src/world/game.ts): a world without
+      // the katamari decides nothing about sticking, loosening or settling
+      // because there is nothing in it to stick — and it never loads rapier
+      // either, so this is belt and braces on purpose.
+      //
+      // Then the bodies, which exist only on a page that was elected host
       // (docs/PLAN.md §7.6), and a page that lost the election a second ago
       // still has them — `aiPaused` is what that page set on the way down.
-      return bodiesOf() !== null && !aiPaused;
+      return katamari && bodiesOf() !== null && !aiPaused;
     },
 
     applyStick(record): void {
+      if (!katamari) return;
       const carrier = slots.get(record.id);
       if (!carrier) return;
       seat(carrier, record);
     },
 
     applyDrop(record): void {
+      if (!katamari) return;
       const carrier = slots.get(record.id);
       if (!carrier) return;
       unseat(carrier, record.item, record.x, record.z, {
@@ -3565,6 +3619,7 @@ export function createCreatureManager(
        * existed), and the plain hide is then the right fallback — there is
        * nothing to build a body from.
        */
+      if (!katamari) return;
       const bodies = bodiesOf();
       const built = bodies ? bodies.loosen(item) : null;
       if (!built) hidePlacement(item);
@@ -3572,6 +3627,7 @@ export function createCreatureManager(
     },
 
     applyCrack(item, stage): void {
+      if (!katamari) return;
       applyCrackLocal(item, stage);
     },
 
@@ -3580,6 +3636,7 @@ export function createCreatureManager(
       // the hit, and the fragments are secondary debris either way (the
       // pieces that matter arrive as `settle`). So they are laid out where
       // their chunks sat rather than thrown at a speed nobody recorded.
+      if (!katamari) return;
       applyShatterLocal(record, 0);
     },
 
@@ -3592,6 +3649,7 @@ export function createCreatureManager(
     },
 
     applySettle(record): void {
+      if (!katamari) return;
       // Where the thing ACTUALLY came to rest, which is the one position in
       // the whole format (docs/SESSION.md §2): a viewer runs no physics, so
       // without this it would have a tree lying wherever the host last said

@@ -214,6 +214,9 @@ function simulatingWorld(): {
   const manager = createCreatureManager(world, {
     autoHatch: false,
     surface: FLAT_SURFACE,
+    // Destruction is the katamari world's (src/world/game.ts): a manager that
+    // says nothing plays no game and decides nothing about a prop.
+    game: 'katamari',
     observer: {
       egg: () => {},
       hatch: () => {},

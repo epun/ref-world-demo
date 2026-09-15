@@ -91,6 +91,32 @@ export function sanitizeStyle(raw) {
 }
 
 /**
+ * Which GAME, if any, runs in this world?
+ *
+ * `none` is the shipped world every deployment ships. `katamari` is a
+ * per-world GAME (2026-09-15 user ruling, docs/PLAN.md §7.6): rapier, the
+ * sticky pickup rules, prop destruction and the island map, on the one world
+ * that asked for it. The public world is not in this file at all, so it can
+ * never be anything but `none`.
+ *
+ * The reason this is a field here rather than a branch in the app: the default
+ * branch builds EVERY world's production deployment at once, and a merge that
+ * put the rocks and the pickups on meridian had to be reverted. A world opts
+ * in by name or it does not get the game.
+ */
+export const WORLD_GAMES = ['none', 'katamari'];
+
+/**
+ * Only the exact lowercase word opts a world in, the same defensive rule as
+ * sanitizeStyle and for a sharper reason: a misread setting must fall back
+ * onto the world every other deployment ships rather than switch a game on
+ * somewhere nobody asked for one. Mirrored in src/world/game.ts.
+ */
+export function sanitizeGame(raw) {
+  return String(raw ?? '').trim().toLowerCase() === 'katamari' ? 'katamari' : 'none';
+}
+
+/**
  * The same rule the app sanitises with (docs/PUBLIC.md §urls, and
  * sanitizeWorld in src/main.ts): lowercase letters, digits and hyphens, up
  * to 24 characters. Anything else is stripped rather than refused, so a
@@ -129,6 +155,7 @@ export function readWorlds(file) {
         residents: sanitizeResidents(config?.residents),
         hatch: sanitizeHatch(config?.hatch),
         style: sanitizeStyle(config?.style),
+        game: sanitizeGame(config?.game),
         // Does this world's deployment keep the dev surface (the ghost panel
         // and everything behind __IS_DEV__)? Off unless the file says exactly
         // `true`: a client's world is a place people visit, not a workbench,
@@ -173,6 +200,7 @@ export function resolveWorld(env = {}, worlds = {}) {
     residents: configured?.residents ?? 'shipped',
     hatch: configured?.hatch ?? 'timer',
     style: configured?.style ?? 'ink',
+    game: configured?.game ?? 'none',
     dev: configured?.dev === true,
   };
 }
@@ -199,9 +227,10 @@ function setMeta(html, attr, key, value) {
  * is a true picture of what happens in any of these worlds.
  *
  * The residents tag is written ONLY for a world that wants none, the hatch
- * tag ONLY for a world that waits for an operator, and the style tag ONLY for
- * a world that opted out of the shipped look — so the public html keeps not
- * mentioning settings it does not have.
+ * tag ONLY for a world that waits for an operator, the style tag ONLY for a
+ * world that opted out of the shipped look, and the game tag ONLY for a world
+ * that asked for a game — so the public html keeps not mentioning settings it
+ * does not have.
  *
  * All lowercase, like every other piece of type here (TASTE §5).
  */
@@ -212,6 +241,7 @@ export function applyWorldToHtml(html, world) {
   const clean = sanitizeResidents(world.residents) === 'none';
   const manual = sanitizeHatch(world.hatch) === 'manual';
   const styled = sanitizeStyle(world.style);
+  const game = sanitizeGame(world.game);
 
   let out = html.replace(
     /([ \t]*)<title>[\s\S]*?<\/title>/i,
@@ -222,6 +252,9 @@ export function applyWorldToHtml(html, world) {
       (manual ? `${indent}<meta name="refworld:hatch" content="manual" />\n` : '') +
       (styled !== 'ink'
         ? `${indent}<meta name="refworld:style" content="${escapeAttr(styled)}" />\n`
+        : '') +
+      (game !== 'none'
+        ? `${indent}<meta name="refworld:game" content="${escapeAttr(game)}" />\n`
         : '') +
       `${indent}<title>ref world · ${name}</title>`,
   );

@@ -28,6 +28,7 @@ import {
   landscapeMode,
   rippleSpots,
   seaLevel,
+  setIslandMode,
   setLandscapeMode,
   setTerrainParams,
   terrainHeight,
@@ -45,8 +46,18 @@ import {
 } from '../../src/world/water';
 import type { PaintedBody, PaintedWaterField } from '../../src/world/painted-water';
 
-beforeAll(() => setLandscapeMode('landscape'));
-afterAll(() => setLandscapeMode('plain'));
+/* The sea is the island's, and the island is the katamari world's map, which
+ * ships OFF (src/world/game.ts). This file measures the whole authored
+ * surface — lake, ponds and ocean — so it switches the island on with the mode
+ * and puts both back. */
+beforeAll(() => {
+  setLandscapeMode('landscape');
+  setIslandMode(true);
+});
+afterAll(() => {
+  setLandscapeMode('plain');
+  setIslandMode(false);
+});
 
 /** The scatter's ticks sit here — everything water must stay under it. */
 const TICK_LIFT = 0.015;

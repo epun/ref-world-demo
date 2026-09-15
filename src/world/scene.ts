@@ -21,11 +21,13 @@ import { createScatter, type Scatter } from './scatter';
 import { FlatShadows } from './shadows';
 import {
   landscapeMode,
+  setIslandMode,
   setLandscapeMode,
   setTerrainParams,
   terrainParams,
   type TerrainParams,
 } from './landscape';
+import { sanitizeGame, type WorldGame } from './game';
 import { sanitizeStyle, type WorldStyle } from './style';
 import { ROLLING_SURFACE, type Surface } from './surface';
 import { setToonEnabled, setToonSun } from './toon';
@@ -209,6 +211,15 @@ export interface WorldHandles {
    * at startup on a page that is pinned as host (`?host=1`, the moderator
    * secret, the dev build, or an installation room with nobody to elect
    * against).
+   *
+   * …AND ONLY IN A WORLD THAT RUNS THE KATAMARI (2026-09-15 user ruling,
+   * src/world/game.ts). Rigid bodies exist in this project to serve the
+   * pickups, the destruction and the loose props, which are one world's game
+   * and not the shipped world. On a `game: 'none'` world this resolves
+   * immediately, rapier is never even imported, `physics()` stays null forever
+   * and `onPhysicsReady` never fires — so a caller needs no flag of its own
+   * and a page that calls this anyway cannot accidentally start a simulation
+   * meridian never asked for.
    */
   enablePhysics(): Promise<void>;
   /** Fires once when the physics world exists — immediately if it already
@@ -240,6 +251,16 @@ export interface WorldHandles {
   setStyle(style: WorldStyle): void;
   /** The look this world is rendering in. */
   style(): WorldStyle;
+  /**
+   * The GAME this world runs (src/world/game.ts) — `'none'` unless the
+   * deployment's worlds.json entry asked for one.
+   *
+   * Read at `start` and never changed: a world is or is not a katamari for
+   * the whole of its life, because the map, the physics and the creature
+   * bodies are all decided the moment anything is built. Every layer that
+   * gates on it asks here rather than re-reading the address.
+   */
+  game(): WorldGame;
 }
 
 export interface WorldOptions {
@@ -249,9 +270,35 @@ export interface WorldOptions {
    * says nothing gets the frame this project has always drawn.
    */
   style?: WorldStyle;
+  /**
+   * The game this world runs (src/world/game.ts). Defaults to `'none'` — the
+   * shipped world, and what every deployment but the one that asked for a game
+   * gets — so a caller that says nothing gets the world this project has
+   * always run: no rapier, no sticky rules, no destruction, no island.
+   */
+  game?: WorldGame;
 }
 
 export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): WorldHandles {
+  /*
+   * WHICH GAME, decided once and before anything is built (src/world/game.ts).
+   *
+   * Everything this gates is a construction-time decision — whether rapier is
+   * ever loaded, whether the island's coast is part of the map the ground is
+   * displaced from — so there is no setter and no live switch: a world is or
+   * is not a katamari.
+   */
+  const game = sanitizeGame(opts.game);
+  /*
+   * THE ISLAND IS PART OF THE KATAMARI WORLD (2026-09-15 user ruling).
+   *
+   * Set before the ground, the scatter and the water are built, because each
+   * of them samples the geography as it builds. With the game off the coast,
+   * the sea and the beach answer as if the lobes had never been authored and
+   * the map is the one every deployment already had (src/world/landscape.ts
+   * `setIslandMode`).
+   */
+  setIslandMode(game === 'katamari');
   const renderer = new WebGLRenderer({ canvas, antialias: true });
   /*
    * Pixel ratio cap. The frame is four full-resolution passes (colour,
@@ -321,6 +368,15 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
   /** The one in-flight load, so N calls are one download. */
   let physicsLoad: Promise<void> | null = null;
   const enablePhysics = (): Promise<void> => {
+    /*
+     * A WORLD WITHOUT THE GAME NEVER LOADS RAPIER — the gate, at the one API
+     * boundary every caller comes through (see `enablePhysics` on the
+     * interface). A resolved promise rather than a throw: the callers are
+     * `void world.enablePhysics()` on host election and at startup, and a
+     * world with no game answering "there, done" is the truth — there is
+     * nothing for it to simulate.
+     */
+    if (game !== 'katamari') return Promise.resolve();
     if (physicsLoad) return physicsLoad;
     physicsLoad = createPhysicsWorld(surface, FIELD_SIZE).then((p) => {
       physics = p;
@@ -644,6 +700,7 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
       applyStyle(sanitizeStyle(style));
     },
     style: (): WorldStyle => currentStyle,
+    game: (): WorldGame => game,
     setPaused: (next: boolean): void => {
       if (next === paused) return;
       paused = next;

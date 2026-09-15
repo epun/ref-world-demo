@@ -49,6 +49,7 @@ import {
   isWater,
   sampleLandscape,
   seaLevel,
+  setIslandMode,
   setLandscapeMode,
   terrainHeight,
   terrainNormal,
@@ -125,8 +126,23 @@ function probes(count: number, half = 200): [number, number][] {
   return out;
 }
 
-beforeAll(() => setLandscapeMode('landscape'));
-afterAll(() => setLandscapeMode('plain'));
+/*
+ * THE ISLAND IS A PER-WORLD GAME'S MAP (2026-09-15 user ruling,
+ * src/world/game.ts). It ships OFF, like the landscape mode beside it and for
+ * a sharper reason: the default branch builds every world's production
+ * deployment at once, so a coast that is right for the katamari world must not
+ * be able to reach meridian or the public one. Everything this file measures
+ * is the map with the island ON, so it switches both on and puts both back —
+ * test/world/landscape.test.ts's island-off block is the other half.
+ */
+beforeAll(() => {
+  setLandscapeMode('landscape');
+  setIslandMode(true);
+});
+afterAll(() => {
+  setLandscapeMode('plain');
+  setIslandMode(false);
+});
 
 describe('the island — the coast', () => {
   it('is a union of wobbled lobes led by the main mass, and no lobe is a circle', () => {

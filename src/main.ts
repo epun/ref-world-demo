@@ -99,6 +99,7 @@ import { residentsFrom } from './world/residents';
 import { readHatchMode } from './world/hatchmode';
 import { storeNote } from './world/storeline';
 import { start } from './world/scene';
+import { readWorldGame } from './world/game';
 import { readWorldStyle } from './world/style';
 import { createTour } from './world/tour';
 
@@ -246,7 +247,26 @@ function main(): void {
     document.querySelector<HTMLMetaElement>('meta[name="refworld:style"]')?.content ?? null,
   );
 
-  const world = start(canvas, { style: worldStyle });
+  /**
+   * The GAME this page runs (src/world/game.ts) — read here, beside the look
+   * and for the same reason: the map, the physics and the creature bodies are
+   * all decided as the world is built, so `start` needs it first.
+   *
+   * Two sources, `?game=` then `<meta name="refworld:game">`, which the build
+   * injects for a world whose worlds.json entry asked for it. The public build
+   * and meridian's inject nothing and resolve to `none` — the world this
+   * project has always run (2026-09-15 user ruling: nothing on this branch
+   * changes meridian or the public world).
+   */
+  const worldGame = readWorldGame(
+    location.search,
+    document.querySelector<HTMLMetaElement>('meta[name="refworld:game"]')?.content ?? null,
+  );
+
+  const world = start(canvas, { style: worldStyle, game: worldGame });
+  /** True in the one world that runs the katamari — the flag every seam below
+   * gates on, asked of the world rather than re-read off the address. */
+  const katamari = world.game() === 'katamari';
 
   // ── room ──────────────────────────────────────────────────────────────────
   // The room pairs this world with phones drawing at /draw/?room=xxxx via the
@@ -627,6 +647,12 @@ function main(): void {
    * the room has to see the tree lying in the field just as the projection
    * does. It is the same mesh a pickup then hangs on a creature's pile, so
    * there is one object per fallen thing however it ends up.
+   *
+   * …on every page OF THE KATAMARI WORLD (2026-09-15 user ruling,
+   * src/world/game.ts). Nothing in any other world ever knocks a prop out of
+   * the ground: props are broken by the pickups and the destruction, which are
+   * this one world's game. So both layers are `null` there — not built, not
+   * added to the scene, not stepped — and every use below is optional.
    */
   /**
    * The chunk set, built on FIRST DEMAND (src/world/chunks.ts).
@@ -638,7 +664,9 @@ function main(): void {
    */
   let chunkSet: Map<ChunkKind, Chunk[][]> | null = null;
   const chunks = (): Map<ChunkKind, Chunk[][]> => (chunkSet ??= buildChunkGeometries());
-  const looseMeshes = createLooseMeshes(world.scatter, world.scene, () => chunkSet);
+  const looseMeshes = katamari
+    ? createLooseMeshes(world.scatter, world.scene, () => chunkSet)
+    : null;
   /**
    * Where the pieces of a broken prop go (src/world/debris.ts).
    *
@@ -648,18 +676,25 @@ function main(): void {
    * registry are passed as getters because they arrive on host election and
    * never on a viewer (docs/PLAN.md §7.6).
    */
-  const debris = createDebris({
-    physics: () => world.physics(),
-    bodies: () => world.bodies(),
-    loose: looseMeshes,
-    surface: world.surface,
-    chunks,
-    tier: world.tier,
-  });
+  const debris =
+    looseMeshes === null
+      ? null
+      : createDebris({
+          physics: () => world.physics(),
+          bodies: () => world.bodies(),
+          loose: looseMeshes,
+          surface: world.surface,
+          chunks,
+          tier: world.tier,
+        });
   const creatures = createCreatureManager(world, {
     autoHatch: isPublic && hatchMode === 'timer',
-    loose: looseMeshes,
-    debris,
+    // The game, so the manager's own katamari half — the sticky simulation,
+    // the clumps, the kinematic bodies, the growth — is off in every other
+    // world (src/creatures/manager.ts).
+    game: world.game(),
+    ...(looseMeshes ? { loose: looseMeshes } : {}),
+    ...(debris ? { debris } : {}),
     chunks: () => chunkSet,
     observer: {
       ...recorder,
@@ -773,6 +808,56 @@ function main(): void {
   // the same ids and the same strokes at the same offsets. Spawns go STRAIGHT
   // to the manager, never back through the screen — the recorded verdict is
   // the decision, and re-screening could rule differently on a newer build.
+  /**
+   * THE SIX KATAMARI SCENE KINDS, as replay-driver methods — installed ONLY
+   * in the katamari world (2026-09-15 user ruling, src/world/game.ts).
+   *
+   * Left OFF the driver elsewhere rather than made to no-op inside it, which
+   * is the whole point of `ReplayDriver` having them optional: a world with no
+   * game has no pile to seat an item on and no chunk set to break a prop into,
+   * so a `stick` off the wire or out of a restored log is a kind this page does
+   * not drive. `applySceneEvents` and `replaySession` both call them as
+   * `driver.stick?.(…)`, so an absent method is skipped without error — the
+   * same rule the paint stamp already follows on a build with no brush mounted.
+   */
+  const katamariDriver: Pick<
+    ReplayDriver,
+    'stick' | 'drop' | 'loose' | 'settle' | 'crack' | 'shatter'
+  > = {
+    /*
+     * THE KATAMARI FOUR, applied (src/creatures/sticky.ts).
+     *
+     * Presentation only, on any page: the manager's `apply*` methods hide a
+     * placement, seat an item on a pile at the offset the event carries and
+     * grow the carrier, and they decide nothing. The page that SIMULATED
+     * never comes round this way — its own events are swallowed by the
+     * `applyingScene` guard on the way out to the outbox, because it already
+     * applied its decision as it made it.
+     */
+    stick: (event) => creatures.applyStick(event),
+    drop: (event) => creatures.applyDrop(event),
+    loose: (event) => creatures.applyLoose(event.item, event.x, event.z),
+    settle: (event) => creatures.applySettle(event),
+    /*
+     * …AND THE TWO DESTRUCTION STATES, applied the same way. A `crack`
+     * brings a prop up to a stage of its collapse and a `shatter` replaces
+     * it with its chunks; both decide nothing, and both build the chunk set
+     * on demand (see `chunks` above) because a page that hears one is a page
+     * that is about to need it.
+     */
+    crack: (event) => creatures.applyCrack(event.item, event.stage),
+    shatter: (event) =>
+      creatures.applyShatter({
+        item: event.item,
+        x: event.x,
+        z: event.z,
+        rotY: event.rotY,
+        scale: event.scale,
+        kind: event.kind,
+        variant: event.variant,
+      }),
+  };
+
   const replayDriver: ReplayDriver = {
     spawn: (d) =>
       creatures.spawn(d.id, d.strokes, {
@@ -808,38 +893,7 @@ function main(): void {
         .__refworldPaint;
       probe?.applyPaint?.(event);
     },
-    /*
-     * THE KATAMARI FOUR, applied (src/creatures/sticky.ts).
-     *
-     * Presentation only, on any page: the manager's `apply*` methods hide a
-     * placement, seat an item on a pile at the offset the event carries and
-     * grow the carrier, and they decide nothing. The page that SIMULATED
-     * never comes round this way — its own events are swallowed by the
-     * `applyingScene` guard on the way out to the outbox, because it already
-     * applied its decision as it made it.
-     */
-    stick: (event) => creatures.applyStick(event),
-    drop: (event) => creatures.applyDrop(event),
-    loose: (event) => creatures.applyLoose(event.item, event.x, event.z),
-    settle: (event) => creatures.applySettle(event),
-    /*
-     * …AND THE TWO DESTRUCTION STATES, applied the same way. A `crack`
-     * brings a prop up to a stage of its collapse and a `shatter` replaces
-     * it with its chunks; both decide nothing, and both build the chunk set
-     * on demand (see `chunks` above) because a page that hears one is a page
-     * that is about to need it.
-     */
-    crack: (event) => creatures.applyCrack(event.item, event.stage),
-    shatter: (event) =>
-      creatures.applyShatter({
-        item: event.item,
-        x: event.x,
-        z: event.z,
-        rotY: event.rotY,
-        scale: event.scale,
-        kind: event.kind,
-        variant: event.variant,
-      }),
+    ...(katamari ? katamariDriver : {}),
     // The operator state a replayed world should stand in: hold mode and the
     // block list. Removals are driven by replay itself, above.
     operator: (action, id, on) => {
@@ -2088,8 +2142,11 @@ function main(): void {
      * world run everywhere, and on the host the fragments' transforms are
      * written out of their bodies. After the creatures, because a fragment a
      * creature has just picked up stops being debris in that call.
+     *
+     * …on every page of the KATAMARI world. Elsewhere there is no debris
+     * layer at all, so there is nothing to step and no frame cost for it.
      */
-    debris.update(dt, nowMs);
+    debris?.update(dt, nowMs);
     /*
      * The handset camera goes where its creature goes.
      *

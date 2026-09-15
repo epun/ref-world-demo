@@ -21,6 +21,7 @@ import { Color, Mesh, MeshBasicMaterial, type BufferAttribute } from 'three';
 import { SURFACE } from '../../src/taste/tokens';
 import { FIELD_SEGMENTS, FIELD_SIZE, createGround } from '../../src/world/ground';
 import {
+  setIslandMode,
   setLandscapeMode,
   setTerrainParams,
   TERRAIN,
@@ -29,8 +30,17 @@ import {
 } from '../../src/world/landscape';
 import { FLAT_SURFACE, ROLLING_SURFACE } from '../../src/world/surface';
 
-beforeAll(() => setLandscapeMode('landscape'));
-afterAll(() => setLandscapeMode('plain'));
+/* The island — and so the sea floor the far ring rests on — is the katamari
+ * world's map and ships OFF (src/world/game.ts), so this file switches it on
+ * with the mode and puts both back. */
+beforeAll(() => {
+  setLandscapeMode('landscape');
+  setIslandMode(true);
+});
+afterAll(() => {
+  setLandscapeMode('plain');
+  setIslandMode(false);
+});
 
 const field = (ground = createGround(ROLLING_SURFACE)): Mesh =>
   ground.group.getObjectByName('ground-field') as Mesh;

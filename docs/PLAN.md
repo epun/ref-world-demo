@@ -933,6 +933,40 @@ it on the way.
 when the placement is no longer standing). It used only to `take`, which on a restore left a
 tree lying in the field with nothing under it: in the picture, out of the simulation.
 
+#### the katamari is a PER-WORLD GAME — *(2026-09-15 user ruling)*
+
+Everything above runs in **one world**. The default branch builds every world's production
+deployment at once, and the merge that shipped §7.6 put the rigid-body rocks, the katamari
+pickups and the island map on **meridian**, which had to be reverted. So the game is a
+`worlds.json` field and nothing else: `"game": "katamari"` on `valiocon`, absent everywhere
+else. **Meridian and the public world are byte-identical and behaviourally unchanged by this
+branch.**
+
+The switch copies `style`'s discipline exactly (§9 of docs/TASTE.md, `src/world/style.ts`):
+sanitised in `scripts/world-build.mjs` (`sanitizeGame` — only the exact lowercase word, else
+`none`), injected as `<meta name="refworld:game">` **only** when it is not `none` so the public
+html stays byte-identical, read once in `src/main.ts` through `readWorldGame` (`?game=` wins,
+then the tag, else `none`), and mirrored in **`src/world/game.ts`** so the tag a build writes
+and the app's reading of it can never name two different games. The default is the shipped
+behaviour, at every one of these seams.
+
+What the flag gates, and where:
+
+| seam | with `game: none` |
+|---|---|
+| `WorldHandles.enablePhysics()` (`src/world/scene.ts`) | resolves immediately; **rapier is never imported**, `physics()`/`bodies()` stay null, `onPhysicsReady` never fires. The callers in `settleRole` and at startup are untouched. |
+| `WorldHandles.game()` | `'none'`, read once at `start` and never switched |
+| `createLooseMeshes` / `createDebris` (`src/main.ts`) | never built; the `debris.update` frame block is skipped |
+| the replay driver's `stick`/`drop`/`loose`/`settle`/`crack`/`shatter` | **not installed**. `applySceneEvents` and `replaySession` call them as `driver.stick?.(…)`, so a page handed one of those kinds ignores it without error |
+| `CreatureManager` (`{ game }` option) | `simulating()` is false however many bodies the page has; no clump, no kinematic body and no growth is ever created (guarded at the creation points); all six `apply*` methods no-op |
+| the ISLAND (`src/world/landscape.ts` `setIslandMode`, off by default) | no coast, no sea, no beach: `isSea` is false everywhere, `seaLevel()` is 0, the sea pass in `terrainHeight` is skipped, `sampleLandscape().beach` is 0 and `region` is never `'beach'`, and `waterColliders()` walls no coast. The sea sheets in `water.ts` and the ocean fill in `minimap.ts` are **built and hidden**, exactly as the lake is in the plain mode, and re-asked on `setLandscape`. `scene.ts`'s `start` sets the flag from the game. |
+
+`test/world/landscape.test.ts`'s island-off block measures the pre-island map back at 2,000
+points; `test/world/island.test.ts` switches the island on in its `beforeAll`.
+
+**The creature LOOK is not gated here.** The colourways, the stalk-and-topper and the two eyes
+(docs/taste/creature.md, TASTE §8) predate this branch and belong to a separate decision.
+
 ---
 
 ## 8. Networking (`src/net/`, `worker/`)

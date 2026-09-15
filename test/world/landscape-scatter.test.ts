@@ -21,6 +21,7 @@ import {
   isAuthoredWater,
   isWater,
   sampleLandscape,
+  setIslandMode,
   setLandscapeMode,
   WATER_BODIES,
   WOBBLE_MAX,
@@ -38,8 +39,17 @@ import {
   type Placement,
 } from '../../src/world/scatter';
 
-beforeAll(() => setLandscapeMode('landscape'));
-afterAll(() => setLandscapeMode('plain'));
+/* The island is the katamari world's map and ships OFF (src/world/game.ts);
+ * every fixture below was taken against the mapped world WITH it, so this
+ * file switches it on and puts it back, exactly as it does the mode. */
+beforeAll(() => {
+  setLandscapeMode('landscape');
+  setIslandMode(true);
+});
+afterAll(() => {
+  setLandscapeMode('plain');
+  setIslandMode(false);
+});
 
 /** Run `f` with the map switched off, then put the file's mode back. */
 function inPlain<T>(f: () => T): T {

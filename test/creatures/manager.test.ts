@@ -37,6 +37,7 @@ import { STICKY } from '../../src/creatures/sticky';
 import { EGG_RADIUS } from '../../src/egg/egg';
 import type { Collider } from '../../src/physics/colliders';
 import type { WorldHandles } from '../../src/world/scene';
+import type { WorldGame } from '../../src/world/game';
 import { FLAT_SURFACE, ROLLING_SURFACE, type Surface } from '../../src/world/surface';
 import { isWater } from '../../src/world/landscape';
 import { bird, fish, quadruped, snowman, circleBlob } from '../fixtures/strokes';
@@ -1295,7 +1296,7 @@ describe('drive hold — the stick owns the creature, the wander ai waits', () =
  */
 
 describe('sticky — one creature carrying another', () => {
-  function pair(opts: { physics?: boolean } = {}): {
+  function pair(opts: { physics?: boolean; game?: WorldGame } = {}): {
     world: WorldHandles;
     manager: ReturnType<typeof createCreatureManager>;
     seen: { kind: string; id: string; item: string }[];
@@ -1305,6 +1306,11 @@ describe('sticky — one creature carrying another', () => {
     const manager = createCreatureManager(world, {
       autoHatch: false,
       surface: FLAT_SURFACE,
+      // The katamari is a per-world GAME (src/world/game.ts): the piles, the
+      // kinematic bodies and the sticky pass only exist in a manager that was
+      // told this world plays it. A manager that says nothing is meridian's,
+      // and the gate block at the bottom of this file passes 'none' here.
+      game: opts.game ?? 'katamari',
       observer: {
         egg: () => {},
         hatch: () => {},
@@ -1617,6 +1623,8 @@ describe('sticky — impact is in world units per SECOND', () => {
     const manager = createCreatureManager(world, {
       autoHatch: false,
       surface: FLAT_SURFACE,
+      // The sticky pass is the katamari world's (src/world/game.ts).
+      game: 'katamari',
       observer: {
         egg: () => {},
         hatch: () => {},
@@ -1726,5 +1734,150 @@ describe('sticky — impact is in world units per SECOND', () => {
     const { loosened, bumped } = walkInto({ r: 1, hard: true, gap: 0.2 });
     expect(loosened).toEqual([]);
     expect(bumped).toEqual([]);
+  });
+});
+
+/**
+ * THE KATAMARI IS A PER-WORLD GAME (2026-09-15 user ruling, src/world/game.ts).
+ *
+ * The default branch builds every world's production deployment at once, and a
+ * merge that put the rigid-body rocks and the pickups on meridian had to be
+ * reverted. Nothing on this branch may reach meridian or the public world
+ * again, so the manager's whole second half is off unless it was created with
+ * `{ game: 'katamari' }`.
+ *
+ * Every assertion below is paired with its katamari twin above — the same
+ * stubs, the same overlap, the same frame — so this block measures the gate
+ * rather than an inert fixture.
+ */
+describe('the katamari is a per-world game — a world without it plays none', () => {
+  function pair(game: WorldGame): {
+    world: WorldHandles;
+    manager: ReturnType<typeof createCreatureManager>;
+    seen: { kind: string; id: string; item: string }[];
+  } {
+    const seen: { kind: string; id: string; item: string }[] = [];
+    // `physics: true` on purpose: the stub HAS bodies, so the only thing
+    // standing between this manager and a simulation is the game.
+    const world = stubWorld([], { physics: true });
+    const manager = createCreatureManager(world, {
+      autoHatch: false,
+      surface: FLAT_SURFACE,
+      game,
+      observer: {
+        egg: () => {},
+        hatch: () => {},
+        retire: () => {},
+        emote: () => {},
+        stick: (r) => seen.push({ kind: 'stick', id: r.id, item: r.item }),
+        drop: (r) => seen.push({ kind: 'drop', id: r.id, item: r.item }),
+        loose: (item) => seen.push({ kind: 'loose', id: '', item }),
+        settle: (r) => seen.push({ kind: 'settle', id: '', item: r.item }),
+        crack: (r) => seen.push({ kind: 'crack', id: '', item: r.item }),
+        shatter: (r) => seen.push({ kind: 'shatter', id: '', item: r.item }),
+      },
+    });
+    manager.spawn('big', fish, { hatchMs: 60_000, grown: true });
+    manager.spawn('small', snowman, { hatchMs: 60_000, grown: true });
+    return { world, manager, seen };
+  }
+
+  /** The live roots by id — the same lookup the sticky block uses. */
+  function rootsOf(
+    world: WorldHandles,
+    manager: ReturnType<typeof createCreatureManager>,
+  ): Map<string, Group> {
+    const out = new Map<string, Group>();
+    for (const id of ['big', 'small']) {
+      const at = manager.positionOf(id);
+      if (!at) continue;
+      for (const child of world.scene.children) {
+        if (!(child instanceof Group)) continue;
+        if (Math.hypot(child.position.x - at.x, child.position.z - at.z) < 1e-6) {
+          out.set(id, child);
+          break;
+        }
+      }
+    }
+    return out;
+  }
+
+  it('never simulates, however many bodies the page has', () => {
+    // The gate is the game, not the election: this stub world is a HOST.
+    expect(pair('none').manager.simulating()).toBe(false);
+    // …and the twin, so the stub really would simulate if it were allowed to.
+    expect(pair('katamari').manager.simulating()).toBe(true);
+  });
+
+  it('never builds a pile, so nothing sticks and nothing grows', () => {
+    const { world, manager, seen } = pair('none');
+    const roots = rootsOf(world, manager);
+    const big = roots.get('big')!;
+    const small = roots.get('small')!;
+    // Dead overlapping, and a frame goes by. On the katamari world this is
+    // exactly the setup that seats the small one on the big one's clump.
+    small.position.set(big.position.x, small.position.y, big.position.z);
+    manager.update(16, 1000);
+    expect(small.parent).toBe(world.scene);
+    expect(seen).toEqual([]);
+    // No clump means no growth curve: the root's scale is untouched and the
+    // exclusion radius the scatter reads is the measured footprint.
+    expect(big.scale.x).toBe(1);
+    expect(small.scale.x).toBe(1);
+    manager.clearAll();
+  });
+
+  it('ignores the six katamari presentations rather than half-applying them', () => {
+    // A page in a world with no game can still be handed these — a stale wire
+    // batch, a log restored from another world — and it has to answer nothing
+    // at all rather than seat an item on a pile it never built.
+    const { world, manager, seen } = pair('none');
+    const small = rootsOf(world, manager).get('small')!;
+    manager.applyStick({
+      id: 'big',
+      item: 'creature:small',
+      ox: 0,
+      oy: 2,
+      oz: 1,
+      qx: 0,
+      qy: 0,
+      qz: 0,
+      qw: 1,
+    });
+    expect(small.parent).toBe(world.scene);
+    manager.applyDrop({
+      id: 'big',
+      item: 'creature:small',
+      x: 4,
+      z: 4,
+      qx: 0,
+      qy: 0,
+      qz: 0,
+      qw: 1,
+    });
+    manager.applyLoose('tree:3:1.00:1.00', 5, 5);
+    manager.applySettle({
+      item: 'tree:3:1.00:1.00',
+      x: 5,
+      z: 5,
+      qx: 0,
+      qy: 0,
+      qz: 0,
+      qw: 1,
+    });
+    manager.applyCrack('building:1:1.00:1.00', 2);
+    manager.applyShatter({
+      item: 'building:1:1.00:1.00',
+      x: 6,
+      z: 6,
+      rotY: 0,
+      scale: 1,
+      kind: 'building',
+      variant: 1,
+    });
+    // Nothing decided, nothing recorded, and no wreck state invented.
+    expect(seen).toEqual([]);
+    expect(manager.wrecks()).toEqual([]);
+    manager.clearAll();
   });
 });

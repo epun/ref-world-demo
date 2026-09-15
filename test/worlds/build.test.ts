@@ -21,6 +21,7 @@ import { describe, expect, it } from 'vitest';
 import {
   HATCH_MODES,
   RESIDENTS,
+  WORLD_GAMES,
   WORLD_STYLES,
   applyWorldToHtml,
   normalizeHost,
@@ -28,12 +29,14 @@ import {
   resolveWorld,
   sanitizeHatch,
   sanitizeResidents,
+  sanitizeGame,
   sanitizeStyle,
   sanitizeWorldName,
 } from '../../scripts/world-build.mjs';
 import { residentsFrom } from '../../src/world/residents';
 import { hatchModeFrom, readHatchMode } from '../../src/world/hatchmode';
 import { readWorldStyle, sanitizeStyle as sanitizeStyleApp } from '../../src/world/style';
+import { readWorldGame, sanitizeGame as sanitizeGameApp } from '../../src/world/game';
 
 const ROOT = resolve(__dirname, '..', '..');
 const INDEX = readFileSync(join(ROOT, 'index.html'), 'utf8');
@@ -53,6 +56,7 @@ describe('worlds.json — one entry per deployment', () => {
       expect(RESIDENTS).toContain(config.residents);
       expect(HATCH_MODES).toContain(config.hatch);
       expect(WORLD_STYLES).toContain(config.style);
+      expect(WORLD_GAMES).toContain(config.game);
     }
   });
 
@@ -72,6 +76,8 @@ describe('worlds.json — one entry per deployment', () => {
       hatch: 'timer',
       // the shipped look. only the world that ASKED for the override has it.
       style: 'ink',
+      // no game unless a world asked for one (src/world/game.ts).
+      game: 'none',
       dev: true,
     });
     // the public site is absent on purpose: it is the world without an
@@ -85,6 +91,18 @@ describe('worlds.json — one entry per deployment', () => {
     expect(WORLDS['valiocon']?.style).toBe('ghibli');
     const styled = Object.entries(WORLDS).filter(([, w]) => w.style !== 'ink');
     expect(styled.map(([name]) => name)).toEqual(['valiocon']);
+  });
+
+  it('knows valiocon plays the katamari, and nobody else does', () => {
+    // 2026-09-15 user ruling (src/world/game.ts, docs/PLAN.md §7.6): the
+    // physics, the sticky rules, the destruction and the island map are ONE
+    // world's game. This is the assertion that keeps them off meridian — the
+    // default branch builds every deployment at once, and a merge that put
+    // the rocks and the pickups on meridian had to be reverted.
+    expect(WORLDS['valiocon']?.game).toBe('katamari');
+    expect(WORLDS['meridian']?.game).toBe('none');
+    const playing = Object.entries(WORLDS).filter(([, w]) => w.game !== 'none');
+    expect(playing.map(([name]) => name)).toEqual(['valiocon']);
   });
 });
 
@@ -113,6 +131,8 @@ describe('resolveWorld — what world is this build for', () => {
       residents: 'none',
       hatch: 'timer',
       style: 'ink',
+      // no game unless a world asked for one (src/world/game.ts).
+      game: 'none',
       dev: true,
     });
   });
@@ -127,6 +147,8 @@ describe('resolveWorld — what world is this build for', () => {
       residents: 'none',
       hatch: 'timer',
       style: 'ink',
+      // no game unless a world asked for one (src/world/game.ts).
+      game: 'none',
       dev: true,
     });
   });
@@ -143,6 +165,8 @@ describe('resolveWorld — what world is this build for', () => {
       // …and a world the file never heard of renders the taste, not an
       // override it never asked for.
       style: 'ink',
+      // no game unless a world asked for one (src/world/game.ts).
+      game: 'none',
       dev: false,
     });
   });
@@ -293,11 +317,48 @@ describe('style — only the world that asked for it renders the override', () =
   });
 });
 
+describe('game — only the world that asked for it plays the katamari', () => {
+  it('reads the tag, and its absence', () => {
+    // the public build and meridian's inject no tag at all, so absent has to
+    // mean the shipped world: a game is opted into, never inherited.
+    expect(sanitizeGameApp('katamari')).toBe('katamari');
+    expect(sanitizeGameApp(' KATAMARI ')).toBe('katamari');
+    expect(sanitizeGameApp(null)).toBe('none');
+    expect(sanitizeGameApp('')).toBe('none');
+    expect(sanitizeGameApp('none')).toBe('none');
+  });
+
+  it('a typo builds the shipped world rather than a game nobody asked for', () => {
+    expect(sanitizeGameApp('katamar')).toBe('none');
+    expect(sanitizeGameApp('sticky')).toBe('none');
+    expect(sanitizeGame('katamar')).toBe('none');
+    expect(sanitizeGame(undefined)).toBe('none');
+    expect(sanitizeGame('katamari')).toBe('katamari');
+  });
+
+  it('the two sides agree about every value either can produce', () => {
+    for (const value of [...WORLD_GAMES, 'nonsense', '', ' katamari ']) {
+      expect(sanitizeGameApp(value)).toBe(sanitizeGame(value));
+    }
+  });
+
+  it('lets the address override the baked tag, both ways', () => {
+    expect(readWorldGame('?game=katamari', null)).toBe('katamari');
+    expect(readWorldGame('?game=none', 'katamari')).toBe('none');
+    expect(readWorldGame('', 'katamari')).toBe('katamari');
+    expect(readWorldGame('', null)).toBe('none');
+  });
+});
+
 describe('the html transform', () => {
   it('leaves the public build byte-identical', () => {
     // the property this whole design rests on: adding a client cannot
     // change the site everyone else sees.
     expect(applyWorldToHtml(INDEX, null)).toBe(INDEX);
+    // …and the file on disk mentions no per-world setting at all, so the
+    // public build can never carry one (2026-09-15 user ruling).
+    expect(INDEX).not.toContain('refworld:game');
+    expect(INDEX).not.toContain('refworld:style');
   });
 
   const out = applyWorldToHtml(INDEX, {
@@ -350,6 +411,46 @@ describe('the html transform', () => {
     expect(/refworld:style" content="([^"]*)"/.exec(styled)?.[1]).not.toMatch(/[A-Z]/);
     // still one document.
     expect(styled.match(/<title>/g)).toHaveLength(1);
+  });
+
+  it('tells the one world that plays the katamari to play it', () => {
+    const playing = applyWorldToHtml(INDEX, {
+      name: 'valiocon',
+      host: 'ref-world-valiocon.vercel.app',
+      residents: 'none',
+      hatch: 'manual',
+      style: 'ghibli',
+      game: 'katamari',
+      dev: true,
+    });
+    expect(playing).toContain('<meta name="refworld:game" content="katamari" />');
+    expect(readWorldGame('', /refworld:game" content="([^"]*)"/.exec(playing)?.[1] ?? null)).toBe(
+      'katamari',
+    );
+    // and no uppercase in it, like everything else a build injects.
+    expect(/refworld:game" content="([^"]*)"/.exec(playing)?.[1]).not.toMatch(/[A-Z]/);
+    // still one document.
+    expect(playing.match(/<title>/g)).toHaveLength(1);
+  });
+
+  it('says nothing about the game for a world without one — meridian included', () => {
+    // THE PROPERTY THIS BRANCH EXISTS FOR (2026-09-15 user ruling): meridian
+    // and the public world must be byte-identical and behaviourally unchanged
+    // by the katamari, so their html may not mention it and a typo may not
+    // inject it either.
+    expect(out).not.toContain('refworld:game');
+    for (const game of [undefined, 'none', 'katamar', '']) {
+      const quiet = applyWorldToHtml(INDEX, {
+        name: 'meridian',
+        host: 'ref-world-meridian.vercel.app',
+        residents: 'none',
+        ...(game === undefined ? {} : { game }),
+        dev: true,
+      });
+      expect(quiet).not.toContain('refworld:game');
+    }
+    // and the whole public page is still the file on disk.
+    expect(applyWorldToHtml(INDEX, null)).toBe(INDEX);
   });
 
   it('says nothing about the style for a world on the shipped look', () => {
@@ -468,6 +569,7 @@ describe('scripts/new-world.mjs — the worlds.json entry is the only file it wr
           residents: 'shipped',
           hatch: 'timer',
           style: 'ink',
+          game: 'none',
           dev: false,
         },
       });
@@ -486,6 +588,7 @@ describe('scripts/new-world.mjs — the worlds.json entry is the only file it wr
           residents: 'shipped',
           hatch: 'timer',
           style: 'ink',
+          game: 'none',
           dev: false,
         },
       });
@@ -507,6 +610,7 @@ describe('scripts/new-world.mjs — the worlds.json entry is the only file it wr
           residents: 'none',
           hatch: 'timer',
           style: 'ink',
+          game: 'none',
           dev: false,
         },
       });

@@ -60,6 +60,7 @@ import { sampleDrift } from '../motion/ambient';
 import {
   WATER_BODIES,
   coastOutline,
+  islandMode,
   islandOutline,
   landscapeMode,
   waterOutline,
@@ -431,12 +432,21 @@ export function installWorldMinimap(opts: WorldMinimapOptions): WorldMinimapHand
       // water is the default and land is the shape drawn on it. The border loop
       // is the field, and the clip above is already it, so filling the loop in
       // the water value IS the ocean.
-      traceLoop(ctx, border);
-      ctx.fillStyle = WORLD.neutralMid;
-      ctx.fill();
-      // …and the island back over it in the ground value inside its hairline
-      // coast — the lake island's own treatment, inverted.
-      ring(coastCache, SURFACE.ground);
+      //
+      // …in the KATAMARI world, which is the one the island belongs to
+      // (src/world/game.ts). Read per draw beside the mode and for the same
+      // reason: the projection of the coast is cached either way — the ring is
+      // authored geography and the same on every device forever — and what the
+      // flag decides is whether it is drawn. Elsewhere the map is the flat
+      // field with its lakes on it, exactly as before the island landed.
+      if (islandMode()) {
+        traceLoop(ctx, border);
+        ctx.fillStyle = WORLD.neutralMid;
+        ctx.fill();
+        // …and the island back over it in the ground value inside its hairline
+        // coast — the lake island's own treatment, inverted.
+        ring(coastCache, SURFACE.ground);
+      }
       for (const poly of waterCache) ring(poly, WORLD.neutralMid);
       for (const poly of islandCache) ring(poly, SURFACE.ground);
     }

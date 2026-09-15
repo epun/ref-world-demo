@@ -406,8 +406,14 @@ export function coastInland(x: number, z: number): number {
 }
 
 /** True where the SEA stands: outside the coast grown outward by `pad`.
- * `d > coast(theta) - pad` is the same statement as `inland < pad`. */
+ * `d > coast(theta) - pad` is the same statement as `inland < pad`.
+ *
+ * …and nowhere at all when the island is off (`islandMode`): the coast is the
+ * katamari world's, and without it there is no outside for an ocean to be in.
+ * The ONE place the sea's membership is decided, so `isAuthoredWater`,
+ * `isWater` and everything downstream of them cannot disagree about it. */
 function isSea(x: number, z: number, pad: number): boolean {
+  if (!islandMode()) return false;
   return coastInland(x, z) < pad;
 }
 
@@ -454,6 +460,42 @@ export function setLandscapeMode(mode: LandscapeMode): void {
 /** True when the authored map is the one being read. */
 function mapped(): boolean {
   return activeLandscapeMode === 'landscape';
+}
+
+/**
+ * IS THE ISLAND ON? (2026-09-15 user ruling — see src/world/game.ts.)
+ *
+ * The coast, the sea, the beach and the sea wall above are part of the
+ * KATAMARI world and nothing else. The default branch builds every world's
+ * production deployment at once, so a map that is right for one of them must
+ * not be able to reach meridian or the public world: with this off, every
+ * query in this file answers as if the lobes had never been authored — no
+ * coast, no ocean, no beach `Region`, no sea wall — and the mapped world is
+ * bit for bit the one that shipped before the island landed.
+ *
+ * Module state and OFF by default, exactly like `activeLandscapeMode` and for
+ * the same two reasons: these queries are called from pure helpers all over
+ * the world that take no instance, and the shipped default has to be the
+ * world every deployment already has. `scene.ts`'s `start` turns it on for a
+ * katamari world and nowhere else.
+ *
+ * Determinism is unaffected — explicit state, not a clock or a random: the
+ * same flag always gives the same map.
+ */
+let activeIslandMode = false;
+
+/** True when the island's coast and sea are part of the map being read. */
+export function islandMode(): boolean {
+  return activeIslandMode;
+}
+
+/**
+ * Switch the island on or off. Every query in this file answers for the flag
+ * set here, and callers must rebuild the ground / scatter / water to SEE it
+ * (WorldHandles.setLandscape does all three).
+ */
+export function setIslandMode(on: boolean): void {
+  activeIslandMode = on;
 }
 
 /**
@@ -632,7 +674,10 @@ export function sampleLandscape(x: number, z: number): LandscapeSample {
   // The beach: a linear ramp off the coast, and 0 on any water — the sea's
   // own surface is not a beach, and neither is the lake's (a lake has reeds,
   // which is a different fringe and comes from the shore samples).
-  const beach = wet ? 0 : Math.min(1, Math.max(0, 1 - coastInland(x, z) / BEACH_WIDTH));
+  // …and 0 everywhere with the island off, which is what keeps `region` from
+  // ever reading `beach` on a world without a coast (src/world/game.ts).
+  const beach =
+    wet || !islandMode() ? 0 : Math.min(1, Math.max(0, 1 - coastInland(x, z) / BEACH_WIDTH));
   const region: Region = water
     ? 'water'
     : island
@@ -1195,7 +1240,10 @@ export function waterLevel(body: WaterBody): number {
  * a plane and never a warped sheet.
  */
 export function seaLevel(): number {
-  if (!mapped()) return 0;
+  // …and exactly 0 with the island off too, for the same reason and the same
+  // consumer: there is no ocean on a world without a coast, and the water
+  // renderer still asks because it keeps its hidden sheets seated.
+  if (!mapped() || !islandMode()) return 0;
   return SEA_LEVEL * activeTerrain.elevation;
 }
 
@@ -1245,25 +1293,32 @@ export function terrainHeight(x: number, z: number): number {
     // the land, and every basin below still lands on its own exact number.
     // The coast has its own ramp, WIDER than a lake's — see TERRAIN.coastRamp.
     // Horizontal, so it rides `relief` exactly as the shore ramp does.
-    const coastRamp = TERRAIN.coastRamp * relief;
-    const seaFlat = seaLevel();
-    const seaFloor = seaFlat - TERRAIN.basinDrop * elevation;
-    const inland = coastInland(x, z);
-    if (inland <= 0) {
-      // Off the coast: the floor falls away from the waterline over one more
-      // `shoreRamp` and is flat from there to `farEnd` and beyond — the far
-      // ground ring is sea floor now (src/world/ground.ts).
-      h = seaFlat + (seaFloor - seaFlat) * smoothstep(0, shoreRamp, -inland);
-    } else if (inland < coastRamp) {
-      const t = smoothstep(0, coastRamp, inland);
-      const blended = seaFlat + (h - seaFlat) * t;
-      // The same continuous "never below the water line" guard the basins
-      // carry: the first `basinRim` units of beach hold at the sea's level
-      // where the terraced land would otherwise fall under it, and the guard
-      // releases over the rest of the ramp rather than propping up every low
-      // tier on the island.
-      const rim = 1 - smoothstep(basinRim, coastRamp, inland);
-      h = blended + rim * Math.max(0, seaFlat - blended);
+    //
+    // …and ONLY with the island on (`islandMode`, src/world/game.ts): the
+    // coast belongs to the katamari world, and with it off this whole pass is
+    // skipped so the mapped ground is `terracedLand` and the basins exactly as
+    // it was before the island landed.
+    if (islandMode()) {
+      const coastRamp = TERRAIN.coastRamp * relief;
+      const seaFlat = seaLevel();
+      const seaFloor = seaFlat - TERRAIN.basinDrop * elevation;
+      const inland = coastInland(x, z);
+      if (inland <= 0) {
+        // Off the coast: the floor falls away from the waterline over one more
+        // `shoreRamp` and is flat from there to `farEnd` and beyond — the far
+        // ground ring is sea floor now (src/world/ground.ts).
+        h = seaFlat + (seaFloor - seaFlat) * smoothstep(0, shoreRamp, -inland);
+      } else if (inland < coastRamp) {
+        const t = smoothstep(0, coastRamp, inland);
+        const blended = seaFlat + (h - seaFlat) * t;
+        // The same continuous "never below the water line" guard the basins
+        // carry: the first `basinRim` units of beach hold at the sea's level
+        // where the terraced land would otherwise fall under it, and the guard
+        // releases over the rest of the ramp rather than propping up every low
+        // tier on the island.
+        const rim = 1 - smoothstep(basinRim, coastRamp, inland);
+        h = blended + rim * Math.max(0, seaFlat - blended);
+      }
     }
     for (const body of WATER_BODIES) {
       const dx = x - body.x;
@@ -1501,8 +1556,9 @@ export function waterColliders(): Collider[] {
   // `WATER_COLLIDER_R - WATER_COLLIDER_BITE` out to sea, which is exactly the
   // keep rule the tiling uses, so a wall circle protrudes at most
   // `WATER_COLLIDER_BITE` onto the beach. Only in the landscape mode, like
-  // every other authored body.
-  if (mapped()) {
+  // every other authored body — and only with the island on, because with it
+  // off there is no coast to walk and no ocean to be kept out of.
+  if (mapped() && islandMode()) {
     const poly = coastOutline(COAST_OUTLINE_POINTS * SHORE_WALK_SUBDIVISION);
     const push = WATER_COLLIDER_R - WATER_COLLIDER_BITE;
     let acc = 0;

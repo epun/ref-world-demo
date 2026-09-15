@@ -36,6 +36,8 @@ import {
   seaLevel,
   SEA_LEVEL,
   sampleLandscape,
+  islandMode,
+  setIslandMode,
   setLandscapeMode,
   shoreSamples,
   setTerrainParams,
@@ -139,8 +141,19 @@ function edgePoints(b: Blob, n = 512): [number, number][] {
 /** Every block below this line measures the AUTHORED map, which only exists
  * in the landscape mode. The mode is module state, so it is set once for the
  * file and restored after it. */
-beforeAll(() => setLandscapeMode('landscape'));
-afterAll(() => setLandscapeMode('plain'));
+/* The MAPPED world, island and all. The island is the katamari world's map and
+ * ships OFF (src/world/game.ts, 2026-09-15 user ruling), and the measurements
+ * in this file — the sea floor the far rim rests on above all — were re-taken
+ * against it, so the file switches it on with the mode. The island-OFF parity
+ * block at the bottom turns it back off for itself. */
+beforeAll(() => {
+  setLandscapeMode('landscape');
+  setIslandMode(true);
+});
+afterAll(() => {
+  setLandscapeMode('plain');
+  setIslandMode(false);
+});
 
 describe('landscape — determinism', () => {
   it('samples identically on repeat calls', () => {
@@ -1511,5 +1524,118 @@ describe('landscape — the mode', () => {
     setTerrainParams(shipped);
     expect(terrainParams()).toEqual(shipped);
     expect(Math.abs(steep)).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * THE MAP WITHOUT THE ISLAND — the pre-island world, bit for bit.
+ *
+ * 2026-09-15 user ruling: the katamari is a per-world game (src/world/game.ts)
+ * and the island is its map, so the coast, the sea and the beach may not reach
+ * meridian or the public world. Their world is the MAPPED one — forest, range,
+ * lake, ponds, rolling ground — with no edge to it, which is exactly what this
+ * file measured before the island landed.
+ *
+ * Measured at 2,000 points rather than asserted from the flag, and it is the
+ * mirror of test/world/island.test.ts's own plain-mode block: four properties,
+ * every one of which the island would break if it leaked.
+ */
+describe('landscape — the island off is the map that shipped before it', () => {
+  /** 2,000 points over the whole displaced field, deterministic. */
+  function field(): [number, number][] {
+    const out: [number, number][] = [];
+    // A golden-angle spiral out to the field's own rim: even coverage, no
+    // lattice to alias against the wobble, and the same 2,000 points every run.
+    const phi = Math.PI * (3 - Math.sqrt(5));
+    for (let i = 0; i < 2000; i++) {
+      const r = 200 * Math.sqrt((i + 0.5) / 2000);
+      const th = i * phi;
+      out.push([Math.cos(th) * r, Math.sin(th) * r]);
+    }
+    return out;
+  }
+
+  /** Inside one of the AUTHORED bodies' outer discs — the lake and the four
+   * ponds, which are the only water this world has. */
+  function nearBody(x: number, z: number): boolean {
+    for (const body of WATER_BODIES) {
+      const dx = x - body.x;
+      const dz = z - body.z;
+      if (Math.hypot(dx, dz) < body.r * WOBBLE_MAX + 1) return true;
+    }
+    return false;
+  }
+
+  let islandOn = 0;
+
+  beforeAll(() => {
+    islandOn = waterColliders().length;
+    setIslandMode(false);
+  });
+  afterAll(() => setIslandMode(true));
+
+  it('is off, and says so', () => {
+    expect(islandMode()).toBe(false);
+    expect(landscapeMode()).toBe('landscape');
+  });
+
+  it('holds water only in the lake and the ponds, at 2,000 points', () => {
+    let wet = 0;
+    for (const [x, z] of field()) {
+      if (isWater(x, z)) {
+        // …and nowhere that is not one of the five authored bodies: the sea is
+        // the complement of the coast, so a single wet point out in the open
+        // field would be the ocean leaking through.
+        expect(nearBody(x, z), `water at ${x.toFixed(1)},${z.toFixed(1)}`).toBe(true);
+        wet++;
+      }
+      // The authored map is the only source here, so `isAuthoredWater` has to
+      // agree with it point for point — the renderer builds off that one.
+      expect(isAuthoredWater(x, z)).toBe(isWater(x, z));
+    }
+    // …and the lake and the ponds really are in the sample, so the loop above
+    // is a measurement rather than an empty pass.
+    expect(wet).toBeGreaterThan(20);
+  });
+
+  it('labels no ground a beach, and weights none, at 2,000 points', () => {
+    for (const [x, z] of field()) {
+      const sample = sampleLandscape(x, z);
+      expect(sample.beach, `beach at ${x.toFixed(1)},${z.toFixed(1)}`).toBe(0);
+      expect(sample.region).not.toBe('beach');
+    }
+    // The regions that DO exist are untouched — the negative half.
+    expect(sampleLandscape(FOREST_BLOBS[0]!.x, FOREST_BLOBS[0]!.z).region).toBe('forest');
+    // Off the lake's centre, which is its island (WaterBody.island).
+    expect(sampleLandscape(LAKE.x + LAKE.r * 0.5, LAKE.z).region).toBe('water');
+  });
+
+  it('runs flat to the far field again — no sea floor, no coastal bank', () => {
+    // The pre-island assertion verbatim: the terrain was exactly 0 past
+    // `farEnd`, because the far gate is not scaled by a dial. `Math.abs`
+    // because the fade multiplies a negative height by zero, which is -0.
+    expect(seaLevel()).toBe(0);
+    // `Math.abs` for the same reason it is used in the loop below: the far
+    // fade multiplies by zero, and a negated zero is numerically zero.
+    expect(Math.abs(terrainHeight(0, 190))).toBe(0);
+    for (let a = 0; a < 360; a += 3) {
+      const th = (a / 180) * Math.PI;
+      for (const r of [TERRAIN.farEnd, TERRAIN.farEnd + 20, 400]) {
+        expect(
+          Math.abs(terrainHeight(Math.cos(th) * r, Math.sin(th) * r)),
+          `far field at ${r}`,
+        ).toBe(0);
+      }
+    }
+  });
+
+  it('tiles the lake and the ponds and walls no coast', () => {
+    const cols = waterColliders();
+    // Fewer than with the island on, by the whole coast wall.
+    expect(cols.length).toBeLessThan(islandOn);
+    expect(cols.length).toBeGreaterThan(100);
+    // …and every circle belongs to an authored body rather than to a shore
+    // walked round the edge of the world.
+    for (const c of cols) expect(nearBody(c.x, c.z)).toBe(true);
   });
 });

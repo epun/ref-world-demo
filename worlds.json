@@ -11,6 +11,7 @@
       "residents": "none",
       "hatch": "manual",
       "style": "ghibli",
+      "game": "katamari",
       "dev": true
     }
   }
