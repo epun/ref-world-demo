@@ -91,18 +91,36 @@ export const STICKY: Record<PropKind, StickyProps> = {
     stickiness: 1,
   },
   // ── large ────────────────────────────────────────────────────────────────
-  // 14 is the last twenty seconds. Reachable, and only by a pile.
+  /*
+   * 8 is the last twenty seconds: reachable, and only by a pile.
+   *
+   * IT WAS 14, AND 14 WAS UNREACHABLE. Impact is `speed × radius`, so at the
+   * driven speed of 1.68 u/s a break strength of 14 needs a body radius of
+   * 8.3 — and because `growth` is a cube root, getting a typical 0.9u
+   * creature there takes about 1650 units of absorbed volume, which is some
+   * 490 tree-sized items. Nothing in a demo meets 490 trees, so the whole
+   * `large` tier was decoration and the destruction seam that keys off it was
+   * dead. (The number only became checkable once the units bug in the
+   * manager's impact was fixed — until then NO tier was reachable, so the
+   * ceiling never showed.)
+   *
+   * 8 needs radius 4.8, which is about 90 tree-sized items from a small
+   * creature and far fewer from a large one — and by then the creature is
+   * twice the height of the trees it is eating, which is what "out of
+   * control" should look like. The tiers still escalate strictly: a walk
+   * takes a bush, ~11 trees unlock trees, a real pile unlocks a monolith. [D]
+   */
   monolith: {
     tier: 'large',
     rooted: true,
-    breakStrength: 14,
+    breakStrength: 8,
     attachmentStrength: 10,
     stickiness: 1,
   },
   waterTower: {
     tier: 'large',
     rooted: true,
-    breakStrength: 14,
+    breakStrength: 8,
     attachmentStrength: 10,
     stickiness: 1,
   },

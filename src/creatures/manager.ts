@@ -1760,7 +1760,13 @@ export function createCreatureManager(
     return stuck.kind ? STICKY[stuck.kind].attachmentStrength : STICKY.tree.attachmentStrength;
   }
 
-  /** One hard contact this frame, kept for the sticky pass. Reused. */
+  /**
+   * Each alive body's speed as it ENTERED this frame's resolve, by the same
+   * index `onContact` reports. Reused; see the note where it is filled.
+   */
+  const preSpeed: number[] = [];
+
+  /** One contact this frame, kept for the sticky pass. Reused. */
   interface ContactReport {
     slot: Slot;
     collider: Collider;
@@ -1847,7 +1853,9 @@ export function createCreatureManager(
         // `CONTACT_PAD`, because nothing in this world is ever exactly
         // touching: every solver here holds a skin.
         if (d > reach + item.r + CONTACT_PAD) continue;
-        const speed = Math.hypot(entry.body.vx, entry.body.vz) / 1000;
+        // Units: world units per second, raw off the body — see the note on
+        // `preSpeed` in the resolve block.
+        const speed = Math.hypot(entry.body.vx, entry.body.vz);
         const outcome = decideContact({
           itemR: item.r,
           rooted: false,
@@ -2446,6 +2454,34 @@ export function createCreatureManager(
             // scatter's wind path. That sway is the soft-body read.
             const soft = deepestSoftOverlap(root.position.x, root.position.z, bodyR, near);
             if (soft) {
+              /*
+               * A SOFT PROP REPORTS A CONTACT TOO, and it has to, because the
+               * bush is the only soft kind in the world and it is the one
+               * `STICKY` gives the deliberately tiny `breakStrength` of 0.6 —
+               * "a walk into it". But `resolveHard` skips soft colliders by
+               * construction and `onContact` hangs off it, so a bush could
+               * never be knocked out of the ground at all: the rule was
+               * written and the code could not reach it.
+               *
+               * The normal is OUTWARD, the same convention `resolveHard`
+               * uses: from the prop toward the creature, so the sticky pass
+               * negates it to shove the bush the way it was pushed.
+               *
+               * The speed reported is the UNDAMPED one, before
+               * `SOFT_SPEED_FACTOR` is applied below. What the bush is worth
+               * is the effort the creature walked in with — the damping is
+               * the bush resisting, and charging it for its own resistance
+               * would make a bush harder to flatten the better it worked.
+               */
+              const intent = Math.hypot(vx, vz);
+              if (soft.key !== undefined && bodiesOf() !== null && intent > 0) {
+                const dx = root.position.x - soft.x;
+                const dz = root.position.z - soft.z;
+                const d = Math.hypot(dx, dz);
+                const nx = d > 1e-9 ? dx / d : 1;
+                const nz = d > 1e-9 ? dz / d : 0;
+                contacts.push({ slot, collider: soft, nx, nz, speed: intent });
+              }
               vx *= SOFT_SPEED_FACTOR;
               vz *= SOFT_SPEED_FACTOR;
               const speed = Math.hypot(vx, vz);
@@ -2574,6 +2610,30 @@ export function createCreatureManager(
          * more than once.
          */
         const physicsOn = bodiesOf() !== null;
+        /*
+         * HOW FAST IT WAS GOING WHEN IT HIT THE THING — captured BEFORE the
+         * step, and that is the whole point.
+         *
+         * `resolveHard` drops the inward component of the velocity as part of
+         * the correction and reports the contact AFTER doing so, so a
+         * creature walking straight into a trunk has almost no velocity left
+         * by the time the listener is called. Reading `body.vx` there scored
+         * every head-on collision — the only kind that matters here — as
+         * nearly nothing, so nothing was ever hard enough to knock a prop
+         * over. What a contact is worth is the speed the creature carried
+         * into it.
+         *
+         * UNITS: `stepCreatures` integrates `x += vx * subDt / 1000` with
+         * `subDt` in MILLISECONDS, so `vx` is world units per SECOND — the
+         * same scale as `MAX_SPEED` (1.2), which is how the soft-body nudge
+         * below reads it. `impactOf` takes it raw.
+         */
+        if (physicsOn) {
+          preSpeed.length = 0;
+          for (const entry of aliveScratch) {
+            preSpeed.push(Math.hypot(entry.body.vx, entry.body.vz));
+          }
+        }
         stepCreatures(stepBodies, dt, gatherNear, {
           hardPadFrac: HARD_PAD_FRAC,
           ...(physicsOn ? { skipKind: 'rock' } : {}),
@@ -2582,7 +2642,7 @@ export function createCreatureManager(
                 onContact: (index, collider, nx, nz): void => {
                   const entry = aliveScratch[index];
                   if (!entry || entry.held) return;
-                  const speed = Math.hypot(entry.body.vx, entry.body.vz) / 1000;
+                  const speed = preSpeed[index] ?? 0;
                   for (const seen of contacts) {
                     if (seen.slot !== entry.slot || seen.collider !== collider) continue;
                     if (speed > seen.speed) {

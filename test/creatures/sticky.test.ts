@@ -25,6 +25,7 @@ import {
   STICKY,
   type Quat,
 } from '../../src/creatures/sticky';
+import { MAX_SPEED } from '../../src/behavior/agent';
 import { MOTION } from '../../src/taste/tokens';
 import { PROP_KINDS } from '../../src/world/props';
 
@@ -152,6 +153,77 @@ describe('decideContact', () => {
     const large = at('tree', impactOf(speed, 6), 1, 6);
     expect(small).toBe('block');
     expect(large).toBe('loose');
+  });
+});
+
+describe('the table against the speeds the world actually reaches', () => {
+  /*
+   * ANCHORED TO `MAX_SPEED`, not to numbers picked here.
+   *
+   * Every other test in this file hands `impactOf` its arguments directly, so
+   * all of them passed throughout the life of a units bug in the manager that
+   * made real impacts a thousand times too small (see the end-to-end test in
+   * test/creatures/manager.test.ts). These tie the thresholds to the one
+   * speed constant the world is built on and to the radii the generator
+   * actually produces (~0.9 for a small drawing, ~2.7 for a large one), so a
+   * table that drifted out of reach of a walking creature would fail here.
+   */
+  const SMALL_BODY = 0.9;
+  const LARGE_BODY = 2.7;
+
+  it('lets a small creature at full tilt flatten a bush and nothing more', () => {
+    const impact = impactOf(MAX_SPEED, SMALL_BODY);
+    expect(impact).toBeGreaterThan(STICKY.bush.breakStrength);
+    expect(impact).toBeLessThan(STICKY.tree.breakStrength);
+    expect(impact).toBeLessThan(STICKY.monolith.breakStrength);
+  });
+
+  it('puts a tree out of reach until the creature has grown into one', () => {
+    expect(impactOf(MAX_SPEED, SMALL_BODY)).toBeLessThan(STICKY.tree.breakStrength);
+    expect(impactOf(MAX_SPEED, LARGE_BODY * 1.3)).toBeGreaterThan(STICKY.tree.breakStrength);
+  });
+
+  it('keeps the large tier out of reach until there is a real pile', () => {
+    // Nothing unaugmented touches it…
+    expect(impactOf(MAX_SPEED, LARGE_BODY)).toBeLessThan(STICKY.monolith.breakStrength);
+  });
+
+  it('but the large tier IS reachable — a threshold no pile meets is dead', () => {
+    /*
+     * The assertion that was missing, and the one that caught a break
+     * strength of 14: at the driven speed that needed a body radius of 8.3,
+     * which is ~490 tree-sized items through a cube-root growth curve.
+     * Nothing in a demo meets 490 trees, so the tier — and the destruction
+     * seam that keys off `tier === 'large'` — was decoration.
+     *
+     * A hundred items is a busy but real evening. If a future tuning puts
+     * the large tier back out of that reach, this fails and says so.
+     */
+    const driven = MAX_SPEED * 1.4; // × the wander multiplier the world ships
+    const pile = Array.from({ length: 100 }, () => 1.5 ** 3); // tree-sized
+    const bodyR = SMALL_BODY * growth(SMALL_BODY, pile);
+    expect(impactOf(driven, bodyR)).toBeGreaterThan(STICKY.monolith.breakStrength);
+    // And still strictly above the medium tier, so the ordering is real
+    // rather than everything collapsing into one threshold.
+    expect(STICKY.monolith.breakStrength).toBeGreaterThan(STICKY.tree.breakStrength);
+  });
+
+  it('unlocks the medium tier at about a dozen trees, not a hundred', () => {
+    const driven = MAX_SPEED * 1.4;
+    const dozen = Array.from({ length: 12 }, () => 1.5 ** 3);
+    const bodyR = SMALL_BODY * growth(SMALL_BODY, dozen);
+    expect(impactOf(driven, bodyR)).toBeGreaterThan(STICKY.tree.breakStrength);
+  });
+
+  it('sheds a stone off a small carrier at speed, and holds a monolith on', () => {
+    const impact = impactOf(MAX_SPEED, SMALL_BODY);
+    // Under a stone's attachment strength at a walk — a pile does not fall
+    // apart just for moving.
+    expect(shouldDrop(STICKY.rock, impact)).toBe(false);
+    // And well over it once there is a real pile swinging around.
+    expect(shouldDrop(STICKY.rock, impactOf(MAX_SPEED, LARGE_BODY * 1.5))).toBe(true);
+    // A monolith, once won, stays won: nothing a pile can reach shakes it off.
+    expect(shouldDrop(STICKY.monolith, impactOf(MAX_SPEED, LARGE_BODY * 1.5))).toBe(false);
   });
 });
 

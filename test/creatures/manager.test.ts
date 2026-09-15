@@ -30,9 +30,10 @@ import {
   spawnSpot,
   SPAWN_RADIUS,
 } from '../../src/creatures/manager';
-import { BehaviorAgent } from '../../src/behavior/agent';
+import { BehaviorAgent, MAX_SPEED } from '../../src/behavior/agent';
 import { generatedName } from '../../src/creatures/naming';
 import { MOTION } from '../../src/taste/tokens';
+import { STICKY } from '../../src/creatures/sticky';
 import { EGG_RADIUS } from '../../src/egg/egg';
 import type { Collider } from '../../src/physics/colliders';
 import type { WorldHandles } from '../../src/world/scene';
@@ -1507,5 +1508,202 @@ describe('sticky — one creature carrying another', () => {
     ).not.toThrow();
     expect(seen).toEqual([]);
     manager.clearAll();
+  });
+});
+
+describe('sticky — impact is in world units per SECOND', () => {
+  /*
+   * THE UNITS BUG THIS PINS, because it was silent and total.
+   *
+   * `stepCreatures` integrates `x += vx * subDt / 1000` with `subDt` in
+   * MILLISECONDS, so a body's `vx` is world units per SECOND — the same scale
+   * as `MAX_SPEED` (1.2), which is how the soft-body nudge has always read it.
+   * The sticky pass divided by 1000 on the way into `impactOf`, making every
+   * impact a thousand times too small: a creature walking at 1.2 u/s with a
+   * ~0.9u body scored 0.001 instead of 1.1, so `breakStrength` 0.6 for a bush
+   * and 4 for a tree were unreachable, NO rooted prop could ever come out of
+   * the ground, and `shouldDrop` never fired once. Every unit test passed —
+   * they all handed `impactOf` its numbers directly.
+   *
+   * So this one goes end to end: a real creature, driven at a real speed,
+   * into a real collider, and the assertion is on what `PropBodies` is asked
+   * to do about it.
+   */
+
+  /** `PropBodies`, recording what the sticky pass asks of it. */
+  function recordingBodies(): {
+    api: unknown;
+    loosened: string[];
+    bumped: { key: string; strength: number }[];
+  } {
+    const loosened: string[] = [];
+    const bumped: { key: string; strength: number }[] = [];
+    return {
+      loosened,
+      bumped,
+      api: {
+        items: () => [],
+        onSettle: () => {},
+        take: () => true,
+        restore: () => null,
+        bump: (key: string, _dx: number, _dz: number, strength: number) => {
+          bumped.push({ key, strength });
+        },
+        loosen: (key: string) => {
+          loosened.push(key);
+          // A plausible item, so the observer's `loose` fires too.
+          return { key, kind: 'bush', variant: 0, scale: 1, x: 0, z: 0, r: 1 };
+        },
+        itemByCollider: () => undefined,
+        sync: () => {},
+        update: () => {},
+        dispose: () => {},
+      },
+    };
+  }
+
+  /**
+   * One creature, driven straight at one collider.
+   *
+   * The collider is added AFTER the spawn on purpose: `clearSpawnSpot`
+   * projects an egg clear of every hard prop, so a prop present at spawn
+   * would simply push the creature away from the thing under test.
+   */
+  function walkInto(c: Omit<Collider, 'x' | 'z'> & { gap: number }): {
+    loosened: string[];
+    bumped: { key: string; strength: number }[];
+    impact: number;
+  } {
+    const recorded = recordingBodies();
+    const colliders: Collider[] = [];
+    let version = 1;
+    const world = {
+      scene: new Scene(),
+      cameraRig: { frameAt: () => {} },
+      shadows: {
+        addShadow: () => ({ setPosition: () => {}, setRadius: () => {} }),
+        removeShadow: () => {},
+      },
+      bodies: () => recorded.api,
+      physics: () => null,
+      enablePhysics: async () => {},
+      scatter: {
+        colliders: () => colliders,
+        collidersVersion: () => version,
+        positions: () => [],
+        nudge: () => {},
+      },
+    } as unknown as WorldHandles;
+
+    const manager = createCreatureManager(world, {
+      autoHatch: false,
+      surface: FLAT_SURFACE,
+      observer: {
+        egg: () => {},
+        hatch: () => {},
+        retire: () => {},
+        emote: () => {},
+        stick: () => {},
+        drop: () => {},
+        loose: () => {},
+        settle: () => {},
+      },
+    });
+    // Exactly MAX_SPEED under the thumb, so the arithmetic in the assertions
+    // is the arithmetic in the code rather than times the wander multiplier.
+    manager.setWanderSpeed(1);
+    manager.spawn('walker', snowman, { hatchMs: 60_000, grown: true });
+
+    const at = manager.positionOf('walker')!;
+    const bodyR = manager.positions().find((p) => p.kind === 'character')!.r;
+    // Already overlapping, straight ahead on +x: the first resolve corrects
+    // and the contact is reported on the same frame.
+    colliders.push({ ...c, x: at.x + bodyR + c.r - c.gap, z: at.z });
+    version++;
+
+    manager.drive('walker', { x: 1, z: 0, mag: 1 });
+    manager.update(16, 1000);
+    return {
+      loosened: recorded.loosened,
+      bumped: recorded.bumped,
+      impact: MAX_SPEED * bodyR,
+    };
+  }
+
+  it('a walk into a bush is enough to take it out of the ground', () => {
+    // A bush's collider is SOFT — it is the only soft prop kind — so it never
+    // reaches `resolveHard` and could not be reported through `onContact` at
+    // all. Its 0.6 break strength existed and was unreachable.
+    const { loosened, bumped, impact } = walkInto({
+      r: 1,
+      hard: false,
+      kind: 'bush',
+      key: 'bush:0:9.00:9.00',
+      gap: 0.2,
+    });
+    // ~1.1, comfortably over the bush's 0.6 — and a thousand times the
+    // 0.0011 the bug produced.
+    expect(impact).toBeGreaterThan(STICKY.bush.breakStrength);
+    expect(impact).toBeLessThan(STICKY.tree.breakStrength);
+    expect(loosened).toEqual(['bush:0:9.00:9.00']);
+    // And it was shoved in the direction it was walked into, always —
+    // whatever the verdict.
+    expect(bumped.map((b) => b.key)).toContain('bush:0:9.00:9.00');
+    expect(bumped[0]!.strength).toBeGreaterThan(0);
+    expect(bumped[0]!.strength).toBeLessThanOrEqual(1);
+  });
+
+  it('the same walk into a tree bends it and leaves it standing', () => {
+    const { loosened, bumped, impact } = walkInto({
+      r: 1,
+      hard: true,
+      kind: 'tree',
+      key: 'tree:0:9.00:9.00',
+      gap: 0.2,
+    });
+    expect(impact).toBeLessThan(STICKY.tree.breakStrength);
+    // Rooted and unyielding at this speed: the recoil spring is kicked, the
+    // tree stays in the ground. A creature has to grow before a forest is
+    // food, which is the arc the brief asks for.
+    expect(loosened).toEqual([]);
+    expect(bumped.map((b) => b.key)).toEqual(['tree:0:9.00:9.00']);
+    expect(bumped[0]!.strength).toBeGreaterThan(0);
+  });
+
+  it('reports the speed carried INTO the contact, not what survived it', () => {
+    // `resolveHard` drops the inward velocity as part of the correction and
+    // reports afterwards, so reading the body's velocity in the listener
+    // scored a head-on hit — the only kind that matters — as ~0, and nothing
+    // was ever bumped hard at all. A tree hit head-on must still register.
+    const { bumped } = walkInto({
+      r: 1,
+      hard: true,
+      kind: 'tree',
+      key: 'tree:0:1.00:1.00',
+      gap: 0.2,
+    });
+    // impact ≈ 1.1, and the bump strength is min(1, impact / 6) ≈ 0.18. Zero
+    // is what the bug gave, so anything clearly above it is the fix.
+    expect(bumped[0]!.strength).toBeGreaterThan(0.1);
+  });
+
+  it('a building is bumped and never loosened, whatever walks into it', () => {
+    const { loosened, bumped } = walkInto({
+      r: 2,
+      hard: true,
+      kind: 'building',
+      key: 'building:0:9.00:9.00',
+      gap: 0.2,
+    });
+    expect(loosened).toEqual([]);
+    expect(bumped.map((b) => b.key)).toEqual(['building:0:9.00:9.00']);
+  });
+
+  it('ignores a collider with no placement key — the landscape water rings', () => {
+    // Water blocks a creature and is not a prop. Nothing to bump, nothing to
+    // loosen, and no crash for asking.
+    const { loosened, bumped } = walkInto({ r: 1, hard: true, gap: 0.2 });
+    expect(loosened).toEqual([]);
+    expect(bumped).toEqual([]);
   });
 });
