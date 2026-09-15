@@ -47,6 +47,31 @@ export interface StickyProps {
   rooted: boolean;
   /** Impact at which it comes out of the ground. `Infinity` never does. */
   breakStrength: number;
+  /**
+   * Impact at which it BREAKS instead of coming out of the ground whole —
+   * the `large` tier's second threshold (user brief, 2026-09-15: *"large
+   * props break into major chunks that become independent debris"*).
+   *
+   * Absent means never: a bush that a big enough pile hit would otherwise
+   * shatter, and a bush has no chunks. Where it is present it must be
+   * ABOVE `breakStrength`, so the escalation still reads — a monolith comes
+   * out of the ground first and only comes apart when hit harder than that.
+   * **[D]**
+   */
+  shatterStrength?: number;
+  /**
+   * Cumulative impact thresholds for a STAGED collapse (user brief: *"impact
+   * 1 → cracks, impact 2 → a section removed, impact 3 → collapse into
+   * rubble"*). Three numbers, ascending; `stageFor` reads them.
+   *
+   * Cumulative and not per-hit, which is the whole point: a building
+   * "initially resists, and can become loose after repeated impact". The
+   * accumulator lives on the host (src/creatures/manager.ts) because damage
+   * is a decision and decisions travel as events.
+   *
+   * Absent means the kind has no stages — it breaks whole, or not at all.
+   */
+  stages?: readonly [number, number, number];
   /** Impact at which a carrier sheds it again (see `shouldDrop`). */
   attachmentStrength: number;
   /** 0 means it never sticks to anything, whatever its size. */
@@ -110,10 +135,19 @@ export const STICKY: Record<PropKind, StickyProps> = {
    * control" should look like. The tiers still escalate strictly: a walk
    * takes a bush, ~11 trees unlock trees, a real pile unlocks a monolith. [D]
    */
+  /*
+   * 11 is `breakStrength` plus a bit under half again: a pile that can lift
+   * a monolith out of the ground is not yet a pile that can burst one, and
+   * the gap is where the escalation lives. Impact is `speed x radius`, so at
+   * the driven speed it is the difference between a radius of 4.8 and 6.5 —
+   * a few dozen more trees, which is the last stretch of the twenty seconds.
+   * **[D]**
+   */
   monolith: {
     tier: 'large',
     rooted: true,
     breakStrength: 8,
+    shatterStrength: 11,
     attachmentStrength: 10,
     stickiness: 1,
   },
@@ -121,17 +155,29 @@ export const STICKY: Record<PropKind, StickyProps> = {
     tier: 'large',
     rooted: true,
     breakStrength: 8,
+    shatterStrength: 11,
     attachmentStrength: 10,
     stickiness: 1,
   },
   // ── building ─────────────────────────────────────────────────────────────
-  // `Infinity` FOR NOW, and the seam is deliberate: the destruction task
-  // replaces these two numbers with staged collapse, and until it does a
-  // building is the thing you cannot eat rather than a thing that vanishes.
+  /*
+   * `breakStrength` STAYS `Infinity` and that is not a leftover: a building
+   * never comes out of the ground whole. What it does instead is wear down —
+   * `stages` are cumulative impact, so the first hit cracks it, the second
+   * takes a section out and the third brings it down as rubble, which is the
+   * brief's own three beats. Nothing about a building is ever carried.
+   *
+   * 6 / 9 / 12 against the monolith's 8: one impact that would have freed a
+   * monolith only cracks a building, and the whole collapse costs about half
+   * again what bursting a monolith does. A mountain is the level itself —
+   * 9 / 13 / 18, roughly half again the building's — and it comes down over
+   * its own lump stages (src/world/chunks.ts `LUMP_TIERS`). **[D]**
+   */
   building: {
     tier: 'building',
     rooted: true,
     breakStrength: Infinity,
+    stages: [6, 9, 12],
     attachmentStrength: 10,
     stickiness: 1,
   },
@@ -139,6 +185,7 @@ export const STICKY: Record<PropKind, StickyProps> = {
     tier: 'building',
     rooted: true,
     breakStrength: Infinity,
+    stages: [9, 13, 18],
     attachmentStrength: 10,
     stickiness: 1,
   },
@@ -232,7 +279,51 @@ export function impactOf(speed: number, carrierR: number): number {
 }
 
 /** What one creature-meets-item contact does. */
-export type Outcome = 'block' | 'loose' | 'shove' | 'stick';
+export type Outcome = 'block' | 'loose' | 'shove' | 'stick' | 'break';
+
+/**
+ * Which stage of a staged collapse `accumulated` damage has reached.
+ *
+ * 0 is intact, 3 is rubble. Inclusive at each threshold, the same
+ * `>=` `decideContact` uses for coming out of the ground, and monotonic in
+ * the accumulator — the host adds impact to a running total and asks this,
+ * so a stage can only ever advance.
+ *
+ * A kind with no `stages` is never staged and answers 0 for any damage at
+ * all: a tree does not crack, it comes down.
+ */
+export function stageFor(props: StickyProps, accumulated: number): 0 | 1 | 2 | 3 {
+  const stages = props.stages;
+  if (!stages || !(accumulated > 0)) return 0;
+  if (accumulated >= stages[2]) return 3;
+  if (accumulated >= stages[1]) return 2;
+  if (accumulated >= stages[0]) return 1;
+  return 0;
+}
+
+/**
+ * [D] How long a piece of debris lives, by the tier of the prop it broke off.
+ *
+ * > User brief, 2026-09-15: *"debris is lightweight, has LIFETIMES (small
+ * > 5–10 s, medium 10–20 s, important persistent), never grows without
+ * > bound."*
+ *
+ * From the tokens, never a literal (CLAUDE.md): two ambient beats is 7.3s,
+ * which sits in the brief's small band, and four is 14.6s, which sits in its
+ * medium one. A `large` or `building` chunk is the brief's "important" case
+ * and persists — a fallen section of a building is a landmark of what
+ * happened in the room, and a piece that faded out from under a pile
+ * halfway through collecting it would be the world taking something back.
+ *
+ * The CAP is what actually bounds the count (`DEBRIS_CAP` in
+ * src/world/device.ts, oldest-first): a lifetime keeps the field tidy, a cap
+ * keeps a phone alive.
+ */
+export function debrisLifetimeMs(props: StickyProps): number {
+  if (props.tier === 'small') return MOTION.ambientMs * 2;
+  if (props.tier === 'medium') return MOTION.ambientMs * 4;
+  return Infinity;
+}
 
 /**
  * The whole game, in four lines.
@@ -254,6 +345,17 @@ export function decideContact(a: {
   carrierR: number;
 }): Outcome {
   if (a.rooted) {
+    /*
+     * BREAK TAKES PRECEDENCE over coming out of the ground, and it is asked
+     * first for exactly that reason: `shatterStrength` is above
+     * `breakStrength`, so an impact that reaches it has already passed the
+     * looser test and a prop hit that hard should come apart rather than be
+     * lifted whole onto a pile. It is asked even of a kind whose
+     * `breakStrength` is `Infinity`, because those two thresholds are
+     * independent — though nothing in `STICKY` sets both today.
+     */
+    const shatter = a.props.shatterStrength;
+    if (shatter !== undefined && Number.isFinite(shatter) && a.impact >= shatter) return 'break';
     // `Infinity` means NEVER, and it has to mean that even when it is asked
     // about an infinite impact — `Infinity >= Infinity` is true, which would
     // have handed a building to anyone who managed to overflow a speed.

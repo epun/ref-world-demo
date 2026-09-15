@@ -405,3 +405,175 @@ describe('prop bodies', () => {
     expect(remaining).toBe(1);
   });
 });
+
+/**
+ * The impact seam and the adopted body (src/world/rocks.ts `onImpact`,
+ * `adopt`) — against a REAL rapier world, because what is under test is
+ * whether rapier reports these contacts at all.
+ *
+ * Its own world and its own bodies: the suite above ends by disposing.
+ *
+ * WHY THIS SEAM EXISTS. The katamari rules could only knock a prop loose off
+ * the pure resolve's own hard contacts, which is a creature walking into a
+ * trunk. Everything else the destruction brief asks for is one thing hitting
+ * another thing — a stuck bench swinging into a sign, a rolling stone, a
+ * falling chunk — and those contacts live in rapier and nowhere else.
+ */
+describe('the impact seam', () => {
+  let physics: PhysicsWorld;
+  let bodies: PropBodies;
+  let stub: ReturnType<typeof stubScatter>;
+  const seen: { a: string; b: string; kinds: string; rooted: string; speed: number }[] = [];
+
+  beforeAll(async () => {
+    physics = await createPhysicsWorld(flat, FIELD);
+    stub = stubScatter();
+    bodies = createPropBodies({
+      physics,
+      scatter: stub.scatter,
+      surface: flat,
+      wind: stub.scatter.windField(),
+    });
+    bodies.onImpact((a, b, speed) => {
+      seen.push({
+        a: a.key,
+        b: b.key,
+        kinds: `${a.kind}|${b.kind}`,
+        rooted: `${a.rooted}|${b.rooted}`,
+        speed,
+      });
+    });
+  });
+
+  it('names both sides of a stone meeting a standing tree, with the closing speed', () => {
+    const treeKey = placementKey(TREES[0]!);
+    const item = bodies.items().find((i) => i.x === 0)!;
+    seen.length = 0;
+    item.body.setTranslation({ x: 0, y: 0.5, z: 0 }, true);
+    item.body.setLinvel({ x: 9, y: 0, z: 0 }, true);
+    item.awake = true;
+    for (let i = 0; i < 300; i++) bodies.update(1000 / 60, 1000 + i * (1000 / 60));
+
+    const hit = seen.find((s) => s.a === treeKey || s.b === treeKey);
+    expect(hit).toBeTruthy();
+    // The stone is the unrooted side and the tree is the rooted one, which
+    // is the field the whole routing turns on (a fallen tree and a standing
+    // one are the same kind).
+    expect(hit!.rooted.split('|').sort()).toEqual(['false', 'true']);
+    expect(hit!.kinds).toContain('tree');
+    expect(hit!.kinds).toContain('rock');
+    expect(hit!.speed).toBeGreaterThan(0);
+  });
+
+  it('never reports the terrain, or two standing props', () => {
+    // Every contact reported so far had at most one rooted side, and a body
+    // resting on the heightfield produced nothing nameable at all.
+    expect(seen.length).toBeGreaterThan(0);
+    for (const report of seen) {
+      expect(report.rooted).not.toBe('true|true');
+    }
+  });
+
+  it('names a foreign collider the way the creature layer registered it', () => {
+    // The creature layer owns its own bodies and is the only thing that
+    // knows which slot a ball belongs to, so it hands the seam a side and
+    // this module reads it at the moment of the contact.
+    const rapier = physics.rapier;
+    const body = physics.addRigidBody(
+      rapier.RigidBodyDesc.dynamic().setTranslation(0, 1.2, 6).setLinearDamping(0),
+      rapier.ColliderDesc.ball(0.5)
+        .setRestitution(0)
+        .setActiveEvents(rapier.ActiveEvents.COLLISION_EVENTS),
+    );
+    const handle = body.collider(0).handle;
+    const side = { key: 'slot-a', kind: 'creature' as const, r: 0.5, x: 0, z: 6, rooted: false };
+    bodies.registerForeign(handle, side);
+    // Straight at the second tree, which stands at (-4, 6).
+    body.setLinvel({ x: -9, y: 0, z: 0 }, true);
+    seen.length = 0;
+    for (let i = 0; i < 240; i++) bodies.update(1000 / 60, 9000 + i * (1000 / 60));
+    const hit = seen.find((s) => s.a === 'slot-a' || s.b === 'slot-a');
+    expect(hit).toBeTruthy();
+    expect(hit!.kinds).toContain('creature');
+    expect(hit!.kinds).toContain('tree');
+
+    // Unregistered, it is nobody's again — and a contact nothing can name is
+    // not reported, because a rule that fired on "something unknown" would
+    // fire on the ground.
+    bodies.unregisterForeign(handle);
+    body.setTranslation({ x: 0, y: 1.2, z: 6 }, true);
+    body.setLinvel({ x: -9, y: 0, z: 0 }, true);
+    seen.length = 0;
+    for (let i = 0; i < 240; i++) bodies.update(1000 / 60, 20000 + i * (1000 / 60));
+    expect(seen.some((s) => s.a === 'slot-a' || s.b === 'slot-a')).toBe(false);
+    physics.remove(body);
+  });
+
+  it('adopts a fragment, keeps it through a rebuild, and lets it go again', () => {
+    const rapier = physics.rapier;
+    const key = 'monolith:0:5.00:5.00#2';
+    const body = physics.addRigidBody(
+      rapier.RigidBodyDesc.dynamic().setTranslation(5, 2, 5),
+      rapier.ColliderDesc.ball(0.4).setRestitution(0),
+    );
+    bodies.adopt({
+      key,
+      kind: 'monolith',
+      variant: 0,
+      scale: 1,
+      meshDrawn: true,
+      x: 5,
+      z: 5,
+      r: 0.4,
+      body,
+      colliderHandle: body.collider(0).handle,
+      awake: true,
+    });
+    // In `items()`, so the katamari pickup pass can see it.
+    expect(bodies.items().some((i) => i.key === key)).toBe(true);
+    expect(bodies.itemByCollider(body.collider(0).handle)?.key).toBe(key);
+    // A fragment never was a placement, so its absence from the scatter's
+    // refs must not be read as "this placement is gone".
+    stub.rebuild();
+    bodies.sync();
+    expect(bodies.items().some((i) => i.key === key)).toBe(true);
+    // And released without hiding anything — there is no placement to hide.
+    const takenBefore = stub.taken().size;
+    expect(bodies.release(key)).toBe(true);
+    expect(bodies.items().some((i) => i.key === key)).toBe(false);
+    expect(stub.taken().size).toBe(takenBefore);
+    expect(bodies.release(key)).toBe(false);
+  });
+
+  it('take() on a fragment reports it and leaves the scatter alone', () => {
+    const rapier = physics.rapier;
+    const key = 'monolith:0:7.00:7.00#1';
+    const body = physics.addRigidBody(
+      rapier.RigidBodyDesc.dynamic().setTranslation(7, 2, 7),
+      rapier.ColliderDesc.ball(0.4).setRestitution(0),
+    );
+    const took: string[] = [];
+    bodies.onTake((k) => took.push(k));
+    bodies.adopt({
+      key,
+      kind: 'monolith',
+      variant: 0,
+      scale: 1,
+      meshDrawn: true,
+      x: 7,
+      z: 7,
+      r: 0.4,
+      body,
+      colliderHandle: body.collider(0).handle,
+      awake: true,
+    });
+    const takenBefore = stub.taken().size;
+    expect(bodies.take(key)).toBe(true);
+    expect(took).toEqual([key]);
+    // The debris layer hears it and stops tracking the piece — the clump
+    // owns its mesh from here.
+    expect(bodies.items().some((i) => i.key === key)).toBe(false);
+    // …and no scatter rebuild for a key the scatter never drew.
+    expect(stub.taken().size).toBe(takenBefore);
+  });
+});

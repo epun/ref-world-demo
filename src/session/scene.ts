@@ -30,11 +30,13 @@
  */
 
 import type {
+  CrackEvent,
   DropEvent,
   LooseEvent,
   PaintEvent,
   SessionEvent,
   SettleEvent,
+  ShatterEvent,
   StickEvent,
   WorldEvent,
 } from './events';
@@ -72,7 +74,15 @@ export type SceneWorldField = (typeof SCENE_WORLD_FIELDS)[number];
  * outbox and the same topic and into the same store as a dab of the brush —
  * no second channel, which is the rule this layer exists to keep.
  */
-export type SceneEvent = WorldEvent | PaintEvent | StickEvent | DropEvent | LooseEvent | SettleEvent;
+export type SceneEvent =
+  | WorldEvent
+  | PaintEvent
+  | StickEvent
+  | DropEvent
+  | LooseEvent
+  | SettleEvent
+  | CrackEvent
+  | ShatterEvent;
 
 /**
  * Ceiling on stored events, past which the list is compacted rather than
@@ -156,12 +166,19 @@ export const SCENE_MAX_PATCH_TEXELS = 4096;
  * [D] An ITEM id: a placement key (`rock:2:11.50:-8.25`), a dev-dropped
  * rock (`spawn:3`), or a creature riding another (`creature:<drawer id>`).
  *
+ * …or, since the destruction runtime (2026-09-15), ONE CHUNK of a broken
+ * prop: `<placementKey>#<chunkIndex>`, which is why `#` is in the character
+ * class. A chunk is addressed rather than described because the parent's
+ * `kind`/`variant`/`scale` on the `stick` (or the `shatter`) is what a page
+ * builds it from — the index alone picks it out of
+ * `buildChunkGeometries()` (src/world/chunks.ts).
+ *
  * Shape-checked and bounded, never interpreted — the receiving page looks
  * it up and does nothing when it finds nothing, exactly as the layer id
  * below is checked here and resolved there. The bound is what stops a
  * public broker posting a megabyte of key.
  */
-const ITEM_ID = /^[A-Za-z0-9][A-Za-z0-9:.\-_]{0,63}$/;
+const ITEM_ID = /^[A-Za-z0-9][A-Za-z0-9:.\-_#]{0,63}$/;
 
 /** [D] Bound on a clump-local offset, world units. A pile is a few units
  * across and the biggest creature in the world is not twenty; 64 is the
@@ -225,7 +242,13 @@ export function isSceneEvent(event: SessionEvent): event is SceneEvent {
     event.k === 'stick' ||
     event.k === 'drop' ||
     event.k === 'loose' ||
-    event.k === 'settle'
+    event.k === 'settle' ||
+    // The two destruction states (2026-09-15). Same argument as the four
+    // above and a shorter one: a building that is rubble on the projection
+    // and standing on a phone is two worlds, and nothing about which hit
+    // took it down is re-derivable off a rapier world that runs on one page.
+    event.k === 'crack' ||
+    event.k === 'shatter'
   ) {
     return true;
   }
@@ -456,6 +479,56 @@ function readSettleScene(rec: Record<string, unknown>, t: number): SceneEvent | 
 }
 
 /**
+ * A stage, as a whole number in 1..3.
+ *
+ * REFUSED rather than clamped, unlike a dab's geometry: a stage is an
+ * enumeration, and "the closest stage to 7" is not a thing a building can be
+ * in. 0 is refused too — nothing announces that a prop is intact.
+ */
+function readCrackScene(rec: Record<string, unknown>, t: number): SceneEvent | null {
+  const key = itemId(rec['item']);
+  if (key === null) return null;
+  const stage = num(rec['stage']);
+  if (stage === null || !Number.isInteger(stage) || stage < 1 || stage > 3) return null;
+  return { k: 'crack', t, item: key, stage };
+}
+
+/**
+ * A shatter: the prop's pose and the mesh hints, whole or not at all.
+ *
+ * The same rule `readStickScene` holds for its hints, and for the same
+ * reason — half a description would draw a monolith's chunks at a bush's
+ * scale on a page that never had the placement. Here they are not optional
+ * at all: a shatter with no kind is a page with nothing to build.
+ */
+function readShatterScene(rec: Record<string, unknown>, t: number): SceneEvent | null {
+  const key = itemId(rec['item']);
+  if (key === null) return null;
+  const at = ground(rec);
+  if (!at) return null;
+  const kind = rec['kind'];
+  if (typeof kind !== 'string' || kind.length === 0 || kind.length > MAX_KIND) return null;
+  const variant = num(rec['variant']);
+  if (variant === null || !Number.isInteger(variant) || variant < 0 || variant > 255) return null;
+  const scale = num(rec['scale']);
+  if (scale === null || !(scale > 0)) return null;
+  const rotY = num(rec['rotY']);
+  if (rotY === null) return null;
+  return {
+    k: 'shatter',
+    t,
+    item: key,
+    x: at.x,
+    z: at.z,
+    // An angle, so wrapped — the same call `yaw` gets, for the same reason.
+    rotY: wrapAngle(rotY),
+    scale: Math.min(scale, MAX_OFFSET),
+    kind,
+    variant,
+  };
+}
+
+/**
  * Narrow an arbitrary parsed value to a scene event, clamped.
  *
  * Returns null for anything malformed rather than a half-read event: a dab
@@ -473,6 +546,8 @@ export function readSceneEvent(value: unknown): SceneEvent | null {
   if (rec['k'] === 'drop') return readDropScene(rec, t);
   if (rec['k'] === 'loose') return readLooseScene(rec, t);
   if (rec['k'] === 'settle') return readSettleScene(rec, t);
+  if (rec['k'] === 'crack') return readCrackScene(rec, t);
+  if (rec['k'] === 'shatter') return readShatterScene(rec, t);
   return null;
 }
 
@@ -523,9 +598,17 @@ export function readSceneBatch(value: unknown, cap: number = MAX_SCENE_BATCH): S
  *   ended up, and every earlier answer to that question was superseded by
  *   the body coming to rest again. The same argument as a dial.
  *
+ *   A LATER CRACK REPLACES AN EARLIER ONE for the same item, and a SHATTER
+ *   SWALLOWS every crack of its item. Both follow from the events being
+ *   states rather than blows: `stage: 3` already says the building is
+ *   rubble, and replaying `stage: 1` on the way to it would draw cracks onto
+ *   a heap. A shatter is the terminal state of a prop, so nothing before it
+ *   about that prop is worth applying.
+ *
  * `loose` events all survive: each one is the moment a different prop left
  * the ground, and a page that missed one would still be drawing that prop
- * standing where the scatter put it.
+ * standing where the scatter put it. Every `shatter` survives too, for the
+ * same reason — one per prop that came apart.
  *
  * Relative order is preserved for everything that survives, because a
  * flatten depends on the ground it is flattening and a landscape switch
@@ -543,6 +626,9 @@ export function compactScene(events: readonly SceneEvent[]): SceneEvent[] {
   const seen = new Set<string>();
   /** Carrier+item pairs whose LATER drop is still looking for its stick. */
   const dropped = new Map<string, number>();
+  /** Items already known to have SHATTERED later in the list — walking
+   * backwards, a shatter is seen before the cracks it swallows. */
+  const shattered = new Set<string>();
   const out: SceneEvent[] = [];
   // Backwards, so "the last one wins" is simply "the first one seen".
   for (let i = events.length - 1; i >= 0; i--) {
@@ -567,6 +653,21 @@ export function compactScene(events: readonly SceneEvent[]): SceneEvent[] {
         dropped.set(key, pending - 1);
         continue;
       }
+      out.push(event);
+      continue;
+    }
+    if (event.k === 'shatter') {
+      shattered.add(event.item);
+      out.push(event);
+      continue;
+    }
+    if (event.k === 'crack') {
+      // The prop came apart later: every stage it passed through on the way
+      // is a picture of a building that no longer exists.
+      if (shattered.has(event.item)) continue;
+      const key = `crack:${event.item}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
       out.push(event);
       continue;
     }

@@ -98,9 +98,14 @@ const DRAWING = {
   confidence: 1,
 };
 
-describe('schema version 3', () => {
-  it('bumped, because a v2 reader refuses an unrecognised kind outright', () => {
-    expect(SESSION_SCHEMA_VERSION).toBe(3);
+describe('schema version', () => {
+  it('bumped past the version that did not know these kinds', () => {
+    // 3 was the katamari four; 4 is `crack` and `shatter` on top of them
+    // (the destruction runtime, 2026-09-15). The argument for each bump is
+    // the same: `isEvent` refuses an unrecognised `k` and one bad event
+    // fails the WHOLE file, so the version is what tells "junk" from
+    // "newer".
+    expect(SESSION_SCHEMA_VERSION).toBe(4);
   });
 
   it('round-trips all four kinds through the log', () => {
@@ -116,12 +121,12 @@ describe('schema version 3', () => {
     rec.settle(settle);
     const parsed = parseSessionLog(rec.toJson());
     expect(parsed).not.toBeNull();
-    expect(parsed!.version).toBe(3);
+    expect(parsed!.version).toBe(4);
     expect(parsed!.events.map((e) => e.k)).toEqual(['stick', 'drop', 'loose', 'settle']);
   });
 
-  it('still reads a v1 and a v2 log exactly as it always did', () => {
-    for (const version of [1, 2]) {
+  it('still reads a v1, v2 and v3 log exactly as it always did', () => {
+    for (const version of [1, 2, 3]) {
       const log = JSON.stringify({
         schema: 'refworld.session',
         version,

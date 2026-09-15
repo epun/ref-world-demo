@@ -65,6 +65,15 @@ function stubBodies(): unknown {
   return {
     items: () => [],
     onSettle: () => {},
+    // The destruction seams (src/world/rocks.ts). A stub that lacked them
+    // would throw the moment the manager wired the impact seam — which is
+    // every simulating frame.
+    onImpact: () => {},
+    onTake: () => {},
+    registerForeign: () => {},
+    unregisterForeign: () => {},
+    adopt: () => {},
+    release: () => false,
     take: () => true,
     restore: () => null,
     loosen: () => null,
@@ -468,6 +477,8 @@ describe('who is still an egg — the manual hatch, synced (user ask, 2026-09-10
         drop: () => {},
         loose: () => {},
         settle: () => {},
+        crack: () => {},
+        shatter: () => {},
       },
     });
     manager.spawn('a', snowman, { hatchMs: 60_000 });
@@ -1303,6 +1314,8 @@ describe('sticky — one creature carrying another', () => {
         drop: (r) => seen.push({ kind: 'drop', id: r.id, item: r.item }),
         loose: (item) => seen.push({ kind: 'loose', id: '', item }),
         settle: (r) => seen.push({ kind: 'settle', id: '', item: r.item }),
+        crack: (r) => seen.push({ kind: 'crack', id: '', item: r.item }),
+        shatter: (r) => seen.push({ kind: 'shatter', id: '', item: r.item }),
       },
     });
     // Grown, so there is no shell to break and no hatch timing in the way.
@@ -1544,6 +1557,12 @@ describe('sticky — impact is in world units per SECOND', () => {
       api: {
         items: () => [],
         onSettle: () => {},
+        onImpact: () => {},
+        onTake: () => {},
+        registerForeign: () => {},
+        unregisterForeign: () => {},
+        adopt: () => {},
+        release: () => false,
         take: () => true,
         restore: () => null,
         bump: (key: string, _dx: number, _dz: number, strength: number) => {
@@ -1607,6 +1626,8 @@ describe('sticky — impact is in world units per SECOND', () => {
         drop: () => {},
         loose: () => {},
         settle: () => {},
+        crack: () => {},
+        shatter: () => {},
       },
     });
     // Exactly MAX_SPEED under the thumb, so the arithmetic in the assertions

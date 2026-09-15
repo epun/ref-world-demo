@@ -38,11 +38,13 @@ import {
   type HatchCause,
   type KeepAction,
   type KeepSource,
+  type CrackEvent,
   type DropEvent,
   type OperatorAction,
   type PaintEvent,
   type RetireCause,
   type SettleEvent,
+  type ShatterEvent,
   type StickEvent,
   type SessionConfig,
   type SessionEvent,
@@ -132,6 +134,10 @@ export type StickRecord = Omit<StickEvent, 't' | 'k'>;
 export type DropRecord = Omit<DropEvent, 't' | 'k'>;
 export type SettleRecord = Omit<SettleEvent, 't' | 'k'>;
 
+/** The two destruction states, minus the offset the recorder stamps. */
+export type ShatterRecord = Omit<ShatterEvent, 't' | 'k'>;
+export type CrackRecord = Omit<CrackEvent, 't' | 'k'>;
+
 /** A steering intent on the ground plane. `null` (or `mag: 0`) is the
  * release — the same shape `CreatureManager.drive` takes. */
 export interface DriveVector {
@@ -175,6 +181,16 @@ export interface SessionRecorder {
   drop(record: DropRecord): void;
   loose(item: string, x: number, z: number): void;
   settle(record: SettleRecord): void;
+  /**
+   * The two destruction states (src/world/wreck.ts, docs/SESSION.md §6).
+   *
+   * Discrete like the four above, and rarer: a prop cracks at most three
+   * times in its life and shatters exactly once. Nothing about the DAMAGE
+   * that got it there is recorded — that is a running total on the host and
+   * nobody else has a use for it (src/session/events.ts `CrackEvent`).
+   */
+  crack(record: CrackRecord): void;
+  shatter(record: ShatterRecord): void;
   /** Live view of the events — do not mutate. */
   events(): readonly SessionEvent[];
   count(): number;
@@ -368,6 +384,20 @@ export function createSessionRecorder(opts: RecorderOptions): SessionRecorder {
         qy: round6(record.qy),
         qz: round6(record.qz),
         qw: round6(record.qw),
+      });
+    },
+    crack(record: CrackRecord): void {
+      push({ ...record, k: 'crack', t: stamp() });
+    },
+    shatter(record: ShatterRecord): void {
+      push({
+        ...record,
+        k: 'shatter',
+        t: stamp(),
+        x: round3(record.x),
+        z: round3(record.z),
+        rotY: round6(record.rotY),
+        scale: round3(record.scale),
       });
     },
     events: () => events,

@@ -13,7 +13,7 @@ import { createEnvironment, type Environment } from './environment';
 import { GrainPass } from './grain';
 import { createGround, FIELD_SIZE } from './ground';
 import { createPhysicsWorld, type PhysicsWorld } from '../physics/world';
-import { deviceTier } from './device';
+import { deviceTier, type DeviceTier } from './device';
 import { createPropBodies, type PropBodies } from './rocks';
 import { InkPass } from './ink';
 import { createLighting } from './lighting';
@@ -180,6 +180,15 @@ export interface WorldHandles {
    * `onPhysicsReady`, and a consumer that finds null must not assume it is
    * merely early: on a viewer it stays null for the life of the page.
    */
+  /**
+   * What kind of screen this is (src/world/device.ts).
+   *
+   * Read ONCE, here, when the renderer is built — the pixel-ratio cap needs
+   * it and so does the debris ceiling (`DEBRIS_CAP`), and two inline media
+   * queries is how those two answers get to disagree. Exposed rather than
+   * re-queried by the caller for exactly that reason.
+   */
+  readonly tier: DeviceTier;
   physics(): PhysicsWorld | null;
   /** Loose rocks, fixed prop bodies and the tree recoil
    * (src/world/rocks.ts). Null until, and unless, physics is enabled. */
@@ -620,6 +629,7 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
     setSoloDrag: (enabled: boolean): void => {
       soloDrag = enabled;
     },
+    tier,
     physics: (): PhysicsWorld | null => physics,
     bodies: (): PropBodies | null => bodies,
     enablePhysics,

@@ -18,9 +18,11 @@
 import type { StrokeList } from '../shape/types';
 import type { DrawingSource, EmoteSource, HatchCause, OperatorAction, RetireCause } from './events';
 import type {
+  CrackRecord,
   DropRecord,
   SessionRecorder,
   SettleRecord,
+  ShatterRecord,
   StickRecord,
 } from './recorder';
 
@@ -61,6 +63,9 @@ export interface CreatureObserverShape {
   drop(record: DropRecord): void;
   loose(item: string, x: number, z: number): void;
   settle(record: SettleRecord): void;
+  /** …and the two destruction states, on the same terms. */
+  crack(record: CrackRecord): void;
+  shatter(record: ShatterRecord): void;
 }
 
 export interface GateRecorderOptions {
@@ -110,5 +115,7 @@ export function recordCreatures(recorder: SessionRecorder): CreatureObserverShap
     drop: (record) => recorder.drop(record),
     loose: (item, x, z) => recorder.loose(item, x, z),
     settle: (record) => recorder.settle(record),
+    crack: (record) => recorder.crack(record),
+    shatter: (record) => recorder.shatter(record),
   };
 }

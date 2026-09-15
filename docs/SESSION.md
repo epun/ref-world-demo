@@ -43,7 +43,7 @@ One json object: a header, then a flat array of events.
 ```jsonc
 {
   "schema": "refworld.session",
-  "version": 3,
+  "version": 4,
   "epoch": "w1x9k2j",          // the world session id src/main.ts mints
   "room": "xkcd",
   "startedAt": "2026-08-18T09:14:02.115Z",   // the ONE wall clock in the file
@@ -82,6 +82,8 @@ the log, so the log is always schedulable.
 | `drop` | `id`, `item`, `x`, `z`, `qx…qw` | creature `id` shed `item`, which is now loose at `x`, `z`. Rate-limited on the host to one per carrier per `MOTION.tertiaryMs` — a pile that shed on every contact would unravel in a frame |
 | `loose` | `item`, `x`, `z` | a rooted prop was knocked out of the ground. **No creature id**: a tree comes out on its own account, and which something hit it is not a thing anybody replays. No mesh hints either — the placement key already spells out kind and variant |
 | `settle` | `item`, `x`, `z`, `qx…qw` | a loose body came to rest here |
+| `crack` | `item`, `stage` | a staged prop (`building`, `mountain`) has reached this stage of its collapse: `1` cracked, `2` a section gone, `3` rubble. A STATE and not a blow — absolute, so a page that missed the first two hits still ends up looking at the same ruin. The cumulative damage that produced it is a running total on the host and is not in the log at all |
+| `shatter` | `item`, `x`, `z`, `rotY`, `scale`, `kind`, `variant` | a `large` prop (`monolith`, `waterTower`) came apart into all of its chunks at once. The pose and the mesh hints travel because the placement is hidden the moment it is decided, and a page that never had it drawn builds the chunk set from the event alone (`buildChunkGeometries()`) |
 
 ### the two thinned kinds
 
@@ -129,6 +131,23 @@ per-frame dump wearing an event's clothes:
   `src/world/rocks.ts` fires it on the one frame a body that had been **moving** goes
   to sleep, only past `SETTLE_REPORT_MIN_MOVE` (0.5u, [D]) and at most once per item
   per `MOTION.secondaryMs`. A field of four hundred sleeping stones records nothing.
+
+- **`crack` and `shatter`** are neither thinned nor positions of anything that
+  moves: a prop cracks at most three times in its life and shatters exactly
+  once. The pieces they leave behind are **local** — the brief's own split,
+  *"the server syncs only destruction states and major transforms; secondary
+  debris is local"* — so a collapse is one event and not forty. The fragments
+  that come to matter travel anyway: one coming to rest is a `settle`, and one
+  a creature picks up is a `stick`.
+
+**An `item` is one of four shapes**, and the string is what says which: a
+placement key (`rock:2:11.50:-8.25` — `src/world/scatter.ts` `placementKey`), a
+dev-dropped rock (`spawn:3`), a creature riding another (`creature:<id>`), or —
+since the destruction runtime — ONE CHUNK of a broken prop,
+`<placementKey>#<chunkIndex>`. A chunk is addressed rather than described: the
+parent's `kind`/`variant`/`scale` on the event is what a page builds it from,
+and the index picks the piece out of `buildChunkGeometries()`
+(`src/world/chunks.ts`).
 
 Both still hold the rule the format is built on: an idle world records nothing,
 and nothing in the file is a per-frame sample of anything.
@@ -371,6 +390,15 @@ and a serverless handler alike.
 | `world` with `field: terrain` (`kind` is `elevation` \| `tierStep` \| `relief`) | every other kind: `drawing`, `egg`, `hatch`, `drive`, `keep`, `operator` … |
 | `paint` — every dab, `{ tool: 'clear' }`, and `{ tool: 'patch' }` (an undo) | |
 | `stick`, `drop`, `loose`, `settle` — the katamari four | |
+| `crack`, `shatter` — the two destruction states | |
+
+**The two destruction states ride with them** (2026-09-15) and on exactly the same
+argument: a building that is rubble on the projection and standing on somebody's phone
+is two worlds, and what took it down is a running total of impacts on a rapier
+simulation that exists on one page. The door **refuses** a stage that is not a whole
+1, 2 or 3 rather than clamping it — a stage is an enumeration, and there is no closest
+stage to seven — and refuses a `shatter` that is missing any of its pose or its mesh
+hints, for the same reason it refuses half a `stick`'s description.
 
 **The katamari four are the first CREATURE kinds in the scene layer**, and the rule
 until 2026-09-15 was "the ground, not the cast". They do not break it. `stick`,
@@ -431,6 +459,11 @@ becoming a megabyte on arrival. Two rules, neither of which reorders anything:
 - **a settle keeps only its last value, per item** — it is where the thing ended
   up, and every earlier answer was superseded by the body coming to rest again.
   Every `loose` survives: each one is a different prop leaving the ground.
+- **a crack keeps only its last value, per item**, and **a shatter swallows every
+  crack of its own item.** Both follow from the events being states: `stage: 3`
+  already says the building is rubble, and replaying `stage: 1` on the way to it
+  would draw cracks onto a heap. Every `shatter` survives — one per prop that came
+  apart — and the clear buries these two as it buries the katamari four.
 
 Everything that survives keeps its order, because a flatten depends on the
 ground it is flattening and a landscape switch decides what a dab lands on.
