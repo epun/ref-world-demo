@@ -15,6 +15,7 @@
     "relay:dev": "tsx src/net/devRelay.ts"
   },
   "dependencies": {
+    "@dimforge/rapier3d-compat": "^0.14.0",
     "@upstash/redis": "^1.38.2",
     "envpaint": "file:vendor/envpaint-0.1.0.tgz",
     "three": "0.180.0"
