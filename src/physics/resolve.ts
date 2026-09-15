@@ -73,6 +73,40 @@ export const MAX_STEP_TRAVEL = 0.25;
  * far beyond peak creature speed × the 250ms dt clamp. */
 export const MAX_SUBSTEPS = 16;
 
+/**
+ * The two things a caller can ask of one hard resolve beyond the geometry.
+ * Both are pure: a filter and a report, neither of them a force.
+ */
+export interface HardOptions {
+  /**
+   * Ignore every collider published by this prop kind.
+   *
+   * What it is for: once rapier is simulating (src/physics/world.ts) every
+   * scattered `rock` is a DYNAMIC rigid body, and the creature's kinematic
+   * circle meets it through the solver instead. Its old footprint circle is
+   * still in `scatter.colliders()` — one spatial index for everything, by
+   * design — so without this filter a creature would be pushed out of a
+   * stone the solver has already moved somewhere else.
+   */
+  skipKind?: string;
+  /**
+   * Called once per HARD CORRECTION, with the collider that caused it and
+   * the outward contact normal.
+   *
+   * Reporting, not resolving: the sweep's arithmetic is identical with and
+   * without a listener. It exists because the creature layer needs to know
+   * WHICH prop it just ran into — to flinch a tree's recoil spring, and to
+   * decide whether the tree came out of the ground
+   * (src/creatures/sticky.ts). Recovering that from positions afterwards
+   * would be re-deriving a contact the sweep already had in hand.
+   *
+   * May fire more than once for the same collider in one call — corner
+   * pockets sweep more than once (RESOLVE_PASSES) — so a listener that
+   * cares takes the strongest, not the last.
+   */
+  onContact?(collider: Collider, nx: number, nz: number): void;
+}
+
 /** A moving circle: position (world x/z) + ground velocity (units/s). */
 export interface KinematicBody {
   x: number;
@@ -109,14 +143,19 @@ export function resolveHard(
   nearby: readonly Collider[],
   passes: number = RESOLVE_PASSES,
   hardPadFrac = 0,
+  opts: HardOptions = {},
 ): boolean {
   let touched = false;
+  const skipKind = opts.skipKind;
+  const onContact = opts.onContact;
   const maxPasses = Math.max(passes, RESOLVE_PASSES_MAX);
   const pad = 1 + Math.max(0, hardPadFrac);
   for (let pass = 0; pass < maxPasses; pass++) {
     let corrected = false;
     for (const c of nearby) {
       if (!c.hard) continue;
+      // A kind the caller has handed to a real solver (see HardOptions).
+      if (skipKind !== undefined && c.kind === skipKind) continue;
       const dx = body.x - c.x;
       const dz = body.z - c.z;
       const rr = r + c.r * pad;
@@ -139,6 +178,11 @@ export function resolveHard(
       }
       corrected = true;
       touched = true;
+      // The report (see HardOptions). AFTER the correction, so a listener
+      // reading the body sees where it ended up, and with the OUTWARD
+      // normal — the caller negates it to get the direction the prop was
+      // pushed in.
+      onContact?.(c, nx, nz);
     }
     if (!corrected) break;
   }
@@ -273,6 +317,17 @@ export interface StepOptions {
   passes?: number;
   /** Fractional inflation of hard collider radii (see resolveHard). */
   hardPadFrac?: number;
+  /** Ignore this prop kind's footprint circles — see HardOptions. */
+  skipKind?: string;
+  /**
+   * Every hard correction, by BODY INDEX into `bodies` plus the collider
+   * and the outward normal — see HardOptions. Only the integrate-and-
+   * resolve pass reports; the positional backstop after pair separation
+   * does not, because it is re-seating a body a neighbour pushed rather
+   * than a body that walked into something, and counting it would kick a
+   * tree for standing near a crowd.
+   */
+  onContact?(index: number, collider: Collider, nx: number, nz: number): void;
 }
 
 const backstopScratch: KinematicBody = { x: 0, z: 0, vx: 0, vz: 0 };
@@ -306,6 +361,20 @@ export function stepCreatures(
   const maxSub = opts.maxSubsteps ?? MAX_SUBSTEPS;
   const passes = opts.passes ?? SEPARATION_PASSES;
   const pad = opts.hardPadFrac ?? 0;
+  const skip = opts.skipKind;
+  const report = opts.onContact;
+  // One reusable options record and one reusable closure: this runs per
+  // body per substep, and allocating either here would be an allocation
+  // per creature per frame.
+  let reportIndex = 0;
+  const hardOpts: HardOptions = {
+    ...(skip === undefined ? {} : { skipKind: skip }),
+    ...(report === undefined
+      ? {}
+      : { onContact: (c: Collider, nx: number, nz: number) => report(reportIndex, c, nx, nz) }),
+  };
+  // The backstop never reports (see StepOptions.onContact).
+  const backstopOpts: HardOptions = skip === undefined ? {} : { skipKind: skip };
 
   let vMax = 0;
   for (const b of bodies) {
@@ -317,10 +386,12 @@ export function stepCreatures(
   const subDt = dt / steps;
 
   for (let s = 0; s < steps; s++) {
-    for (const b of bodies) {
+    for (let i = 0; i < bodies.length; i++) {
+      const b = bodies[i]!;
       b.x += (b.vx * subDt) / 1000;
       b.z += (b.vz * subDt) / 1000;
-      resolveHard(b, b.r, near(b.x, b.z, b.r), RESOLVE_PASSES, pad);
+      reportIndex = i;
+      resolveHard(b, b.r, near(b.x, b.z, b.r), RESOLVE_PASSES, pad, hardOpts);
     }
     // Pair separation ↔ hard backstop, interleaved to a fixed depth: each
     // round separates every overlapping pair, then re-seats anyone a pair
@@ -341,6 +412,7 @@ export function stepCreatures(
             near(b.x, b.z, b.r),
             RESOLVE_PASSES,
             pad,
+            backstopOpts,
           )
         ) {
           b.x = backstopScratch.x;

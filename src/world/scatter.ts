@@ -1253,12 +1253,21 @@ export function colliderFor(
   if (p.kind === 'cloud') return null;
   const s = p.scale * kindScaleMult;
   if (p.kind === 'bush') {
-    return { x: p.x, z: p.z, r: BUSH_SOFT_FOOTPRINT * s, hard: false };
+    return { x: p.x, z: p.z, r: BUSH_SOFT_FOOTPRINT * s, hard: false, kind: p.kind };
   }
   const trunk = TRUNK_FOOTPRINT[p.kind];
   // Rocks render widened (ROCK_WIDEN_XZ) — the collider follows the visual.
   const widen = p.kind === 'rock' ? ROCK_WIDEN_XZ : 1;
-  return { x: p.x, z: p.z, r: (trunk ?? baseRadius) * s * widen, hard: true };
+  // The kind rides along (src/physics/colliders.ts `Collider.kind`): the
+  // creature layer needs it to ask how sticky a prop is, and to drop rocks
+  // out of the kinematic set once rapier owns them.
+  return {
+    x: p.x,
+    z: p.z,
+    r: (trunk ?? baseRadius) * s * widen,
+    hard: true,
+    kind: p.kind,
+  };
 }
 
 // ── tick geometry ────────────────────────────────────────────────────────────
@@ -2068,6 +2077,20 @@ export interface Scatter {
   /** The authored geometry behind one (kind, variant) — for building a
    * collider hull from the shape actually on screen. */
   geometryFor(kind: PropKind, variant: number): BufferGeometry | null;
+  /**
+   * The albedo this kind's instances are drawn with — the SAME object, not
+   * a copy.
+   *
+   * For `src/world/loose.ts`, which draws a prop that has come out of the
+   * ground as a mesh of its own. Sharing the material is the point: a style
+   * override, a dev tint or the ghibli recolour reaches the fallen tree and
+   * the standing ones in one write, and a fallen tree can never be a
+   * different green from its neighbours. The material already carries the
+   * wind injection and the toon chain; a non-instanced draw on it compiles
+   * one extra program variant without `USE_INSTANCING`, which is one
+   * compile and no per-frame cost.
+   */
+  materialFor(kind: PropKind): MeshStandardMaterial;
   /** Bumps on every `rebuild()`. Cheap to compare once a frame. */
   rebuildVersion(): number;
   /**
@@ -2416,6 +2439,29 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
   // Bake the height-fraction attribute the sway shader bends by. Rigid kinds
   // deliberately never get this attribute (taste guard: tests assert it).
   const swayKindSet = new Set<PropKind>(WIND_SWAY_KINDS);
+
+  /**
+   * The ONE place a kind's albedo is chosen (see `Scatter.materialFor`).
+   *
+   * Pulled out of the rebuild loop because a second consumer arrived:
+   * `src/world/loose.ts` draws a prop that has been knocked out of the
+   * ground as a non-instanced mesh, and it has to be the SAME material
+   * object — so a style override, a dev tint or a ghibli recolour lands on
+   * the fallen tree and the standing ones together, with no code knowing
+   * there are two kinds of draw.
+   */
+  const materialFor = (kind: PropKind): MeshStandardMaterial =>
+    kind === 'cloud'
+      ? cloudMaterial
+      : kind === 'rock' || kind === 'monolith'
+        ? rockMaterial
+        : kind === 'palm'
+          ? palmMaterial
+          : kind === 'cactus'
+            ? cactusMaterial
+            : swayKindSet.has(kind)
+              ? swayMaterial
+              : propMaterial;
   for (const kind of WIND_SWAY_KINDS) {
     for (const variant of geometries.get(kind)!) {
       const position = variant.geometry.getAttribute('position');
@@ -2577,18 +2623,7 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
       for (let v = 0; v < variants.length; v++) {
         const of = visible.filter((p) => p.kind === kind && p.variant === v);
         if (of.length === 0) continue;
-        const material =
-          kind === 'cloud'
-            ? cloudMaterial
-            : kind === 'rock' || kind === 'monolith'
-            ? rockMaterial
-            : kind === 'palm'
-              ? palmMaterial
-              : kind === 'cactus'
-                ? cactusMaterial
-                : swayKindSet.has(kind)
-                  ? swayMaterial
-                  : propMaterial;
+        const material = materialFor(kind);
         const mesh = new InstancedMesh(variants[v]!.geometry, material, of.length);
         // Named so the ghost-panel scene outliner represents environment
         // objects legibly, like it does each created character (user ask).
@@ -2871,6 +2906,7 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
     instanceRefs(kind: PropKind): InstanceRef[] {
       return instanceRefsByKind.get(kind) ?? [];
     },
+    materialFor,
     geometryFor(kind: PropKind, variant: number): BufferGeometry | null {
       return geometries.get(kind)?.[variant]?.geometry ?? null;
     },

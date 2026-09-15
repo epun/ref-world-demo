@@ -115,11 +115,29 @@ export const SPAWN_CAPACITY = 64;
 /** Instance scale of a dropped rock. */
 const SPAWN_SCALE = 0.8;
 
+/**
+ * [D] How far a body has to have travelled from its last reported pose
+ * before coming to rest is worth telling the room about, world units.
+ *
+ * Half a unit is under a small stone's own diameter — below it a body that
+ * woke, twitched and slept again has not moved anywhere anybody can see,
+ * and reporting it would put a packet on a free public broker for nothing.
+ */
+export const SETTLE_REPORT_MIN_MOVE = 0.5;
+
+/** At most one settle report per item per beat. From the tokens, never a
+ * literal: a body that keeps waking and sleeping under a crowd's feet is
+ * one event a beat, not one a frame. */
+export const SETTLE_REPORT_MIN_GAP_MS = MOTION.secondaryMs;
+
 /** A dynamic rock: its body, where it was placed, and how big it reads. */
 export interface LooseItem {
   key: string;
   kind: PropKind;
   variant: number;
+  /** Uniform instance scale it is drawn at — what `src/world/loose.ts`
+   * needs to build a mesh for it on a page that never had it instanced. */
+  scale: number;
   /** Placement x (the identity anchor — the live position is on the body). */
   x: number;
   z: number;
@@ -158,6 +176,47 @@ export interface PropBodies {
    * `BEND_MAX` cap.
    */
   bump(key: string, dirX: number, dirZ: number, strength: number): void;
+  /**
+   * Knock a ROOTED prop out of the ground (src/creatures/sticky.ts decides
+   * when). Its fixed cylinder goes, the scatter stops drawing it
+   * (`setTaken`, the one filter), and a dynamic body built from its own
+   * geometry hull takes its place — so from this moment it is in `items()`
+   * and can be shoved, carried and dropped like a stone.
+   *
+   * Returns the item, or null when that key is not a standing fixed prop
+   * (already loose, already taken, never existed).
+   *
+   * It is NOT drawn by this module afterwards: a loosened tree has no
+   * instance row left, so `src/world/loose.ts` draws it — the same path a
+   * viewer with no physics at all uses, which is how the host and the room
+   * end up looking at the same fallen tree.
+   */
+  loosen(key: string): LooseItem | null;
+  /**
+   * Put a DROPPED item back into the world as a free body at (x, z) with
+   * rotation `q`, the mirror of `take`.
+   *
+   * The seed rather than a key, because by the time a carrier sheds
+   * something the placement it came from may have been rebuilt away — the
+   * clump is the only thing that still knows what the item was.
+   */
+  restore(
+    seed: { key: string; kind: PropKind; variant: number; scale: number; r: number },
+    x: number,
+    z: number,
+    q: { x: number; y: number; z: number; w: number },
+  ): LooseItem | null;
+  /**
+   * Called when a body that had been moving comes to rest.
+   *
+   * The seam the `settle` scene event hangs on, and the reason it is here
+   * rather than in the creature layer: this module is the only thing that
+   * knows a rapier body went to sleep. Rate-limited per item
+   * (SETTLE_REPORT_MIN_GAP_MS) and only for a body that actually moved
+   * (SETTLE_REPORT_MIN_MOVE), so a field of four hundred sleeping stones
+   * reports nothing at all.
+   */
+  onSettle(cb: (item: LooseItem) => void): void;
   dispose(): void;
   // ── the dev surface (src/dev/index.ts `physics` folder) ─────────────────
   /** How many bodies exist, and how many are awake right now. */
@@ -241,10 +300,22 @@ export function createPropBodies(opts: PropBodiesOptions): PropBodies {
   const byCollider = new Map<number, string>();
   /** Swaying props by key, for the recoil rows. */
   const swayRefs = new Map<string, InstanceRef>();
+  /**
+   * EVERY non-rock placement by key, rock or not, hard or not.
+   *
+   * `swayRefs` is the recoil channel and `fixed` is the collider; neither
+   * of them is "what shape is this and how big is it drawn", which is what
+   * `loosen` needs to build a hull and what the creature layer needs to
+   * describe the item to the rest of the room.
+   */
+  const propRefs = new Map<string, InstanceRef>();
   /** Live recoil springs — only struck trees are iterated. */
   const recoils = new Map<string, Recoil>();
   /** Placements a creature has carried off. */
   const takenKeys = new Set<string>();
+  /** Per item: where its rest was last reported, and when. */
+  const settleState = new Map<string, { x: number; z: number; atMs: number }>();
+  const settleListeners: ((item: LooseItem) => void)[] = [];
 
   const itemList: LooseItem[] = [];
   let itemsDirty = true;
@@ -324,6 +395,7 @@ export function createPropBodies(opts: PropBodiesOptions): PropBodies {
       key: ref.key,
       kind: 'rock',
       variant: p.variant,
+      scale: ref.scale,
       x: p.x,
       z: p.z,
       r: ref.radius,
@@ -397,6 +469,7 @@ export function createPropBodies(opts: PropBodiesOptions): PropBodies {
     const survivors: InstanceRef[] = [];
     rockRefs.clear();
     swayRefs.clear();
+    propRefs.clear();
 
     for (const kind of PROP_KINDS) {
       for (const ref of scatter.instanceRefs(kind)) {
@@ -407,6 +480,7 @@ export function createPropBodies(opts: PropBodiesOptions): PropBodies {
           else createRock(ref);
           continue;
         }
+        propRefs.set(ref.key, ref);
         // Swaying kinds carry the recoil row whether or not they are hard.
         if (ref.mesh.geometry.getAttribute('aBend')) swayRefs.set(ref.key, ref);
         const footprintR = hardFootprint(ref);
@@ -439,7 +513,12 @@ export function createPropBodies(opts: PropBodiesOptions): PropBodies {
 
     for (const [key, item] of rocks) {
       // Spawned rocks are not placements — they survive every rebuild.
-      if (seenRocks.has(key) || key.startsWith('spawn')) continue;
+      // Neither is a LOOSENED prop or a dropped item: the scatter has been
+      // told to stop drawing those (`takenKeys`), so they are absent from
+      // `instanceRefs` on purpose and a rebuild must not read that absence
+      // as "this placement is gone" and delete the body under a tree that
+      // is lying in the field.
+      if (seenRocks.has(key) || key.startsWith('spawn') || takenKeys.has(key)) continue;
       removeBody(item.body, item.colliderHandle);
       rocks.delete(key);
       rockState.delete(key);
@@ -507,6 +586,100 @@ export function createPropBodies(opts: PropBodiesOptions): PropBodies {
     bump(propKey, v.x, v.z, Math.min(1, speed / 6));
   };
 
+  /**
+   * A free body built from a placement's own geometry, at (x, y, z).
+   *
+   * The rock path, reused: the hull of the shape actually on screen so the
+   * thing beds down on a face, restitution 0, contact events on. Shared by
+   * `loosen` (a prop coming out of the ground) and `restore` (an item a
+   * carrier shed), which differ only in what they take away first.
+   */
+  const createFreeBody = (
+    kind: PropKind,
+    variant: number,
+    scaleX: number,
+    scaleY: number,
+    scaleZ: number,
+    radius: number,
+    x: number,
+    y: number,
+    z: number,
+    rotation: { x: number; y: number; z: number; w: number },
+  ): RapierRigidBody => {
+    const geometry = scatter.geometryFor(kind, variant);
+    return physics.addRigidBody(
+      rapier.RigidBodyDesc.dynamic()
+        .setTranslation(x, y, z)
+        .setRotation(rotation)
+        .setLinearDamping(ROCK_LINEAR_DAMPING)
+        .setAngularDamping(ROCK_ANGULAR_DAMPING)
+        .setCanSleep(true),
+      rockCollider(geometry, scaleX, scaleY, scaleZ, radius),
+    );
+  };
+
+  const loosen = (key: string): LooseItem | null => {
+    if (rocks.has(key) || takenKeys.has(key)) return null;
+    const ref = propRefs.get(key);
+    if (!ref) return null;
+    const prop = fixed.get(key);
+    readInstance(ref);
+    const spawnX = pos.x;
+    const spawnZ = pos.z;
+    // Lifted by its own footprint before the hull goes in: the instance sits
+    // with its ORIGIN on the ground (that is how the scatter seats it), and a
+    // hull whose points run from 0 upward, dropped in at ground level, starts
+    // the frame intersecting the terrain collider. Half its own reach is the
+    // cheapest lift that is provably clear, and the height itself comes off
+    // the seam (PLAN §7.2) — never a constant.
+    const lift = Math.max(ref.radius, 0.25);
+    const spawnY = surface.sampleHeight(spawnX, spawnZ) + lift;
+    if (prop) {
+      removeBody(prop.body, prop.colliderHandle);
+      fixed.delete(key);
+    }
+    const body = createFreeBody(
+      ref.placement.kind as PropKind,
+      ref.placement.variant,
+      scl.x,
+      scl.y,
+      scl.z,
+      ref.radius,
+      spawnX,
+      spawnY,
+      spawnZ,
+      { x: quat.x, y: quat.y, z: quat.z, w: quat.w },
+    );
+    const handle = handleOf(body);
+    byCollider.set(handle, key);
+    const item: LooseItem = {
+      key,
+      kind: ref.placement.kind as PropKind,
+      variant: ref.placement.variant,
+      scale: ref.scale,
+      x: ref.placement.x,
+      z: ref.placement.z,
+      r: ref.radius,
+      body,
+      colliderHandle: handle,
+      awake: true,
+    };
+    rocks.set(key, item);
+    // No instance row: `src/world/loose.ts` draws it from here, on this page
+    // and on every other one. `landed` is false so the settle damping only
+    // kicks in once it has come down.
+    rockState.set(key, { landed: false, damped: false, scl: scl.clone() });
+    itemsDirty = true;
+    // The scatter stops drawing the standing version — the SAME filter a
+    // pickup uses, so there is one way for a prop to stop being scenery.
+    takenKeys.add(key);
+    scatter.setTaken(new Set(takenKeys));
+    // `setTaken` rebuilds, which invalidates every ref this module holds.
+    // The loop calls `sync` on the next version bump; until then the refs
+    // for the survivors are stale, and this key is not among them.
+    return item;
+  };
+
   const writeRock = (item: LooseItem): void => {
     const ref = rockRefs.get(item.key);
     const state = rockState.get(item.key);
@@ -545,6 +718,20 @@ export function createPropBodies(opts: PropBodiesOptions): PropBodies {
     for (const item of rocks.values()) {
       const sleeping = item.body.isSleeping();
       if (sleeping && !item.awake) continue;
+      // The moment a body that had been moving stops: this frame it is
+      // asleep and last frame it was not. The one seam a `settle` event can
+      // hang on (see PropBodies.onSettle) — the alternative is a per-frame
+      // position sample, which the session format forbids outright.
+      if (sleeping && item.awake && settleListeners.length > 0) {
+        const t = item.body.translation();
+        const last = settleState.get(item.key);
+        const moved = last ? Math.hypot(t.x - last.x, t.z - last.z) : Infinity;
+        const aged = !last || nowMs - last.atMs >= SETTLE_REPORT_MIN_GAP_MS;
+        if (moved >= SETTLE_REPORT_MIN_MOVE && aged) {
+          settleState.set(item.key, { x: t.x, z: t.z, atMs: nowMs });
+          for (const cb of settleListeners) cb(item);
+        }
+      }
       item.awake = !sleeping;
       const state = rockState.get(item.key);
       if (!state) continue;
@@ -660,6 +847,58 @@ export function createPropBodies(opts: PropBodiesOptions): PropBodies {
       return true;
     },
     bump,
+    loosen,
+    restore(seed, x, z, q): LooseItem | null {
+      if (rocks.has(seed.key)) return null;
+      const lift = Math.max(seed.r, 0.25);
+      // The seam owns the height a dropped thing appears at, as it owns
+      // every other height in the world (PLAN §7.2).
+      const y = surface.sampleHeight(x, z) + lift;
+      const widen = seed.kind === 'rock' ? ROCK_WIDEN_XZ : 1;
+      const squash = seed.kind === 'rock' ? ROCK_SQUASH_Y : 1;
+      const body = createFreeBody(
+        seed.kind,
+        seed.variant,
+        seed.scale * widen,
+        seed.scale * squash,
+        seed.scale * widen,
+        seed.r,
+        x,
+        y,
+        z,
+        q,
+      );
+      const handle = handleOf(body);
+      byCollider.set(handle, seed.key);
+      const item: LooseItem = {
+        key: seed.key,
+        kind: seed.kind,
+        variant: seed.variant,
+        scale: seed.scale,
+        x,
+        z,
+        r: seed.r,
+        body,
+        colliderHandle: handle,
+        awake: true,
+      };
+      rocks.set(seed.key, item);
+      rockState.set(seed.key, {
+        landed: false,
+        damped: false,
+        scl: new Vector3(seed.scale * widen, seed.scale * squash, seed.scale * widen),
+      });
+      itemsDirty = true;
+      // It stays HIDDEN from the scatter: it is drawn by src/world/loose.ts
+      // from here, which is the one path that works on a page with no
+      // physics in it at all.
+      takenKeys.add(seed.key);
+      scatter.setTaken(new Set(takenKeys));
+      return item;
+    },
+    onSettle(cb): void {
+      settleListeners.push(cb);
+    },
     counts(): { bodies: number; awake: number; springs: number } {
       let awake = 0;
       for (const item of rocks.values()) if (!item.body.isSleeping()) awake++;
@@ -713,6 +952,7 @@ export function createPropBodies(opts: PropBodiesOptions): PropBodies {
         key,
         kind: 'rock',
         variant: 0,
+        scale: SPAWN_SCALE,
         x,
         z,
         r: SPAWN_SCALE * ROCK_WIDEN_XZ,
@@ -747,6 +987,9 @@ export function createPropBodies(opts: PropBodiesOptions): PropBodies {
       rockState.clear();
       rockRefs.clear();
       swayRefs.clear();
+      propRefs.clear();
+      settleState.clear();
+      settleListeners.length = 0;
       byCollider.clear();
       for (const recoil of recoils.values()) {
         recoil.x.dispose();

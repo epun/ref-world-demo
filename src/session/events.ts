@@ -40,8 +40,16 @@ export const SESSION_SCHEMA = 'refworld.session';
  * would refuse it as junk rather than as a newer format. The version says
  * which of those two it is. Reading DOWN still works — a v1 log parses here
  * exactly as it always did.
+ *
+ * 3 — `stick`, `drop`, `loose` and `settle` (2026-09-15, the katamari
+ * rules). The same argument as the v2 bump, for the same reason: these are
+ * additive kinds, but `isEvent` refuses an unrecognised `k` and one bad
+ * event fails the WHOLE file, so a v2 reader handed a log with a pickup in
+ * it would call the file junk rather than call it newer. The version is what
+ * tells those two apart. Reading DOWN is unaffected — a v1 or v2 log parses
+ * here exactly as it always did.
  */
-export const SESSION_SCHEMA_VERSION = 2;
+export const SESSION_SCHEMA_VERSION = 3;
 
 // ── event kinds ─────────────────────────────────────────────────────────────
 
@@ -288,6 +296,94 @@ export interface KeepEvent extends EventBase {
   source: KeepSource;
 }
 
+/**
+ * The four katamari kinds (src/creatures/sticky.ts, docs/SESSION.md §6).
+ *
+ * WHY THEY ARE IN THE LOG AT ALL, when nothing else about a creature's
+ * movement is. The format's whole argument is that positions are DERIVED —
+ * same strokes, same id, same seeded agent, same path (see the header). A
+ * pickup breaks that: it depends on where a stone had rolled to, which
+ * depends on a rapier simulation that is explicitly not bit-identical
+ * across devices (src/world/rocks.ts). So "who is carrying what" cannot be
+ * re-derived, and the one page that simulates has to SAY it.
+ *
+ * Which also makes them the one set of creature kinds that are SCENE events
+ * (src/session/scene.ts): they describe the world every screen has to be
+ * looking at, not this screen's opinion of it.
+ *
+ * `item` addresses a thing three ways, and the shape of the string is what
+ * says which: a placement key (`rock:2:11.50:-8.25` — src/world/scatter.ts
+ * `placementKey`), a dev-dropped rock (`spawn:3`), or a creature riding on
+ * another creature (`creature:<id>`).
+ */
+export interface StickEvent extends EventBase {
+  k: 'stick';
+  /** The carrier — a live creature's spawn id. */
+  id: string;
+  /** What stuck. See the note above on the three forms. */
+  item: string;
+  /** Prop kind and variant, so a viewer that never had this placement drawn
+   * (it was hidden from the scatter the moment it was taken) can build a
+   * mesh for it. Absent for a creature passenger, which already has one. */
+  kind?: string;
+  variant?: number;
+  /** Instance scale of that mesh. */
+  scale?: number;
+  /** Offset in the CLUMP's local frame — where on the pile it sits. */
+  ox: number;
+  oy: number;
+  oz: number;
+  /** …and its rotation there, in the same frame. */
+  qx: number;
+  qy: number;
+  qz: number;
+  qw: number;
+}
+
+/** A carrier shed one item: it is set down loose at x, z. */
+export interface DropEvent extends EventBase {
+  k: 'drop';
+  id: string;
+  item: string;
+  x: number;
+  z: number;
+  qx: number;
+  qy: number;
+  qz: number;
+  qw: number;
+}
+
+/** A rooted prop was knocked out of the ground. On the simulating page it
+ * becomes a dynamic body; everywhere else it becomes a mesh of its own
+ * (src/world/loose.ts), because the scatter has stopped drawing it. */
+export interface LooseEvent extends EventBase {
+  k: 'loose';
+  item: string;
+  x: number;
+  z: number;
+}
+
+/**
+ * A loose body came to rest here.
+ *
+ * The only kind in this file that is a POSITION, and it earns it the same
+ * way `egg` does not: a viewer runs no physics at all (docs/PLAN.md §7.6),
+ * so without this it would have a tree lying wherever the host last told it
+ * and no way to learn where the tree actually stopped. Rate-limited on the
+ * host to one per item per `MOTION.secondaryMs`, and only for an item that
+ * has actually moved — a field of sleeping stones records nothing.
+ */
+export interface SettleEvent extends EventBase {
+  k: 'settle';
+  item: string;
+  x: number;
+  z: number;
+  qx: number;
+  qy: number;
+  qz: number;
+  qw: number;
+}
+
 /** A world-level control an operator changed — weather, time of day, density,
  * grain, paper colour. Discrete samples only: nothing here is read per frame. */
 export interface WorldEvent extends EventBase {
@@ -308,7 +404,11 @@ export type SessionEvent =
   | PaintEvent
   | KeepEvent
   | OperatorEvent
-  | WorldEvent;
+  | WorldEvent
+  | StickEvent
+  | DropEvent
+  | LooseEvent
+  | SettleEvent;
 
 export type SessionEventKind = SessionEvent['k'];
 
@@ -356,6 +456,10 @@ const EVENT_KINDS = new Set<string>([
   'keep',
   'operator',
   'world',
+  'stick',
+  'drop',
+  'loose',
+  'settle',
 ]);
 
 function isStrokeList(value: unknown): value is StrokeList {
@@ -394,6 +498,14 @@ function isEvent(value: unknown): value is SessionEvent {
   if (kind === 'keep') {
     return typeof rec['id'] === 'string' && typeof rec['action'] === 'string';
   }
+  // The katamari kinds are addressed by the ITEM, and two of them by a
+  // carrier as well. `loose` and `settle` carry no creature id at all — a
+  // tree comes out of the ground because something hit it, and which
+  // something is not a thing anybody replays.
+  if (kind === 'stick' || kind === 'drop') {
+    return typeof rec['id'] === 'string' && typeof rec['item'] === 'string';
+  }
+  if (kind === 'loose' || kind === 'settle') return typeof rec['item'] === 'string';
   return typeof rec['id'] === 'string';
 }
 

@@ -24,6 +24,7 @@ export {
   type DrawingEvent,
   type DrawingSource,
   type DriveEvent,
+  type DropEvent,
   type EggEvent,
   type EmoteEvent,
   type EmoteSource,
@@ -42,6 +43,9 @@ export {
   type SessionEventKind,
   type SessionHeader,
   type SessionLog,
+  type SettleEvent,
+  type StickEvent,
+  type LooseEvent,
   type WorldEvent,
 } from './events';
 
@@ -54,7 +58,10 @@ export {
   createSessionRecorder,
   type DriveVector,
   type DrawingRecord,
+  type DropRecord,
   type PaintRecord,
+  type SettleRecord,
+  type StickRecord,
   type RecorderOptions,
   type SessionRecorder,
 } from './recorder';

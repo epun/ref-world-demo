@@ -132,6 +132,18 @@ export interface ShadowHandle {
   /** Move the stamp on the ground plane. Height and tilt are owned by the
    * pass, which samples them from the Surface — a caster never says y. */
   setPosition(x: number, z: number): void;
+  /**
+   * Resize the stamp, re-laying it where it already is.
+   *
+   * For a caster whose footprint CHANGES while it stands there, which
+   * until the katamari rules nothing did: a creature carrying a pile grows
+   * (src/creatures/sticky.ts `growth`), and a shadow that kept the drawn
+   * creature's radius would read as a big creature hovering over a small
+   * mark. Removing and re-adding the stamp would do it too — and would
+   * swap-remove somebody else's matrix for nothing, every frame the pile
+   * changed size.
+   */
+  setRadius(radius: number): void;
 }
 
 interface Stamp {
@@ -306,6 +318,11 @@ export class FlatShadows {
       setPosition: (x: number, z: number): void => {
         stamp.x = x;
         stamp.z = z;
+        this.lay(stamp);
+      },
+      setRadius: (next: number): void => {
+        if (!(next > 0) || next === stamp.radius) return;
+        stamp.radius = next;
         this.lay(stamp);
       },
     };

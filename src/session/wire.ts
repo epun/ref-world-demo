@@ -17,7 +17,12 @@
 
 import type { StrokeList } from '../shape/types';
 import type { DrawingSource, EmoteSource, HatchCause, OperatorAction, RetireCause } from './events';
-import type { SessionRecorder } from './recorder';
+import type {
+  DropRecord,
+  SessionRecorder,
+  SettleRecord,
+  StickRecord,
+} from './recorder';
 
 /** The drawing payload a gate entry carries, as far as the log cares. */
 export interface RecordableDrawing {
@@ -50,6 +55,12 @@ export interface CreatureObserverShape {
   hatch(id: string, cause: HatchCause): void;
   retire(id: string, cause: RetireCause): void;
   emote(id: string, emote: string, source: EmoteSource): void;
+  /** The katamari four. Only the page that SIMULATES ever calls these —
+   * a viewer applies them and decides nothing (docs/PLAN.md §7.6). */
+  stick(record: StickRecord): void;
+  drop(record: DropRecord): void;
+  loose(item: string, x: number, z: number): void;
+  settle(record: SettleRecord): void;
 }
 
 export interface GateRecorderOptions {
@@ -95,5 +106,9 @@ export function recordCreatures(recorder: SessionRecorder): CreatureObserverShap
     hatch: (id, cause) => recorder.hatch(id, cause),
     retire: (id, cause) => recorder.retire(id, cause),
     emote: (id, emote, source) => recorder.emote(id, emote, source),
+    stick: (record) => recorder.stick(record),
+    drop: (record) => recorder.drop(record),
+    loose: (item, x, z) => recorder.loose(item, x, z),
+    settle: (record) => recorder.settle(record),
   };
 }
