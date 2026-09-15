@@ -5,6 +5,12 @@
       "residents": "none",
       "hatch": "timer",
       "dev": true
+    },
+    "valiocon": {
+      "host": "ref-world-valiocon.vercel.app",
+      "residents": "none",
+      "hatch": "manual",
+      "dev": true
     }
   }
 }
