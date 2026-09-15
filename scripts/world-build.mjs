@@ -69,6 +69,28 @@ export function sanitizeHatch(raw) {
 }
 
 /**
+ * Which LOOK does this world render in?
+ *
+ * `ink` is the shipped one and the only one the taste describes. `ghibli` is a
+ * per-world USER OVERRIDE (2026-09-15, docs/TASTE.md §9): envpaint's cel
+ * palette and two-tone lighting, on the one world that asked for it. The
+ * public world is not in this file at all, so it can never be anything but
+ * `ink`.
+ */
+export const WORLD_STYLES = ['ink', 'ghibli'];
+
+/**
+ * Only the exact lowercase word opts a world in, the same defensive rule as
+ * sanitizeHatch and for the same reason: the shipped look IS the taste, so a
+ * typo has to fall back onto it rather than away from it. Mirrored in
+ * src/world/style.ts, so the injected tag and the app's reading of it can
+ * never name two different looks.
+ */
+export function sanitizeStyle(raw) {
+  return String(raw ?? '').trim().toLowerCase() === 'ghibli' ? 'ghibli' : 'ink';
+}
+
+/**
  * The same rule the app sanitises with (docs/PUBLIC.md §urls, and
  * sanitizeWorld in src/main.ts): lowercase letters, digits and hyphens, up
  * to 24 characters. Anything else is stripped rather than refused, so a
@@ -106,6 +128,7 @@ export function readWorlds(file) {
         host: normalizeHost(config?.host),
         residents: sanitizeResidents(config?.residents),
         hatch: sanitizeHatch(config?.hatch),
+        style: sanitizeStyle(config?.style),
         // Does this world's deployment keep the dev surface (the ghost panel
         // and everything behind __IS_DEV__)? Off unless the file says exactly
         // `true`: a client's world is a place people visit, not a workbench,
@@ -149,6 +172,7 @@ export function resolveWorld(env = {}, worlds = {}) {
     host,
     residents: configured?.residents ?? 'shipped',
     hatch: configured?.hatch ?? 'timer',
+    style: configured?.style ?? 'ink',
     dev: configured?.dev === true,
   };
 }
@@ -174,9 +198,10 @@ function setMeta(html, attr, key, value) {
  * stays the public frame — it is a real render by the same pipeline, so it
  * is a true picture of what happens in any of these worlds.
  *
- * The residents tag is written ONLY for a world that wants none, and the
- * hatch tag ONLY for a world that waits for an operator, so the public html
- * keeps not mentioning settings it does not have.
+ * The residents tag is written ONLY for a world that wants none, the hatch
+ * tag ONLY for a world that waits for an operator, and the style tag ONLY for
+ * a world that opted out of the shipped look — so the public html keeps not
+ * mentioning settings it does not have.
  *
  * All lowercase, like every other piece of type here (TASTE §5).
  */
@@ -186,6 +211,7 @@ export function applyWorldToHtml(html, world) {
   const description = `a world for ${name}. draw a creature on your phone and it hatches somewhere everyone can see.`;
   const clean = sanitizeResidents(world.residents) === 'none';
   const manual = sanitizeHatch(world.hatch) === 'manual';
+  const styled = sanitizeStyle(world.style);
 
   let out = html.replace(
     /([ \t]*)<title>[\s\S]*?<\/title>/i,
@@ -194,6 +220,9 @@ export function applyWorldToHtml(html, world) {
       `${indent}<meta name="refworld:world" content="${escapeAttr(name)}" />\n` +
       (clean ? `${indent}<meta name="refworld:residents" content="none" />\n` : '') +
       (manual ? `${indent}<meta name="refworld:hatch" content="manual" />\n` : '') +
+      (styled !== 'ink'
+        ? `${indent}<meta name="refworld:style" content="${escapeAttr(styled)}" />\n`
+        : '') +
       `${indent}<title>ref world · ${name}</title>`,
   );
   out = setMeta(out, 'property', 'og:title', name);

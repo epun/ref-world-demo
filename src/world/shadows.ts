@@ -190,6 +190,11 @@ export class FlatShadows {
    * resized) when it runs out of slots. */
   private mesh: InstancedMesh;
 
+  // The pair the presence lerp runs between: at presence 0 a stamp equals the
+  // paper under it and disappears, at 1 it is the flat shadow value. Both are
+  // swappable, because a per-world style override changes the paper as well as
+  // the shadow it takes (docs/TASTE.md §9) — the LOOK is unchanged either way:
+  // one flat value, shared by every stamp, cut sharp.
   private readonly groundValue = new Color(SURFACE.ground);
   private readonly shadowValue = new Color(SURFACE.shadow);
 
@@ -227,6 +232,16 @@ export class FlatShadows {
     this.mesh.dispose();
     this.mesh = next;
     this.group.add(next);
+  }
+
+  /**
+   * Retarget the two ends of the presence lerp. Defaults to today's pair
+   * (`SURFACE.ground` → `SURFACE.shadow`), so a caller that never calls this
+   * gets exactly the shipped behaviour.
+   */
+  setPalette(ground: Color | string = SURFACE.ground, ink: Color | string = SURFACE.shadow): void {
+    this.groundValue.set(ground);
+    this.shadowValue.set(ink);
   }
 
   /**

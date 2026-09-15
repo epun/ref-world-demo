@@ -55,6 +55,7 @@ import {
   type WebGLProgramParametersWithUniforms,
 } from 'three';
 import { MOTION, SURFACE } from '../taste/tokens';
+import { applyToon } from './toon';
 import { TERRAIN, terrainParams } from './landscape';
 import { PAINTED_SIZE } from './painted';
 import type { Surface } from './surface';
@@ -233,6 +234,15 @@ export interface Ground {
    */
   setPaintedScorch(texture: Texture | null): void;
   /**
+   * Recolour the ground's own drawn marks — the terrace lips, the riser
+   * hatching, the painted trail and the scorch all mix toward this one value.
+   *
+   * `SURFACE.ink` is the shipped floor (TASTE §1). The ghibli style swaps it
+   * for a path-edge brown, because a violet-black contour on green meadow
+   * reads as a crack rather than a drawn contour (docs/TASTE.md §9).
+   */
+  setInk(color: Color | string): void;
+  /**
    * Advance the pen wobble's ambient drift. Call once per frame, like
    * `water.update` — one uniform write, a wall-clock value, no integration.
    */
@@ -381,6 +391,11 @@ ${groundNoiseGlsl}`,
   // The injected chunks change the program — never share a cache slot with a
   // stock basic material.
   material.customProgramCacheKey = (): string => GROUND_MARKS_CACHE_KEY;
+  // Cel lighting, chained ON TOP of the marks hook above (never instead of
+  // it): the ground is the one surface that repaints its steep faces as rock
+  // before lighting them, exactly as envpaint's Terrain does. Inert until the
+  // ghibli style turns it on (src/world/toon.ts).
+  applyToon(material, { slopeRock: true });
 
   const field = new PlaneGeometry(FIELD_SIZE, FIELD_SIZE, FIELD_SEGMENTS, FIELD_SEGMENTS);
   // Laid flat first, so the attribute holds world x/z and the height sample
@@ -420,6 +435,9 @@ ${groundNoiseGlsl}`,
       // Wall-clock seconds, like the ripples: no integration, so a dropped
       // frame cannot make the wobble jump.
       markUniforms.uGroundTime.value = nowMs / 1000;
+    },
+    setInk: (color: Color | string): void => {
+      markUniforms.uInk.value.set(color);
     },
     setPaintedPath: (texture: Texture | null): void => {
       markUniforms.uPath.value = texture ?? emptyPath;

@@ -39,6 +39,7 @@ import { Spring } from '../motion/spring';
 import type { StrokeList } from '../shape/types';
 import { MOTION, SURFACE } from '../taste/tokens';
 import { applyCrackShader } from './crack';
+import { applyToon } from '../world/toon';
 
 /** Egg height in world units, resting on the ground. */
 export const EGG_HEIGHT = 2.6;
@@ -352,6 +353,11 @@ export function createEgg(strokes: StrokeList, options: EggOptions = {}): Egg {
     clearcoatRoughness: 0.25,
   });
   const crackHandle = applyCrackShader(material, seed);
+  // Cel lighting, chained on top of the crack injection (src/world/toon.ts):
+  // the shell is a lit MeshPhysicalMaterial, so a world on the ghibli style
+  // has to light it with everything else or the eggs stay smooth-shaded lumps
+  // on a cel field. Inert on every other world.
+  applyToon(material);
 
   const mesh = new Mesh(geometry, material);
   const group = new Group();

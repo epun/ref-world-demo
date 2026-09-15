@@ -6,8 +6,8 @@
  * → grain (the final paper layer). GENERATOR §ink rendering pass.
  */
 
-import { Color, Scene, WebGLRenderer, type Texture } from 'three';
-import { SURFACE } from '../taste/tokens';
+import { Color, Scene, Vector3, WebGLRenderer, type Texture } from 'three';
+import { GHIBLI, SURFACE, WORLD } from '../taste/tokens';
 import { CameraRig } from './camera';
 import { createEnvironment, type Environment } from './environment';
 import { GrainPass } from './grain';
@@ -25,7 +25,9 @@ import {
   terrainParams,
   type TerrainParams,
 } from './landscape';
+import { sanitizeStyle, type WorldStyle } from './style';
 import { ROLLING_SURFACE, type Surface } from './surface';
+import { setToonEnabled, setToonSun } from './toon';
 import { createWater, type Water } from './water';
 
 export type FrameCallback = (dt: number, nowMs: number) => void;
@@ -196,9 +198,31 @@ export interface WorldHandles {
    * free for whatever is on top.
    */
   setPaused(paused: boolean): void;
+  /**
+   * Switch the whole frame between the two looks (docs/TASTE.md §9).
+   *
+   * ONE place, deliberately: the background, the ground's paper and its mark
+   * ink, the three light colours, the cel lighting switch, the ink composite,
+   * the prop palette, both shadow palettes and the water all move together,
+   * because a frame half in one look and half in the other is not a style —
+   * it is a bug nobody can name. `setStyle('ink')` restores every one of them
+   * to the shipped tokens exactly, so this is reversible in a demo.
+   */
+  setStyle(style: WorldStyle): void;
+  /** The look this world is rendering in. */
+  style(): WorldStyle;
 }
 
-export function start(canvas: HTMLCanvasElement): WorldHandles {
+export interface WorldOptions {
+  /**
+   * The look this world opens in (src/world/style.ts). Defaults to `ink` —
+   * the shipped one, and the only one the taste describes — so a caller that
+   * says nothing gets the frame this project has always drawn.
+   */
+  style?: WorldStyle;
+}
+
+export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): WorldHandles {
   const renderer = new WebGLRenderer({ canvas, antialias: true });
   /*
    * Pixel ratio cap. The frame is four full-resolution passes (colour,
@@ -393,6 +417,46 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
     { passive: false },
   );
 
+  /** Scratch for the per-frame cel sun direction — one allocation, ever. */
+  const toonSunDir = new Vector3();
+
+  // ── the look ──────────────────────────────────────────────────────────────
+  /** The ghibli stamp value: the meadow under its own cool shadow tint, the
+   * one flat tone a cel shadow takes on that paper. Computed once. */
+  const ghibliStamp = new Color(GHIBLI.meadow).multiply(new Color(...GHIBLI.shadowTint));
+  let currentStyle: WorldStyle = 'ink';
+  const applyStyle = (style: WorldStyle): void => {
+    currentStyle = style;
+    const ghibli = style === 'ghibli';
+    // The paper, and the sky beyond it — still ONE field, still dipped in
+    // value (never hue) at night by the environment engine, which keeps
+    // scaling whatever base is current.
+    backgroundBase.set(ghibli ? GHIBLI.background : SURFACE.ground);
+    background.copy(backgroundBase).multiplyScalar(backgroundLumaScale);
+    ground.material.color.set(ghibli ? GHIBLI.meadow : SURFACE.ground);
+    ground.setInk(ghibli ? GHIBLI.dirtEdge : SURFACE.ink);
+    // Light COLOURS only: environment.ts drives intensities and the key's
+    // position and never touches these, so they stick for the whole session.
+    lighting.key.color.set(ghibli ? GHIBLI.sun : WORLD.light);
+    lighting.fill.color.set(ghibli ? GHIBLI.sky : WORLD.light);
+    lighting.fill.groundColor.set(ghibli ? GHIBLI.hemiGround : WORLD.neutralMid);
+    setToonEnabled(ghibli);
+    ink.setStyle(style);
+    scatter.setStyle(style);
+    // Both stamp passes lerp paper → shadow as the sun's presence rises, so
+    // both need the pair that belongs to the paper now underneath them. The
+    // stamps stay one flat value cut sharp either way (TASTE §2.4).
+    if (ghibli) {
+      shadows.setPalette(GHIBLI.meadow, ghibliStamp);
+      scatter.setShadowPalette(GHIBLI.meadow, ghibliStamp);
+    } else {
+      shadows.setPalette(SURFACE.ground, SURFACE.shadow);
+      scatter.setShadowPalette(SURFACE.ground, SURFACE.shadow);
+    }
+    water.setStyle(style);
+  };
+  applyStyle(sanitizeStyle(opts.style));
+
   const frameCallbacks: FrameCallback[] = [];
   let last = performance.now();
   /** Nothing visible is on screen — see setPaused. */
@@ -428,6 +492,16 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
     // Sun-driven shadow stamps: one shared ellipse + one flat value per
     // frame for every stamp (scatter throttles its instanced re-lay).
     const sun = environment.sun;
+    // The cel terminator follows the SAME key the stamps and the hatch do:
+    // environment.update has just moved `lighting.key.position` along the sun
+    // arc, so its normalized world position is the direction toward the sun.
+    // Two colour copies and a normalize — no recompile, and inert while the
+    // ink style has the toon switch at 0.
+    setToonSun(
+      toonSunDir.copy(lighting.key.position),
+      lighting.key.color,
+      lighting.fill.color,
+    );
     shadows.setSun(sun.azimuth, sun.altitude, sun.presence);
     scatter.setSun(sun.azimuth, sun.altitude, sun.presence);
     // Weather-driven vertex wind: the environment's spring-glided strength
@@ -516,6 +590,10 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
     onFrame: (callback: FrameCallback): void => {
       frameCallbacks.push(callback);
     },
+    setStyle: (style: WorldStyle): void => {
+      applyStyle(sanitizeStyle(style));
+    },
+    style: (): WorldStyle => currentStyle,
     setPaused: (next: boolean): void => {
       if (next === paused) return;
       paused = next;
