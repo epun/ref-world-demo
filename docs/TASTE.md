@@ -288,3 +288,42 @@ them is attributable to the measured taste.
   real P1 output, not now.
 - **Body type family** — the grotesque-sans read is *incidental* (conf 0.38), so it's open.
 - **1823ms** — confidence 0.06. Tune against the built thing.
+
+
+---
+
+## 8. The creature brief supersedes the character brief for the creature *(2026-09-15)*
+
+**User ruling.** A third brief arrived — [`taste/creature.md`](./taste/creature.md), a
+Pikmin-inspired board of 45 references — with the ask: *"change the style of the characters
+… keep the same mechanics for character generation … the drawing can inform the color of the
+character as well as the silhouette … at the top, where the antenna is for most Pikmin, they
+have a flower. We should have the drawing or the shape of that drawing be the flower."*
+
+What changes, and what it overrides in §1–§7:
+
+- **The creature is coloured.** [M] Each figure is a near-monochrome fill in red, blue,
+  yellow, purple, pink or grey (brief saturation 0.609). §1's "the character is the only
+  near-black on screen" no longer holds for the body — the pupils and the eye's dark are the
+  creature's darks now. The **environment rules are unchanged**: it stays achromatic, the
+  ground stays the paper, near-black is still never environmental. The achromatic gate is
+  now a gate on the *environment*, not the frame.
+- **Colour comes from the drawing.** [D] `src/character/palette.ts`: the type is read off
+  the drawing's measured motifs (archetype, crown count, aspect, lumpiness), never a seed.
+- **The body is the brief's soft ovoid, informed by the drawing.** [D] `BODY_OVOID` in
+  `src/character/interpret.ts` blends the §1a body halfway toward an egg of its own bounds.
+  GENERATOR §1a's "drawn objects keep their shape" is softened, not revoked: at 0 it is the
+  old body, and a wide drawing is still a wide creature.
+- **The drawing is the topper.** [M] The brief's species marker is the thing on the stalk;
+  here that thing is the person's own drawing (`src/character/topper.ts`). The drawing is
+  still projected onto the egg; the back marking stays as a quieter second channel.
+- **Two eyes.** [M] *"two dot or oval eyes"* — supersedes the standing one-eye ruling in
+  `docs/reference/character-designs.md`.
+- **Still held from the world brief:** all motion (ζ ≥ 1, no cuts), the mark set, no
+  uppercase, hard flat shadows, the full-frame grain, no rectilinear geometry. The creature
+  brief agrees on every one of these.
+
+Tagging discipline is unchanged: the six body hexes are **[D]** (the brief's tokens are the
+sheets' palette, not the creatures'), the stalk length and topper size are **[D]** starting
+points to tune in the ghost panel, and nothing here is attributed to the brief that the
+brief does not show.
