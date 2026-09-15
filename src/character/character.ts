@@ -110,6 +110,12 @@ export interface CharacterOptions {
    */
   fidelity?: number;
   /**
+   * Marking texture edge in texels (src/character/marking.ts). Unset keeps
+   * the 512 the phone portrait wants; the world passes 256, where a creature
+   * is a few percent of the frame and the population is large.
+   */
+  markingSize?: number;
+  /**
    * Body construction (docs/BLENDSHELL.md step 6): 'inflate' (default,
    * shipping) inflates the synthesized silhouette; 'blendshell' builds the
    * SDF blend-shell body with IK stepping — behind this flag until visual
@@ -181,7 +187,9 @@ export function createCharacter(
   const deform = applyDeform(material, frame);
   // Recognition channel 2: the ORIGINAL drawing, painted on the BACK as a
   // quiet light knockout. Chains onto the deform hook — order matters.
-  const marking = applyMarking(material, strokes, box, identitySeed);
+  const marking = applyMarking(material, strokes, box, identitySeed, {
+    ...(options.markingSize ? { size: options.markingSize } : {}),
+  });
   // The eye: painted INTO the same material (no cap geometry to catch the
   // free-orbit camera edge-on). Chained after deform + marking; because its
   // projection reads the undeformed position, it rides every squash / lean /

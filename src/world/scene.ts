@@ -183,7 +183,19 @@ export interface WorldHandles {
 
 export function start(canvas: HTMLCanvasElement): WorldHandles {
   const renderer = new WebGLRenderer({ canvas, antialias: true });
-  const pixelRatio = Math.min(window.devicePixelRatio, 2);
+  /*
+   * Pixel ratio cap. The frame is four full-resolution passes (colour,
+   * normals, ink composite, grain — docs/QA-AUDIT.md D1), so every pixel
+   * costs four, and a handset's world view was rendering the whole cast at
+   * DPR 2 on a phone GPU. The crowd reference demo caps its ratio at 1.0
+   * outright; here a projection keeps 2 (the ink lines are the picture),
+   * and a coarse-pointer device — a phone looking at the world — caps at
+   * 1.5, which is 44% fewer pixels per pass for a line the eye cannot
+   * separate at arm's length. **[D]**
+   */
+  const coarse =
+    typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches;
+  const pixelRatio = Math.min(window.devicePixelRatio, coarse ? 1.5 : 2);
   renderer.setPixelRatio(pixelRatio);
 
   const scene = new Scene();

@@ -56,6 +56,7 @@ import { countByKind } from '../session';
 import type { SessionRecorder } from '../session';
 import { FALLBACK_DRAWINGS, FALLBACK_HATCH_MS } from './fixtures';
 import { DEV_SKILLS_META } from './skills-meta';
+import { FRAME_RING_SIZE, createFrameRing, formatPerfLine } from './perf';
 
 export { FALLBACK_DRAWINGS, FALLBACK_HATCH_MS } from './fixtures';
 export { DEV_SKILLS_META } from './skills-meta';
@@ -434,6 +435,24 @@ const MODERATION_ROWS = 12;
 /** How many fallback creatures one button press spawns. */
 const FALLBACK_SPAWN_COUNT = 3;
 
+/** …and how many the stress button spawns, for watching the frame line move. */
+const FALLBACK_STRESS_COUNT = 200;
+
+/**
+ * Creatures built per animation frame while a stress spawn runs.
+ *
+ * Same number and the same reason as `SPAWN_PER_FRAME` in src/main.ts:
+ * building a creature is the whole pure pipeline on the main thread, and two
+ * hundred of them in one loop is a frozen tab, not a slow one. Yielding
+ * between slices costs a little total time and keeps the world on screen
+ * while its population arrives.
+ */
+const STRESS_SPAWN_PER_FRAME = 3;
+
+/** How often the perf readout redraws. Slow enough to read, fast enough to
+ * see a spike land. */
+const PERF_READOUT_MS = 250;
+
 /**
  * Mount the ghost-panel dev surface. Resolves to a disposer, or null when
  * there is no DOM (node) — in which case nothing was imported or mounted.
@@ -683,6 +702,33 @@ export async function initDevPanel(
       }
     });
 
+  /*
+   * The stress spawn, A FEW PER FRAME.
+   *
+   * Both spawnFallback implementations (the handle main.ts passes and the
+   * local fallback above) already cycle FALLBACK_DRAWINGS and derive a fresh
+   * id from an incrementing counter, so ids never collide past the fixture
+   * count and two hundred distinct creatures land. Neither yields, though —
+   * so the pacing lives here, in slices, rather than in either of them.
+   *
+   * Re-entrant presses are ignored while a run is in flight: a second run
+   * interleaved with the first would double the per-frame cost, which is the
+   * one thing this button exists to measure.
+   */
+  let stressRunning = false;
+  const spawnFallbackPaced = async (total: number): Promise<void> => {
+    if (stressRunning) return;
+    stressRunning = true;
+    try {
+      for (let done = 0; done < total; done += STRESS_SPAWN_PER_FRAME) {
+        spawnFallback(Math.min(STRESS_SPAWN_PER_FRAME, total - done));
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+      }
+    } finally {
+      stressRunning = false;
+    }
+  };
+
   // ── frame readback for the pixel gates ────────────────────────────────────
   // The renderer's buffer is not preserved between frames, so the readback
   // waits for the next animation frame: our one-shot rAF is queued after the
@@ -733,6 +779,9 @@ export async function initDevPanel(
     apply: (panelUi) => {
       const folder = panelUi.addFolder('demo');
       folder.addButton('spawn fallback creatures', () => spawnFallback(FALLBACK_SPAWN_COUNT));
+      folder.addButton(`spawn ${FALLBACK_STRESS_COUNT} (stress)`, () => {
+        void spawnFallbackPaced(FALLBACK_STRESS_COUNT);
+      });
       folder.addButton('hatch all', () => creatures.hatchAll());
       folder.addButtonRow([
         { label: 'pause ai', onClick: () => creatures.pauseAi(true) },
@@ -784,9 +833,58 @@ export async function initDevPanel(
           tour.hatchAllMoment(() => creatures.hatchAll()),
         );
       }
-      return { folder };
+
+      // ── the perf line ────────────────────────────────────────────────────
+      // `frame 16.4ms (p95 22.1) · draw calls 213 · tris 1.2m · creatures 200`
+      // — the same live line the crowd reference demo carries, rendered
+      // through the panel's info control like every other readout here.
+      //
+      // Frame time comes from rAF deltas rather than the world's per-frame
+      // dt, so it measures the whole frame (post chain and all) and keeps
+      // ticking while the sim is paused. The renderer's counters are read as
+      // they stand: `info.autoReset` is on by default, so the custom pipeline
+      // in src/world/scene.ts accumulates every pass into one frame's totals
+      // and clears them itself on the next.
+      folder.addInfo('', 'perf-readout');
+      const ring = createFrameRing(FRAME_RING_SIZE);
+      let lastFrameMs: number | null = null;
+      let frameHandle = 0;
+      const sampleFrame = (nowMs: number): void => {
+        if (lastFrameMs !== null) ring.push(nowMs - lastFrameMs);
+        lastFrameMs = nowMs;
+        frameHandle = requestAnimationFrame(sampleFrame);
+      };
+      frameHandle = requestAnimationFrame(sampleFrame);
+
+      const renderPerf = (): void => {
+        const info = handles.renderer?.info.render;
+        folder.get('perf-readout')?.setText?.(
+          formatPerfLine({
+            frames: ring.stats(),
+            ...(info ? { calls: info.calls, triangles: info.triangles } : {}),
+            creatures: creatures.count(),
+          }),
+        );
+      };
+      renderPerf();
+      const perfTimer = window.setInterval(renderPerf, PERF_READOUT_MS);
+
+      const stopPerf = (): void => {
+        window.clearInterval(perfTimer);
+        cancelAnimationFrame(frameHandle);
+        window.removeEventListener('beforeunload', stopPerf);
+      };
+      // Belt and braces: the skill teardown below is the real stop, but a
+      // reload that never tears the panel down should not leave a timer
+      // holding the folder's dom.
+      window.addEventListener('beforeunload', stopPerf);
+
+      return { folder, stopPerf };
     },
-    teardown: (panelUi) => panelUi.panel.removeFolder('demo'),
+    teardown: (panelUi, handle) => {
+      (handle as { stopPerf?: () => void } | undefined)?.stopPerf?.();
+      panelUi.panel.removeFolder('demo');
+    },
   });
 
   // ── refworld.moderation — the operator layer (docs/MODERATION.md) ────────

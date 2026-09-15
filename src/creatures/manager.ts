@@ -13,7 +13,7 @@
  * creature sinks and fades out over t.primary, then disposes.
  */
 
-import { Group, Mesh, Vector3 } from 'three';
+import { Frustum, Group, Matrix4, Mesh, Sphere, Vector3 } from 'three';
 import type { Object3D } from 'three';
 import {
   BehaviorAgent,
@@ -36,6 +36,8 @@ import {
   stepCreatures,
   type CreatureBody,
 } from '../physics/resolve';
+import { SpatialHash } from '../physics/spatial';
+import { NOTICE_RADIUS } from '../behavior/states';
 import { VARIATION_BULGE, VARIATION_SCALE_XZ } from '../world/scatter';
 import { createEgg, EGG_RADIUS, type Egg } from '../egg/egg';
 import { startHatch, type HatchHandle } from '../egg/hatch';
@@ -92,8 +94,62 @@ export const DRIVE_TURN_TAU_MS = 90;
  */
 export const DRIVE_IDLE_MS = MOTION.primaryMs;
 
-/** Practical demo guard, not a design cap (see header). */
-export const MAX_POPULATION = 96;
+/**
+ * Practical demo guard, not a design cap (see header).
+ *
+ * 96 → 256 (2026-09-15, user ask: *"support 100-200 players at one time"*).
+ * The guard is a frame-rate guarantee, and what made it affordable to lift
+ * is the crowd-engine work that landed with it: the per-frame neighbour
+ * gather and the pair separation both went from all-pairs to a spatial
+ * hash (src/physics/spatial.ts), off-screen creatures update their
+ * presentation on a stride (`OFFSCREEN_STRIDE`), and the shadow stamps
+ * draw as one instanced mesh (src/world/shadows.ts).
+ */
+export const MAX_POPULATION = 256;
+
+/**
+ * How far an agent looks for company, world units. **[D]**
+ *
+ * The behaviour model only ever asks two things of its peers: who is the
+ * nearest, and is anyone within NOTICE_RADIUS (src/behavior/states.ts).
+ * Twice that radius is far enough that a creature an agent has decided to
+ * approach stays resolvable while it walks over, and near enough that a
+ * field of two hundred hands each agent a handful of peers instead of the
+ * whole cast. A creature with nobody inside it reads as alone, which at
+ * that distance it is.
+ */
+export const PEER_RADIUS = NOTICE_RADIUS * 2;
+
+/**
+ * Every Nth frame, an OFF-SCREEN creature refreshes its presentation. **[D]**
+ *
+ * The port of the reference crowd engine's amortised update: it advances
+ * physics for a quarter of its crowd per frame and rewrites matrices for
+ * far characters one frame in four. Here the SIMULATION still runs every
+ * frame for every creature — the host's positions are the truth every
+ * phone follows, and a creature nobody is looking at is still walking
+ * somewhere — but the part only a viewer can see (gait and emote springs,
+ * eye state, the name bubble, the shadow stamp on the terrain) is refreshed
+ * one frame in four while it is outside the camera's frustum, with the
+ * skipped frames' dt handed over in one piece. The springs are critically
+ * damped and substep internally, so a bigger dt is the same curve, not a
+ * different one; and there is no visible step, because nothing was visible.
+ * The tour camera frames a small piece of a huge map (PLAN §7.1), so at
+ * two hundred creatures this is most of them, most of the time.
+ */
+export const OFFSCREEN_STRIDE = 4;
+
+/** Cap on the dt handed over after a run of skipped frames, ms — a tab
+ * that was hidden for a minute does not owe the springs a minute. */
+const OFFSCREEN_DT_CAP = 250;
+
+/**
+ * Marking texture edge for a WORLD creature, texels. **[D]** A creature is
+ * 1-3% of the frame here (PLAN §7, "scale is the subject"), so 256² is
+ * already more texels than it ever covers; the phone portrait keeps the
+ * 512 default. At the cap this is a quarter of the texture memory.
+ */
+const WORLD_MARKING_SIZE = 256;
 
 /** The eviction decision, as little of a slot as it actually needs. */
 export interface Evictable {
@@ -365,6 +421,15 @@ interface Slot {
    * — including the pause between two pushes of the same gesture.
    */
   drivenAtMs: number | null;
+  /**
+   * Presentation bookkeeping for the off-screen stride (OFFSCREEN_STRIDE):
+   * how many frames this creature has been outside the frustum, and the dt
+   * its presentation has not yet been told about.
+   */
+  offscreenFrames: number;
+  pendingDt: number;
+  /** Set each frame: is the presentation being refreshed this frame? */
+  present: boolean;
 }
 
 export interface SpawnOptions {
@@ -580,6 +645,16 @@ export function createCreatureManager(
   let eggColliderCount = 0;
   const bodyPool: CreatureBody[] = [];
   const stepBodies: CreatureBody[] = [];
+  // Peer lookup (src/physics/spatial.ts): every alive root indexed once a
+  // frame, queried once per agent. Points are reused, never reallocated.
+  const peerGrid = new SpatialHash(PEER_RADIUS);
+  const peerSlots: Slot[] = [];
+  const peerPoints: { x: number; z: number }[] = [];
+  const peersScratch: AgentPeer[] = [];
+  // Frustum test for the off-screen stride. Scratch only.
+  const frustum = new Frustum();
+  const frustumMatrix = new Matrix4();
+  const boundsSphere = new Sphere();
   const aliveScratch: {
     slot: Slot;
     root: Group;
@@ -799,7 +874,7 @@ export function createCreatureManager(
       // The slot id is the creature's identity: it salts the within-band
       // synthesis so the same drawing submitted twice hatches two visibly
       // distinct individuals, and it matches the phone portrait (same id).
-      const next = createCharacter(strokes, 1, { identity: id });
+      const next = createCharacter(strokes, 1, { identity: id, markingSize: WORLD_MARKING_SIZE });
       if (!next) return false;
 
       const existing = slots.get(id);
@@ -821,7 +896,7 @@ export function createCreatureManager(
        * arrival, and the only thing left was whoever had just walked in.
        *
        * Two passes, not a sort — this runs on the spawn path with a full
-       * pipeline behind it, and the cap is 96.
+       * pipeline behind it, and the cap is MAX_POPULATION.
        *
        * Residents are the fallback, not an exemption. If a world is
        * somehow ALL residents the oldest of them still goes: the cap is a
@@ -890,6 +965,9 @@ export function createCreatureManager(
         resident: opts.resident === true,
         drive: null,
         drivenAtMs: null,
+        offscreenFrames: 0,
+        pendingDt: 0,
+        present: true,
       };
       slots.set(id, slot);
 
@@ -1046,10 +1124,73 @@ export function createCreatureManager(
       }
       aliveScratch.length = 0;
 
+      // The camera's frustum, when there is a real camera to read one off
+      // (a stub world in a test has none — then everything is on screen
+      // and the stride never engages). Last frame's view matrix is fine:
+      // the camera drifts, it never cuts.
+      let culling = false;
+      if (
+        camera &&
+        camera.projectionMatrix &&
+        camera.matrixWorldInverse &&
+        Array.isArray(camera.projectionMatrix.elements)
+      ) {
+        frustumMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+        frustum.setFromProjectionMatrix(frustumMatrix);
+        culling = true;
+      }
+
+      // Index every alive root once, so each agent's peer query is a walk
+      // over the few cells around it rather than the whole cast.
+      peerSlots.length = 0;
+      for (const s of slots.values()) {
+        if (s.phase !== 'alive' || !s.characterRoot) continue;
+        const i = peerSlots.length;
+        let pt = peerPoints[i];
+        if (!pt) {
+          pt = { x: 0, z: 0 };
+          peerPoints[i] = pt;
+        }
+        pt.x = s.characterRoot.position.x;
+        pt.z = s.characterRoot.position.z;
+        peerSlots.push(s);
+      }
+      peerPoints.length = peerSlots.length;
+      peerGrid.rebuild(peerPoints);
+
       for (const slot of [...slots.values()]) {
+        /*
+         * Is this one being LOOKED AT this frame? On screen: refreshed
+         * every frame, as ever. Off screen: one frame in OFFSCREEN_STRIDE,
+         * and the skipped dt rides along (see the constant). Retiring and
+         * hatching creatures are exempt — their animations are timed
+         * against the clock and the tour is on its way to a hatch anyway.
+         */
+        slot.pendingDt += dt;
+        let present = true;
+        if (culling && !slot.hatch && slot.phase !== 'retiring') {
+          const root: Object3D | null = slot.characterRoot ?? slot.egg?.group ?? null;
+          if (root) {
+            const reach = slot.character ? slot.character.radius * 3 + 1 : EGG_RADIUS * 3 + 1;
+            boundsSphere.center.copy(root.position);
+            boundsSphere.radius = reach;
+            if (frustum.intersectsSphere(boundsSphere)) {
+              slot.offscreenFrames = 0;
+            } else {
+              present = slot.offscreenFrames % OFFSCREEN_STRIDE === 0;
+              slot.offscreenFrames++;
+            }
+          }
+        }
+        slot.present = present;
+        const presentDt = Math.min(slot.pendingDt, OFFSCREEN_DT_CAP);
+        if (present) slot.pendingDt = 0;
+
         if (slot.egg) {
-          slot.egg.update(dt, nowMs);
-          slot.eggShadow?.setPosition(slot.egg.group.position.x, slot.egg.group.position.z);
+          if (present) {
+            slot.egg.update(presentDt, nowMs);
+            slot.eggShadow?.setPosition(slot.egg.group.position.x, slot.egg.group.position.z);
+          }
           if (!slot.hatch && slot.phase === 'egg' && !timersPaused) {
             const total = slot.hatchAtMs - slot.bornMs;
             const p = total <= 0 ? 1 : Math.min(1, (nowMs - slot.bornMs) / total);
@@ -1068,8 +1209,10 @@ export function createCreatureManager(
         slot.hatch?.update(dt, nowMs);
 
         if (slot.character) {
-          if (worldUnitsPerPx > 0) slot.character.setWorldUnitsPerPixel?.(worldUnitsPerPx);
-          slot.character.update(dt, nowMs);
+          if (present) {
+            if (worldUnitsPerPx > 0) slot.character.setWorldUnitsPerPixel?.(worldUnitsPerPx);
+            slot.character.update(presentDt, nowMs);
+          }
 
           // Autonomous behavior: the agent owns the root's x/z and heading.
           // Never world-space Y — locomotion stays on the Surface seam.
@@ -1147,24 +1290,26 @@ export function createCreatureManager(
             // does — because it is moving — rather than being told to.
             const moved = Math.hypot(root.position.x - beforeX, root.position.z - beforeZ);
             slot.character.setLocomotion(dt > 0 ? (moved / dt) * 1000 : 0, root.rotation.y);
-            slot.characterShadow?.setPosition(
-              root.position.x + slot.character.group.position.x,
-              root.position.z + slot.character.group.position.z,
-            );
+            if (present) {
+              slot.characterShadow?.setPosition(
+                root.position.x + slot.character.group.position.x,
+                root.position.z + slot.character.group.position.z,
+              );
+            }
             // Deliberately NOT entered into the physics pass: the host has
             // already resolved every overlap, and a second solver running
             // on top of the answer would fight it.
           } else if (root && slot.agent && slot.phase === 'alive' && !aiPaused) {
-            const peers: AgentPeer[] = [];
-            for (const other of slots.values()) {
-              if (other === slot || other.phase !== 'alive' || !other.characterRoot) {
-                continue;
-              }
-              peers.push({
-                x: other.characterRoot.position.x,
-                z: other.characterRoot.position.z,
-                id: other.id,
-              });
+            // Company within PEER_RADIUS, in roster order (the grid
+            // answers ascending, and it was filled in slot order).
+            const peers = peersScratch;
+            peers.length = 0;
+            const nearIdx = peerGrid.near(root.position.x, root.position.z, PEER_RADIUS);
+            for (let k = 0; k < nearIdx.length; k++) {
+              const other = peerSlots[nearIdx[k]!]!;
+              if (other === slot) continue;
+              const pt = peerPoints[nearIdx[k]!]!;
+              peers.push({ x: pt.x, z: pt.z, id: other.id });
             }
             /*
              * A PERSON IS STEERING THIS ONE (src/world/joystick.ts).
@@ -1301,7 +1446,7 @@ export function createCreatureManager(
             slot.character.setLocomotion(0, root?.rotation.y ?? 0);
           }
 
-          if (slot.characterRoot && slot.characterShadow) {
+          if (present && slot.characterRoot && slot.characterShadow) {
             slot.characterShadow.setPosition(
               slot.characterRoot.position.x + slot.character.group.position.x,
               slot.characterRoot.position.z + slot.character.group.position.z,
@@ -1343,7 +1488,7 @@ export function createCreatureManager(
           if (entry.held) {
             // The gizmo owns this root; the resolved body position is
             // discarded (neighbors carried their half of any separation).
-            slot.characterShadow?.setPosition(
+            if (slot.present) slot.characterShadow?.setPosition(
               root.position.x + (slot.character?.group.position.x ?? 0),
               root.position.z + (slot.character?.group.position.z ?? 0),
             );
@@ -1356,10 +1501,12 @@ export function createCreatureManager(
           // The gait reads the RESOLVED ground speed — walk cycles blend in
           // with actual movement and drift out to the ambient floor.
           character.setLocomotion(Math.hypot(body.vx, body.vz), entry.heading);
-          slot.characterShadow?.setPosition(
-            body.x + character.group.position.x,
-            body.z + character.group.position.z,
-          );
+          if (slot.present) {
+            slot.characterShadow?.setPosition(
+              body.x + character.group.position.x,
+              body.z + character.group.position.z,
+            );
+          }
         }
       }
 
