@@ -75,6 +75,9 @@ The traps, in order of how easily they get violated:
 - **Everything in `src/dev/` is gated on `isDev`** and must tree-shake out of the demo build.
 - **Scene changes — landscape, terrain dials, paint — travel as session events** over the sync
   topic and into `refworld:<world>:scene`; apply through the replay driver, never a second path.
+- **Physics runs only on the simulating page; every decision about what is stuck, loose or
+  settled travels as a scene event.** `world.enablePhysics()` is called on host election and
+  nowhere else — a viewer holds no rapier world and decides nothing (docs/PLAN.md §7.6).
 - **The geography is authored in `src/world/landscape.ts`** and is the single source every
   system samples — placement, colliders, water, minimap. Never re-derive a shoreline
   elsewhere, and the map does not ride the scatter seed. The ground has height: sample it

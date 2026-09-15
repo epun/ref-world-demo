@@ -56,6 +56,7 @@ import {
   clumpLocalOffset,
   clumpLocalRotation,
   decideContact,
+  CONTACT_PAD,
   DROP_MIN_GAP_MS,
   impactOf,
   shouldDrop,
@@ -1278,7 +1279,7 @@ export function createCreatureManager(
    * this overwrites anyway, and the continuity attach would have bought is
    * what the entrance slide is for.
    */
-  function seat(carrier: Slot, record: StickRecord): boolean {
+  function seat(carrier: Slot, record: StickRecord, opts: { slide?: boolean } = {}): boolean {
     const clump = carrier.clump;
     if (!clump || carrier.phase !== 'alive') return false;
     if (clump.items.has(record.item)) return false;
@@ -1330,6 +1331,18 @@ export function createCreatureManager(
     hidePlacement(record.item);
     if (!looseMeshes) return false;
     const object = looseMeshes.show(record.item, kind, variant, scale);
+    /*
+     * WHERE IT SLIDES IN FROM, and why a prop is the one case that has to ask.
+     *
+     * A creature passenger is standing somewhere real on every page, so its
+     * slide is always a short travel from where it was. A prop's mesh is
+     * created HERE — and on the host `stickItem` has already moved it to the
+     * stone's live transform, so sliding from it is the stone being scooped
+     * up. On a viewer applying a `stick` there is no live transform to slide
+     * from: the mesh is brand new at the origin, and sliding from there would
+     * fly a tree across the map. So the viewer seats it and nothing moves,
+     * which is right — nothing arrived, the world simply is like this.
+     */
     clump.add({
       key: record.item,
       object,
@@ -1339,6 +1352,7 @@ export function createCreatureManager(
       scale,
       offset,
       rotation,
+      ...(opts.slide === true ? { from: enterFrom(carrier, object, offset) } : {}),
     });
     return true;
   }
@@ -1614,9 +1628,14 @@ export function createCreatureManager(
       qz: rotation.z,
       qw: rotation.w,
     };
-    // The body goes first: `take` drops it and hides the placement, so the
-    // mesh `seat` then draws is the only copy of the thing.
-    if (!seat(carrier, record)) return;
+    // The mesh goes where the stone ACTUALLY is first, so the entrance slide
+    // below is the short travel from the hit point to the seat rather than a
+    // flight from the origin. `show` is idempotent, so `seat` finds this one.
+    if (looseMeshes && item.kind) {
+      looseMeshes.show(item.key, item.kind, item.variant, item.scale);
+      looseMeshes.move(item.key, t.x, t.y, t.z, r);
+    }
+    if (!seat(carrier, record, { slide: true })) return;
     observer?.stick(record);
   }
 
@@ -1825,7 +1844,9 @@ export function createCreatureManager(
         const props = STICKY[item.kind];
         const point = itemPoints[nearIdx[k]!]!;
         const d = Math.hypot(point.x - root.position.x, point.z - root.position.z);
-        if (d > reach + item.r) continue;
+        // `CONTACT_PAD`, because nothing in this world is ever exactly
+        // touching: every solver here holds a skin.
+        if (d > reach + item.r + CONTACT_PAD) continue;
         const speed = Math.hypot(entry.body.vx, entry.body.vz) / 1000;
         const outcome = decideContact({
           itemR: item.r,
@@ -1860,7 +1881,7 @@ export function createCreatureManager(
         if (a.slot.passengers.has(b.slot.id) || b.slot.passengers.has(a.slot.id)) continue;
         const dx = a.root.position.x - b.root.position.x;
         const dz = a.root.position.z - b.root.position.z;
-        if (Math.hypot(dx, dz) > a.slot.bodyR + b.slot.bodyR) continue;
+        if (Math.hypot(dx, dz) > a.slot.bodyR + b.slot.bodyR + CONTACT_PAD) continue;
         if (b.slot.bodyR <= carryLimit(a.slot.bodyR)) stickCreature(a.slot, b.slot, a.root);
         else if (a.slot.bodyR <= carryLimit(b.slot.bodyR)) stickCreature(b.slot, a.slot, b.root);
       }
@@ -2644,11 +2665,21 @@ export function createCreatureManager(
         root.position.y = surface.sampleHeight(root.position.x, root.position.z);
       }
 
-      // The pile: its size and its entrance slides on every page, its
-      // decisions on the one that simulates (see `simulateSticky`).
-      growPass(dt);
+      /*
+       * The pile. DECISIONS FIRST, then size — so a creature that picked
+       * something up this frame is already bigger this frame. The other way
+       * round it grew one frame late, which is a frame of a stone sitting on
+       * a creature that has not noticed.
+       *
+       * `simulateSticky` runs on the page that simulates and nowhere else
+       * (docs/PLAN.md §7.6); `growPass` runs on every page, because the pile
+       * has to be DRAWN on all of them. A page that is not simulating drops
+       * the frame's contact reports on the floor rather than keeping a list
+       * nothing will ever read.
+       */
       if (manager.simulating()) simulateSticky(nowMs);
       else contacts.length = 0;
+      growPass(dt);
     },
 
     has(id): boolean {

@@ -17,8 +17,8 @@
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { Mesh, Scene, Vector3 } from 'three';
-import type { Group, Object3D } from 'three';
+import { Group, Mesh, Scene, Vector3 } from 'three';
+import type { Object3D } from 'three';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { createCharacter } from '../../src/character/character';
 import {
@@ -38,7 +38,7 @@ import type { Collider } from '../../src/physics/colliders';
 import type { WorldHandles } from '../../src/world/scene';
 import { FLAT_SURFACE, ROLLING_SURFACE, type Surface } from '../../src/world/surface';
 import { isWater } from '../../src/world/landscape';
-import { bird, quadruped, snowman, circleBlob } from '../fixtures/strokes';
+import { bird, fish, quadruped, snowman, circleBlob } from '../fixtures/strokes';
 
 // createEgg paints its shell texture through a 2d canvas; off-DOM the
 // context is null and every paint is a guarded no-op — only createElement
@@ -52,14 +52,40 @@ beforeAll(() => {
   }
 });
 
+/**
+ * The rigid-body layer, stubbed just enough for the sticky pass.
+ *
+ * `simulating()` is `bodies() !== null && !aiPaused`, which is how the
+ * manager knows it is the page that decides (docs/PLAN.md §7.6). A stub
+ * world with no `bodies` is therefore a VIEWER as far as the manager is
+ * concerned, and that is exactly what one of the tests below wants.
+ */
+function stubBodies(): unknown {
+  return {
+    items: () => [],
+    onSettle: () => {},
+    take: () => true,
+    restore: () => null,
+    loosen: () => null,
+    bump: () => {},
+    itemByCollider: () => undefined,
+    sync: () => {},
+    update: () => {},
+    dispose: () => {},
+  };
+}
+
 /** Minimal world: real scene graph, no renderer, no DOM. */
-function stubWorld(colliders: Collider[]): WorldHandles {
+function stubWorld(colliders: Collider[], opts: { physics?: boolean } = {}): WorldHandles {
   let version = 1;
   const world = {
+    ...(opts.physics === true
+      ? { bodies: stubBodies, physics: () => null, enablePhysics: async () => {} }
+      : {}),
     scene: new Scene(),
     cameraRig: { frameAt: (_p: Vector3) => {} },
     shadows: {
-      addShadow: () => ({ setPosition: () => {} }),
+      addShadow: () => ({ setPosition: () => {}, setRadius: () => {} }),
       removeShadow: () => {},
     },
     scatter: {
@@ -437,6 +463,10 @@ describe('who is still an egg — the manual hatch, synced (user ask, 2026-09-10
         hatch: (id, cause) => hatched.push({ id, cause }),
         retire: () => {},
         emote: () => {},
+        stick: () => {},
+        drop: () => {},
+        loose: () => {},
+        settle: () => {},
       },
     });
     manager.spawn('a', snowman, { hatchMs: 60_000 });
@@ -1232,6 +1262,250 @@ describe('drive hold — the stick owns the creature, the wander ai waits', () =
   it('says nothing is held for a creature that was never there', () => {
     const manager = held();
     expect(manager.isDriven('nobody', 10_000)).toBe(false);
+    manager.clearAll();
+  });
+});
+
+// ── the sticky world (src/creatures/sticky.ts, docs/PLAN.md §7.6) ───────────
+/*
+ * WHAT THESE PIN, in the user's terms: a small creature that walks into a big
+ * one ends up riding on it; the person whose creature is being carried keeps
+ * it (their minimap follows the pile, and they get it back when the carrier
+ * leaves); and a phone watching the room arrives at exactly the same pile
+ * from the event alone, without running a solver and without pretending to
+ * have decided anything.
+ *
+ * `fish` measures ~2.72u and `snowman` ~0.91u, so the snowman is comfortably
+ * inside `carryLimit(fish)` = 0.6 × 2.72 = 1.63 and the fish is not inside
+ * the snowman's. Deliberately not a hand-set radius: the carry rule turns on
+ * the REAL mesh footprint, and a test that set the numbers itself would pass
+ * over a generator that had stopped measuring.
+ */
+
+describe('sticky — one creature carrying another', () => {
+  function pair(opts: { physics?: boolean } = {}): {
+    world: WorldHandles;
+    manager: ReturnType<typeof createCreatureManager>;
+    seen: { kind: string; id: string; item: string }[];
+  } {
+    const seen: { kind: string; id: string; item: string }[] = [];
+    const world = stubWorld([], opts);
+    const manager = createCreatureManager(world, {
+      autoHatch: false,
+      surface: FLAT_SURFACE,
+      observer: {
+        egg: () => {},
+        hatch: () => {},
+        retire: () => {},
+        emote: () => {},
+        stick: (r) => seen.push({ kind: 'stick', id: r.id, item: r.item }),
+        drop: (r) => seen.push({ kind: 'drop', id: r.id, item: r.item }),
+        loose: (item) => seen.push({ kind: 'loose', id: '', item }),
+        settle: (r) => seen.push({ kind: 'settle', id: '', item: r.item }),
+      },
+    });
+    // Grown, so there is no shell to break and no hatch timing in the way.
+    manager.spawn('big', fish, { hatchMs: 60_000, grown: true });
+    manager.spawn('small', snowman, { hatchMs: 60_000, grown: true });
+    return { world, manager, seen };
+  }
+
+  /**
+   * The live roots, by id.
+   *
+   * Matched on POSITION rather than on the root's name: the manager names a
+   * root after the creature's generated name when the drawer did not sign
+   * one, so the name is not the id and a test keyed on it would be pinning
+   * the naming table. `positionOf` is the id's own answer.
+   */
+  function rootsOf(
+    world: WorldHandles,
+    manager: ReturnType<typeof createCreatureManager>,
+  ): Map<string, Group> {
+    const out = new Map<string, Group>();
+    for (const id of ['big', 'small']) {
+      const at = manager.positionOf(id);
+      if (!at) continue;
+      for (const child of world.scene.children) {
+        if (!(child instanceof Group)) continue;
+        if (Math.hypot(child.position.x - at.x, child.position.z - at.z) < 1e-6) {
+          out.set(id, child);
+          break;
+        }
+      }
+    }
+    return out;
+  }
+
+  it('carries the smaller one: slot state, root parent, and one stick event', () => {
+    const { world, manager, seen } = pair({ physics: true });
+    const roots = rootsOf(world, manager);
+    expect(roots.size).toBe(2);
+    const big = roots.get('big')!;
+    const small = roots.get('small')!;
+    // Standing on each other. Nothing here writes Y — the ground pass owns it.
+    small.position.set(big.position.x, small.position.y, big.position.z);
+    manager.update(16, 1000);
+
+    const sticks = seen.filter((e) => e.kind === 'stick');
+    expect(sticks).toEqual([{ kind: 'stick', id: 'big', item: 'creature:small' }]);
+    // The small one now hangs under the big one's clump, not under the scene.
+    expect(small.parent?.name).toBe('clump');
+    expect(small.parent?.parent).toBe(big);
+    expect(world.scene.children).not.toContain(small);
+
+    // And it is still its drawer's creature: the roster reports it, and its
+    // pose is where it has been carried TO rather than a clump-local offset.
+    expect(manager.liveIds()).toContain('small');
+    const pose = manager.poses().find((p) => p.id === 'small')!;
+    expect(Math.hypot(pose.x - big.position.x, pose.z - big.position.z)).toBeLessThan(12);
+
+    // Exactly once, however many frames go by.
+    manager.update(16, 1016);
+    manager.update(16, 1032);
+    expect(seen.filter((e) => e.kind === 'stick')).toHaveLength(1);
+    manager.clearAll();
+  });
+
+  it('grows the carrier, and the growth shows up in the exclusion radius', () => {
+    const { world, manager } = pair({ physics: true });
+    const roots = rootsOf(world, manager);
+    const big = roots.get('big')!;
+    const small = roots.get('small')!;
+    const before = Math.max(...manager.positions().map((p) => p.r));
+    small.position.set(big.position.x, small.position.y, big.position.z);
+    manager.update(16, 1000);
+    expect(big.scale.x).toBeGreaterThan(1);
+    // `positions()` is what the scatter reads for its exclusion radius, so a
+    // creature that has eaten something clears more world out of its way.
+    expect(Math.max(...manager.positions().map((p) => p.r))).toBeGreaterThan(before);
+    manager.clearAll();
+  });
+
+  it('sets the passenger down FREE when its carrier leaves, with a drop', () => {
+    const { world, manager, seen } = pair({ physics: true });
+    const roots = rootsOf(world, manager);
+    const big = roots.get('big')!;
+    const small = roots.get('small')!;
+    small.position.set(big.position.x, small.position.y, big.position.z);
+    manager.update(16, 1000);
+    expect(small.parent?.name).toBe('clump');
+    seen.length = 0;
+
+    manager.clear('big');
+    // Back in the world, standing on its own, and its own creature again.
+    expect(small.parent).toBe(world.scene);
+    expect(manager.liveIds()).toEqual(['small']);
+    expect(seen.filter((e) => e.kind === 'drop')).toEqual([
+      { kind: 'drop', id: 'big', item: 'creature:small' },
+    ]);
+    // It answers to its phone again.
+    expect(manager.drive('small', { x: 1, z: 0, mag: 1 })).toBe(true);
+    expect(manager.driven()).toEqual(['small']);
+    manager.clearAll();
+  });
+
+  it('ignores a drive on a carried creature rather than refusing it', () => {
+    // A `false` would have the handset report the creature gone, which it is
+    // not: it is on a pile, and it will answer again the moment it is down.
+    const { world, manager } = pair({ physics: true });
+    const roots = rootsOf(world, manager);
+    const big = roots.get('big')!;
+    roots.get('small')!.position.set(big.position.x, 0, big.position.z);
+    manager.update(16, 1000);
+    expect(manager.drive('small', { x: 1, z: 0, mag: 1 })).toBe(true);
+    expect(manager.driven()).toEqual([]);
+    manager.clearAll();
+  });
+
+  it('a viewer reaches the same slot state from the event, deciding nothing', () => {
+    // No physics at all: `simulating()` is false, the sticky pass never runs,
+    // and the only thing that puts the small one on the pile is the event.
+    const { world, manager, seen } = pair();
+    expect(manager.simulating()).toBe(false);
+    const roots = rootsOf(world, manager);
+    const big = roots.get('big')!;
+    const small = roots.get('small')!;
+    // Overlapping, and a frame goes by. On a viewer that decides nothing.
+    small.position.set(big.position.x, small.position.y, big.position.z);
+    manager.update(16, 1000);
+    expect(small.parent).toBe(world.scene);
+    expect(seen).toEqual([]);
+
+    manager.applyStick({
+      id: 'big',
+      item: 'creature:small',
+      ox: 0,
+      oy: 2,
+      oz: 1,
+      qx: 0,
+      qy: 0,
+      qz: 0,
+      qw: 1,
+    });
+    // The same state the host's decision produced — and NOT a decision: the
+    // observer never fired.
+    expect(small.parent?.name).toBe('clump');
+    expect(small.parent?.parent).toBe(big);
+    expect(seen).toEqual([]);
+    expect(manager.liveIds()).toContain('small');
+    manager.clearAll();
+  });
+
+  it('refuses to seat a creature on itself, or to seat one twice', () => {
+    const { world, manager } = pair();
+    const small = rootsOf(world, manager).get('small')!;
+    const record = {
+      item: 'creature:small',
+      ox: 0,
+      oy: 1,
+      oz: 0,
+      qx: 0,
+      qy: 0,
+      qz: 0,
+      qw: 1,
+    };
+    manager.applyStick({ ...record, id: 'small' });
+    expect(small.parent).toBe(world.scene);
+    manager.applyStick({ ...record, id: 'big' });
+    expect(small.parent?.name).toBe('clump');
+    // A resent batch must not put it on a second pile.
+    manager.applyStick({ ...record, id: 'small' });
+    expect(small.parent?.parent).toBe(rootsOf(world, manager).get('big'));
+    manager.clearAll();
+  });
+
+  it('ignores an apply naming a carrier or an item that does not exist', () => {
+    const { manager, seen } = pair();
+    expect(() =>
+      manager.applyStick({
+        id: 'ghost',
+        item: 'creature:small',
+        ox: 0,
+        oy: 0,
+        oz: 0,
+        qx: 0,
+        qy: 0,
+        qz: 0,
+        qw: 1,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      manager.applyDrop({
+        id: 'big',
+        item: 'creature:nobody',
+        x: 0,
+        z: 0,
+        qx: 0,
+        qy: 0,
+        qz: 0,
+        qw: 1,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      manager.applySettle({ item: 'rock:0:0.00:0.00', x: 1, z: 1, qx: 0, qy: 0, qz: 0, qw: 1 }),
+    ).not.toThrow();
+    expect(seen).toEqual([]);
     manager.clearAll();
   });
 });

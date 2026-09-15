@@ -176,6 +176,19 @@ export const CLUMP_FIT = 0.7;
  */
 export const STUCK_COLLIDERS_MAX = 24;
 
+/**
+ * [D] Slack on "touching", world units.
+ *
+ * The pure resolve separates every creature pair to EXACT contact plus a 1mm
+ * skin and pushes every creature out of a hard prop the same way
+ * (src/physics/resolve.ts), and rapier keeps its own bodies a hair apart too.
+ * So by the time anything asks whether two things are touching, they provably
+ * are not — quite — and a strict `d <= rA + rB` test could never fire a
+ * single pickup. 5cm is under the skin's own order of magnitude at world
+ * scale and far below anything a person could see.
+ */
+export const CONTACT_PAD = 0.05;
+
 /** From the tokens, never a literal: the shortest gap between two drops off
  * the same carrier. A pile that shed on every contact would unravel in one
  * frame against a tree, and a beat is the shortest interval this project
@@ -222,7 +235,13 @@ export function decideContact(a: {
   impact: number;
   carrierR: number;
 }): Outcome {
-  if (a.rooted) return a.impact >= a.props.breakStrength ? 'loose' : 'block';
+  if (a.rooted) {
+    // `Infinity` means NEVER, and it has to mean that even when it is asked
+    // about an infinite impact — `Infinity >= Infinity` is true, which would
+    // have handed a building to anyone who managed to overflow a speed.
+    if (!Number.isFinite(a.props.breakStrength)) return 'block';
+    return a.impact >= a.props.breakStrength ? 'loose' : 'block';
+  }
   return a.itemR <= carryLimit(a.carrierR) && a.props.stickiness > 0 ? 'stick' : 'shove';
 }
 
