@@ -327,34 +327,6 @@ full rate and only nearby scatter renders. Distant characters tick at a reduced 
 render as simplified silhouettes; the inflated mesh is LOD'd down. This is the main perf
 risk in the whole plan and it lands in P5.
 
-*Partly shipped, 2026-09-15* (user ask: 100–200 players at once), ported from an instanced
-crowd engine (red-reddington's "Where's Walter" — one `InstancedMesh`, shader LOD, amortised
-per-frame updates, simulation in flat arrays). What transferred, and what did not:
-
-- **Peer lookup is a spatial hash** (`src/physics/spatial.ts`). Each agent asks the cells
-  around it rather than the whole cast; 2.8ms → 0.18ms a frame at 200 agents. The pair
-  separation sweep stays all-pairs — ported, measured, byte-identical and slower, because
-  twenty thousand tight numeric checks beat two hundred hashed walks.
-- **Off-screen creatures refresh their presentation one frame in four**
-  (`OFFSCREEN_STRIDE` in `src/creatures/manager.ts`): gait and emote springs, eyes, bubble,
-  shadow stamp. The simulation still runs every frame for every creature — the host's
-  positions are what every phone follows. The tour camera frames a small piece of a huge map,
-  so this is most of the cast, most of the time.
-- **Shadow stamps are one instanced draw call** (`src/world/shadows.ts`), instead of a mesh
-  and a geometry each. Same flat value, same sharp edge.
-- **Textures sized to what they cover**: egg shell 1024² → 512², world marking 512² → 256²
-  (the phone portrait keeps 512). A manual world stands its whole clutch at once; at 200 eggs
-  the shells alone were ~800MB of GPU memory.
-- **Pixel ratio capped at 1.5 on coarse-pointer devices** (the phone's world view); the
-  projection keeps 2.
-- **`MAX_POPULATION` 96 → 256**, and a `spawn 200 (stress)` button with a live
-  `frame · draw calls · tris · creatures` line in the ghost panel to measure against.
-- **Not transferable**: the single draw call for the cast itself. Every creature here is a
-  unique inflated mesh with its own marking texture and deform/eye uniforms; the reference
-  shares one geometry across its whole crowd. `BatchedMesh` plus a texture atlas and
-  per-instance uniform textures is the path if the projection still needs it, and it is a
-  rewrite of `src/character/`, not a tweak.
-
 **The minimap absorbs the crowding.** This is where a busy world actually shows, so the
 minimap does the work: **you** are `#080808` with the `#fb5429` ring, always distinct at any
 zoom; everyone else is muted `#8e908d` and clusters into a single softer mark below a

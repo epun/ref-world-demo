@@ -65,14 +65,7 @@ const WOBBLE_RATIO = Math.SQRT2;
  */
 const FACE_CAMERA_Y = -Math.PI / 4;
 
-/**
- * Shell texture edge. 1024 → 512 (2026-09-15, the crowd work): an egg is a
- * few percent of the frame and a manual world stands its whole clutch at
- * once, so at two hundred eggs the shells were ~800MB of RGBA on the GPU
- * before a single one hatched. Half the edge is a quarter of that, and the
- * paint-on strokes are drawn at STAMP_SIZE and scaled onto it as before.
- */
-const TEX_SIZE = 512;
+const TEX_SIZE = 1024;
 const STAMP_SIZE = 512;
 
 /** A partial-shell range, used by the hatch to split the egg into pieces. */

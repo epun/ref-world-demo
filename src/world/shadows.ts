@@ -13,16 +13,6 @@
  * and the tilt are the pass's business, which is the same seam discipline
  * locomotion follows.
  *
- * ONE DRAW CALL for the whole population: every stamp is an instance of a
- * single shared unit disc in one InstancedMesh, not a Mesh of its own. At two
- * hundred creatures the per-stamp design cost two hundred draw calls and two
- * hundred CircleGeometry allocations; instanced, the population is one buffer
- * of matrices uploaded once a frame. The radius that used to be baked into
- * each stamp's geometry now lives in its instance scale, which is the only
- * reason the geometry can be shared at all. Nothing about the LOOK changes:
- * still one flat value cut sharp (TASTE §2.4), because the material is shared
- * by construction — instancing removes the meshes, not the discipline.
- *
  * TIME OF DAY (cellshader translation): the reference environment drives its
  * shadow-catcher from sun altitude (length/direction) and a per-weather
  * shadow scalar (opacity). Here that translates to the monochrome system:
@@ -37,10 +27,8 @@
 import {
   CircleGeometry,
   Color,
-  DynamicDrawUsage,
   Group,
-  InstancedMesh,
-  Matrix4,
+  Mesh,
   MeshBasicMaterial,
   Quaternion,
   Vector3,
@@ -52,9 +40,6 @@ import { ROLLING_SURFACE, type Surface } from './surface';
 /** Just proud of the sampled ground height. */
 export const SHADOW_LIFT = 0.02;
 const SHADOW_SEGMENTS = 64;
-
-/** Instance slots allocated up front; doubles when full, never shrinks. */
-const SHADOW_CAPACITY = 64;
 
 // ── sun-stamp ellipse math (pure) ────────────────────────────────────────────
 
@@ -135,8 +120,7 @@ export interface ShadowHandle {
 }
 
 interface Stamp {
-  /** Slot in the InstancedMesh's matrix buffer. Moves on swap-remove. */
-  index: number;
+  mesh: Mesh;
   radius: number;
   /** Caster ground position — the ellipse offset is applied on top. */
   x: number;
@@ -149,10 +133,6 @@ export class FlatShadows {
 
   private readonly stamps = new Map<string, Stamp>();
 
-  /** Slot → id, the inverse of `stamps`. Swap-remove needs to know whose
-   * matrix it just moved so the map can be corrected. */
-  private readonly slots: string[] = [];
-
   /** The ground every stamp lies on. Defaults to the world's terrain; a
    * caller with no landscape (tests, the phone stage) passes FLAT_SURFACE. */
   private readonly surface: Surface;
@@ -163,10 +143,6 @@ export class FlatShadows {
   private readonly groundNormal = new Vector3();
   private readonly tilt = new Quaternion();
   private readonly spin = new Quaternion();
-  private readonly position = new Vector3();
-  private readonly orientation = new Quaternion();
-  private readonly scale = new Vector3();
-  private readonly matrix = new Matrix4();
 
   // One shared material: every shadow is the same single value by
   // construction — the per-frame presence step retints ALL stamps at once,
@@ -177,18 +153,6 @@ export class FlatShadows {
     polygonOffsetFactor: -2,
     polygonOffsetUnits: -2,
   });
-
-  // One shared UNIT disc, rotated flat at build time. Every stamp is this
-  // geometry scaled by its own radius — there is no per-stamp allocation.
-  private readonly geometry = (() => {
-    const g = new CircleGeometry(1, SHADOW_SEGMENTS);
-    g.rotateX(-Math.PI / 2);
-    return g;
-  })();
-
-  /** The single mesh the whole population draws from. Replaced (never
-   * resized) when it runs out of slots. */
-  private mesh: InstancedMesh;
 
   private readonly groundValue = new Color(SURFACE.ground);
   private readonly shadowValue = new Color(SURFACE.shadow);
@@ -201,32 +165,6 @@ export class FlatShadows {
 
   constructor(surface: Surface = ROLLING_SURFACE) {
     this.surface = surface;
-    this.mesh = this.makeMesh(SHADOW_CAPACITY);
-    this.group.add(this.mesh);
-  }
-
-  private makeMesh(capacity: number): InstancedMesh {
-    const mesh = new InstancedMesh(this.geometry, this.material, capacity);
-    mesh.renderOrder = 1;
-    // The stamps are scattered across the whole map and the mesh's own
-    // bounding sphere means nothing once the matrices move.
-    mesh.frustumCulled = false;
-    mesh.instanceMatrix.setUsage(DynamicDrawUsage);
-    mesh.count = 0;
-    return mesh;
-  }
-
-  /** Double the slot count: new mesh, matrices copied across, old one gone.
-   * Never shrinks — a population that peaked once will peak again. */
-  private grow(): void {
-    const next = this.makeMesh(Math.max(1, this.mesh.instanceMatrix.count) * 2);
-    next.instanceMatrix.array.set(this.mesh.instanceMatrix.array);
-    next.count = this.mesh.count;
-    next.instanceMatrix.needsUpdate = true;
-    this.group.remove(this.mesh);
-    this.mesh.dispose();
-    this.mesh = next;
-    this.group.add(next);
   }
 
   /**
@@ -262,31 +200,25 @@ export class FlatShadows {
     const push = e.offset * stamp.radius;
     const px = stamp.x + e.dirX * push;
     const pz = stamp.z + e.dirZ * push;
-    this.position.set(px, this.surface.sampleHeight(px, pz) + SHADOW_LIFT, pz);
+    stamp.mesh.position.set(px, this.surface.sampleHeight(px, pz) + SHADOW_LIFT, pz);
     const n = this.surface.normalAt(px, pz);
     this.groundNormal.set(n.x, n.y, n.z);
     this.tilt.setFromUnitVectors(this.worldUp, this.groundNormal);
     this.spin.setFromAxisAngle(this.worldUp, stampRotationY(e));
-    this.orientation.copy(this.tilt).multiply(this.spin);
-    // The unit geometry carries no radius, so the radius rides in the scale:
-    // long axis radius × stretch, short axis radius.
-    this.scale.set(stamp.radius * e.stretch, 1, stamp.radius);
-    this.mesh.setMatrixAt(
-      stamp.index,
-      this.matrix.compose(this.position, this.orientation, this.scale),
-    );
-    this.mesh.instanceMatrix.needsUpdate = true;
+    stamp.mesh.quaternion.copy(this.tilt).multiply(this.spin);
+    stamp.mesh.scale.set(e.stretch, 1, 1);
   }
 
   addShadow(id: string, radius: number): ShadowHandle {
     this.removeShadow(id);
-    if (this.mesh.count >= this.mesh.instanceMatrix.count) this.grow();
-    const index = this.mesh.count;
-    this.mesh.count = index + 1;
-    const stamp: Stamp = { index, radius, x: 0, z: 0 };
-    this.stamps.set(id, stamp);
-    this.slots[index] = id;
+    const geometry = new CircleGeometry(radius, SHADOW_SEGMENTS);
+    geometry.rotateX(-Math.PI / 2);
+    const mesh = new Mesh(geometry, this.material);
+    mesh.renderOrder = 1;
+    const stamp: Stamp = { mesh, radius, x: 0, z: 0 };
     this.lay(stamp);
+    this.group.add(mesh);
+    this.stamps.set(id, stamp);
     return {
       setPosition: (x: number, z: number): void => {
         stamp.x = x;
@@ -296,26 +228,11 @@ export class FlatShadows {
     };
   }
 
-  /**
-   * Swap-remove: the last instance's matrix is moved down into the freed slot
-   * and the count drops by one, so the live instances stay a dense prefix of
-   * the buffer. Nothing is reallocated and no other stamp is re-laid.
-   */
   removeShadow(id: string): void {
     const stamp = this.stamps.get(id);
     if (!stamp) return;
-    const last = this.mesh.count - 1;
-    if (stamp.index !== last) {
-      this.mesh.getMatrixAt(last, this.matrix);
-      this.mesh.setMatrixAt(stamp.index, this.matrix);
-      const movedId = this.slots[last]!;
-      const moved = this.stamps.get(movedId);
-      if (moved) moved.index = stamp.index;
-      this.slots[stamp.index] = movedId;
-    }
-    this.slots.length = last;
-    this.mesh.count = last;
-    this.mesh.instanceMatrix.needsUpdate = true;
+    this.group.remove(stamp.mesh);
+    stamp.mesh.geometry.dispose();
     this.stamps.delete(id);
   }
 }

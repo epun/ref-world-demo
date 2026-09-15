@@ -44,12 +44,6 @@ import { CHARACTER } from '../taste/tokens';
 /** Mark opacity — subtle; the silhouette must still win at distance. */
 const MARK_OPACITY = 0.3;
 
-/**
- * Default marking texture edge. The phone portrait fills the screen and
- * keeps this; the world passes a smaller one (`size` below) because a
- * creature there is 1-3% of the frame and two hundred of them at 512² is
- * a texture budget the projection cannot afford.
- */
 const TEX_SIZE = 512;
 const STAMP_SIZE = 512;
 
@@ -174,10 +168,8 @@ export function applyMarking(
   strokes: StrokeList,
   box: { min: { x: number; y: number }; max: { x: number; y: number } },
   identitySeed?: number,
-  options: { size?: number } = {},
 ): MarkingHandle | null {
   if (typeof document === 'undefined') return null;
-  const TEX = options.size && options.size > 0 ? Math.round(options.size) : TEX_SIZE;
 
   // Identity placement jitter — deterministic per id, zero when unsalted.
   const idMix = identitySeed === undefined ? null : (identitySeed % 8192) * 0.4271;
@@ -203,8 +195,8 @@ export function applyMarking(
   // texture, so the stamp is pre-scaled by the inverse aspect to land
   // isotropic on the body.
   const canvas = document.createElement('canvas');
-  canvas.width = TEX;
-  canvas.height = TEX;
+  canvas.width = TEX_SIZE;
+  canvas.height = TEX_SIZE;
   const ctx = canvas.getContext('2d');
   if (ctx && stampCtx) {
     let fw = STAMP_FIT;
@@ -220,9 +212,15 @@ export function applyMarking(
     // readable there. Drawn about the (identity-jittered) center so the tilt
     // pivots there; unsalted this is the exact back-center stamp.
     ctx.save();
-    ctx.translate(stampCx * TEX, (1 - stampCy) * TEX);
+    ctx.translate(stampCx * TEX_SIZE, (1 - stampCy) * TEX_SIZE);
     ctx.rotate(stampRot);
-    ctx.drawImage(stamp, (-fw / 2) * TEX, (-fh / 2) * TEX, fw * TEX, fh * TEX);
+    ctx.drawImage(
+      stamp,
+      (-fw / 2) * TEX_SIZE,
+      (-fh / 2) * TEX_SIZE,
+      fw * TEX_SIZE,
+      fh * TEX_SIZE,
+    );
     ctx.restore();
   }
 

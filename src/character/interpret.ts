@@ -734,142 +734,6 @@ function proportionWarp(mask: Mask, plan: BodyPlan): Mask | null {
   return { size, data: out };
 }
 
-// ── the ovoid: the creature brief's constant body ────────────────────────────
-
-/**
- * How far the body is pulled toward an ovoid, 0–1. **[D]**
- *
- * The creature brief (docs/taste/creature.md, 2026-09-15) restages ONE rig
- * — *"a soft ovoid body … treating the stalk-topper as the variable that
- * carries species identity while the body stays constant"* — and the user's
- * ask keeps the drawing in the loop: *"the drawing can inform the color of
- * the character as well as the silhouette"*. So the body is neither the
- * drawing verbatim (§1a) nor a stock egg: the drawing's processed mass is
- * blended toward an egg of the same bounds, radius by radius around its
- * centre. At 0 the §1a body is untouched; at 1 every drawing is the same
- * egg. Half-and-half keeps a drawn hat wider than a drawn bottle and lets
- * ears, horns and drawn feet survive as bumps on a body that reads as the
- * brief's — the drawing informs, the rig holds. Tuned in the ghost panel;
- * the shipped number is a starting point.
- */
-export const BODY_OVOID = 0.5;
-
-/**
- * How much narrower the egg is at the crown than at the belly, 0–1. **[D]**
- * The board's bodies are a touch narrower where the stalk leaves them
- * (docs/taste/creature.md, "what the board shows"); a plain ellipse reads
- * as a bean, not a bulb.
- */
-export const OVOID_TAPER = 0.14;
-
-/**
- * How much the egg's LOWER half is squashed, 0–1. **[D]** A full egg bottom
- * hangs below the stubby legs and reads as a belly-foot — the feet detector
- * then counts one foot where the brief's rig has two. The board's bodies
- * sit on a flattish base with the legs under it; this is that base.
- */
-export const OVOID_FLAT_BOTTOM = 0.18;
-
-/** Angular resolution of the radial profile the blend is computed on. */
-const OVOID_BINS = 360;
-
-/** Dev-panel override of BODY_OVOID (src/dev/); null = the constant. */
-let bodyOvoidOverride: number | null = null;
-export function setBodyOvoid(amount: number | null): void {
-  bodyOvoidOverride = amount === null ? null : clamp(amount, 0, 1);
-}
-export function bodyOvoid(): number {
-  return bodyOvoidOverride ?? BODY_OVOID;
-}
-
-/**
- * Blend a mask toward an ovoid of its own bounds — PURE.
- *
- * Radial, about the mass centre: the mask's outermost ink along every
- * angle is measured into OVOID_BINS bins (a concave drawing is taken at its
- * star hull, which is one more step toward the brief's soft body), the
- * egg's radius along the same angle comes from its half-extents with the
- * crown narrowed by OVOID_TAPER, and every pixel inside the mixed radius is
- * filled. Nothing random, nothing timed; the same mask and amount fill the
- * same pixels on every device.
- */
-export function ovoidBlend(mask: Mask, amount: number): Mask {
-  const k = clamp(amount, 0, 1);
-  if (k <= 0) return mask;
-  const size = mask.size;
-  const b = maskBounds(mask);
-  if (b.maxX < 0) return mask;
-  const cx = (b.minX + b.maxX) / 2;
-  const cy = (b.minY + b.maxY) / 2;
-  const hw = Math.max(1, (b.maxX - b.minX) / 2);
-  const hh = Math.max(1, (b.maxY - b.minY) / 2);
-
-  // The mask's own radial profile: farthest ink per angle bin.
-  const profile = new Float64Array(OVOID_BINS);
-  const data = mask.data;
-  for (let y = b.minY; y <= b.maxY; y++) {
-    const row = y * size;
-    for (let x = b.minX; x <= b.maxX; x++) {
-      if (data[row + x] !== 1) continue;
-      const dx = x - cx;
-      const dy = y - cy;
-      const r = Math.sqrt(dx * dx + dy * dy);
-      const bin = angleBin(dx, dy);
-      if (r > profile[bin]!) profile[bin] = r;
-    }
-  }
-  // Empty bins (thin drawings leave gaps between pixel angles) take their
-  // nearest filled neighbour so the profile is continuous.
-  for (let i = 0; i < OVOID_BINS; i++) {
-    if (profile[i]! > 0) continue;
-    for (let d = 1; d < OVOID_BINS; d++) {
-      const a = profile[(i + d) % OVOID_BINS]!;
-      const c = profile[(i - d + OVOID_BINS) % OVOID_BINS]!;
-      if (a > 0 || c > 0) {
-        profile[i] = Math.max(a, c);
-        break;
-      }
-    }
-  }
-
-  const out = new Uint8Array(size * size);
-  const reach = Math.ceil(Math.max(hw, hh)) + 2;
-  const y0 = Math.max(0, Math.floor(cy - reach));
-  const y1 = Math.min(size - 1, Math.ceil(cy + reach));
-  const x0 = Math.max(0, Math.floor(cx - reach));
-  const x1 = Math.min(size - 1, Math.ceil(cx + reach));
-  for (let y = y0; y <= y1; y++) {
-    const dy = y - cy;
-    // y is DOWN in mask space: up = negative dy. The crown narrows.
-    const up = clamp(-dy / hh, 0, 1);
-    const rx = hw * (1 - OVOID_TAPER * up * up);
-    // Below the centre the egg is squashed so the base sits flat over the legs.
-    const hy = dy > 0 ? hh * (1 - OVOID_FLAT_BOTTOM) : hh;
-    const row = y * size;
-    for (let x = x0; x <= x1; x++) {
-      const dx = x - cx;
-      const r = Math.sqrt(dx * dx + dy * dy);
-      const bin = angleBin(dx, dy);
-      const rMask = profile[bin]!;
-      // Egg radius along this angle: the ellipse (rx, hh) at the same direction.
-      const ux = r > 1e-9 ? dx / r : 0;
-      const uy = r > 1e-9 ? dy / r : 1;
-      const denom = Math.sqrt((ux * ux) / (rx * rx) + (uy * uy) / (hy * hy));
-      const rEgg = denom > 1e-12 ? 1 / denom : 0;
-      const rMix = rMask + (rEgg - rMask) * k;
-      if (r <= rMix) out[row + x] = 1;
-    }
-  }
-  return { size, data: out };
-}
-
-function angleBin(dx: number, dy: number): number {
-  const a = Math.atan2(dy, dx); // (-π, π]
-  const t = (a + Math.PI) / (2 * Math.PI); // [0, 1]
-  const bin = Math.floor(t * OVOID_BINS);
-  return bin >= OVOID_BINS ? 0 : bin;
-}
-
 /**
  * SPECIES ADDITIONS: grounding + stubby legs. Everything is measured
  * against the body's UNDERSIDE BASELINE — the median of the per-column
@@ -1064,16 +928,12 @@ export function buildBody(
   size: number,
   contourPoints: number,
   identitySeed?: number,
-  ovoid: number = bodyOvoid(),
 ): ShapeAnalysis | null {
   const plan = bodyPlan(motifs, seed, identitySeed);
   const filled = fillAndChunkify(strokes, size);
   if (!filled) return null;
-  const warped = proportionWarp(filled, plan);
-  if (!warped) return null;
-  // The brief's constant body: toward an egg, before the legs are stamped so
-  // they stand under the mass that actually results (see BODY_OVOID).
-  const proportioned = ovoidBlend(warped, ovoid);
+  const proportioned = proportionWarp(filled, plan);
+  if (!proportioned) return null;
   // Separate stamp channel so plan evolution never reshuffles leg waviness.
   const legRng = makeRng((seed ^ 0x9e3779b9) >>> 0);
   const body = groundAndLegs(proportioned, plan, legRng);
@@ -1091,12 +951,6 @@ export interface InterpretedDrawing {
   /** Analysis of the PROCESSED BODY — eyes and inflation work on the actual
    * silhouette (the drawing's own shape, §1a). */
   analysis: ShapeAnalysis;
-  /** Analysis of the drawing AS DRAWN — what the stalk's topper is cut from
-   * (src/character/topper.ts). The creature brief's species marker is the
-   * thing on the stalk, and here that thing is the drawing itself. */
-  source: ShapeAnalysis;
-  /** What the drawing measured as. Read by the colourway (./palette.ts). */
-  motifs: Motifs;
 }
 
 /**
@@ -1118,14 +972,14 @@ export interface InterpretedDrawing {
 export function interpretDrawing(
   strokes: StrokeList,
   fidelity = 1,
-  opts: AnalyzeOptions & { ovoid?: number } = {},
+  opts: AnalyzeOptions = {},
   identitySeed?: number,
 ): InterpretedDrawing | null {
   const source = analyze(strokes, opts);
   if (!source) return null;
-  const motifs = extractMotifs(source);
-  if (fidelity < 0.5) return { strokes, analysis: source, source, motifs };
+  if (fidelity < 0.5) return { strokes, analysis: source };
 
+  const motifs = extractMotifs(source);
   const base = strokeSeed(strokes);
   const seed = identitySeed === undefined ? base : (base ^ identitySeed) >>> 0;
   const size = opts.size ?? 512;
@@ -1136,11 +990,10 @@ export function interpretDrawing(
     size,
     opts.contourPoints ?? 120,
     identitySeed,
-    opts.ovoid ?? bodyOvoid(),
   );
   // A body that fails analysis would leave the creature with no silhouette
   // at all — fall back to the verbatim drawing (should not happen; the
   // processed mask is always one fat component).
-  if (!body) return { strokes, analysis: source, source, motifs };
-  return { strokes, analysis: body, source, motifs };
+  if (!body) return { strokes, analysis: source };
+  return { strokes, analysis: body };
 }
