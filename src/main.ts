@@ -96,6 +96,7 @@ import { residentsFrom } from './world/residents';
 import { readHatchMode } from './world/hatchmode';
 import { storeNote } from './world/storeline';
 import { start } from './world/scene';
+import { readWorldStyle } from './world/style';
 import { createTour } from './world/tour';
 
 /** Hatch timer — dev pacing; a live demo wants ~90s (PLAN §13). */
@@ -228,7 +229,21 @@ function main(): void {
     throw new Error('missing #world canvas');
   }
 
-  const world = start(canvas);
+  /**
+   * The LOOK this page renders in (src/world/style.ts) — read here, beside the
+   * world's own name and for the same reason: the whole frame has to open in
+   * one style, so `start` needs it before it builds anything.
+   *
+   * Two sources, `?style=` then `<meta name="refworld:style">`, which the
+   * build injects for a world whose worlds.json entry asked for it. The public
+   * build injects nothing and resolves to `ink`, exactly as before.
+   */
+  const worldStyle = readWorldStyle(
+    location.search,
+    document.querySelector<HTMLMetaElement>('meta[name="refworld:style"]')?.content ?? null,
+  );
+
+  const world = start(canvas, { style: worldStyle });
 
   // ── room ──────────────────────────────────────────────────────────────────
   // The room pairs this world with phones drawing at /draw/?room=xxxx via the
@@ -1991,6 +2006,10 @@ function main(): void {
         getGrainAmplitude: () => world.grain.getAmplitude(),
         // Paper color grade (shader style section): background + ground.
         setBackgroundColor: (c) => world.setBackgroundColor(c),
+        // The per-world look (docs/TASTE.md §9), switchable live so an
+        // operator can put the two side by side.
+        setStyle: (style) => world.setStyle(style),
+        style: () => world.style(),
         // The live terrain dials (src/world/landscape.ts): each one rebuilds
         // the ground field, re-seats the scatter and re-levels the water.
         setTerrain: (next) => world.setTerrain(next),

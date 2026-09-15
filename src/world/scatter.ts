@@ -40,7 +40,7 @@ import {
   Vector4,
 } from 'three';
 import type { Collider } from '../physics/colliders';
-import { MOTION, SURFACE, WORLD } from '../taste/tokens';
+import { GHIBLI, MOTION, SURFACE, WORLD } from '../taste/tokens';
 import {
   activeWaterBodies,
   isWater,
@@ -68,7 +68,9 @@ import {
   type PropKind,
 } from './props';
 import { stampEllipse, stampRotationY, type StampEllipse } from './shadows';
+import type { WorldStyle } from './style';
 import { ROLLING_SURFACE, type Surface } from './surface';
+import { applyToon } from './toon';
 import {
   buildWaterfallGeometries,
   WATERFALL_VARIANTS,
@@ -1935,6 +1937,25 @@ export interface Scatter {
    */
   setSun(azimuth: number, altitude: number, presence: number): void;
   /**
+   * Recolour every prop albedo for a per-world style override
+   * (docs/TASTE.md §9) — the shipped achromatic tokens, or envpaint's ghibli
+   * palette: canopy green on the swaying kinds, warm paper on built things,
+   * stone on the rocks, white on the clouds, grass green on the marks.
+   *
+   * Value STRUCTURE is what this moves, so the dev tint's captured lightnesses
+   * are re-read here: the panel's hue/saturation grade keeps working on top of
+   * whichever palette is current instead of dragging the old one's values
+   * back. `ink` restores the tokens exactly.
+   */
+  setStyle(style: WorldStyle): void;
+  /**
+   * Retarget the two ends of the shadow stamps' presence lerp — the paper the
+   * stamp vanishes into, and the flat value it reaches in full sun. Same
+   * handle as `FlatShadows.setPalette`, for the same reason: a style override
+   * changes the ground the props stand on.
+   */
+  setShadowPalette(ground: Color | string, ink: Color | string): void;
+  /**
    * Drive the vertex wind. Call once per frame with the environment's live
    * (spring-glided) wind strength and the frame time; strength is clamped to
    * [WIND_STRENGTH_MIN, WIND_STRENGTH_MAX] and the heading drifts on its own
@@ -2255,6 +2276,22 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
   chainVariation(palmMaterial);
   chainVariation(cactusMaterial);
   chainVariation(cloudMaterial);
+
+  // Cel lighting, chained LAST so it wraps the wind / nudge / variation stack
+  // above rather than replacing it (src/world/toon.ts). Inert — one uniform at
+  // 0 — until a world on the ghibli style turns it on, so every other
+  // deployment renders exactly as before.
+  for (const m of [
+    propMaterial,
+    rockMaterial,
+    swayMaterial,
+    palmMaterial,
+    cactusMaterial,
+    cloudMaterial,
+    tickMaterial,
+  ]) {
+    applyToon(m);
+  }
 
   // Bake the height-fraction attribute the sway shader bends by. Rigid kinds
   // deliberately never get this attribute (taste guard: tests assert it).
@@ -2682,6 +2719,31 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
       return nudgeUniforms.uNudge.value
         .filter((v) => v.z > 0)
         .map((v) => ({ x: v.x, z: v.y, strength: v.z, t0: v.w }));
+    },
+    setStyle(style: WorldStyle): void {
+      const ghibli = style === 'ghibli';
+      propMaterial.color.set(ghibli ? GHIBLI.rockWarm : WORLD.light);
+      rockMaterial.color.set(ghibli ? GHIBLI.rockBody : WORLD.neutral);
+      swayMaterial.color.set(ghibli ? GHIBLI.canopyLight : WORLD.light);
+      palmMaterial.color.set(ghibli ? GHIBLI.canopyLight : WORLD.light);
+      cactusMaterial.color.set(ghibli ? GHIBLI.canopyLight : WORLD.light);
+      tickMaterial.color.set(ghibli ? GHIBLI.grassBase : WORLD.ink);
+      cloudMaterial.color.set(ghibli ? GHIBLI.cloudLit : WORLD.light);
+      // Re-capture each material's lightness so the dev tint slider grades the
+      // palette that is actually on screen (see `setTint`). A live tint is
+      // dropped by the recolour above, which is the honest outcome: the grade
+      // was a grade of the old palette.
+      gradedMaterials.forEach((m, i) => {
+        const hsl = { h: 0, s: 0, l: 0 };
+        m.color.getHSL(hsl);
+        gradeLightness[i] = hsl.l;
+      });
+      tintHue = 0;
+      tintSaturation = 0;
+    },
+    setShadowPalette(ground: Color | string, ink: Color | string): void {
+      shadowGroundValue.set(ground);
+      shadowInkValue.set(ink);
     },
     setTint(hue: number, saturation: number): void {
       tintHue = ((hue % 1) + 1) % 1;
