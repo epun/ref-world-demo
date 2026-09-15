@@ -31,7 +31,10 @@ import {
   OUTLINE_POINTS,
   RIPPLE_MARGIN,
   rippleSpots,
+  coastRadius,
   landscapeMode,
+  seaLevel,
+  SEA_LEVEL,
   sampleLandscape,
   setLandscapeMode,
   shoreSamples,
@@ -179,6 +182,10 @@ describe('landscape — the origin clearing stays open plain', () => {
       mountain: 0,
       water: false,
       island: false,
+      // The origin is ~130 units of land from the nearest coast, so the beach
+      // weight is 0 there and the hatch clearing is open plain (the map became
+      // an island, 2026-09-15 — src/world/landscape.ts `ISLAND`).
+      beach: 0,
       region: 'plain',
       // Nothing is painted in this file, so every brush weight is 0 — an
       // unpainted world is the shipped one exactly (src/world/painted.ts).
@@ -572,11 +579,22 @@ describe('landscape — colliders', () => {
     // The design bound, with no exception left in it now the causeway is
     // gone: a creature gets at most ~1.6 units past any shore — the outer
     // one or the island's — before a circle stops it.
+    //
+    // PER BODY, and that is what the disc test below is for: this walks each
+    // body's bounding square, and since the map became an island (2026-09-15)
+    // the far corner of the lake's square is out at SEA. The ocean is blocked
+    // by a WALL along its coast rather than tiled to the horizon (landscape's
+    // `waterColliders`), so open water 40 units offshore is the design and not
+    // a hole — a creature meets the wall long before it. The bodies are what
+    // this test is about, so it measures inside their own shores.
     for (const body of WATER_BODIES) {
       const reach = body.r * WOBBLE_MAX;
       for (let x = body.x - reach; x <= body.x + reach; x += 0.4) {
         for (let z = body.z - reach; z <= body.z + reach; z += 0.4) {
           if (!isWater(x, z)) continue;
+          const dx = x - body.x;
+          const dz = z - body.z;
+          if (Math.hypot(dx, dz) >= wobbledRadius(body, Math.atan2(dz, dx))) continue;
           let clear = Infinity;
           for (const c of cols()) clear = Math.min(clear, Math.hypot(x - c.x, z - c.z) - c.r);
           expect(clear, `open water at ${x.toFixed(1)},${z.toFixed(1)}`).toBeLessThan(1.8);
@@ -1070,14 +1088,32 @@ describe('landscape — terrain height', () => {
     expect(range - forest).toBeGreaterThan(1);
   });
 
-  it('meets the flat ground disc past the far fade', () => {
+  it('meets the flat SEA FLOOR past the coast', () => {
+    // This used to read "meets the flat ground disc past the far fade" and
+    // pin exactly 0 out here, because the terrain was 0 past `farEnd` by
+    // construction. Since the map became an island (2026-09-15) the ground
+    // outside the coast falls away from the waterline over one `shoreRamp`
+    // and is flat from there out — the far ground ring is SEA FLOOR now
+    // (src/world/ground.ts seats it off this very sample).
+    const floor = seaLevel() - TERRAIN.basinDrop * terrainParams().elevation;
+    let coastMax = 0;
+    for (let i = 0; i < 720; i++) coastMax = Math.max(coastMax, coastRadius((i / 720) * Math.PI * 2));
+    // Measured 176.30, so the floor is flat from ~192.3 outward — inside the
+    // ground field's own rim at 200, which is what lets the ring meet the
+    // field at one number with no seam.
+    expect(coastMax).toBeLessThan(184);
+    expect(coastMax + TERRAIN.shoreRamp).toBeLessThan(200);
     for (let a = 0; a < 360; a += 3) {
-      for (const r of [TERRAIN.farEnd, TERRAIN.farEnd + 20, 400]) {
-        const th = (a / 180) * Math.PI;
-        // Math.abs: the fade multiplies a negative height by zero, which is
-        // -0 — numerically zero, and not what this test is about.
-        expect(Math.abs(terrainHeight(Math.cos(th) * r, Math.sin(th) * r))).toBe(0);
+      const th = (a / 180) * Math.PI;
+      for (const r of [195, 205, 400, 1200]) {
+        expect(terrainHeight(Math.cos(th) * r, Math.sin(th) * r), `floor at ${r}`).toBe(floor);
       }
+      // …and inside that, on the slope: never above the waterline, never
+      // below the floor. (`farEnd` is 185, which is on the last stretch of
+      // it on the bearings where the coast bulges furthest.)
+      const h = terrainHeight(Math.cos(th) * TERRAIN.farEnd, Math.sin(th) * TERRAIN.farEnd);
+      expect(h).toBeLessThanOrEqual(seaLevel());
+      expect(h).toBeGreaterThanOrEqual(floor);
     }
   });
 
@@ -1183,15 +1219,22 @@ describe('landscape — the terrain dials', () => {
   it('spreads the relief wider — the contours move apart', () => {
     // `relief` is a horizontal scale, so doubling it halves every gradient:
     // the same height differences laid out over twice the ground. Measured
-    // mean |∇h| 0.0571 at relief 1 and 0.0453 at relief 2 — the field's own
-    // flat regions (the clearing, the far fade, the basins) are not scaled
-    // and dilute the ratio, so this asserts the direction and a floor, not
-    // an exact half.
+    // mean |∇h| 0.0655 at relief 1 and 0.0559 at relief 2 — the field's own
+    // flat regions (the clearing, the far fade, the basins, and the ocean)
+    // are not scaled and dilute the ratio, so this asserts the direction and
+    // a floor, not an exact half.
+    //
+    // The floor is 0.9, not the 0.85 it was before the map became an island
+    // (2026-09-15), and the coast dilutes it further for a reason that is the
+    // dial working rather than failing: the coast ramp is a horizontal scale
+    // too, so at relief 2 the climb out of the sea is half as steep at every
+    // point AND laid over twice as much of the field, which turns flat ocean
+    // into gently sloping beach and pulls the mean back up.
     const tight = meanGradient();
     setTerrainParams({ relief: 2 });
     const spread = meanGradient();
     expect(spread).toBeLessThan(tight);
-    expect(spread).toBeLessThan(tight * 0.85);
+    expect(spread).toBeLessThan(tight * 0.9);
   });
 
   it('clamps every dial to its limits', () => {
@@ -1232,52 +1275,60 @@ describe('landscape — the terrain dials', () => {
     expect(sample()).toEqual(before);
   });
 
-  it('leaves the hatch clearing alone, and the far rim flat, at every setting', () => {
-    // Neither gate is scaled by a dial: the clearing is a fixed place the
-    // creatures hatch in, and the rim has to keep meeting the flat outer
-    // disc. The clearing is EXACT at every setting.
+  it('leaves the hatch clearing alone, and the far rim one flat sheet, at every setting', () => {
+    // The clearing gate is not scaled by a dial — it is a fixed place the
+    // creatures hatch in, not a feature of the relief — so the clearing is
+    // EXACT at every setting.
     //
-    // The rim is exact at the shipped defaults (the "meets the flat ground
-    // disc past the far fade" test above pins that at 0) but not quite at
-    // the top of the relief dial, and that is the geography being honest:
-    // basins are applied AFTER the far fade so a basin's interior is exactly
-    // its water level, and at relief 2.5 the lake's 40-unit shore ramp (16 ×
-    // 2.5) reaches a few units past farEnd. Measured worst case: 0.11 of a
-    // unit, a fourteenth of a tier, on one bearing of the rim.
+    // The rim is one flat sheet at every setting too, and it is the SEA FLOOR
+    // rather than zero now (2026-09-15, the map became an island). Both of the
+    // numbers that put it there ride the dials: `SEA_LEVEL` and `basinDrop`
+    // scale with `elevation`, and the slope that reaches it scales with
+    // `relief`, which is why the probe radius below is taken off the widest
+    // shore ramp the dial allows (16 × 2.5 past the coast's 171.8) rather than
+    // off `farEnd` (176.3 + 16 × 2.5 = 216.3).
     for (const params of [
       { elevation: 2, tierStep: 4, relief: 2.5 },
       { elevation: 0.2, tierStep: 0.6, relief: 0.5 },
     ]) {
       setTerrainParams(params);
       expect(terrainHeight(0, 0)).toBe(0);
+      const floor = seaLevel() - TERRAIN.basinDrop * params.elevation;
+      expect(floor).toBe(SEA_LEVEL * params.elevation - TERRAIN.basinDrop * params.elevation);
       for (let i = 0; i < 120; i++) {
         const th = (i / 120) * Math.PI * 2;
         for (const r of [3, 7, TERRAIN.clearRadius]) {
           expect(terrainHeight(Math.cos(th) * r, Math.sin(th) * r), `clearing ${r}`).toBe(0);
         }
-        for (const r of [TERRAIN.farEnd, TERRAIN.farEnd + 20, 400]) {
-          expect(
-            Math.abs(terrainHeight(Math.cos(th) * r, Math.sin(th) * r)),
-            `rim ${r}`,
-          ).toBeLessThanOrEqual(0.15);
+        for (const r of [220, 400, 1200]) {
+          expect(terrainHeight(Math.cos(th) * r, Math.sin(th) * r), `rim ${r}`).toBe(floor);
         }
       }
     }
-    // …and back at the defaults it is exactly the flat sheet again.
+    // …and back at the defaults it is the shipped floor again.
     setTerrainParams(TERRAIN_DEFAULTS);
+    const floor = seaLevel() - TERRAIN.basinDrop * TERRAIN_DEFAULTS.elevation;
     for (let i = 0; i < 120; i++) {
       const th = (i / 120) * Math.PI * 2;
-      expect(
-        Math.abs(terrainHeight(Math.cos(th) * TERRAIN.farEnd, Math.sin(th) * TERRAIN.farEnd)),
-      ).toBe(0);
+      expect(terrainHeight(Math.cos(th) * 200, Math.sin(th) * 200)).toBe(floor);
     }
   });
 
   it('stays a bank and not a wall at the top of the elevation dial', () => {
     // A dev dial may be steep — the 0.6 field bound is the SHIPPED world's,
-    // not the dial's. Measured at elevation 2.0: 1.15 over the field (at the
-    // range's southern apron) and 2.05 on the island's bank. Stated, so a
-    // future change that makes the ceiling vertical is caught.
+    // not the dial's. Measured at elevation 2.0: 1.59 over the field and 2.05
+    // on the island's bank. Stated, so a future change that makes the ceiling
+    // vertical is caught.
+    //
+    // 1.59, not the 1.15 this used to measure (at the range's southern apron),
+    // and the coast is why: since the map became an island (2026-09-15) the
+    // steepest ground in the field at the top of the dial is the north-east
+    // beach, where the range's shoulder still stands 5–6 units high where the
+    // sea meets it and the climb out of the water is ~19 units at elevation 2.
+    // TERRAIN.coastRamp is already widened to 26 for exactly this (at
+    // `shoreRamp`'s 16 the SHIPPED world measured 0.6951, over its own bound);
+    // the remaining headroom is the dial's, and the bound moves with the
+    // measurement rather than the geography being bent to an old number.
     setTerrainParams({ elevation: TERRAIN_LIMITS.elevation[1] });
     let field = 0;
     let island = 0;
@@ -1293,7 +1344,7 @@ describe('landscape — the terrain dials', () => {
         } else field = Math.max(field, g);
       }
     }
-    expect(field).toBeLessThanOrEqual(1.25);
+    expect(field).toBeLessThanOrEqual(1.7);
     expect(island).toBeLessThanOrEqual(2.2);
   });
 });
@@ -1354,6 +1405,9 @@ describe('landscape — the mode', () => {
           mountain: 0,
           water: false,
           island: false,
+          // No coast in the plain mode, so no beach: the plain world is the
+          // flat field it always was, island or no island.
+          beach: 0,
           region: 'plain',
           planting: zeroPlanting(),
         });

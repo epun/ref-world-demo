@@ -91,22 +91,31 @@ describe('ground — the field is the surface', () => {
     expect(moved).toBeGreaterThan(20);
   });
 
-  it('rests its whole rim on zero, where the far field meets it', () => {
-    // TERRAIN.farEnd is 185 and the rim is at 200, so the terrain is already
-    // exactly flat out there: the ring beyond it needs no seam to hide.
+  it('rests its whole rim on the sea floor, where the far ring meets it', () => {
+    // This used to read "rests its whole rim on zero": the terrain was
+    // exactly 0 past TERRAIN.farEnd (185) and the rim is at 200. Since the
+    // map became an island (2026-09-15) the ground outside the coast falls to
+    // the SEA FLOOR and stays there, and the coast's farthest bulge plus its
+    // floor slope (171.8 + 16) lands well inside 200 — so the rim is still
+    // ONE flat number, and the far ring is seated on that number rather than
+    // on zero.
     const attr = positionOf(field());
     const half = FIELD_SIZE / 2;
+    const floor = ROLLING_SURFACE.sampleHeight(half, 0);
+    // A floor, not paper: the ocean is a real basin under the plain.
+    expect(floor).toBeLessThan(-1);
     let rim = 0;
     for (let i = 0; i < attr.count; i++) {
       const x = attr.getX(i);
       const z = attr.getZ(i);
       if (Math.abs(Math.abs(x) - half) > 1e-3 && Math.abs(Math.abs(z) - half) > 1e-3) continue;
       rim++;
-      // Math.abs, because a faded tier lands on -0 and Object.is(-0, 0) is
-      // false — the two are the same paper.
-      expect(Math.abs(attr.getY(i)), `rim vertex at ${x},${z}`).toBe(0);
+      expect(attr.getY(i), `rim vertex at ${x},${z}`).toBeCloseTo(floor, 5);
     }
     expect(rim).toBe(FIELD_SEGMENTS * 4);
+    // …and the ring is seated on it, so the two meet with no seam to hide.
+    const far = createGround(ROLLING_SURFACE).group.getObjectByName('ground-far')!;
+    expect(far.position.y).toBe(floor);
   });
 
   it('carries unit normals, computed after the displacement', () => {

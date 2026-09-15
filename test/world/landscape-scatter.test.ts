@@ -331,6 +331,21 @@ describe('the plain is the world that shipped', () => {
   const key = (p: Placement): string =>
     `${p.kind}:${p.variant}:${p.x.toFixed(4)}:${p.z.toFixed(4)}:${p.scale.toFixed(4)}:${p.rotY.toFixed(4)}`;
 
+  /** Distance from a placement to the nearest ground the MAP claims — forest
+   * weight, mountain weight, or beach — or Infinity past two scatter steps.
+   * This is what separates "a cluster spilled over a region's edge" from "the
+   * map leaked into open plain". */
+  function nearestClaimed(p: Placement): number {
+    for (let r = 0.5; r <= SCATTER_STEP * 2; r += 0.5) {
+      for (let a = 0; a < 64; a++) {
+        const th = (a / 64) * Math.PI * 2;
+        const l = sampleLandscape(p.x + Math.cos(th) * r, p.z + Math.sin(th) * r);
+        if (l.forest > 0 || l.mountain > 0 || l.beach >= 0.5) return r;
+      }
+    }
+    return Infinity;
+  }
+
   /** fnv-1a, 32 bit — a stable digest, not a hash with any other job. */
   function digest(parts: string[]): string {
     let h = 0x811c9dc5;
@@ -361,8 +376,19 @@ describe('the plain is the world that shipped', () => {
   // seat two more cottages before the cap stops them. Nothing else moved —
   // every painted kind seeds at 0 unpainted, and the per-kind counts are
   // otherwise digit-for-digit what they were.
-  const PLAIN_COUNT = 1129;
-  const PLAIN_DIGEST = '7d360949';
+  //
+  // Re-taken 2026-09-15 (was 1129 / 7d360949): THE MAP BECAME AN ISLAND. This
+  // fixture is the set of placements the predicate above calls deep plain, and
+  // that SET has shrunk by more than half - not because the expression moved
+  // but because the ground did. Everything outside the authored coast is sea
+  // now, which plants nothing at all; everything within 13 units of it is
+  // excluded by the predicate's own shore clearance; and the band inside that
+  // is `region: 'beach'`, which rolls its own table. The readable half of the
+  // fixture below - the hatch clearing, spelled out - has not moved a digit,
+  // and that is what still says the expression is intact: the island's coast
+  // is 131 units from the origin at its nearest.
+  const PLAIN_COUNT = 511;
+  const PLAIN_DIGEST = '948fffcd';
 
   it('places exactly what it placed before the map existed', () => {
     const plain = shipped().filter(deepPlain).map(key);
@@ -390,14 +416,19 @@ describe('the plain is the world that shipped', () => {
   // anywhere, so the same pre-map expression governs every cell — which is
   // the world the room now opens on (2026-09-09, user ask).
 
-  /** The same deep-plain digest, taken in the plain mode. Four short of the
-   * mapped fixture, and the assertion below says exactly why: a cluster
-   * seeded inside the forest can throw a neighbour a step or two clear of it,
-   * onto ground the predicate calls deep plain. Those four spill-overs are
-   * the map's, so the plain world does not have them — it does not move a
-   * single one of the other 1123. */
-  const PLAIN_MODE_COUNT = 1124;
-  const PLAIN_MODE_DIGEST = 'c8a218a7';
+  /** The same deep-plain digest, taken in the plain mode. Eight short of the
+   * mapped fixture, and the assertions below say exactly why: a cluster
+   * seeded inside the forest — or, since the map became an island, on the
+   * beach — can throw a neighbour a step or two clear of it, onto ground the
+   * predicate calls deep plain. Those spill-overs are the map's, so the plain
+   * world does not have them.
+   *
+   * It is EIGHT rather than nine because the traffic now runs both ways: the
+   * plain world has one deep-plain bush the mapped world does not, thrown
+   * from a cell the beach has since claimed. The map used only to ADD to this
+   * ground; an island takes some of it away. */
+  const PLAIN_MODE_COUNT = 503;
+  const PLAIN_MODE_DIGEST = 'f1ff4970';
 
   it('places no mountain and no reed anywhere in the plain mode', () => {
     const plain = inPlain(() => computePlacements());
@@ -420,42 +451,49 @@ describe('the plain is the world that shipped', () => {
     expect(digest(deep)).toBe(PLAIN_MODE_DIGEST);
 
     // Nothing MOVED: every deep-plain placement of the plain world is in the
-    // mapped one too, digit for digit. The map only ever adds to this ground.
+    // mapped one too, digit for digit — with one exception since the map
+    // became an island, and the exception is located rather than counted.
+    // (The map used only to ADD to this ground. An island takes some away, so
+    // a cluster whose seed cell the beach has claimed loses the neighbour it
+    // threw clear of it.)
     const mapped = new Set(shipped().filter(deepPlain).map(key));
-    for (const k of deep) expect(mapped.has(k), k).toBe(true);
+    const gone = deep.filter((k) => !mapped.has(k));
+    expect(gone).toHaveLength(1);
+    for (const p of plain.filter(deepPlain).filter((q) => gone.includes(key(q)))) {
+      expect(
+        nearestClaimed(p),
+        `${p.kind} at ${p.x.toFixed(1)},${p.z.toFixed(1)}`,
+      ).toBeLessThanOrEqual(SCATTER_STEP * 2);
+    }
   });
 
   it('differs from the mapped fixture only where a region spills over its edge', () => {
     const plain = new Set(inPlain(() => computePlacements()).filter(deepPlain).map(key));
     const extra = shipped().filter(deepPlain).filter((p) => !plain.has(key(p)));
-    expect(extra).toHaveLength(PLAIN_COUNT - PLAIN_MODE_COUNT);
-    // Buildings are the one CAPPED kind in this set (BUILDING_MAX), so a
-    // cottage can differ between the modes for a reason that has nothing to
-    // do with where it stands: the mapped world drops every building that
-    // rolled inside the forest (no building in FOREST_SEED), which frees cap
-    // slots for cells further down the iteration order. That is the cap
-    // working, not the map leaking — so they are counted rather than located,
-    // and the spill rule below is asserted over everything else.
-    const capped = extra.filter((p) => p.kind === 'building');
-    expect(capped.length, 'cap-boundary cottages').toBeLessThanOrEqual(2);
-    for (const p of extra.filter((q) => q.kind !== 'building')) {
-      // Every one of them stands within a single scatter step of ground the
-      // map weights — a neighbour thrown clear of a cluster seeded inside the
-      // forest, which is precisely what the plain world has no seed for.
-      let nearest = Infinity;
-      for (let r = 0.5; r <= SCATTER_STEP && nearest === Infinity; r += 0.5) {
-        for (let a = 0; a < 64; a++) {
-          const th = (a / 64) * Math.PI * 2;
-          const l = sampleLandscape(p.x + Math.cos(th) * r, p.z + Math.sin(th) * r);
-          if (l.forest > 0 || l.mountain > 0) {
-            nearest = r;
-            break;
-          }
-        }
-      }
-      expect(nearest, `${p.kind} at ${p.x.toFixed(1)},${p.z.toFixed(1)}`).toBeLessThanOrEqual(
-        SCATTER_STEP,
-      );
+    // Nine, and PLAIN_COUNT - PLAIN_MODE_COUNT is eight: the plain world has
+    // one the mapped world lacks, which the test above locates.
+    expect(extra).toHaveLength(PLAIN_COUNT - PLAIN_MODE_COUNT + 1);
+    // Buildings and water towers are the CAPPED kinds in this set
+    // (BUILDING_MAX, WATER_TOWER_MAX), so one can differ between the modes for
+    // a reason that has nothing to do with where it stands: the mapped world
+    // drops every one that rolled inside the forest or on the beach (neither
+    // table names a built kind), which frees cap slots for cells further down
+    // the iteration order. That is the cap working, not the map leaking — so
+    // they are counted rather than located, and the spill rule below is
+    // asserted over everything else.
+    const capped = extra.filter((p) => p.kind === 'building' || p.kind === 'waterTower');
+    expect(capped.length, 'cap-boundary structures').toBeLessThanOrEqual(4);
+    for (const p of extra.filter((q) => q.kind !== 'building' && q.kind !== 'waterTower')) {
+      // Every one of them stands within a couple of scatter steps of ground
+      // the map claims — forest weight, mountain weight, or beach — which is
+      // to say a neighbour thrown clear of a cluster seeded on ground the
+      // plain world has no seed for. Two steps, not one: a cluster throws its
+      // neighbours 0.6–1.6 steps out, and the beach's own clusters sit
+      // further from the plain than the forest's do.
+      expect(
+        nearestClaimed(p),
+        `${p.kind} at ${p.x.toFixed(1)},${p.z.toFixed(1)}`,
+      ).toBeLessThanOrEqual(SCATTER_STEP * 2);
     }
   });
 
@@ -492,9 +530,13 @@ describe('the plain is the world that shipped', () => {
         expect(l.forest + l.mountain, at).toBe(0);
       }
     });
-    // Fewer props overall than the mapped world, which is the forest doing
-    // its job: a stand is an order of magnitude denser than open field.
-    expect(plain.length).toBeLessThan(shipped().length);
+    // MORE props overall than the mapped world, and that flipped when the map
+    // became an island (2026-09-15). It used to be fewer, which was the forest
+    // doing its job — a stand is an order of magnitude denser than open field.
+    // The sea is the bigger term by far now: the plain mode plants the whole
+    // ±160 field, and the mapped world plants only the island inside a coast
+    // whose nearest point is 131 units out.
+    expect(plain.length).toBeGreaterThan(shipped().length);
   });
 
   it('gives the identical world back when the map is switched on again', () => {

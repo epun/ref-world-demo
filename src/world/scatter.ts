@@ -366,6 +366,30 @@ const ISLAND_SEED: RegionSeed = {
   tick: 0.16,
 };
 
+/**
+ * The BEACH (2026-09-15, the map became an island — src/world/landscape.ts
+ * `ISLAND`, `BEACH_WIDTH`).
+ *
+ * The band of land inside the coast, and its own flora list rather than a
+ * blend over the plain's, for the reason the island's is: what grows on a
+ * beach is not a thinner version of what grows in a field. Rocks are the
+ * commonest thing on it and small — shingle, not boulders — with cut stumps
+ * reading as driftwood among them and palms standing back off the waterline.
+ *
+ * NOTHING BUILT and nothing forested: no tree, no conifer, no building, no
+ * mountain reaches this table, so the beach can never sprout a cottage or a
+ * pine at the tideline. Cacti are in it but rare — a tropical island has a
+ * few on the dunes, not a desert. Ticks are sparse: sand is the one ground on
+ * this map that should read as mostly empty paper (TASTE §2.3).
+ */
+const BEACH_SEED: RegionSeed = {
+  rock: 0.11,
+  stump: 0.045,
+  palm: 0.05,
+  cactus: 0.012,
+  tick: 0.04,
+};
+
 /** [D] Planting keep-out from every shoreline. A cell this close to water
  * seeds NOTHING — not even a tick — so a cluster's seed can never sit on
  * the waterline and throw its whole grove into the pond. */
@@ -923,6 +947,11 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
         const user = density * userMult(kind);
         // The island is its own flora list, not a blend over the plain.
         if (sample.island) return (ISLAND_SEED[kind] ?? 0) * user * clear * onPath;
+        // …and so is the beach. Same shape as the island's branch, and above
+        // the forest/mountain blend for the same reason: sand is not a field
+        // with fewer things on it. (The sea plants nothing at all — a wet cell
+        // was recorded as null far above and never reaches this function.)
+        if (sample.region === 'beach') return (BEACH_SEED[kind] ?? 0) * user * clear * onPath;
         const base =
           SEED_PROB[kind] * density * Math.max(0, kindDensity[kind] ?? 1) * clear * onPath;
         return (

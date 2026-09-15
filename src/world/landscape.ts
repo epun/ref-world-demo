@@ -106,7 +106,7 @@ import type { Collider } from '../physics/colliders';
 import { zeroPlanting, type PlantingWeights } from './painted';
 import type { PaintedBody, PaintedWaterField } from './painted-water';
 
-export type Region = 'plain' | 'forest' | 'mountain' | 'island' | 'water';
+export type Region = 'plain' | 'forest' | 'mountain' | 'island' | 'beach' | 'water';
 
 /** A hand-placed disc with a wobbled (never circular) edge. */
 export interface Blob {
@@ -140,7 +140,24 @@ export interface LandscapeSample {
   water: boolean;
   /** Land inside the lake's outer shore — the island, and only the island. */
   island: boolean;
-  /** Dominant label: water > island > forest > mountain > plain. */
+  /**
+   * How close to the SEA this spot of land is: 1 at the waterline, fading
+   * linearly to 0 `BEACH_WIDTH` units inland, and 0 on the water itself and
+   * everywhere in the plain mode.
+   *
+   * A soft weight like `forest` and `mountain` rather than a boolean, for the
+   * same reason they are: the beach has to be able to blend into whatever is
+   * behind it instead of ending on a line.
+   */
+  beach: number;
+  /** Dominant label: water > island > beach > forest > mountain > plain.
+   *
+   * `beach` sits above the two region weights and below the island for a
+   * geographic reason, not an arbitrary one: no authored feature comes within
+   * 12 units of the coast (test/world/island.test.ts pins it), and the beach
+   * label only claims the first `BEACH_WIDTH / 2` of them, so the two can
+   * never actually contend. The order is the tie-break that says which would
+   * win if the layout ever moved. */
   region: Region;
   /**
    * What somebody has PAINTED here (src/world/painted.ts), per brush, [0,1] —
@@ -287,6 +304,113 @@ export const WATER_BODIES: readonly WaterBody[] = [
   { kind: 'pond', x: -95, z: -58, r: 6, seed: 404 },
 ];
 
+// ── the island ───────────────────────────────────────────────────────────────
+
+/**
+ * THE MAP IS AN ISLAND (2026-09-15, user ask — *"I want this map to be an
+ * island instead of a large flat plane … it should feel like Studio Ghibli
+ * meets Scavengers Reign on a tropical island"*).
+ *
+ * The world used to be a landmass with no edge: the ground ran flat to the
+ * horizon and the only water on it was the lake and the four ponds. The sea
+ * below is the COMPLEMENT of the coast authored here — everything outside it
+ * is water — so the island needs no separate outline, no second shoreline and
+ * no "is this the edge of the world" flag anywhere else.
+ *
+ * ONE MASS, THREE HEADLANDS [D]. The coast is the UNION of the wobbled discs
+ * below, not one blob's harmonics: a single wobbled disc of this radius reads
+ * as a coin with a crinkled rim, because its three harmonics are the only
+ * shape information in the whole 940 units of coastline. Unioning smaller
+ * lobes into it gives the coast headlands that reach out and bays that cut
+ * back in between them, at a scale the harmonics cannot reach.
+ *
+ * WHERE the lobes are is geography, not decoration. Every authored feature —
+ * the forest, the range, the lake and the ponds — has to keep at least 12
+ * units of dry land between its own edge and the sea, and the layout was
+ * authored (2026-09-03) for a field with no coast in it: the range reaches
+ * z ≈ -149, the lake's far shore r ≈ 156, the western stand r ≈ 142. The main
+ * mass alone leaves them 0. So one lobe stands behind each of the three, and
+ * the measured worst clearance over the whole layout is 12.80 units at the
+ * range's eastern mass (test/world/island.test.ts measures it rather than
+ * trusting this comment). Nothing in the authored layout moved.
+ *
+ * Measured coast radius: 131.7 .. 176.3 — inside the displaced ground field
+ * (±200) with the whole sea-floor slope to spare.
+ */
+export const ISLAND: Blob = { x: 0, z: 0, r: 150, seed: 501 };
+
+/** The lobes the coast is the union of — the main mass first, then the three
+ * headlands. [D] */
+export const ISLAND_LOBES: readonly Blob[] = [
+  ISLAND,
+  // The north headland, behind the range.
+  { x: 7, z: -39, r: 115, seed: 505 },
+  // The south-east headland, behind the lake. 114 rather than the 110 that
+  // clears the lake's own edge by 12: the LAKE is the one feature with a shore
+  // ramp of its own, and at 110 that ramp overlapped the coast's by half a
+  // unit — enough to pull the waterline six thousandths of a unit under the
+  // sea on one bearing. At 114 the lake's edge stands 18.1 units off the
+  // coast, past a whole `shoreRamp`, and the two basins never meet.
+  { x: 35, z: 35, r: 114, seed: 511 },
+  // The west headland, behind the forest.
+  { x: -56, z: 21, r: 90, seed: 521 },
+];
+
+/**
+ * [D] Where the sea sits, world units, BEFORE the elevation dial — under the
+ * plain's own tier 0, so the beach reads as a step down onto the water rather
+ * than a sheet laid over it.
+ *
+ * Scaled by `elevation` like every other authored vertical (see `seaLevel`),
+ * which is what keeps `elevation: 0` an exactly flat world: at that setting
+ * the sea, the sea floor and the land are all 0.
+ */
+export const SEA_LEVEL = -1.2;
+
+/** [D] Units of land the beach reaches inland from the waterline. 14: two
+ * strides of open sand and shingle before the plain's own planting takes
+ * over, which is the band the reference's islands draw. */
+export const BEACH_WIDTH = 14;
+
+/** Largest radius any lobe's edge can reach from the ORIGIN — a bracket for
+ * the coast walk below, never a substitute for the real edge. */
+const COAST_REACH = ISLAND_LOBES.reduce(
+  (m, l) => Math.max(m, Math.hypot(l.x, l.z) + l.r * WOBBLE_MAX),
+  0,
+);
+
+/**
+ * Signed distance INLAND from the coast, world units: positive on the island,
+ * 0 at the waterline, negative at sea.
+ *
+ * The union's own signed field [D]: the max, over the lobes, of each lobe's
+ * own `wobbledRadius - d`. That is exactly `coast(theta) - d` for a single
+ * lobe, and for the union it is positive precisely where at least one lobe
+ * holds the point — so the sign of this one number IS the membership test,
+ * and the sea, the beach weight, the shore ramp and the collider wall cannot
+ * disagree about where the coast is by a fraction of a unit.
+ *
+ * Measured from each lobe's OWN centre, like `bodyHoldsWater`: the lobes are
+ * not concentric, so one polar angle cannot serve them all.
+ */
+export function coastInland(x: number, z: number): number {
+  let best = -Infinity;
+  for (const lobe of ISLAND_LOBES) {
+    const dx = x - lobe.x;
+    const dz = z - lobe.z;
+    const d = Math.hypot(dx, dz);
+    const v = wobbledRadius(lobe, Math.atan2(dz, dx)) - d;
+    if (v > best) best = v;
+  }
+  return best;
+}
+
+/** True where the SEA stands: outside the coast grown outward by `pad`.
+ * `d > coast(theta) - pad` is the same statement as `inland < pad`. */
+function isSea(x: number, z: number, pad: number): boolean {
+  return coastInland(x, z) < pad;
+}
+
 // ── the landscape mode ───────────────────────────────────────────────────────
 
 /**
@@ -404,7 +528,8 @@ function bodyHoldsWater(body: WaterBody, x: number, z: number, pad: number): boo
 
 /**
  * True inside any AUTHORED water body, whatever the mode — the map as
- * written. `pad > 0` grows every body outward by `pad` units.
+ * written, the SEA included (everything outside the coast). `pad > 0` grows
+ * every body outward by `pad` units.
  *
  * The one query that ignores the mode, and it exists for the water renderer:
  * it builds its fills, shorelines and ripples from the authored bodies in
@@ -413,6 +538,9 @@ function bodyHoldsWater(body: WaterBody, x: number, z: number, pad: number): boo
  * world currently on screen. Everything else wants `isWater`.
  */
 export function isAuthoredWater(x: number, z: number, pad = 0): boolean {
+  // The sea first: it is the largest body on the map by far, and it is the
+  // one every point outside the coast belongs to.
+  if (isSea(x, z, pad)) return true;
   for (const body of WATER_BODIES) if (bodyHoldsWater(body, x, z, pad)) return true;
   return false;
 }
@@ -487,6 +615,9 @@ export function sampleLandscape(x: number, z: number): LandscapeSample {
       mountain: 0,
       water: wet,
       island: false,
+      // No coast in the plain mode, so no beach either: the plain is the flat
+      // field it always was, and `test/world/painted.test.ts` pins that.
+      beach: 0,
       region: wet ? 'water' : 'plain',
       planting,
     };
@@ -498,16 +629,22 @@ export function sampleLandscape(x: number, z: number): LandscapeSample {
   const wet = water || island;
   const forest = wet ? 0 : blobWeight(FOREST_BLOBS, FOREST_FALLOFF, x, z);
   const mountain = wet ? 0 : blobWeight(MOUNTAIN_BLOBS, MOUNTAIN_FALLOFF, x, z);
+  // The beach: a linear ramp off the coast, and 0 on any water — the sea's
+  // own surface is not a beach, and neither is the lake's (a lake has reeds,
+  // which is a different fringe and comes from the shore samples).
+  const beach = wet ? 0 : Math.min(1, Math.max(0, 1 - coastInland(x, z) / BEACH_WIDTH));
   const region: Region = water
     ? 'water'
     : island
       ? 'island'
-      : forest >= 0.5
-        ? 'forest'
-        : mountain >= 0.5
-          ? 'mountain'
-          : 'plain';
-  return { forest, mountain, water, island, region, planting };
+      : beach >= 0.5
+        ? 'beach'
+        : forest >= 0.5
+          ? 'forest'
+          : mountain >= 0.5
+            ? 'mountain'
+            : 'plain';
+  return { forest, mountain, water, island, beach, region, planting };
 }
 
 // ── terrain height ───────────────────────────────────────────────────────────
@@ -611,6 +748,26 @@ export const TERRAIN = {
    * is lower than it is. Releases by `shoreRamp`.
    */
   basinRim: 2,
+  /**
+   * [D] Units of beach over which the land climbs out of the SEA — the
+   * coast's own `shoreRamp`, and wider than a lake's for a measured reason.
+   *
+   * A lake's basin floor sits five or six units under the land around it. The
+   * sea sits under the land around it by whatever that land happens to be,
+   * and at the north-east coast the range's own shoulder is still 5–6 units
+   * high where the sea meets it (`mountainShelfFalloff` is 70 units, far more
+   * than the 40 of open ground between the range and the coast) — so the
+   * climb out of the sea is the deepest on the map, ~6.8 units at the
+   * shipped dials. At `shoreRamp`'s 16 that measured 0.6951, over the field's
+   * 0.6 bound; at 26 it measures 0.4967, back under it, and the beach stops
+   * being the steepest ground in the world.
+   *
+   * It is not wider still because the ramp reaches INLAND: the lake's far
+   * shore keeps ~17 units of land between itself and the coast, so a ramp
+   * much past this would start pulling the lake's own shoulder down toward
+   * the sea and the basin would stop reading as sunk.
+   */
+  coastRamp: 26,
   /**
    * [D] How high an island stands over the water it sits in, before the
    * terrace. 3.4 clears two tiers, so the island's crown reads as a
@@ -1029,6 +1186,20 @@ export function waterLevel(body: WaterBody): number {
 }
 
 /**
+ * The flat level the SEA's surface sits at — `SEA_LEVEL` through the
+ * `elevation` dial, and exactly 0 in the plain mode (which has no coast, so
+ * no sea: the water renderer still asks, because it keeps its hidden sheets
+ * seated whatever the mode, exactly as it does for `waterLevel`).
+ *
+ * One number for the whole ocean, like a body's own level: a water surface is
+ * a plane and never a warped sheet.
+ */
+export function seaLevel(): number {
+  if (!mapped()) return 0;
+  return SEA_LEVEL * activeTerrain.elevation;
+}
+
+/**
  * Ground height at (x, z), world units. Pure, deterministic.
  *
  * Basins are applied SEQUENTIALLY and LAST, each replacing the running
@@ -1056,6 +1227,44 @@ export function terrainHeight(x: number, z: number): number {
   // user ask — open flat, then sculpt in front of the audience). Unpainted,
   // this is exactly 0.
   if (mapped()) {
+    // ── the sea ─────────────────────────────────────────────────────────────
+    // A basin's maths, MIRRORED: `inland` is the signed distance in from the
+    // coast (landscape's `coastInland`), so where a lake measures how far
+    // OUT of the water you are, the sea measures how far IN to the land — and
+    // the same blend, the same rim guard and the same `shoreRamp` do the rest.
+    //
+    // FIRST rather than last, which is the one place this pass departs from
+    // the basins beside it, and for the reason the comment above gives for
+    // them: a basin's interior has to come out EXACTLY its `waterLevel`, so
+    // nothing may run after one. The lake's far shore keeps only ~13 units of
+    // land between itself and the coast (the layout's 12-unit rule), which is
+    // inside one `shoreRamp`, so a sea pass that ran last would blend the
+    // lake's own flat sheet a fifth of the way toward the ocean and the
+    // surface would stop being a plane. The sea is the LANDFORM the basins are
+    // cut into — the shelves are already ordered that way — so it goes in with
+    // the land, and every basin below still lands on its own exact number.
+    // The coast has its own ramp, WIDER than a lake's — see TERRAIN.coastRamp.
+    // Horizontal, so it rides `relief` exactly as the shore ramp does.
+    const coastRamp = TERRAIN.coastRamp * relief;
+    const seaFlat = seaLevel();
+    const seaFloor = seaFlat - TERRAIN.basinDrop * elevation;
+    const inland = coastInland(x, z);
+    if (inland <= 0) {
+      // Off the coast: the floor falls away from the waterline over one more
+      // `shoreRamp` and is flat from there to `farEnd` and beyond — the far
+      // ground ring is sea floor now (src/world/ground.ts).
+      h = seaFlat + (seaFloor - seaFlat) * smoothstep(0, shoreRamp, -inland);
+    } else if (inland < coastRamp) {
+      const t = smoothstep(0, coastRamp, inland);
+      const blended = seaFlat + (h - seaFlat) * t;
+      // The same continuous "never below the water line" guard the basins
+      // carry: the first `basinRim` units of beach hold at the sea's level
+      // where the terraced land would otherwise fall under it, and the guard
+      // releases over the rest of the ramp rather than propping up every low
+      // tier on the island.
+      const rim = 1 - smoothstep(basinRim, coastRamp, inland);
+      h = blended + rim * Math.max(0, seaFlat - blended);
+    }
     for (const body of WATER_BODIES) {
       const dx = x - body.x;
       const dz = z - body.z;
@@ -1153,6 +1362,10 @@ export function terrainNormal(x: number, z: number): { x: number; y: number; z: 
 
 /** Default vertex count of an outer shoreline. */
 export const OUTLINE_POINTS = 96;
+/** Default vertex count of the COAST — twice an outer shoreline's, because it
+ * is ten times as long: the lake's 96 points sit ~2.7 units apart and 192 on
+ * the coast sit ~4.9, which is the same order and the same read. [D] */
+export const COAST_OUTLINE_POINTS = 192;
 /** Default vertex count of an island shoreline. */
 export const ISLAND_OUTLINE_POINTS = 64;
 
@@ -1184,6 +1397,49 @@ export function islandOutline(
 ): [number, number][] | null {
   const isl = islandBlob(body);
   return isl ? ringOutline(isl, points) : null;
+}
+
+/**
+ * Radius of the coast along the ray out of the ORIGIN at `theta` — the union
+ * of the lobes, found by bisecting `coastInland`'s sign rather than by
+ * evaluating a formula, because the union of three wobbled discs has no
+ * closed form.
+ *
+ * Deterministic to the bit: a fixed bracket (0 to `COAST_REACH`, which no
+ * lobe's edge can pass) and a fixed iteration count, so the same theta always
+ * gives the same radius on every device. 40 halvings take the bracket under
+ * 1e-10 units, which is far finer than the geometry it describes.
+ */
+export function coastRadius(theta: number): number {
+  const cos = Math.cos(theta);
+  const sin = Math.sin(theta);
+  let lo = 0;
+  let hi = COAST_REACH;
+  for (let i = 0; i < 40; i++) {
+    const mid = (lo + hi) / 2;
+    if (coastInland(cos * mid, sin * mid) > 0) lo = mid;
+    else hi = mid;
+  }
+  return (lo + hi) / 2;
+}
+
+/**
+ * Closed polygon (last point NOT repeated) of the COAST, counter-clockwise in
+ * x/z — the same convention as `waterOutline`, so `(dz, −dx)` points off the
+ * island and into the sea at every vertex.
+ *
+ * The sea's fill is this ring punched out of the far disc as a HOLE, which is
+ * the lake's island treatment inverted (src/world/water.ts), and the drawn
+ * shore ribbon and the foam ride these same points.
+ */
+export function coastOutline(points = COAST_OUTLINE_POINTS): [number, number][] {
+  const out: [number, number][] = [];
+  for (let i = 0; i < points; i++) {
+    const theta = (i / points) * TAU;
+    const r = coastRadius(theta);
+    out.push([Math.cos(theta) * r, Math.sin(theta) * r]);
+  }
+  return out;
 }
 
 // ── physics ──────────────────────────────────────────────────────────────────
@@ -1234,6 +1490,47 @@ export function waterColliders(): Collider[] {
   const step = WATER_COLLIDER_R;
   const row = WATER_COLLIDER_R * WATER_COLLIDER_ROW;
   const pad = -(WATER_COLLIDER_R - WATER_COLLIDER_BITE);
+  // The sea is a WALL along the coast, not a tiling of the ocean [D]. Every
+  // other body is finite and gets tiled edge to edge; the ocean runs to the
+  // horizon, and tiling it would be tens of thousands of circles to stop a
+  // creature that only ever meets the first two metres of it. So the same
+  // circles, at the same radius and the same `step` pitch, walked along the
+  // coast at arc length instead of laid on a lattice: consecutive circles sit
+  // `step` apart and overlap, so the band they cover is ~3.8 units deep with
+  // no gap anywhere a creature could thread. Each centre is pushed
+  // `WATER_COLLIDER_R - WATER_COLLIDER_BITE` out to sea, which is exactly the
+  // keep rule the tiling uses, so a wall circle protrudes at most
+  // `WATER_COLLIDER_BITE` onto the beach. Only in the landscape mode, like
+  // every other authored body.
+  if (mapped()) {
+    const poly = coastOutline(COAST_OUTLINE_POINTS * SHORE_WALK_SUBDIVISION);
+    const push = WATER_COLLIDER_R - WATER_COLLIDER_BITE;
+    let acc = 0;
+    let next = step * 0.5;
+    for (let i = 0; i < poly.length; i++) {
+      const a = poly[i]!;
+      const b = poly[(i + 1) % poly.length]!;
+      const dx = b[0] - a[0];
+      const dz = b[1] - a[1];
+      const len = Math.hypot(dx, dz);
+      if (len <= 1e-9) continue;
+      // The outward normal of a counter-clockwise ring is (dz, −dx), which
+      // here points off the island and into the sea.
+      const nx = dz / len;
+      const nz = -dx / len;
+      while (next <= acc + len) {
+        const t = (next - acc) / len;
+        next += step;
+        out.push({
+          x: a[0] + dx * t + nx * push,
+          z: a[1] + dz * t + nz * push,
+          r: WATER_COLLIDER_R,
+          hard: true,
+        });
+      }
+      acc += len;
+    }
+  }
   for (const body of activeWaterBodies()) {
     const reach = body.r * WOBBLE_MAX;
     const jn = Math.ceil(reach / row);
@@ -1343,6 +1640,27 @@ export function shoreSamples(body: WaterBody, spacing = SHORE_SPACING): ShoreSam
   walkShore(waterOutline(body, OUTLINE_POINTS * SHORE_WALK_SUBDIVISION), false, spacing, out);
   const isl = islandOutline(body, ISLAND_OUTLINE_POINTS * SHORE_WALK_SUBDIVISION);
   if (isl) walkShore(isl, true, spacing, out);
+  return out;
+}
+
+/**
+ * The same walk along the COAST — points at ~`spacing` units with the unit
+ * normal pointing inland, off the sea — where reeds, foam and driftwood can
+ * ride the waterline.
+ *
+ * `inward: true`, exactly like a lake's island: the water is OUTSIDE this
+ * ring, so "away from the water, onto land" is toward the island. Everything
+ * else the walker already does is already right here — the `SHORE_PUSH` nudge
+ * onto land, and the `isWater` skip that drops a sample which lands back in
+ * the water it borders.
+ *
+ * Answers in BOTH modes, like `shoreSamples` and for the same reason: the
+ * ring is AUTHORED geography, and the renderer that lines it builds once and
+ * then just hides what the plain world does not show.
+ */
+export function coastShoreSamples(spacing = SHORE_SPACING): ShoreSample[] {
+  const out: ShoreSample[] = [];
+  walkShore(coastOutline(COAST_OUTLINE_POINTS * SHORE_WALK_SUBDIVISION), true, spacing, out);
   return out;
 }
 

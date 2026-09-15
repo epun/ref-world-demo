@@ -8,6 +8,11 @@
  * image, not chrome, and that shipped as on-taste. Everything on it is a
  * hairline mark:
  *
+ * - the sea: the whole field filled WORLD.neutralMid, with the ISLAND drawn
+ *   back over it in the ground value inside a hairline coast. That is the
+ *   lake-island treatment inverted, and it is the same two marks — a fill and
+ *   a hairline — so the mark set does not grow (TASTE §4). Drawn FIRST, under
+ *   everything, because it is the paper the rest of the map stands on;
  * - water: the ponds and the lake, filled WORLD.neutralMid inside a hairline
  *   WORLD.ink shore, and then the lake's island drawn back over it in the
  *   ground value inside a hairline of its own — an island in a lake, which is
@@ -54,6 +59,7 @@ import { Vector3 } from 'three';
 import { sampleDrift } from '../motion/ambient';
 import {
   WATER_BODIES,
+  coastOutline,
   islandOutline,
   landscapeMode,
   waterOutline,
@@ -71,8 +77,12 @@ import { CHARACTER, SURFACE, WORLD } from '../taste/tokens';
 // ── pure helpers ─────────────────────────────────────────────────────────────
 
 /** Fixed half-extent of the mapped world square — the scattered region plus
- * a little breathing room, so wanderers at the fringe stay on the map. */
-export const WORLD_MAP_EXTENT = 175;
+ * a little breathing room, so wanderers at the fringe stay on the map.
+ *
+ * 185 since the map became an island (2026-09-15): the coast reaches 176.3
+ * units out at the south-east headland, and at 175 the map cut the corner off
+ * it. A map of an island has to contain the island. */
+export const WORLD_MAP_EXTENT = 185;
 
 /** Inverse of worldToMap: canvas px → world x/z under the same uniform,
  * centered mapping. Lets a click land where the map says it will. */
@@ -329,8 +339,13 @@ export function installWorldMinimap(opts: WorldMinimapOptions): WorldMinimapHand
   const islandFills: [number, number][][] = WATER_BODIES.map((body) =>
     islandOutline(body),
   ).filter((poly): poly is [number, number][] => poly !== null);
+  // The coast, at map scale. The world draws it at 192 points and subdivides
+  // that fourfold for the pen; the map is a couple of hundred pixels across,
+  // so the cheap ring is the whole of the gain — the same call the lake makes.
+  const coastFill: [number, number][] = coastOutline();
   let waterCache: { px: number; py: number }[][] = [];
   let islandCache: { px: number; py: number }[][] = [];
+  let coastCache: { px: number; py: number }[] = [];
   let waterCacheKey = '';
   const project = (
     polys: readonly [number, number][][],
@@ -342,6 +357,7 @@ export function installWorldMinimap(opts: WorldMinimapOptions): WorldMinimapHand
     if (key !== waterCacheKey) {
       waterCache = project(waterFills, frame);
       islandCache = project(islandFills, frame);
+      coastCache = project([coastFill], frame)[0] ?? [];
       waterCacheKey = key;
     }
   };
@@ -411,6 +427,16 @@ export function installWorldMinimap(opts: WorldMinimapOptions): WorldMinimapHand
       ctx.stroke();
     };
     if (mapped) {
+      // The sea first, over the whole field: the map is a map of an island, so
+      // water is the default and land is the shape drawn on it. The border loop
+      // is the field, and the clip above is already it, so filling the loop in
+      // the water value IS the ocean.
+      traceLoop(ctx, border);
+      ctx.fillStyle = WORLD.neutralMid;
+      ctx.fill();
+      // …and the island back over it in the ground value inside its hairline
+      // coast — the lake island's own treatment, inverted.
+      ring(coastCache, SURFACE.ground);
       for (const poly of waterCache) ring(poly, WORLD.neutralMid);
       for (const poly of islandCache) ring(poly, SURFACE.ground);
     }

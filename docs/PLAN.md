@@ -280,6 +280,41 @@ so the marker never jitters or snaps.
   slide at `t.primary` and settle by drifting. Follow policy is in §7.1.
 - **Ground**: mid-toned neutral `#b6b6af`–`#c2c2bb`, targeting the measured `groundLuma
   0.74`. **Not cream, not white** — see TASTE §2.2.
+- **Landscape**: the geography is **authored** in `src/world/landscape.ts` and is the single
+  source every system samples — placement, colliders, water, minimap, height. A forest to the
+  west, a range along the north, one lake with an island in it, four ponds, and since
+  2026-09-15 **the map is an island** (user ask: *"I want this map to be an island instead of
+  a large flat plane … it should feel like Studio Ghibli meets Scavengers Reign on a tropical
+  island"*). The coast is `ISLAND_LOBES`: the union of four wobbled discs — a 150-radius main
+  mass at the origin plus three headlands (north, south-east, west), so the coastline has
+  bays and points at a scale one blob's three harmonics cannot reach. Measured radius
+  **131.7–176.3** [D], inside the ground field's own ±200. Every authored feature keeps at
+  least **12 units of land** between its edge and the sea (measured 12.55 at the range's
+  eastern mass); the headlands are placed to buy that clearance, and nothing in the 2026-09-03
+  layout moved.
+  **The sea is the complement of the coast** — `isWater` answers true outside it, so there is
+  no separate ocean outline and nothing else has to know where the edge of the world is. It
+  sits at `SEA_LEVEL = -1.2` before the elevation dial [D], under the plain's own tier 0 so
+  the beach reads as a step down; `seaLevel()` is the one plane the whole ocean rides.
+  `terrainHeight` cuts it as a **mirrored basin**: the land climbs out of the waterline over
+  `TERRAIN.coastRamp = 26` [D] (wider than a lake's `shoreRamp` of 16 — the range's shoulder
+  still stands 5–6 units high where the sea meets it, and at 16 the climb measured 0.6951,
+  over the field's own 0.6 gradient bound; at 26 it measures 0.4967), with the same
+  `basinRim` guard holding the first units of beach at the waterline. Outside the coast the
+  floor falls one `shoreRamp` to `SEA_LEVEL - basinDrop` and is flat from there out — **the
+  ground's far ring is sea floor now**, seated off the Surface at its own inner rim rather
+  than assuming zero. The sea pass runs BEFORE the authored basins, the one place it departs
+  from them: a basin's interior has to come out exactly its `waterLevel`, so nothing may run
+  after one, and the sea is the landform the basins are cut into.
+  **The beach** is a soft weight on the landscape sample — 1 at the waterline fading to 0
+  `BEACH_WIDTH = 14` units inland [D] — and a `Region` of its own, claimed where that weight
+  reaches 0.5. Scatter gives it a table (`BEACH_SEED`): small rocks and plenty of them,
+  stumps as driftwood, palms, a rare cactus, sparse ticks, and nothing built or forested. The
+  sea plants nothing, as it always did for water. Creatures are stopped at the waterline by a
+  **wall** of hex-pitch collider circles walked along the coast (479 of them) rather than a
+  tiling of the ocean, which would be unbounded.
+  The plain mode is untouched by all of it: no coast, no sea, no beach, flat paper — pinned at
+  2,000 points in `test/world/island.test.ts`.
 - **Scatter**: repeated small hand-drawn units — trees, rocks, huts, birds, doodads —
   authored as silhouettes and run through the **same inflater** as the characters. Placement
   on the isometric grid with jitter; **grid governs placement, never form** (TASTE §2.5).

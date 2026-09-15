@@ -35,6 +35,7 @@ import {
 import { CHARACTER, SURFACE, WORLD } from '../../src/taste/tokens';
 import {
   WATER_BODIES,
+  coastOutline,
   islandOutline,
   setLandscapeMode,
   waterOutline,
@@ -353,10 +354,12 @@ describe('the map draws an island in a lake', () => {
 
     const lake = WATER_BODIES[0]!;
     const water = fills.filter((f) => f.style === WORLD.neutralMid);
-    // One water fill per body, and the lake's is its OUTER shore — nothing
-    // is cut out of it on the map.
-    expect(water).toHaveLength(WATER_BODIES.length);
-    expect(matches(water[0]!, waterOutline(lake))).toBe(true);
+    // The SEA first (2026-09-15, the map became an island): one fill over the
+    // whole field, so the map reads as water with land drawn on it. Then one
+    // water fill per body, and the lake's is its OUTER shore — nothing is cut
+    // out of it on the map.
+    expect(water).toHaveLength(WATER_BODIES.length + 1);
+    expect(matches(water[1]!, waterOutline(lake))).toBe(true);
 
     // …and the island is drawn back over it in the ground value, so the map
     // shows an island in a lake rather than a plain grey disc.
@@ -365,7 +368,57 @@ describe('the map draws an island in a lake', () => {
     );
     expect(island).toHaveLength(1);
     // Drawn AFTER the water it stands in.
-    expect(fills.indexOf(island[0]!)).toBeGreaterThan(fills.indexOf(water[0]!));
+    expect(fills.indexOf(island[0]!)).toBeGreaterThan(fills.indexOf(water[1]!));
+  });
+
+  it('draws the sea over the whole field with the island back over it', () => {
+    // The lake island's treatment, inverted: the ocean is the default and the
+    // land is the shape on it. Two marks, a fill and a hairline — the mark set
+    // does not grow (TASTE §4).
+    const { fills, strokes } = drawOnce();
+
+    const scale = mapMarkScale(200);
+    const mapFrame: MapFrame = { w: 200, h: 200, inset: mapBorderInset(scale) + 5 * scale };
+    const coast = coastOutline().map(([x, z]) => {
+      const at = worldToMap(x, z, WORLD_MAP_EXTENT, mapFrame);
+      return [at.px, at.py] as [number, number];
+    });
+
+    const water = fills.filter((f) => f.style === WORLD.neutralMid);
+    // The sea is the FIRST water fill and it is the field itself — the border
+    // loop, not a body's outline — so it covers the whole map.
+    const sea = water[0]!;
+    expect(sea.points.length).toBeGreaterThan(8);
+    expect(sea.points.length).not.toBe(coastOutline().length);
+
+    // …and the island is filled back over it in the ground value, on the
+    // coast's own polygon, with a hairline round it.
+    const land = fills.filter(
+      (f) =>
+        f.style === SURFACE.ground &&
+        f.points.length === coast.length &&
+        f.points.every(
+          ([x, y], i) => Math.abs(x - coast[i]![0]) < 1e-6 && Math.abs(y - coast[i]![1]) < 1e-6,
+        ),
+    );
+    expect(land).toHaveLength(1);
+    expect(fills.indexOf(land[0]!)).toBeGreaterThan(fills.indexOf(sea));
+    expect(
+      strokes.some(
+        (st) =>
+          st.style === WORLD.ink &&
+          st.points.length === coast.length &&
+          st.points.every(
+            ([x, y], i) => Math.abs(x - coast[i]![0]) < 1e-6 && Math.abs(y - coast[i]![1]) < 1e-6,
+          ),
+      ),
+    ).toBe(true);
+    // The island is inside the mapped square, so the coast really is drawn
+    // rather than clipped away.
+    for (const [x, z] of coastOutline()) {
+      expect(Math.abs(x)).toBeLessThan(WORLD_MAP_EXTENT);
+      expect(Math.abs(z)).toBeLessThan(WORLD_MAP_EXTENT);
+    }
   });
 });
 
@@ -379,7 +432,9 @@ describe('the map of the plain world has no water on it', () => {
       setLandscapeMode('landscape');
     }
     // The one filled shape on the map is the water (TASTE §4 — the mark set
-    // is icon + ruleLine + border), so a plain world leaves the paper alone.
+    // is icon + ruleLine + border), so a plain world leaves the paper alone —
+    // the SEA included: the plain mode has no coast, so the map of it is not
+    // a map of an island.
     expect(fills.filter((f) => f.style === WORLD.neutralMid)).toHaveLength(0);
     const lake = WATER_BODIES[0]!;
     const island = islandOutline(lake)!;
@@ -391,7 +446,7 @@ describe('the map of the plain world has no water on it', () => {
     // Checked against the mapped world, so this is a difference and not an
     // empty recorder.
     expect(drawOnce().fills.filter((f) => f.style === WORLD.neutralMid)).toHaveLength(
-      WATER_BODIES.length,
+      WATER_BODIES.length + 1,
     );
   });
 });

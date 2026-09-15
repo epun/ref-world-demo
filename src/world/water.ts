@@ -21,6 +21,14 @@
  * construction rather than by matching sample counts (the lesson of the
  * causeway strip that used to run between them).
  *
+ * THE SEA IS THE SAME THREE LAYERS, INVERTED (2026-09-15, the map became an
+ * island). Its fill is the whole far disc with the coast punched out of it as
+ * a hole — the lake island's treatment turned inside out — its shore is one
+ * ribbon walked round that same ring with the water on the outside of it, and
+ * its ripple marks are a line of surf along the coast rather than a grid
+ * inside a body, because an ocean has no inside to fill. All of it comes off
+ * `coastOutline` and rides `seaLevel`, which is one plane for the whole ocean.
+ *
  * Everything AUTHORED here is built ONCE from WATER_BODIES. That geography is
  * fixed (it does not ride the scatter seed), so it has no rebuild path — only
  * `update`, which advances the ripples' ambient drift.
@@ -77,20 +85,25 @@ import {
 } from 'three';
 import { GHIBLI, MOTION, SURFACE, WORLD } from '../taste/tokens';
 import {
+  COAST_OUTLINE_POINTS,
+  ISLAND,
   ISLAND_OUTLINE_POINTS,
   OUTLINE_POINTS,
   RIPPLE_MARGIN,
   WATER_BODIES,
+  coastOutline,
   islandOutline,
   isAuthoredWater,
   landscapeMode,
   paintedRippleSpots,
   rippleSpots,
+  seaLevel,
   waterLevel,
   waterOutline,
   type RippleSpot,
   type WaterBody,
 } from './landscape';
+import { GROUND_RADIUS } from './ground';
 import type { PaintedWaterField } from './painted-water';
 import type { WorldStyle } from './style';
 
@@ -172,6 +185,35 @@ const PAINTED_POND_SPAN = 20;
 /** Drift period: two ambient beats, the slowest thing on screen. */
 const RIPPLE_PERIOD_S = (MOTION.ambientMs * 2) / 1000;
 const RIPPLE_OMEGA = (Math.PI * 2) / RIPPLE_PERIOD_S;
+
+// ── the sea [D] ──────────────────────────────────────────────────────────────
+/**
+ * THE MAP IS AN ISLAND (2026-09-15), so the largest body of water in the
+ * world is the one outside the coast. It is drawn with the authored bodies'
+ * own three layers and nothing new: a flat fill, a drawn shore, drifting
+ * ripple marks.
+ *
+ * Its FILL is the lake's island treatment inverted — the whole far disc, out
+ * to the horizon the ground's own ring reaches, with the coast punched out of
+ * it as a HOLE. Earcut invents no points, so the sheet's vertices are exactly
+ * the two rings' and the grey meets the ink by construction.
+ */
+/** Points round the ocean's outer rim. A circle nobody can reach the edge of
+ * — 96, the same budget the ground's far ring uses for the same horizon. */
+const SEA_DISC_POINTS = 96;
+/** Arc length between candidate foam marks along the coast. Far coarser than
+ * a lake's ripple grid: the coast is ~940 units long, and a mark every two
+ * units would be a texture rather than a scattering (TASTE §2.3). */
+const SEA_FOAM_SPACING = 7;
+/** Fraction of those candidates that carry a mark. */
+const SEA_FOAM_KEEP = 0.55;
+/** How far offshore a foam mark sits, in world units — min and span. Kept
+ * clear of the drawn shore so the two read as two marks. */
+const SEA_FOAM_OFFSET_MIN = 1.4;
+const SEA_FOAM_OFFSET_SPAN = 2.6;
+/** Length of one foam mark, min and span. */
+const SEA_FOAM_LEN_MIN = 0.7;
+const SEA_FOAM_LEN_SPAN = 0.9;
 
 // ── deterministic hash ───────────────────────────────────────────────────────
 
@@ -681,6 +723,94 @@ export function createWater(): Water {
   rippleMesh.position.y = 0;
   group.add(rippleMesh);
 
+  // ── the sea ───────────────────────────────────────────────────────────────
+  // The island's own water, built from `coastOutline` and nothing else — the
+  // same three layers, the same three materials, the same pen. Its sheets ride
+  // ONE level for the whole ocean (`seaLevel`), so they are kept in their own
+  // little list rather than the per-body one `refreshLevels` walks.
+  const seaSheets: { mesh: Mesh; lift: number }[] = [];
+  const coastRing = densify(coastOutline(COAST_OUTLINE_POINTS * SHORE_SUBDIVISION));
+  {
+    // The flat value: the whole far disc, with the island cut out of it as a
+    // hole. Counter-clockwise like every ring the geography hands over.
+    const disc: Point[] = [];
+    for (let i = 0; i < SEA_DISC_POINTS; i++) {
+      const theta = (i / SEA_DISC_POINTS) * Math.PI * 2;
+      disc.push([Math.cos(theta) * GROUND_RADIUS, Math.sin(theta) * GROUND_RADIUS]);
+    }
+    const shape = trace(new Shape(), disc);
+    shape.holes.push(trace(new Path(), coastRing));
+    const geometry = new ShapeGeometry(shape);
+    geometry.rotateX(-Math.PI / 2);
+    geometries.push(geometry);
+    const fill = new Mesh(geometry, fillMaterial);
+    fill.name = 'sea-fill';
+    fill.position.y = seaLevel() + WATER_LIFT;
+    seaSheets.push({ mesh: fill, lift: WATER_LIFT });
+    group.add(fill);
+
+    // The drawn coast. The water is OUTSIDE this ring, like a lake island's,
+    // so the probe pushes outward — and the guard is the authored geography,
+    // which answers whatever mode the world is opening in.
+    const ribbon = ribbonGeometry(coastRing, ISLAND.seed, 1, isAuthoredWater);
+    geometries.push(ribbon);
+    const shore = new Mesh(ribbon, shoreMaterial);
+    shore.name = 'sea-shore';
+    shore.position.y = seaLevel() + SHORE_LIFT;
+    seaSheets.push({ mesh: shore, lift: SHORE_LIFT });
+    group.add(shore);
+
+    // Foam: the ripple mark, placed along the coast instead of on a grid
+    // inside a body — the ocean has no inside to fill, and what reads as
+    // moving water at a coast is the line of surf along it. Each mark lies
+    // along the coast's own tangent, a hashed step offshore, and the arcs and
+    // the drift shader are the ripples' unchanged.
+    const foam: RippleMark[] = [];
+    let acc = 0;
+    let next = SEA_FOAM_SPACING * 0.5;
+    let k = 0;
+    for (let i = 0; i < coastRing.length; i++) {
+      const a = coastRing[i]!;
+      const b = coastRing[(i + 1) % coastRing.length]!;
+      const dx = b[0] - a[0];
+      const dz = b[1] - a[1];
+      const len = Math.hypot(dx, dz);
+      if (len <= 1e-9) continue;
+      // Outward normal of a counter-clockwise ring: off the island, out to sea.
+      const nx = dz / len;
+      const nz = -dx / len;
+      while (next <= acc + len) {
+        const t = (next - acc) / len;
+        next += SEA_FOAM_SPACING;
+        const seed = ISLAND.seed + k * 3.7;
+        k++;
+        if (hash(seed) >= SEA_FOAM_KEEP) continue;
+        const off = SEA_FOAM_OFFSET_MIN + SEA_FOAM_OFFSET_SPAN * hash(seed + 1.9);
+        foam.push({
+          spot: {
+            x: a[0] + dx * t + nx * off,
+            z: a[1] + dz * t + nz * off,
+            rot: Math.atan2(dz, dx),
+            len: SEA_FOAM_LEN_MIN + SEA_FOAM_LEN_SPAN * hash(seed + 5.3),
+          },
+          // Baked at 0 and lifted by the mesh: the whole ocean is one level,
+          // so unlike the per-body sheet this one CAN carry its own height —
+          // which is what lets `refreshLevels` re-seat it with one write.
+          y: 0,
+          seed,
+        });
+      }
+      acc += len;
+    }
+    const foamGeometry = buildRippleGeometry(foam);
+    geometries.push(foamGeometry);
+    const foamMesh = new Mesh(foamGeometry, rippleMaterial);
+    foamMesh.name = 'sea-foam';
+    foamMesh.position.y = seaLevel() + RIPPLE_LIFT;
+    seaSheets.push({ mesh: foamMesh, lift: RIPPLE_LIFT });
+    group.add(foamMesh);
+  }
+
   // ── painted water ─────────────────────────────────────────────────────────
   // Rebuilt whole on every `setPainted`, into `paintedGroup`. Same three
   // layers, same three materials, same pen and the same drift shader — only
@@ -794,6 +924,9 @@ export function createWater(): Water {
     },
     refreshLevels: (): void => {
       for (const sheet of sheets) sheet.mesh.position.y = waterLevel(sheet.body) + sheet.lift;
+      // The ocean is one plane, so its three sheets take one number.
+      const sea = seaLevel();
+      for (const sheet of seaSheets) sheet.mesh.position.y = sea + sheet.lift;
       const attr = rippleGeometry.getAttribute('position') as BufferAttribute;
       for (const range of rippleRanges) {
         const y = waterLevel(range.body) + RIPPLE_LIFT;

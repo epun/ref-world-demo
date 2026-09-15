@@ -240,6 +240,10 @@ describe('with nothing painted, the world is the world', () => {
           mountain: 0,
           water: false,
           island: false,
+          // The plain mode has no coast in it, so no beach either (the map
+          // became an island, 2026-09-15 — the SEA is authored geography and
+          // the mode gates it, exactly as it gates the lake).
+          beach: 0,
           region: 'plain',
           // Nothing is painted with a PLANTING brush in this file, so every
           // weight is 0 (src/world/painted.ts, the environment brush kit).
@@ -468,6 +472,9 @@ describe('sampleLandscape reports painted water on the plain', () => {
           mountain: 0,
           water: true,
           island: false,
+          // A painted pond is not a beach: the beach weight is the SEA's, and
+          // the plain mode has no sea.
+          beach: 0,
           region: 'water',
           // Nothing is painted with a PLANTING brush in this file, so every
           // weight is 0 (src/world/painted.ts, the environment brush kit).
@@ -481,6 +488,10 @@ describe('sampleLandscape reports painted water on the plain', () => {
           mountain: 0,
           water: false,
           island: false,
+          // The plain mode has no coast in it, so no beach either (the map
+          // became an island, 2026-09-15 — the SEA is authored geography and
+          // the mode gates it, exactly as it gates the lake).
+          beach: 0,
           region: 'plain',
           // Nothing is painted with a PLANTING brush in this file, so every
           // weight is 0 (src/world/painted.ts, the environment brush kit).
