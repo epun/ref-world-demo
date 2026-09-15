@@ -30,6 +30,7 @@
  * second hue on one figure (*"color rarely mixes on one figure"*).
  */
 
+import { CREATURE } from '../taste/tokens';
 import type { Motifs } from './interpret';
 
 export type PaletteName = 'red' | 'blue' | 'yellow' | 'purple' | 'pink' | 'grey';
@@ -48,19 +49,19 @@ export interface CreaturePalette {
   pupil: string;
 }
 
-/** Brief tokens [M]. */
-export const BRIEF_LIGHT = '#f7f4f1';
-export const BRIEF_DARK_NEUTRAL = '#544c50';
-export const BRIEF_GROUND = '#1a1717';
+/** Brief tokens [M] — the values live in src/taste/tokens.ts, the one home. */
+export const BRIEF_LIGHT: string = CREATURE.light;
+export const BRIEF_DARK_NEUTRAL: string = CREATURE.darkNeutral;
+export const BRIEF_GROUND: string = CREATURE.ground;
 
 /** Body hues [D]: one per type, vivid (brief saturation 0.609). */
 export const BODY_HUES: Readonly<Record<PaletteName, string>> = {
-  red: '#d9483b',
-  blue: '#4f86c6',
-  yellow: '#e9b93a',
-  purple: '#8b63b8',
-  pink: '#e58aae',
-  grey: '#9b9591',
+  red: CREATURE.red,
+  blue: CREATURE.blue,
+  yellow: CREATURE.yellow,
+  purple: CREATURE.purple,
+  pink: CREATURE.pink,
+  grey: CREATURE.grey,
 };
 
 /** Bulk aspect (height / width) at which a drawing reads as tall. [D] */

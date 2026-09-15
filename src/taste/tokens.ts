@@ -44,6 +44,29 @@ export const CHARACTER = {
   accent: '#fb5429',
 } as const;
 
+// ── Creature palette (creature brief, 2026-09-15) ────────────────────────────
+// docs/taste/creature.md — TASTE §8. The brief's own tokens [M] are the
+// sheets' palette (paper, neutrals, one dark ground); the six body hues are
+// ours [D], pitched at its measured saturation (0.609, vivid, warm). One hue
+// per creature, never mixed; topper and stalk are tints of the body toward
+// `light` and `darkNeutral` (src/character/palette.ts).
+
+export const CREATURE = {
+  /** [M] Highlights and light-struck surfaces — the eye white, the topper tint. */
+  light: '#f7f4f1',
+  /** [M] The dark supporting tone — what the stalk is tinted toward. */
+  darkNeutral: '#544c50',
+  /** [M] The brief's ground token — the pupil, the one dark on the figure. */
+  ground: '#1a1717',
+  /** [D] The six types. */
+  red: '#d9483b',
+  blue: '#4f86c6',
+  yellow: '#e9b93a',
+  purple: '#8b63b8',
+  pink: '#e58aae',
+  grey: '#9b9591',
+} as const;
+
 // ── Applied surfaces [D] ─────────────────────────────────────────────────────
 // Assignments are ours (TASTE §6); the values they point at are measured.
 
