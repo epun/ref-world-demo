@@ -97,14 +97,16 @@ export function propMaskSize(kind: InflatedPropKind): number {
 
 // ── seeded hand-wobble ───────────────────────────────────────────────────────
 
-/** Deterministic hash → [0,1). Same recipe family as motion/ambient. */
-function hash(n: number): number {
+/** Deterministic hash → [0,1). Same recipe family as motion/ambient.
+ * Exported so the destruction layer's fragments wobble off the SAME
+ * family as the prop they came from — never a second noise recipe. */
+export function hash(n: number): number {
   const x = Math.sin(n * 127.1 + 311.7) * 43758.5453123;
   return x - Math.floor(x);
 }
 
 /** Signed hash → [-1,1). */
-function shash(n: number): number {
+export function shash(n: number): number {
   return hash(n) * 2 - 1;
 }
 
@@ -316,7 +318,7 @@ export function latheWobbled(
 
 /** Concatenate parts into one geometry (position + normal, non-indexed).
  * Parts keep their own normals: lathes stay smooth, extrusions stay flat. */
-function mergeParts(parts: BufferGeometry[]): BufferGeometry {
+export function mergeParts(parts: BufferGeometry[]): BufferGeometry {
   const expanded = parts.map((g) => (g.index ? g.toNonIndexed() : g));
   let total = 0;
   for (const g of expanded) total += g.getAttribute('position').count;
@@ -333,6 +335,193 @@ function mergeParts(parts: BufferGeometry[]): BufferGeometry {
   const out = new BufferGeometry();
   out.setAttribute('position', new BufferAttribute(positions, 3));
   out.setAttribute('normal', new BufferAttribute(normals, 3));
+  return out;
+}
+
+// ── parts, and where a prop comes apart ──────────────────────────────────────
+// An architectural prop is BUILT from parts and merged; the destruction
+// layer (src/world/chunks.ts) wants those same parts back, grouped, before
+// the merge. So every builder returns a labelled part list and the whole
+// prop is `mergeParts` of it, in the same order it always was — the merged
+// geometry is unchanged to the float (test/world/chunks.test.ts pins it).
+//
+// A part carries the destruction GROUP it belongs to (parts sharing a group
+// key break off as one chunk) and the STAGE of a staged collapse that takes
+// it: 0 first impact, 1 second, 2 the final collapse.
+
+/** Which stage of a staged collapse removes a part. */
+export type PartStage = 0 | 1 | 2;
+
+export interface ArchPart {
+  geometry: BufferGeometry;
+  /** Destruction group key — parts sharing one come apart as one chunk. */
+  group: string;
+  stage: PartStage;
+}
+
+export interface ArchPartOpts {
+  /**
+   * Split single-body forms (a lone box, a lone lathe) into stacked
+   * sections at wobbled seams, so a building with no natural seam still
+   * has 3–6 chunks. DESTRUCTION ONLY — the whole prop never sets this, and
+   * with it unset every builder emits exactly the parts it always did.
+   */
+  split?: boolean;
+}
+
+interface PartSink {
+  parts: ArchPart[];
+  add: (group: string, stage: PartStage, ...geometries: BufferGeometry[]) => void;
+}
+
+/** Collects a builder's parts in build order (the merge order). */
+function partSink(): PartSink {
+  const parts: ArchPart[] = [];
+  return {
+    parts,
+    add: (group, stage, ...geometries) => {
+      for (const geometry of geometries) parts.push({ geometry, group, stage });
+    },
+  };
+}
+
+/** The whole prop: merge a part list in build order. */
+export function mergeArchParts(parts: readonly ArchPart[]): BufferGeometry {
+  return mergeParts(parts.map((p) => p.geometry));
+}
+
+/** A cut height jittered per point along x — the seam between two stacked
+ * sections is a torn line, never a ruled one. Same `shash` family as every
+ * other wobble here. */
+function seamY(y: number, x: number, seed: number, amp: number): number {
+  return y + amp * shash(seed + x * 5.7);
+}
+
+/** Drop points that collapsed onto their neighbour (clipping makes them,
+ * and wobbleOutline divides by edge length). */
+function dedupeOutline(points: readonly [number, number][]): [number, number][] {
+  const out: [number, number][] = [];
+  for (const p of points) {
+    const last = out[out.length - 1];
+    if (last && Math.hypot(p[0] - last[0], p[1] - last[1]) < 1e-5) continue;
+    out.push(p);
+  }
+  while (out.length > 1) {
+    const a = out[0]!;
+    const b = out[out.length - 1]!;
+    if (Math.hypot(a[0] - b[0], a[1] - b[1]) >= 1e-5) break;
+    out.pop();
+  }
+  return out;
+}
+
+/** Clip a closed outline to one horizontal half-plane, wobbling every cut
+ * point's height. Sutherland–Hodgman; the profile must be y-monotone across
+ * the cut (a box, a gable, a stem) — the arched profiles keep their natural
+ * seams instead of being split. */
+function clipHalf(
+  poly: readonly [number, number][],
+  y: number,
+  keepAbove: boolean,
+  seed: number,
+  amp: number,
+): [number, number][] {
+  const inside = (p: readonly [number, number]): boolean => (keepAbove ? p[1] >= y : p[1] <= y);
+  const out: [number, number][] = [];
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i]!;
+    const b = poly[(i + 1) % poly.length]!;
+    if (inside(a)) out.push([a[0], a[1]]);
+    if (inside(a) !== inside(b)) {
+      const t = (y - a[1]) / (b[1] - a[1]);
+      const x = a[0] + (b[0] - a[0]) * t;
+      out.push([x, seamY(y, x, seed, amp)]);
+    }
+  }
+  return dedupeOutline(out);
+}
+
+/**
+ * Split an extruded profile into stacked sections cut at `heights`
+ * (bottom → top) and extrude each one on its own. Each cut is wobbled per
+ * point, so the break reads as drawn. Sections come back bottom-first.
+ */
+function splitExtrudeStack(
+  profile: readonly [number, number][],
+  depth: number,
+  heights: readonly number[],
+  seed: number,
+  opts: OutlineWobbleOpts & { jitter3d?: number; seamAmp?: number } = {},
+): BufferGeometry[] {
+  const { seamAmp = 0.09, ...wobble } = opts;
+  const bounds = [-Infinity, ...heights, Infinity];
+  const out: BufferGeometry[] = [];
+  for (let i = 0; i < bounds.length - 1; i++) {
+    let band: [number, number][] = profile.map(([x, y]) => [x, y]);
+    const lo = bounds[i]!;
+    const hi = bounds[i + 1]!;
+    if (Number.isFinite(lo)) band = clipHalf(band, lo, true, seed + i * 19.1, seamAmp);
+    if (band.length >= 3 && Number.isFinite(hi)) {
+      band = clipHalf(band, hi, false, seed + (i + 1) * 19.1, seamAmp);
+    }
+    if (band.length < 3) continue;
+    out.push(extrudeWobbled(band, depth, seed + i * 27.7, wobble));
+  }
+  return out;
+}
+
+/** Tear a lathe's seam ring: the ring at `y` is a perfect circle at one
+ * height, which is exactly the ruled line §2.5 forbids — jitter it by
+ * angle so the cut is ragged. */
+function tearLatheSeam(geometry: BufferGeometry, y: number, seed: number, amp: number): void {
+  mapVertices(geometry, (x, vy, z) =>
+    Math.abs(vy - y) < 1e-4
+      ? [x, vy + amp * shash(seed + Math.atan2(z, x) * 3.9), z]
+      : [x, vy, z],
+  );
+  geometry.computeVertexNormals();
+}
+
+/**
+ * Split a lathe profile at `heights` into stacked lathes — the water
+ * tower's tank and roof, a mushroom-house's stem and cap. Each section is
+ * lathed on its own and its seam ring torn. Sections come back
+ * bottom-first.
+ */
+function splitLatheStack(
+  profile: readonly [number, number][],
+  segments: number,
+  heights: readonly number[],
+  seed: number,
+  opts: { bow?: number; segs?: number; jitter3d?: number; seamAmp?: number } = {},
+): BufferGeometry[] {
+  const { seamAmp = 0.06, ...lathe } = opts;
+  const radiusAt = (y: number): number => {
+    for (let i = 0; i < profile.length - 1; i++) {
+      const [r0, y0] = profile[i]!;
+      const [r1, y1] = profile[i + 1]!;
+      if ((y >= y0 && y <= y1) || (y <= y0 && y >= y1)) {
+        const span = y1 - y0;
+        return Math.abs(span) < 1e-9 ? r0 : r0 + ((r1 - r0) * (y - y0)) / span;
+      }
+    }
+    return profile[profile.length - 1]![0];
+  };
+  const bounds = [-Infinity, ...heights, Infinity];
+  const out: BufferGeometry[] = [];
+  for (let i = 0; i < bounds.length - 1; i++) {
+    const lo = bounds[i]!;
+    const hi = bounds[i + 1]!;
+    const band: [number, number][] = [];
+    if (Number.isFinite(lo)) band.push([radiusAt(lo), lo]);
+    for (const [r, y] of profile) if (y > lo && y < hi) band.push([r, y]);
+    if (Number.isFinite(hi)) band.push([radiusAt(hi), hi]);
+    if (band.length < 2) continue;
+    const section = latheWobbled(band, segments, seed + i * 23.3, lathe);
+    if (Number.isFinite(lo)) tearLatheSeam(section, lo, seed + i * 11.9, seamAmp);
+    if (Number.isFinite(hi)) tearLatheSeam(section, hi, seed + (i + 1) * 11.9, seamAmp);
+    out.push(section);
+  }
   return out;
 }
 
@@ -366,6 +555,29 @@ function slabBox(
     d,
     seed,
     { bow: 0.02, corner: 0.06, jitter: 0.01, jitter3d: 0.016, ...opts },
+  );
+}
+
+/** The same slab, cut into stacked courses at torn seams — what a box with
+ * no natural seam comes apart into. Bottom course first. */
+function splitBoxCourses(
+  w: number,
+  h: number,
+  d: number,
+  seed: number,
+  heights: readonly number[],
+): BufferGeometry[] {
+  return splitExtrudeStack(
+    [
+      [-w / 2, 0],
+      [w / 2, 0],
+      [w / 2, h],
+      [-w / 2, h],
+    ],
+    d,
+    heights,
+    seed,
+    { bow: 0.02, corner: 0.06, jitter: 0.01, jitter3d: 0.016, seamAmp: Math.min(0.09, h * 0.05) },
   );
 }
 
@@ -561,32 +773,34 @@ function windowsAt(
 
 /** 1. Crenellated keep: big box, four corner towers, teeth everywhere,
  * arched door, windows, plinth. The castle thumbnail of the pack. */
-function buildKeep(seed: number): BufferGeometry {
-  const parts: BufferGeometry[] = [];
+function buildKeepParts(seed: number): ArchPart[] {
+  const { parts, add } = partSink();
   const half = 1.7;
   const boxH = 4.9;
-  parts.push(plinthSlab(4.8, 4.8, seed + 0.1));
-  parts.push(slabBox(3.4, boxH, 3.4, seed + 1.1));
+  add('base', 2, plinthSlab(4.8, 4.8, seed + 0.1));
+  add('body', 2, slabBox(3.4, boxH, 3.4, seed + 1.1));
   for (const side of [-1, 1]) {
     const front = teethStrip(3.5, 0.14, 0.3, seed + 2.2 + side);
     front.translate(0, boxH, side * 1.55);
-    parts.push(front);
+    add('roof', 0, front);
     const flank = teethStrip(3.5, 0.14, 0.3, seed + 4.4 + side);
     flank.rotateY(Math.PI / 2);
     flank.translate(side * 1.55, boxH, 0);
-    parts.push(flank);
+    add('roof', 0, flank);
   }
   for (const sx of [-1, 1]) {
     for (const sz of [-1, 1]) {
       const tSeed = seed + sx * 4.1 + sz * 2.3;
       const tower = towerRound(0.6, 5.7, tSeed);
       tower.translate(sx * half, 0, sz * half);
-      parts.push(tower);
-      parts.push(...crenellationRing(0.62, 5.7, 6, tSeed + 1.7, [sx * half, sz * half]));
+      add('towers', 1, tower);
+      add('roof', 0, ...crenellationRing(0.62, 5.7, 6, tSeed + 1.7, [sx * half, sz * half]));
     }
   }
-  parts.push(doorAt(seed + 9.9, 1.15, 1.7));
-  parts.push(
+  add('stubs', 0, doorAt(seed + 9.9, 1.15, 1.7));
+  add(
+    'stubs',
+    0,
     ...windowsAt(
       [
         [-0.8, 2.9],
@@ -597,27 +811,27 @@ function buildKeep(seed: number): BufferGeometry {
       seed + 12.3,
     ),
   );
-  return mergeParts(parts);
+  return parts;
 }
 
 /** 2. Round watchtower: tall lathe, machicolated overhang, teeth ring,
  * small center cone, door. */
-function buildWatchtower(seed: number): BufferGeometry {
-  const parts: BufferGeometry[] = [];
-  parts.push(plinthSlab(3.2, 3.2, seed + 0.1));
-  parts.push(towerRound(1.15, 6.3, seed + 1.1, 1.2));
-  parts.push(...crenellationRing(1.28, 6.3, 9, seed + 2.2));
+function buildWatchtowerParts(seed: number): ArchPart[] {
+  const { parts, add } = partSink();
+  add('base', 2, plinthSlab(3.2, 3.2, seed + 0.1));
+  add('shaft', 1, towerRound(1.15, 6.3, seed + 1.1, 1.2));
+  add('roof', 0, ...crenellationRing(1.28, 6.3, 9, seed + 2.2));
   const cone = coneCap(0.66, 1.3, seed + 3.3);
   cone.translate(0, 6.28, 0);
-  parts.push(cone);
-  parts.push(doorAt(seed + 4.4, 1.0, 1.12));
-  parts.push(...windowsAt([[0, 3.6]], 1.02, seed + 5.5));
-  return mergeParts(parts);
+  add('roof', 0, cone);
+  add('stubs', 0, doorAt(seed + 4.4, 1.0, 1.12));
+  add('stubs', 0, ...windowsAt([[0, 3.6]], 1.02, seed + 5.5));
+  return parts;
 }
 
 /** 3. Gatehouse: twin crenellated towers flanking an arched wall. */
-function buildGatehouse(seed: number): BufferGeometry {
-  const parts: BufferGeometry[] = [];
+function buildGatehouseParts(seed: number): ArchPart[] {
+  const { parts, add } = partSink();
   const wall = extrudeWobbled(
     [
       [-1.6, 0],
@@ -638,24 +852,24 @@ function buildGatehouse(seed: number): BufferGeometry {
     seed + 1.1,
     { bow: 0.02, corner: 0.06, jitter3d: 0.02 },
   );
-  parts.push(wall);
+  add('wall', 2, wall);
   const teeth = teethStrip(2.9, 0.14, 0.3, seed + 2.2);
   teeth.translate(0, 3.3, 0);
-  parts.push(teeth);
+  add('roof', 0, teeth);
   for (const side of [-1, 1]) {
     const tower = towerRound(0.78, 4.8, seed + 3.3 + side);
     tower.translate(side * 1.85, 0, 0);
-    parts.push(tower);
-    parts.push(...crenellationRing(0.85, 4.8, 7, seed + 5.5 + side, [side * 1.85, 0]));
-    parts.push(...windowsAt([[side * 1.85, 3.4]], 0.72, seed + 7.7 + side));
+    add('towers', 1, tower);
+    add('roof', 0, ...crenellationRing(0.85, 4.8, 7, seed + 5.5 + side, [side * 1.85, 0]));
+    add('stubs', 0, ...windowsAt([[side * 1.85, 3.4]], 0.72, seed + 7.7 + side));
   }
-  return mergeParts(parts);
+  return parts;
 }
 
 /** 4. Walled courtyard: a low crenellated wall ring (~10u square) with a
  * gate gap and corner posts; the interior stays open ground. */
-function buildCourtyard(seed: number): BufferGeometry {
-  const parts: BufferGeometry[] = [];
+function buildCourtyardParts(seed: number): ArchPart[] {
+  const { parts, add } = partSink();
   const half = 5.1;
   const wallH = 1.55;
   const thick = 0.46;
@@ -663,51 +877,61 @@ function buildCourtyard(seed: number): BufferGeometry {
     teethStrip(len, wallH, thick, seed + s, { toothH: 0.44, pitch: 0.95 });
   const back = mk(10.0, 1.1);
   back.translate(0, 0, -half);
-  parts.push(back);
+  add('wall-back', 1, back);
   for (const side of [-1, 1]) {
     const flank = mk(10.0, 2.2 + side);
     flank.rotateY(Math.PI / 2);
     flank.translate(side * half, 0, 0);
-    parts.push(flank);
+    add('wall-flank', 1, flank);
   }
   // Front wall: two runs flanking the walkable gate gap.
   const gateHalf = 1.15;
   for (const side of [-1, 1]) {
     const run = mk(3.9, 4.4 + side);
     run.translate(side * (gateHalf + 1.95), 0, half);
-    parts.push(run);
+    add('wall-front', 2, run);
     const post = slabBox(0.52, 2.0, 0.52, seed + 6.6 + side, { segs: 2 });
     post.translate(side * gateHalf, 0, half);
-    parts.push(post);
+    add('posts', 0, post);
   }
   for (const sx of [-1, 1]) {
     for (const sz of [-1, 1]) {
       const post = slabBox(0.66, 2.15, 0.66, seed + 8.8 + sx * 1.3 + sz * 0.7, { segs: 2 });
       post.translate(sx * half, 0, sz * half);
-      parts.push(post);
+      add('posts', 0, post);
     }
   }
-  return mergeParts(parts);
+  return parts;
 }
 
 /** 5. Adobe flat-roof house: box + parapet rim + small windows + door. */
-function buildAdobe(seed: number): BufferGeometry {
-  const parts: BufferGeometry[] = [];
-  parts.push(plinthSlab(3.3, 2.9, seed + 0.1));
+function buildAdobeParts(seed: number, opts: ArchPartOpts = {}): ArchPart[] {
+  const { parts, add } = partSink();
+  add('base', 2, plinthSlab(3.3, 2.9, seed + 0.1));
   const boxH = 3.25;
-  parts.push(slabBox(2.6, boxH, 2.2, seed + 1.1));
+  // One plain box: for destruction it splits at a torn waist, the lower
+  // course carrying the collapse and the upper course coming off first.
+  if (opts.split) {
+    const courses = splitBoxCourses(2.6, boxH, 2.2, seed + 1.1, [boxH * 0.52]);
+    add('body', 2, courses[0]!);
+    add('wall', 1, ...courses.slice(1));
+  } else {
+    add('body', 2, slabBox(2.6, boxH, 2.2, seed + 1.1));
+  }
   // Parapet: four thin rim slabs proud of the roofline.
   for (const side of [-1, 1]) {
     const front = slabBox(2.8, 0.42, 0.18, seed + 2.2 + side, { segs: 2 });
     front.translate(0, boxH - 0.06, side * 1.12);
-    parts.push(front);
+    add('roof', 0, front);
     const flank = slabBox(2.4, 0.42, 0.18, seed + 4.4 + side, { segs: 2 });
     flank.rotateY(Math.PI / 2);
     flank.translate(side * 1.32, boxH - 0.06, 0);
-    parts.push(flank);
+    add('roof', 0, flank);
   }
-  parts.push(doorAt(seed + 6.6, 0.95, 1.1));
-  parts.push(
+  add('stubs', 0, doorAt(seed + 6.6, 0.95, 1.1));
+  add(
+    'stubs',
+    0,
     ...windowsAt(
       [
         [-0.75, 2.3],
@@ -720,27 +944,27 @@ function buildAdobe(seed: number): BufferGeometry {
   const sideWin = windowSlab(seed + 9.9);
   sideWin.rotateY(Math.PI / 2); // rotate first: the slab's normal turns to +x…
   sideWin.translate(1.3, 1.67, 0.5); // …then park it proud of the flank wall
-  parts.push(sideWin);
-  return mergeParts(parts);
+  add('stubs', 0, sideWin);
+  return parts;
 }
 
 /** 6. Pagoda house: two tiers of upturned-eave roofs over stacked boxes,
  * topped with a finial. */
-function buildPagoda(seed: number): BufferGeometry {
-  const parts: BufferGeometry[] = [];
-  parts.push(plinthSlab(3.5, 3.5, seed + 0.1));
-  parts.push(slabBox(2.9, 2.05, 2.9, seed + 1.1));
+function buildPagodaParts(seed: number): ArchPart[] {
+  const { parts, add } = partSink();
+  add('base', 2, plinthSlab(3.5, 3.5, seed + 0.1));
+  add('body', 2, slabBox(2.9, 2.05, 2.9, seed + 1.1));
   const roof1 = pagodaRoof(1.62, 1.15, seed + 2.2);
   roof1.translate(0, 1.95, 0);
-  parts.push(roof1);
-  parts.push((() => {
+  add('roof', 0, roof1);
+  add('tier', 1, (() => {
     const upper = slabBox(1.95, 1.5, 1.95, seed + 3.3);
     upper.translate(0, 2.6, 0);
     return upper;
   })());
   const roof2 = pagodaRoof(1.15, 1.0, seed + 4.4);
   roof2.translate(0, 4.0, 0);
-  parts.push(roof2);
+  add('roof', 0, roof2);
   const finial = latheWobbled(
     [
       [0.16, 0],
@@ -753,56 +977,76 @@ function buildPagoda(seed: number): BufferGeometry {
     { bow: 0.05, jitter3d: 0.01 },
   );
   finial.translate(0, 4.85, 0);
-  parts.push(finial);
-  parts.push(doorAt(seed + 6.6, 1.0, 1.45));
-  return mergeParts(parts);
+  add('roof', 0, finial);
+  add('stubs', 0, doorAt(seed + 6.6, 1.0, 1.45));
+  return parts;
 }
 
 /** 7. Longhouse / barn: long low box, big sagging gable, barn-door arch. */
-function buildLonghouse(seed: number): BufferGeometry {
-  const parts: BufferGeometry[] = [];
-  parts.push(plinthSlab(3.1, 5.7, seed + 0.1));
-  parts.push(slabBox(2.4, 2.25, 5.2, seed + 1.1));
+function buildLonghouseParts(seed: number, opts: ArchPartOpts = {}): ArchPart[] {
+  const { parts, add } = partSink();
+  add('base', 2, plinthSlab(3.1, 5.7, seed + 0.1));
+  if (opts.split) {
+    const courses = splitBoxCourses(2.4, 2.25, 5.2, seed + 1.1, [2.25 * 0.48]);
+    add('body', 2, courses[0]!);
+    add('wall', 1, ...courses.slice(1));
+  } else {
+    add('body', 2, slabBox(2.4, 2.25, 5.2, seed + 1.1));
+  }
   const roof = gableRoof(2.75, 1.85, 5.5, seed + 2.2, 0.18);
   roof.translate(0, 2.2, 0);
-  parts.push(roof);
-  parts.push(doorAt(seed + 3.3, 1.5, 2.6));
+  add('roof', 0, roof);
+  add('stubs', 0, doorAt(seed + 3.3, 1.5, 2.6));
   for (const side of [-1, 1]) {
     const win = windowSlab(seed + 4.4 + side);
     win.rotateY(Math.PI / 2); // normal to +x…
     win.translate(1.21, 1.07, side * 1.4); // …proud of the long flank
-    parts.push(win);
+    add('stubs', 0, win);
   }
-  return mergeParts(parts);
+  return parts;
 }
 
 /** 8. Cottage: gabled cross-section extruded, sagging ridge, leaning
  * chimney — upgraded with a door, a window, and a plinth. */
-function buildCottage(seed: number): BufferGeometry {
+function buildCottageParts(seed: number, opts: ArchPartOpts = {}): ArchPart[] {
+  const { parts, add } = partSink();
   const w = 1.6; // half-width
   const wall = 2.3;
   const ridge = 3.8;
   const depth = 2.7;
-  const body = extrudeWobbled(
-    [
-      [-w, 0],
-      [w, 0],
-      [w, wall],
-      [0, ridge],
-      [-w, wall],
-    ],
-    depth,
-    seed,
-    { bow: 0.022, corner: 0.07 },
-  );
+  const profile: [number, number][] = [
+    [-w, 0],
+    [w, 0],
+    [w, wall],
+    [0, ridge],
+    [-w, wall],
+  ];
   // The ridge sags in the middle of its run — a drawn roofline, not ruled.
-  mapVertices(body, (x, y, z) => {
-    if (y <= wall) return [x, y, z];
-    const t = (y - wall) / (ridge - wall);
-    const across = 1 - (z / (depth / 2)) ** 2;
-    return [x, y - 0.14 * t * Math.max(across, 0), z];
-  });
-  body.computeVertexNormals();
+  const sag = (geometry: BufferGeometry): BufferGeometry => {
+    mapVertices(geometry, (x, y, z) => {
+      if (y <= wall) return [x, y, z];
+      const t = (y - wall) / (ridge - wall);
+      const across = 1 - (z / (depth / 2)) ** 2;
+      return [x, y - 0.14 * t * Math.max(across, 0), z];
+    });
+    geometry.computeVertexNormals();
+    return geometry;
+  };
+  // Gable and walls are one extrusion, so destruction cuts it at two torn
+  // heights: the gable cap leaves first, then the upper course, and the
+  // lower course carries the collapse.
+  if (opts.split) {
+    const courses = splitExtrudeStack(profile, depth, [wall * 0.46, wall], seed, {
+      bow: 0.022,
+      corner: 0.07,
+      seamAmp: 0.08,
+    }).map(sag);
+    add('body', 2, courses[0]!);
+    if (courses[1]) add('wall', 1, courses[1]);
+    add('roof', 0, ...courses.slice(2));
+  } else {
+    add('body', 2, sag(extrudeWobbled(profile, depth, seed, { bow: 0.022, corner: 0.07 })));
+  }
   // Chimney: a slightly-leaning wobbled box punched through the roof plane.
   const chimney = extrudeWobbled(
     [
@@ -816,35 +1060,48 @@ function buildCottage(seed: number): BufferGeometry {
     { bow: 0.03, corner: 0.1 },
   );
   chimney.translate(0.95, 2.45, 0.5);
-  const plinth = plinthSlab(3.7, 3.1, seed + 7.3);
-  const door = doorAt(seed + 8.5, 1.0, 1.35);
+  add('stubs', 0, chimney);
+  add('base', 2, plinthSlab(3.7, 3.1, seed + 7.3));
+  add('stubs', 0, doorAt(seed + 8.5, 1.0, 1.35));
   const win = windowSlab(seed + 9.7);
   win.translate(0.85, 1.5, 1.36);
-  return mergeParts([body, chimney, plinth, door, win]);
+  add('stubs', 0, win);
+  return parts;
 }
 
 /** 9. Mushroom-house — the original landmark, a lathed stem + cap. */
-function buildMushroomHouse(seed: number): BufferGeometry {
-  const body = latheWobbled(
-    [
-      [0.95, 0],
-      [0.72, 0.8],
-      [0.62, 2.4],
-      [0.78, 3.15],
-      [1.95, 3.35],
-      [2.08, 3.75],
-      [1.65, 4.6],
-      [0.9, 5.15],
-      [0.3, 5.36],
-      [0.02, 5.4],
-    ],
-    16,
-    seed,
-    { bow: 0.05, jitter3d: 0.03 },
-  );
+function buildMushroomHouseParts(seed: number, opts: ArchPartOpts = {}): ArchPart[] {
+  const { parts, add } = partSink();
+  const profile: [number, number][] = [
+    [0.95, 0],
+    [0.72, 0.8],
+    [0.62, 2.4],
+    [0.78, 3.15],
+    [1.95, 3.35],
+    [2.08, 3.75],
+    [1.65, 4.6],
+    [0.9, 5.15],
+    [0.3, 5.36],
+    [0.02, 5.4],
+  ];
+  // One lathe, no seam of its own: destruction cuts the stem at a torn
+  // waist and takes the cap off whole.
+  if (opts.split) {
+    const sections = splitLatheStack(profile, 16, [1.55, 3.22], seed, {
+      bow: 0.05,
+      jitter3d: 0.03,
+      seamAmp: 0.07,
+    });
+    add('stem', 2, sections[0]!);
+    if (sections[1]) add('wall', 1, sections[1]);
+    add('cap', 0, ...sections.slice(2));
+  } else {
+    add('stem', 2, latheWobbled(profile, 16, seed, { bow: 0.05, jitter3d: 0.03 }));
+  }
   const door = buildDoorStub(seed + 4.3, 0.9);
   door.translate(0, 0, 0.7);
-  return mergeParts([body, door]);
+  add('stubs', 0, door);
+  return parts;
 }
 
 /** One drooping frond blade, pointing +x from the origin: a thin tapered
@@ -880,7 +1137,8 @@ function frondBlade(len: number, droop: number, seed: number): BufferGeometry {
 
 /** Palm: curved lathed trunk + crown knob + 5–7 drooping frond blades.
  * Rendered double-sided; fronds ride the wind sway path strongly. */
-function buildPalm(seed: number, h: number, bend: number, fronds: number): BufferGeometry {
+function buildPalmParts(seed: number, h: number, bend: number, fronds: number): ArchPart[] {
+  const { parts, add } = partSink();
   const trunkH = h * 0.72;
   const trunk = latheWobbled(
     [
@@ -913,7 +1171,8 @@ function buildPalm(seed: number, h: number, bend: number, fronds: number): Buffe
     { bow: 0.06, jitter3d: 0.015 },
   );
   crown.translate(bend, trunkH, 0);
-  const parts = [trunk, crown];
+  add('trunk', 2, trunk);
+  add('crown', 0, crown);
   for (let i = 0; i < fronds; i++) {
     const a = (i / fronds) * Math.PI * 2 + shash(seed + i * 3.7) * 0.35;
     const len = h * 0.42 * (0.85 + 0.3 * hash(seed + i * 5.1));
@@ -921,9 +1180,9 @@ function buildPalm(seed: number, h: number, bend: number, fronds: number): Buffe
     const frond = frondBlade(len, droop, seed + i * 11.3);
     frond.rotateY(a);
     frond.translate(bend, trunkH + 0.12, 0);
-    parts.push(frond);
+    add('crown', 0, frond);
   }
-  return mergeParts(parts);
+  return parts;
 }
 
 /** One wobbled plank: a rounded-rect profile (x/y) extruded along z. */
@@ -948,15 +1207,15 @@ function plank(
 
 /** Picnic table: sagging top slab, two benches, A-frame legs and bench
  * braces — hand-wobbled planks merged into one geometry. */
-function buildPicnicTable(seed: number, len: number, benchW: number): BufferGeometry {
-  const parts: BufferGeometry[] = [];
+function buildPicnicTableParts(seed: number, len: number, benchW: number): ArchPart[] {
+  const { parts, add } = partSink();
   const top = plank(len, 0.13, 1.0, seed);
   top.translate(0, 1.32, 0);
-  parts.push(top);
+  add('top', 1, top);
   for (const side of [-1, 1]) {
     const bench = plank(len, 0.1, benchW, seed + side * 2.1);
     bench.translate(0, 0.62, side * 0.8);
-    parts.push(bench);
+    add('benches', 0, bench);
   }
   const endX = len / 2 - 0.32;
   for (const end of [-1, 1]) {
@@ -975,7 +1234,7 @@ function buildPicnicTable(seed: number, len: number, benchW: number): BufferGeom
       );
       leg.rotateX(lean * 0.55);
       leg.translate(end * endX, 1.26, 0);
-      parts.push(leg);
+      add('legs', 2, leg);
     }
     // Bench brace: a beam along z carrying both benches.
     const brace = extrudeWobbled(
@@ -990,33 +1249,46 @@ function buildPicnicTable(seed: number, len: number, benchW: number): BufferGeom
       { bow: 0.02, corner: 0.1, jitter: 0.008, jitter3d: 0.012 },
     );
     brace.translate(end * endX, 0, 0);
-    parts.push(brace);
+    add('legs', 2, brace);
   }
-  return mergeParts(parts);
+  return parts;
 }
 
 /** Water tower: lathed tank (bellied sides, conical roof, cap knob) on
  * four wobbled legs splaying to the ground. */
-function buildWaterTower(seed: number, h: number, splay: number): BufferGeometry {
+function buildWaterTowerParts(
+  seed: number,
+  h: number,
+  splay: number,
+  opts: ArchPartOpts = {},
+): ArchPart[] {
+  const { parts, add } = partSink();
   const tankBase = h * 0.56;
-  const tank = latheWobbled(
-    [
-      [0.06, tankBase + 0.1],
-      [1.0, tankBase],
-      [1.22, tankBase + 0.3],
-      [1.24, tankBase + 1.65], // near-cylindrical drum, not a balloon
-      [1.34, tankBase + 1.72], // eave lip where the roof starts
-      [1.28, tankBase + 1.82],
-      [0.16, h - 0.16], // conical roof
-      [0.2, h - 0.1],
-      [0.08, h - 0.02],
-      [0.02, h],
-    ],
-    12,
-    seed,
-    { bow: 0.025, jitter3d: 0.022 },
-  );
-  const parts = [tank];
+  const profile: [number, number][] = [
+    [0.06, tankBase + 0.1],
+    [1.0, tankBase],
+    [1.22, tankBase + 0.3],
+    [1.24, tankBase + 1.65], // near-cylindrical drum, not a balloon
+    [1.34, tankBase + 1.72], // eave lip where the roof starts
+    [1.28, tankBase + 1.82],
+    [0.16, h - 0.16], // conical roof
+    [0.2, h - 0.1],
+    [0.08, h - 0.02],
+    [0.02, h],
+  ];
+  // Drum and roof are one lathe on the whole prop; destruction cuts it at
+  // the eave lip so the cone can come off first.
+  if (opts.split) {
+    const sections = splitLatheStack(profile, 12, [tankBase + 1.72], seed, {
+      bow: 0.025,
+      jitter3d: 0.022,
+      seamAmp: 0.05,
+    });
+    add('tank', 2, sections[0]!);
+    add('roof', 0, ...sections.slice(1));
+  } else {
+    add('tank', 2, latheWobbled(profile, 12, seed, { bow: 0.025, jitter3d: 0.022 }));
+  }
   const legH = tankBase + 0.15;
   for (let i = 0; i < 4; i++) {
     const leg = extrudeWobbled(
@@ -1038,9 +1310,9 @@ function buildWaterTower(seed: number, h: number, splay: number): BufferGeometry
     });
     leg.computeVertexNormals();
     leg.rotateY((i / 4) * Math.PI * 2 + Math.PI / 4 + shash(seed + i * 8.1) * 0.06);
-    parts.push(leg);
+    add('legs', 1, leg);
   }
-  return mergeParts(parts);
+  return parts;
 }
 
 // ── the variant library ──────────────────────────────────────────────────────
@@ -1061,8 +1333,12 @@ interface ArchVariantDef {
   name: string;
   /** World-unit height at instance scale 1. */
   height: number;
-  /** Deterministic constructor (seeds baked in). */
-  build: () => BufferGeometry;
+  /**
+   * Deterministic parts constructor (seeds baked in). `mergeArchParts` of
+   * the default (unsplit) list IS the whole prop; the destruction layer
+   * asks for `{ split: true }` and groups the parts into chunks.
+   */
+  parts: (opts?: ArchPartOpts) => ArchPart[];
 }
 
 export const PROP_VARIANT_DEFS: Record<InflatedPropKind, PropVariantDef[]> = {
@@ -1406,28 +1682,32 @@ export const MOUNTAIN_FOOTPRINT: readonly number[] = [7, 8.2, 9.6];
 
 export const ARCH_VARIANT_DEFS: Record<ArchPropKind, ArchVariantDef[]> = {
   building: [
-    { name: 'keep', height: 6.5, build: () => buildKeep(511.1) },
-    { name: 'watchtower', height: 7.2, build: () => buildWatchtower(521.1) },
-    { name: 'gatehouse', height: 5.6, build: () => buildGatehouse(531.1) },
-    { name: 'courtyard', height: 2.4, build: () => buildCourtyard(541.1) },
-    { name: 'adobe', height: 4.0, build: () => buildAdobe(551.1) },
-    { name: 'pagoda', height: 6.2, build: () => buildPagoda(561.1) },
-    { name: 'longhouse', height: 4.6, build: () => buildLonghouse(571.1) },
-    { name: 'cottage', height: 3.8, build: () => buildCottage(581.1) },
-    { name: 'mushroom-house', height: 5.4, build: () => buildMushroomHouse(51.1) },
+    { name: 'keep', height: 6.5, parts: () => buildKeepParts(511.1) },
+    { name: 'watchtower', height: 7.2, parts: () => buildWatchtowerParts(521.1) },
+    { name: 'gatehouse', height: 5.6, parts: () => buildGatehouseParts(531.1) },
+    { name: 'courtyard', height: 2.4, parts: () => buildCourtyardParts(541.1) },
+    { name: 'adobe', height: 4.0, parts: (o) => buildAdobeParts(551.1, o) },
+    { name: 'pagoda', height: 6.2, parts: () => buildPagodaParts(561.1) },
+    { name: 'longhouse', height: 4.6, parts: (o) => buildLonghouseParts(571.1, o) },
+    { name: 'cottage', height: 3.8, parts: (o) => buildCottageParts(581.1, o) },
+    {
+      name: 'mushroom-house',
+      height: 5.4,
+      parts: (o) => buildMushroomHouseParts(51.1, o),
+    },
   ],
   palm: [
-    { name: 'lean', height: 5.5, build: () => buildPalm(911.1, 5.5, 0.55, 6) },
-    { name: 'arc', height: 5.1, build: () => buildPalm(921.1, 5.1, 0.9, 5) },
-    { name: 'tall-straight', height: 5.8, build: () => buildPalm(931.1, 5.8, 0.3, 7) },
+    { name: 'lean', height: 5.5, parts: () => buildPalmParts(911.1, 5.5, 0.55, 6) },
+    { name: 'arc', height: 5.1, parts: () => buildPalmParts(921.1, 5.1, 0.9, 5) },
+    { name: 'tall-straight', height: 5.8, parts: () => buildPalmParts(931.1, 5.8, 0.3, 7) },
   ],
   picnicTable: [
-    { name: 'table', height: 1.4, build: () => buildPicnicTable(941.1, 2.7, 0.34) },
-    { name: 'table-short', height: 1.35, build: () => buildPicnicTable(951.1, 2.25, 0.38) },
+    { name: 'table', height: 1.4, parts: () => buildPicnicTableParts(941.1, 2.7, 0.34) },
+    { name: 'table-short', height: 1.35, parts: () => buildPicnicTableParts(951.1, 2.25, 0.38) },
   ],
   waterTower: [
-    { name: 'tank-tall', height: 6.5, build: () => buildWaterTower(961.1, 6.5, 1.32) },
-    { name: 'tank-squat', height: 6.0, build: () => buildWaterTower(971.1, 6.0, 1.5) },
+    { name: 'tank-tall', height: 6.5, parts: (o) => buildWaterTowerParts(961.1, 6.5, 1.32, o) },
+    { name: 'tank-squat', height: 6.0, parts: (o) => buildWaterTowerParts(971.1, 6.0, 1.5, o) },
   ],
 };
 
@@ -1456,6 +1736,28 @@ export interface PropVariant {
   radius: number;
 }
 
+/**
+ * The grounding rule as data: the uniform scale that takes a raw built box
+ * to the authored height, and the translation applied AFTER it that grounds
+ * (min.y = 0) and centers in x/z. `normalizeVariant` applies exactly this;
+ * the destruction layer uses it to place chunks in the same object space
+ * without rebuilding the whole prop.
+ */
+export function variantTransform(
+  box: { min: { x: number; y: number; z: number }; max: { x: number; y: number; z: number } },
+  height: number,
+): { scale: number; translate: [number, number, number] } {
+  const scale = height / Math.max(box.max.y - box.min.y, 1e-6);
+  return {
+    scale,
+    translate: [
+      (-(box.min.x + box.max.x) / 2) * scale,
+      -box.min.y * scale,
+      (-(box.min.z + box.max.z) / 2) * scale,
+    ],
+  };
+}
+
 /** Scale to the variant height, ground (min.y = 0), center in x/z. */
 function normalizeVariant(
   geometry: BufferGeometry,
@@ -1482,6 +1784,36 @@ function normalizeVariant(
   return { geometry, height, radius };
 }
 
+export interface InflatedVariantOpts {
+  /** Mask resolution; defaults to the kind's rule. */
+  size?: number;
+  /** Interior refinement step; defaults to the whole prop's 10. */
+  gridStep?: number;
+  /** Normalize to this height instead of the variant's authored one. */
+  height?: number;
+}
+
+/**
+ * ONE inflated variant, through the shared analyze() + inflate() pipeline
+ * and normalized. The whole prop and the destruction layer's smaller lumps
+ * both come through here, so the strokes are only authored in one place.
+ */
+export function buildInflatedVariant(
+  kind: InflatedPropKind,
+  index: number,
+  opts: InflatedVariantOpts = {},
+): PropVariant {
+  const def = PROP_VARIANT_DEFS[kind][index];
+  if (!def) throw new Error(`prop '${kind}' has no variant ${index}`);
+  const size = opts.size ?? propMaskSize(kind);
+  const analysis = analyze(def.strokes, { size, contourPoints: 96 });
+  if (!analysis) throw new Error(`prop '${kind}/${def.name}' produced no usable ink`);
+  // Coarse interior refinement: props render at ~100px, so gridStep 10
+  // is invisible on screen and keeps the build inside the init budget.
+  const geometry = toBufferGeometry(inflate(analysis, { gridStep: opts.gridStep ?? 10 }));
+  return normalizeVariant(geometry, opts.height ?? def.height, `${kind}/${def.name}`);
+}
+
 /**
  * Build every variant once — inflated kinds through analyze()+inflate(),
  * architectural kinds through their extrude/lathe builders. Geometry is
@@ -1491,22 +1823,17 @@ function normalizeVariant(
 export function buildPropGeometries(): Map<PropKind, PropVariant[]> {
   const out = new Map<PropKind, PropVariant[]>();
   for (const kind of INFLATED_PROP_KINDS) {
-    const size = propMaskSize(kind);
-    const variants: PropVariant[] = [];
-    for (const def of PROP_VARIANT_DEFS[kind]) {
-      const analysis = analyze(def.strokes, { size, contourPoints: 96 });
-      if (!analysis) throw new Error(`prop '${kind}/${def.name}' produced no usable ink`);
-      // Coarse interior refinement: props render at ~100px, so gridStep 10
-      // is invisible on screen and keeps the build inside the init budget.
-      const geometry = toBufferGeometry(inflate(analysis, { gridStep: 10 }));
-      variants.push(normalizeVariant(geometry, def.height, `${kind}/${def.name}`));
-    }
-    out.set(kind, variants);
+    out.set(
+      kind,
+      PROP_VARIANT_DEFS[kind].map((_def, i) => buildInflatedVariant(kind, i)),
+    );
   }
   for (const kind of ARCH_PROP_KINDS) {
     const variants: PropVariant[] = [];
     for (const def of ARCH_VARIANT_DEFS[kind]) {
-      variants.push(normalizeVariant(def.build(), def.height, `${kind}/${def.name}`));
+      variants.push(
+        normalizeVariant(mergeArchParts(def.parts()), def.height, `${kind}/${def.name}`),
+      );
     }
     out.set(kind, variants);
   }
