@@ -27,6 +27,7 @@ import {
   isWater,
   landscapeMode,
   rippleSpots,
+  seaLevel,
   setLandscapeMode,
   setTerrainParams,
   terrainHeight,
@@ -123,6 +124,13 @@ describe('water — what gets built', () => {
       'shore-pond-3',
       'shore-pond-4',
       'ripples',
+      // …and the sea, the largest body of water on the map since it became an
+      // island (2026-09-15): the same three layers, built last from
+      // `coastOutline` — one fill (the far disc with the island punched out of
+      // it), one drawn coast, one sheet of surf.
+      'sea-fill',
+      'sea-shore',
+      'sea-foam',
     ]);
     // One fill per body — the lake's has its island punched out as a hole —
     // and one ribbon per SHORELINE, which is two for the lake: its outer
@@ -151,11 +159,20 @@ describe('water — what gets built', () => {
       // level, not over y=0. The ripples are the exception: one buffer holds
       // every body's marks, so their heights are baked per vertex and the
       // mesh itself stays at the origin.
-      const expected = mesh.name.startsWith('water-')
-        ? waterLevel(bodyOf(mesh)) + WATER_LIFT
-        : mesh.name.startsWith('shore-')
-          ? waterLevel(bodyOf(mesh)) + SHORE_LIFT
-          : 0;
+      // …and the SEA rides one level for the whole ocean (`seaLevel`), so its
+      // three sheets carry their lift on the mesh, the surf included: unlike
+      // the per-body ripple buffer there is only one height to bake.
+      const expected = mesh.name === 'sea-fill'
+        ? seaLevel() + WATER_LIFT
+        : mesh.name === 'sea-shore'
+          ? seaLevel() + SHORE_LIFT
+          : mesh.name === 'sea-foam'
+            ? seaLevel() + RIPPLE_LIFT
+            : mesh.name.startsWith('water-')
+              ? waterLevel(bodyOf(mesh)) + WATER_LIFT
+              : mesh.name.startsWith('shore-')
+                ? waterLevel(bodyOf(mesh)) + SHORE_LIFT
+                : 0;
       expect(mesh.position.y, mesh.name).toBe(expected);
     }
   });
@@ -419,7 +436,9 @@ describe('water — value', () => {
     expect(fill.color.equals(new Color(WORLD.neutralMid))).toBe(true);
     // One material for every body: the water is one flat value by construction.
     const water = createWater();
-    const fills = water.group.children.filter((c) => c.name.startsWith('water-')) as Mesh[];
+    const fills = water.group.children.filter(
+      (c) => c.name.startsWith('water-') || c.name === 'sea-fill',
+    ) as Mesh[];
     for (const mesh of fills) expect(mesh.material).toBe(fills[0]!.material);
   });
 
@@ -427,7 +446,7 @@ describe('water — value', () => {
     const water = createWater();
     for (const child of water.group.children) {
       const mesh = child as Mesh;
-      if (mesh.name.startsWith('water-')) continue;
+      if (mesh.name.startsWith('water-') || mesh.name === 'sea-fill') continue;
       const material = mesh.material as MeshBasicMaterial;
       expect(material, mesh.name).toBeInstanceOf(MeshBasicMaterial);
       expect(material.color.equals(new Color(SURFACE.ink)), mesh.name).toBe(true);
@@ -539,12 +558,18 @@ describe('water — refreshLevels follows the terrain dials', () => {
       // The bodies really are at different heights to begin with.
       expect(new Set(before).size).toBeGreaterThan(1);
 
-      // elevation 0 flattens the whole map, so every basin's level is 0 and
-      // each sheet drops to nothing but its own lift.
+      // elevation 0 flattens the whole map, so every basin's level is 0 —
+      // the SEA's included, since `SEA_LEVEL` rides the same dial — and each
+      // sheet drops to nothing but its own lift.
       setTerrainParams({ elevation: 0 });
       water.refreshLevels();
       for (const mesh of sheets) {
-        const lift = mesh.name.startsWith('water-') ? WATER_LIFT : SHORE_LIFT;
+        const lift =
+          mesh.name === 'sea-foam'
+            ? RIPPLE_LIFT
+            : mesh.name.startsWith('water-') || mesh.name === 'sea-fill'
+              ? WATER_LIFT
+              : SHORE_LIFT;
         expect(mesh.position.y, mesh.name).toBe(lift);
       }
 

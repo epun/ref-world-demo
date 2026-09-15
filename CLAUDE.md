@@ -79,7 +79,9 @@ The traps, in order of how easily they get violated:
   system samples — placement, colliders, water, minimap. Never re-derive a shoreline
   elsewhere, and the map does not ride the scatter seed. The ground has height: sample it
   through `src/world/surface.ts` only, never derive a height elsewhere. Locomotion never
-  writes Y.
+  writes Y. **The map is an island; the sea is the complement of the authored coast** —
+  everything outside `ISLAND_LOBES` is water, so nothing else needs to know where the edge of
+  the world is (PLAN §7).
 
 ## Running the room
 

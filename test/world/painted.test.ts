@@ -34,6 +34,7 @@
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import {
+  coastInland,
   isWater,
   setLandscapeMode,
   setPaintedHeight,
@@ -381,12 +382,20 @@ function recoverField(x: number, z: number): number | null {
   return null;
 }
 
-/** Probes clear of every basin's shore ramp, every island and the far fade —
- * where `terrainHeight` is `terracedLand` and nothing else. */
+/** Probes clear of every basin's shore ramp, every island, the COAST's own
+ * ramp and the far fade — where `terrainHeight` is `terracedLand` and nothing
+ * else.
+ *
+ * The coast joined the list when the map became an island (2026-09-15): the
+ * ground within `TERRAIN.coastRamp` of the waterline is blended toward the
+ * sea, and out past the coast it IS the sea floor, so a painted unit does not
+ * move it (the same way a painted unit does not lift a basin's flat sheet —
+ * the test above this one pins that case). */
 function openLandProbes(count: number): [number, number][] {
   const out: [number, number][] = [];
   for (const [x, z] of probes(count * 6, 120)) {
     if (Math.hypot(x, z) >= TERRAIN.farStart) continue;
+    if (coastInland(x, z) < TERRAIN.coastRamp * terrainParams().relief) continue;
     let clear = true;
     for (const body of WATER_BODIES) {
       const d = Math.hypot(x - body.x, z - body.z);

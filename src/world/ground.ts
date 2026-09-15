@@ -29,6 +29,15 @@
  * the normal target creases, so a correctly-normalled mesh draws its own
  * risers — there is no separate elevation pass anywhere.
  *
+ * THE FAR RING IS SEA FLOOR (2026-09-15, the map became an island). It used
+ * to sit at exactly y = 0, because the terrain was exactly 0 past
+ * TERRAIN.farEnd by construction. Outside the coast the ground now falls to
+ * the sea floor and stays there, so the ring takes whatever height the Surface
+ * reports at its own inner rim rather than assuming zero — one sample, read
+ * through the same seam as every vertex of the field, so there is still
+ * nothing in this file that derives a height. In the plain mode that sample is
+ * 0 and the ring is exactly where it always was.
+ *
  * WHY A RING RATHER THAN THE DISC THAT USED TO BE HERE [D]: the terraced
  * land runs from about -3.1 to +8, so a full disc at y=0 under the field
  * would cover every basin on the map — the lake floor included — with a
@@ -60,8 +69,11 @@ import { TERRAIN, terrainParams } from './landscape';
 import { PAINTED_SIZE } from './painted';
 import type { Surface } from './surface';
 
-/** Outer radius of the flat far field. */
-const GROUND_RADIUS = 1400;
+/** Outer radius of the flat far field. Exported because the water pass
+ * builds the SEA's own sheet out to the same horizon — one disc of ocean with
+ * the island punched out of it, seated on the same floor this ring stands on
+ * (src/world/water.ts). */
+export const GROUND_RADIUS = 1400;
 const GROUND_SEGMENTS = 96;
 
 /**
@@ -254,8 +266,8 @@ export interface Ground {
    *
    * The GEOMETRY is reused: only the position attribute and the normals are
    * rewritten, so nothing here re-allocates ~205k triangles per drag. The far
-   * ring never moves — the terrain is 0 past `farEnd` at every dial setting,
-   * because the far gate is not scaled.
+   * ring is re-seated too, because it is sea floor now and the sea floor rides
+   * the elevation dial (it used to be a fixed 0).
    */
   rebuild(): void;
 }
@@ -425,7 +437,15 @@ ${groundNoiseGlsl}`,
   // circumscribes, so the two OVERLAP (the field's corners reach past it)
   // rather than leaving a gap. Both are flat and the same value out here, so
   // the overlap is invisible — a gap would not have been.
-  farMesh.position.y = 0;
+  //
+  // …and "the same value" is the SEA FLOOR now, not zero: the sample is taken
+  // at the ring's own inner rim, through the Surface seam. The coast's
+  // farthest bulge plus its floor slope lands well inside that rim at the
+  // shipped dials, so the whole rim really is one flat number.
+  const seatFar = (): void => {
+    farMesh.position.y = surface.sampleHeight(FIELD_SIZE / 2, 0);
+  };
+  seatFar();
   group.add(farMesh);
 
   return {
@@ -449,6 +469,10 @@ ${groundNoiseGlsl}`,
     },
     rebuild: (): void => {
       displace();
+      // The ring moves with the dials now: the sea floor is `SEA_LEVEL` and
+      // `basinDrop` through the elevation dial, so at elevation 0 it comes
+      // back to zero and the world is flat paper again.
+      seatFar();
       markUniforms.uStep.value = terrainParams().tierStep;
     },
   };
