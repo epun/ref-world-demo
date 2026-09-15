@@ -1253,7 +1253,14 @@ export function colliderFor(
   if (p.kind === 'cloud') return null;
   const s = p.scale * kindScaleMult;
   if (p.kind === 'bush') {
-    return { x: p.x, z: p.z, r: BUSH_SOFT_FOOTPRINT * s, hard: false, kind: p.kind };
+    return {
+      x: p.x,
+      z: p.z,
+      r: BUSH_SOFT_FOOTPRINT * s,
+      hard: false,
+      kind: p.kind,
+      key: placementKey(p),
+    };
   }
   const trunk = TRUNK_FOOTPRINT[p.kind];
   // Rocks render widened (ROCK_WIDEN_XZ) — the collider follows the visual.
@@ -1267,6 +1274,10 @@ export function colliderFor(
     r: (trunk ?? baseRadius) * s * widen,
     hard: true,
     kind: p.kind,
+    // The identity, not merely the shape (src/physics/colliders.ts
+    // `Collider.key`): the creature layer needs it to bump this prop's
+    // recoil spring and to knock it out of the ground.
+    key: placementKey(p),
   };
 }
 

@@ -18,6 +18,7 @@
 import { Vector3, type Texture } from 'three';
 import { installHoverNames } from './creatures/hover';
 import { createCreatureManager } from './creatures/manager';
+import { createLooseMeshes } from './world/loose';
 import {
   announceEpochRetained,
   connectWorldFeed,
@@ -615,8 +616,20 @@ function main(): void {
   let publishHatchAll: () => boolean = () => false;
 
   const recorder = recordCreatures(session);
+  /**
+   * Where a prop that has been knocked out of the ground gets drawn
+   * (src/world/loose.ts).
+   *
+   * On EVERY page, not only the one that simulates: the scatter stops drawing
+   * a placement the moment it comes out of the ground, and a phone watching
+   * the room has to see the tree lying in the field just as the projection
+   * does. It is the same mesh a pickup then hangs on a creature's pile, so
+   * there is one object per fallen thing however it ends up.
+   */
+  const looseMeshes = createLooseMeshes(world.scatter, world.scene);
   const creatures = createCreatureManager(world, {
     autoHatch: isPublic && hatchMode === 'timer',
+    loose: looseMeshes,
     observer: {
       ...recorder,
       /**
@@ -764,6 +777,20 @@ function main(): void {
         .__refworldPaint;
       probe?.applyPaint?.(event);
     },
+    /*
+     * THE KATAMARI FOUR, applied (src/creatures/sticky.ts).
+     *
+     * Presentation only, on any page: the manager's `apply*` methods hide a
+     * placement, seat an item on a pile at the offset the event carries and
+     * grow the carrier, and they decide nothing. The page that SIMULATED
+     * never comes round this way — its own events are swallowed by the
+     * `applyingScene` guard on the way out to the outbox, because it already
+     * applied its decision as it made it.
+     */
+    stick: (event) => creatures.applyStick(event),
+    drop: (event) => creatures.applyDrop(event),
+    loose: (event) => creatures.applyLoose(event.item, event.x, event.z),
+    settle: (event) => creatures.applySettle(event),
     // The operator state a replayed world should stand in: hold mode and the
     // block list. Removals are driven by replay itself, above.
     operator: (action, id, on) => {
@@ -1278,19 +1305,43 @@ function main(): void {
    * the paint runs are batched but never floated past a world event. */
   const applySceneEvents = async (events: readonly SceneEvent[]): Promise<void> => {
     let run: PaintEvent[] = [];
+    const flush = async (): Promise<void> => {
+      if (run.length === 0) return;
+      await applyPaintSlices(run);
+      run = [];
+    };
     for (const event of events) {
       if (event.k === 'paint') {
         run.push(event);
         continue;
       }
-      if (run.length > 0) {
-        await applyPaintSlices(run);
-        run = [];
+      await flush();
+      /*
+       * THE KATAMARI FOUR (docs/SESSION.md §6). Straight through the same
+       * driver every other scene kind goes through — they are state, not
+       * motion, so `replayNow` applies them too and a restored world comes
+       * back with its piles on.
+       */
+      if (event.k === 'stick') {
+        replayDriver.stick?.(event);
+        continue;
+      }
+      if (event.k === 'drop') {
+        replayDriver.drop?.(event);
+        continue;
+      }
+      if (event.k === 'loose') {
+        replayDriver.loose?.(event);
+        continue;
+      }
+      if (event.k === 'settle') {
+        replayDriver.settle?.(event);
+        continue;
       }
       replayDriver.world?.(event.field, event.value, event.kind);
       reflectScene(event);
     }
-    if (run.length > 0) await applyPaintSlices(run);
+    await flush();
   };
 
   /**
@@ -1304,6 +1355,10 @@ function main(): void {
     applyingScene = true;
     try {
       if (event.k === 'world') session.world(event.field, event.value, event.kind);
+      else if (event.k === 'stick') session.stick(event);
+      else if (event.k === 'drop') session.drop(event);
+      else if (event.k === 'loose') session.loose(event.item, event.x, event.z);
+      else if (event.k === 'settle') session.settle(event);
       else session.paint(event);
     } finally {
       applyingScene = false;
@@ -1407,6 +1462,15 @@ function main(): void {
     refreshScene();
     await applySceneEvents(events);
   };
+
+  /*
+   * AN INSTALLATION ROOM IS ALWAYS ITS OWN AUTHORITY.
+   *
+   * There is no election in a non-public world — `isHostNow` is `() => true`
+   * and always was — so there is no moment for physics to be enabled on, and
+   * the page has to say so itself at startup (docs/PLAN.md §7.6).
+   */
+  if (!isPublic) void world.enablePhysics();
 
   if (isPublic) {
     sceneOutbox = createSceneOutbox({
@@ -2326,6 +2390,13 @@ function main(): void {
           : 'page';
     const me = makeHostId(hostRole);
     /*
+     * A PINNED page starts simulating immediately, without waiting for an
+     * election it is going to win: it is the operator's screen, the thing an
+     * audience is looking at, and a rock that took two heartbeats to become
+     * solid is two heartbeats of a creature walking through the scenery.
+     */
+    if (hostRole === 'forced') void world.enablePhysics();
+    /*
      * The scene layer gets its transport (docs/SESSION.md §6).
      *
      * It exists long before this does — a person can switch the landscape on
@@ -2577,6 +2648,16 @@ function main(): void {
       pruneClaims(claims, now);
       hostId = electHost(me, claims, now);
       const shouldHost = hostId === me;
+      /*
+       * THE PAGE THAT SIMULATES LOADS THE PHYSICS, AND NOBODY ELSE DOES
+       * (docs/PLAN.md §7.6).
+       *
+       * Idempotent, so calling it on every settle tick is free — and it has
+       * to be on the shouldHost line rather than on the flip below, because
+       * a page starts out believing `hosting` is true and a page that is
+       * still right about that never flips at all.
+       */
+      if (shouldHost) void world.enablePhysics();
       if (shouldHost === hosting) return;
       hosting = shouldHost;
       // A viewer runs no agents: its creatures are placed by the host's

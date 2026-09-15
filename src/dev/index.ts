@@ -1717,9 +1717,11 @@ export async function initDevPanel(
 
   // ── refworld.physics — the rigid-body world (src/physics/world.ts) ────────
   // Small on purpose: a body count, a way to make one stone visibly tumble,
-  // and a wake-all. Everything here is feature-detected, because the physics
-  // world loads asynchronously and a panel opened in the first second of a
-  // session has no handle to talk to yet.
+  // and a wake-all. Everything here is feature-detected, and since the
+  // katamari rules that is not merely about timing: physics loads on HOST
+  // ELECTION and nowhere else (docs/PLAN.md §7.6), so on a page that is only
+  // watching the room there are no bodies to talk to and never will be. The
+  // readout says which of the two it is.
 
   ui.skills.register({
     ...metaOf('refworld.physics'),
@@ -1733,7 +1735,7 @@ export async function initDevPanel(
       const refresh = (): void => {
         const bodies = bodiesOf();
         if (!bodies) {
-          setReadout('the rigid-body world has not loaded yet');
+          setReadout('not simulating — this page runs no rigid bodies');
           return;
         }
         const counts = bodies.counts();
@@ -1746,7 +1748,7 @@ export async function initDevPanel(
       folder.addButton('drop rock', () => {
         const bodies = bodiesOf();
         if (!bodies) {
-          setReadout('the rigid-body world has not loaded yet');
+          setReadout('not simulating — nothing here to drop a rock into');
           return;
         }
         // Three units above what the camera is looking at, so it lands in
@@ -1758,7 +1760,7 @@ export async function initDevPanel(
       folder.addButton('wake all', () => {
         const bodies = bodiesOf();
         if (!bodies) {
-          setReadout('the rigid-body world has not loaded yet');
+          setReadout('not simulating — no rigid bodies to wake');
           return;
         }
         bodies.wakeAll();

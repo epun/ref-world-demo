@@ -13,6 +13,7 @@ import { createEnvironment, type Environment } from './environment';
 import { GrainPass } from './grain';
 import { createGround, FIELD_SIZE } from './ground';
 import { createPhysicsWorld, type PhysicsWorld } from '../physics/world';
+import { deviceTier } from './device';
 import { createPropBodies, type PropBodies } from './rocks';
 import { InkPass } from './ink';
 import { createLighting } from './lighting';
@@ -172,19 +173,38 @@ export interface WorldHandles {
    */
   setSoloDrag(enabled: boolean): void;
   /**
-   * The rigid-body world (src/physics/world.ts), or null until it has
-   * loaded. It is created lazily and ASYNCHRONOUSLY right after the scatter
-   * — the wasm payload must never be something a projection's first frame
-   * waits on — so every consumer has to tolerate null and either poll or
-   * use `onPhysicsReady`.
+   * The rigid-body world (src/physics/world.ts), or null on a page that is
+   * not simulating — which is MOST pages (see `enablePhysics`).
+   *
+   * Every consumer has to tolerate null and either poll or use
+   * `onPhysicsReady`, and a consumer that finds null must not assume it is
+   * merely early: on a viewer it stays null for the life of the page.
    */
   physics(): PhysicsWorld | null;
   /** Loose rocks, fixed prop bodies and the tree recoil
-   * (src/world/rocks.ts). Null until the physics world has loaded. */
+   * (src/world/rocks.ts). Null until, and unless, physics is enabled. */
   bodies(): PropBodies | null;
+  /**
+   * Load rapier and build the bodies. Idempotent — call it as often as you
+   * like; the first call owns the promise and the rest await it.
+   *
+   * ONLY THE PAGE THAT SIMULATES CALLS THIS (docs/PLAN.md §7.6). Most people
+   * watch the world from a phone, each running its own copy of this page
+   * (docs/SESSION.md §6), and until the katamari rules landed all of them
+   * downloaded a wasm payload and stepped a rigid-body world whose answers
+   * they then threw away, because the host's events are the truth. A viewer
+   * now runs no physics at all: the host decides what is stuck, loose and
+   * settled, and every decision travels as a scene event.
+   *
+   * `src/main.ts` calls it when the election says this page is hosting, and
+   * at startup on a page that is pinned as host (`?host=1`, the moderator
+   * secret, the dev build, or an installation room with nobody to elect
+   * against).
+   */
+  enablePhysics(): Promise<void>;
   /** Fires once when the physics world exists — immediately if it already
-   * does. What a later layer (creature bodies, katamari pickups) hangs its
-   * own setup on. */
+   * does, and NEVER on a page that never enables it. What a later layer
+   * (creature bodies, katamari pickups) hangs its own setup on. */
   onPhysicsReady(callback: (physics: PhysicsWorld, bodies: PropBodies) => void): void;
   /** Register per-frame work (entity drift, gaits, …). Runs before render. */
   onFrame(callback: FrameCallback): void;
@@ -234,9 +254,17 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
    * 1.5, which is 44% fewer pixels per pass for a line the eye cannot
    * separate at arm's length. **[D]**
    */
-  const coarse =
-    typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches;
-  const pixelRatio = Math.min(window.devicePixelRatio, coarse ? 1.5 : 2);
+  /*
+   * ONE read of what kind of screen this is (src/world/device.ts). The cap
+   * below and the debris ceiling the destruction task needs are the same
+   * question asked twice, and they used to be two inline media queries.
+   */
+  const tier = deviceTier(
+    typeof window.matchMedia === 'function'
+      ? (query) => window.matchMedia(query).matches
+      : () => false,
+  );
+  const pixelRatio = Math.min(window.devicePixelRatio, tier === 'phone' ? 1.5 : 2);
   renderer.setPixelRatio(pixelRatio);
 
   const scene = new Scene();
@@ -262,32 +290,43 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
   const lighting = createLighting();
 
   /**
-   * The rigid-body world, loaded off the critical path (PLAN §7).
+   * The rigid-body world, loaded off the critical path (PLAN §7.6) and only
+   * on the page that simulates.
    *
-   * Until this resolves the world runs EXACTLY as it did before physics
-   * existed: the loop's physics block is skipped, rocks are the scatter's
-   * instance matrices and the creature layer resolves against
-   * `scatter.colliders()` as always. The terrain collider inside is sampled
-   * from the Surface seam and nothing else derives a height (see
-   * src/physics/world.ts).
+   * Until `enablePhysics` is called — and forever, on a viewer — the world
+   * runs EXACTLY as it did before physics existed: the loop's physics block
+   * is skipped, rocks are the scatter's instance matrices and the creature
+   * layer resolves against `scatter.colliders()` as always. The terrain
+   * collider inside is sampled from the Surface seam and nothing else
+   * derives a height (see src/physics/world.ts).
+   *
+   * It used to load unconditionally here, which meant every phone watching
+   * the room downloaded the wasm and stepped a simulation it was then told
+   * to ignore. `deviceTier` says most of the audience is on one.
    */
   let physics: PhysicsWorld | null = null;
   let bodies: PropBodies | null = null;
   /** The last scatter rebuild the bodies were reconciled against. */
   let seenVersion = -1;
   const physicsReady: ((p: PhysicsWorld, b: PropBodies) => void)[] = [];
-  void createPhysicsWorld(surface, FIELD_SIZE).then((p) => {
-    physics = p;
-    bodies = createPropBodies({
-      physics: p,
-      scatter,
-      surface,
-      wind: scatter.windField(),
+  /** The one in-flight load, so N calls are one download. */
+  let physicsLoad: Promise<void> | null = null;
+  const enablePhysics = (): Promise<void> => {
+    if (physicsLoad) return physicsLoad;
+    physicsLoad = createPhysicsWorld(surface, FIELD_SIZE).then((p) => {
+      physics = p;
+      bodies = createPropBodies({
+        physics: p,
+        scatter,
+        surface,
+        wind: scatter.windField(),
+      });
+      seenVersion = scatter.rebuildVersion();
+      for (const callback of physicsReady) callback(p, bodies);
+      physicsReady.length = 0;
     });
-    seenVersion = scatter.rebuildVersion();
-    for (const callback of physicsReady) callback(p, bodies);
-    physicsReady.length = 0;
-  });
+    return physicsLoad;
+  };
 
   const ground = createGround(surface);
   // Water sits directly on its basin's paper, under the ticks, the prop stamps
@@ -583,6 +622,7 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
     },
     physics: (): PhysicsWorld | null => physics,
     bodies: (): PropBodies | null => bodies,
+    enablePhysics,
     onPhysicsReady: (callback: (p: PhysicsWorld, b: PropBodies) => void): void => {
       if (physics && bodies) callback(physics, bodies);
       else physicsReady.push(callback);

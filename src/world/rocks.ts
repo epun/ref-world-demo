@@ -138,6 +138,21 @@ export interface LooseItem {
   /** Uniform instance scale it is drawn at — what `src/world/loose.ts`
    * needs to build a mesh for it on a page that never had it instanced. */
   scale: number;
+  /**
+   * Who draws it.
+   *
+   * `false` — the scatter still has an instance row for this placement and
+   * `writeRock` pushes the body's transform into it. That is every scattered
+   * stone and every dev-dropped one, and it is the cheap path.
+   *
+   * `true` — the scatter has been told to stop drawing it (`setTaken`), so
+   * `src/world/loose.ts` draws it as a mesh of its own. That is anything
+   * `loosen` knocked out of the ground and anything `restore` put back after
+   * a carrier shed it. Deliberately the SAME path a viewer with no physics at
+   * all uses, so the host and the room cannot end up looking at
+   * differently-placed fallen trees.
+   */
+  meshDrawn: boolean;
   /** Placement x (the identity anchor — the live position is on the body). */
   x: number;
   z: number;
@@ -396,6 +411,7 @@ export function createPropBodies(opts: PropBodiesOptions): PropBodies {
       kind: 'rock',
       variant: p.variant,
       scale: ref.scale,
+      meshDrawn: false,
       x: p.x,
       z: p.z,
       r: ref.radius,
@@ -657,6 +673,7 @@ export function createPropBodies(opts: PropBodiesOptions): PropBodies {
       kind: ref.placement.kind as PropKind,
       variant: ref.placement.variant,
       scale: ref.scale,
+      meshDrawn: true,
       x: ref.placement.x,
       z: ref.placement.z,
       r: ref.radius,
@@ -875,6 +892,7 @@ export function createPropBodies(opts: PropBodiesOptions): PropBodies {
         kind: seed.kind,
         variant: seed.variant,
         scale: seed.scale,
+        meshDrawn: true,
         x,
         z,
         r: seed.r,
@@ -953,6 +971,7 @@ export function createPropBodies(opts: PropBodiesOptions): PropBodies {
         kind: 'rock',
         variant: 0,
         scale: SPAWN_SCALE,
+        meshDrawn: false,
         x,
         z,
         r: SPAWN_SCALE * ROCK_WIDEN_XZ,

@@ -42,6 +42,19 @@ export interface Collider {
    * `PropKind` union so this module keeps importing nothing.
    */
   kind?: string;
+  /**
+   * The placement it came from (`src/world/scatter.ts` `placementKey`), when
+   * a placement published it.
+   *
+   * The resolve sweep never reads it either. It is how a caller that has been
+   * handed a contact can act on the PROP rather than on a circle: kick its
+   * recoil spring, ask how sticky it is, knock it out of the ground. Without
+   * it the creature layer would have to re-derive a key from a position,
+   * which is re-deriving an identity the scatter already had in hand.
+   *
+   * Optional for the same reasons `kind` is.
+   */
+  key?: string;
 }
 
 /** Grid cell edge, world units. Props are 0.5–2.5u circles and creatures
