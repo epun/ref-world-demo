@@ -80,6 +80,7 @@ function stubScatter(): {
   taken: () => ReadonlySet<string>;
   refs: Map<PropKind, InstanceRef[]>;
   version: () => number;
+  rebuild: () => void;
 } {
   const geometry = new BoxGeometry(1, 1, 1);
   const rockMesh = fakeMesh(ROCKS.length, false);
