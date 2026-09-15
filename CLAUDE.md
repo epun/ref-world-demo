@@ -5,9 +5,10 @@ phones emote and track their character on a minimap.
 
 ## Before any visual or motion work
 
-Read [`docs/TASTE.md`](docs/TASTE.md) — the arbitration between two briefs
-([character](docs/taste/character.md), [world](docs/taste/world.md)) that conflict in seven
-places. **The arbitration wins over either brief.**
+Read [`docs/TASTE.md`](docs/TASTE.md) — the arbitration between the briefs
+([character](docs/taste/character.md), [world](docs/taste/world.md), and since 2026-09-15
+[creature](docs/taste/creature.md), which supersedes the character brief for the creature —
+TASTE §8) that conflict in seven places. **The arbitration wins over any brief.**
 
 It tags every rule **[M]** measured (from a brief's tokens — not ours to negotiate) or
 **[D]** derived (our decision, consistent with the briefs but not attributable to them).
@@ -28,6 +29,11 @@ The traps, in order of how easily they get violated:
 - **Near-black belongs to characters only.** Environment never goes below ~`#353534`. The
   measured palette has near-black at just 0.09 prevalence — it's rare by nature, and it's
   the character.
+  ⚠️ **Standing user override (2026-09-15):** creatures are now COLOURED, per the creature
+  brief ([docs/taste/creature.md](docs/taste/creature.md), TASTE §8) — one of six vivid hues
+  read off the drawing (`src/character/palette.ts`), a stalk with the drawing as its topper,
+  two eyes. The environment rule above is untouched: nothing environmental goes near-black
+  or takes a hue. Don't "correct" the creatures back to `#080808`.
 - **The ground is mid-toned grey (`groundLuma 0.74`), not cream or white.** There is **no
   pastel green or pink** in this taste; it is near-achromatic (`saturation 0.188`).
   ⚠️ **Standing user override:** the shipped `SURFACE.ground` is `#dfdfdf` (luma ~0.87) —

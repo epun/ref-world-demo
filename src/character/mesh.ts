@@ -44,13 +44,30 @@ export function deformFrameOf(geometry: BufferGeometry): DeformFrame {
  * The character surface (PLAN §3.3): the one near-black on screen, with the
  * quiet clearcoat gloss both briefs pair with muted saturation. Same recipe
  * as the P0 test blob — 38/100 material realism, not a chrome ball.
+ *
+ * With a `color` (the creature colourway, ./palette.ts) the recipe softens:
+ * the creature brief pairs *"warm color ↔ gloss finish + reflective
+ * surface"* [M] but forbids *"complex shading or material rendering that
+ * would compete with the flat, graphic read"* [M], so a coloured body gets
+ * a broader, duller gloss than the near-black one — enough to catch the key
+ * light, not enough to shade the fill. Passing nothing keeps the original
+ * near-black recipe exactly, for the callers that never asked for a hue.
  */
-export function createCharacterMaterial(): MeshPhysicalMaterial {
+export function createCharacterMaterial(color?: string): MeshPhysicalMaterial {
+  if (color === undefined) {
+    return new MeshPhysicalMaterial({
+      color: CHARACTER.body,
+      roughness: 0.35,
+      metalness: 0,
+      clearcoat: 1,
+      clearcoatRoughness: 0.15,
+    });
+  }
   return new MeshPhysicalMaterial({
-    color: CHARACTER.body,
-    roughness: 0.35,
+    color,
+    roughness: 0.5,
     metalness: 0,
-    clearcoat: 1,
-    clearcoatRoughness: 0.15,
+    clearcoat: 0.8,
+    clearcoatRoughness: 0.3,
   });
 }

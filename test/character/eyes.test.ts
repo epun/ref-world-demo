@@ -7,11 +7,11 @@
  * No Three.js in any tested path — both modules import nothing renderable.
  */
 
-import { MeshPhysicalMaterial } from 'three';
+import { Color, MeshPhysicalMaterial, Vector2 } from 'three';
 import { describe, expect, it } from 'vitest';
 import { DEFORM_CHANNELS } from '../../src/character/deform';
 import { EMOTES, runEmote, type EmoteSprings } from '../../src/character/emotes';
-import { applyEyes, type EyeState } from '../../src/character/eyes';
+import { applyEyes, EYE_SCALE, type EyeState } from '../../src/character/eyes';
 import {
   clampPupil,
   eyeAperture,
@@ -27,7 +27,7 @@ import {
 } from '../../src/character/expressions';
 import { auditDamping } from '../../src/motion/spring';
 import { EMOTE_NAMES } from '../../src/net/protocol';
-import { MOTION } from '../../src/taste/tokens';
+import { CHARACTER, MOTION } from '../../src/taste/tokens';
 import type { ShapeAnalysis } from '../../src/shape/types';
 import {
   computeEyePlacement,
@@ -592,5 +592,143 @@ describe('emotes move the pupil', () => {
       expect(wander, `${name} wander`).toBeGreaterThan(0);
       expect(EXPRESSIONS.surprised.wander, `${name} vs surprised`).toBeLessThanOrEqual(wander);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// two eyes (creature brief, 2026-09-15 — supersedes the one-eye ruling)
+// ---------------------------------------------------------------------------
+//
+// The pair lives entirely in the fragment uniforms, so reading them is
+// reading the face: uEyeCenter is the midpoint and uEyeOffset the vector to
+// the right eye, so the two centres are center ∓ offset. Compiling the
+// material's hook against a stub shader is how the uniforms become visible
+// without a renderer.
+
+/** Run the material's onBeforeCompile hook and hand back its uniforms. */
+function eyeUniforms(material: MeshPhysicalMaterial): Record<string, { value: unknown }> {
+  const shader = {
+    uniforms: {} as Record<string, { value: unknown }>,
+    vertexShader: '#include <common>\n#include <begin_vertex>\n',
+    fragmentShader: '#include <common>\n#include <alphamap_fragment>\n',
+  };
+  material.onBeforeCompile(shader as never, null as never);
+  return shader.uniforms;
+}
+
+/** The pair's geometry as the shader will draw it, object-space units. */
+function eyeGeometry(seed?: number): {
+  left: Vector2;
+  right: Vector2;
+  separation: number;
+  /** The VISIBLE radius of one eye at expression size 1 (the mark spans
+   * MARK_R of the unit frame uEyeRadius describes). */
+  radius: number;
+} {
+  const material = new MeshPhysicalMaterial();
+  const eyes = applyEyes(material, EYE_ANALYSIS, seed);
+  const u = eyeUniforms(material);
+  const center = u['uEyeCenter']!.value as Vector2;
+  const offset = u['uEyeOffset']!.value as Vector2;
+  const radius = (u['uEyeRadius']!.value as number) * MARK_R;
+  eyes.dispose();
+  material.dispose();
+  return {
+    left: center.clone().sub(offset),
+    right: center.clone().add(offset),
+    separation: offset.length() * 2,
+    radius,
+  };
+}
+
+describe('two eyes', () => {
+  it('straddles the head lobe on the placement pair, both centres in the lobe', () => {
+    const placement = computeEyePlacement(EYE_ANALYSIS);
+    const { left, right } = eyeGeometry();
+    // The pair sits exactly on computeEyePlacement's own left/right centres.
+    expect(left.x).toBeCloseTo(placement.left.x, 10);
+    expect(left.y).toBeCloseTo(placement.left.y, 10);
+    expect(right.x).toBeCloseTo(placement.right.x, 10);
+    expect(right.y).toBeCloseTo(placement.right.y, 10);
+    // Wide-set and symmetric about the lobe axis.
+    expect(left.x).toBeLessThan(0);
+    expect(right.x).toBeGreaterThan(0);
+    // Both inside the head lobe region: within the lobe's own local
+    // half-thickness of the lobe centre, so neither eye walks off the head.
+    const lobe = maskToLocal(EYE_ANALYSIS.headLobe, BOUNDS, SIZE);
+    for (const [name, eye] of [
+      ['left', left],
+      ['right', right],
+    ] as const) {
+      expect(Math.hypot(eye.x - lobe.x, eye.y - lobe.y), `${name} in lobe`).toBeLessThan(
+        placement.thickness,
+      );
+    }
+  });
+
+  it('keeps a real gap: separation > 0 and the two marks never overlap', () => {
+    // Every identity salt — the size jitter keys off it, so nothing here
+    // may be seed-lucky.
+    for (const seed of [undefined, ...SEEDS]) {
+      const { separation, radius } = eyeGeometry(seed);
+      expect(separation, `separation @ ${seed}`).toBeGreaterThan(0);
+      expect(radius, `radius @ ${seed}`).toBeGreaterThan(0);
+      // Two discs of this radius, this far apart, still have air between
+      // them — the pair can never collapse back into one cyclops mark.
+      expect(2 * radius, `overlap @ ${seed}`).toBeLessThan(separation);
+    }
+  });
+
+  it('sizes each eye from the placement radius by EYE_SCALE', () => {
+    const placement = computeEyePlacement(EYE_ANALYSIS);
+    // Unsalted: no jitter, so the nominal radius is exact (the drawn radius
+    // carries the cap-era frame headroom on top, unchanged).
+    const { radius } = eyeGeometry();
+    expect(radius / (placement.radius * EYE_SCALE)).toBeCloseTo(1.5, 10);
+  });
+
+  it('draws the SDF twice and unions the pair', () => {
+    const material = new MeshPhysicalMaterial();
+    const eyes = applyEyes(material, EYE_ANALYSIS, 7);
+    const shader = {
+      uniforms: {} as Record<string, { value: unknown }>,
+      vertexShader: '#include <common>\n#include <begin_vertex>\n',
+      fragmentShader: '#include <common>\n#include <alphamap_fragment>\n',
+    };
+    material.onBeforeCompile(shader as never, null as never);
+    // Both eye centres are addressed, the union is a min, and the front
+    // fade on +normal.z is still the thing that hides the mark edge-on.
+    expect(shader.fragmentShader).toContain('uEyeCenter - eyeS * uEyeOffset');
+    expect(shader.fragmentShader).toContain('dEye = min(dEye, d)');
+    expect(shader.fragmentShader).toContain('dEyePupil = min(dEyePupil');
+    expect(shader.fragmentShader).toContain('smoothstep(0.05, 0.5, vEyeNz)');
+    expect(shader.vertexShader).toContain('vEyeNz = normal.z');
+    eyes.dispose();
+    material.dispose();
+  });
+});
+
+describe('eye colours', () => {
+  it('defaults to the character tokens', () => {
+    const material = new MeshPhysicalMaterial();
+    const eyes = applyEyes(material, EYE_ANALYSIS, 7);
+    const u = eyeUniforms(material);
+    expect((u['uEyeColor']!.value as Color).getHex()).toBe(new Color(CHARACTER.eye).getHex());
+    expect((u['uEyePupil']!.value as Color).getHex()).toBe(new Color(CHARACTER.body).getHex());
+    eyes.dispose();
+    material.dispose();
+  });
+
+  it('takes a palette pair when the caller passes one', () => {
+    const material = new MeshPhysicalMaterial();
+    const eyes = applyEyes(material, EYE_ANALYSIS, 7, undefined, {
+      eye: '#f7f4f1',
+      pupil: '#1a1717',
+    });
+    const u = eyeUniforms(material);
+    expect((u['uEyeColor']!.value as Color).getHex()).toBe(new Color('#f7f4f1').getHex());
+    expect((u['uEyePupil']!.value as Color).getHex()).toBe(new Color('#1a1717').getHex());
+    eyes.dispose();
+    material.dispose();
   });
 });

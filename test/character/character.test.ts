@@ -4,7 +4,7 @@
  * safe.
  */
 
-import { Box3, Mesh } from 'three';
+import { Box3, Mesh, type Object3D } from 'three';
 import { describe, expect, it } from 'vitest';
 import {
   CHARACTER_HEIGHT,
@@ -13,6 +13,21 @@ import {
 } from '../../src/character/character';
 import { MOTION } from '../../src/taste/tokens';
 import { circleBlob, snowman } from '../fixtures/strokes';
+
+/**
+ * The BODY's world-space box. The creature now carries the brief's rig — a
+ * stalk and a topper parented to the body mesh (src/character/topper.ts) —
+ * so `setFromObject(group)` measures body + stalk + topper. Everything the
+ * character contract is written against (the 3.5-unit height, the ground
+ * rest, the footprint) is the BODY's, so measure the body geometry alone.
+ */
+function bodyBox(object: Object3D): Box3 {
+  object.updateMatrixWorld(true);
+  const mesh = object.children.find((o): o is Mesh => o instanceof Mesh);
+  if (!mesh) throw new Error('no body mesh');
+  if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
+  return mesh.geometry.boundingBox!.clone().applyMatrix4(mesh.matrixWorld);
+}
 
 describe('createCharacter', () => {
   it('returns null when analyze rejects the drawing', () => {
@@ -26,7 +41,7 @@ describe('createCharacter', () => {
     expect(character).not.toBeNull();
     if (!character) return;
 
-    const box = new Box3().setFromObject(character.group);
+    const box = bodyBox(character.group);
     const height = box.max.y - box.min.y;
     expect(height).toBeCloseTo(CHARACTER_HEIGHT, 3);
     // Resting on the ground: bbox min.y at y = 0.
@@ -50,7 +65,7 @@ describe('createCharacter', () => {
     const character = createCharacter(circleBlob, 2);
     expect(character).not.toBeNull();
     if (!character) return;
-    const box = new Box3().setFromObject(character.group);
+    const box = bodyBox(character.group);
     expect(box.max.y - box.min.y).toBeCloseTo(CHARACTER_HEIGHT * 2, 3);
     character.dispose();
   });

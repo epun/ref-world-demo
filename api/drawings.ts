@@ -88,7 +88,7 @@ function asSessionLog(
     startedAt: new Date(0).toISOString(),
     config: {
       hatchMs: HATCH_MS,
-      maxPopulation: 96,
+      maxPopulation: 256,
       public: true,
       /*
        * Is there a store behind this world?

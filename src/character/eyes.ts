@@ -1,7 +1,19 @@
 /**
- * The eye (PLAN §3.4) — the character's entire emotional range.
+ * The eyes (PLAN §3.4) — the character's entire emotional range.
  *
- * The eye is PAINT ON THE BODY, not geometry. Like the marking
+ * RULING CHANGE (creature brief, docs/taste/creature.md, 2026-09-15): the
+ * character wears TWO wide-set eyes, each a light oval with a dark pupil —
+ * "facial expression is minimal and consistent: two dot or oval eyes, no
+ * mouth or a simple line", and the board read records them as "two,
+ * wide-set, either plain dark dots or white ovals with dark pupils". The
+ * earlier "one eye, always" user ruling (a single cyclops mark centered on
+ * the head lobe) is SUPERSEDED and no longer applies. Everything else about
+ * the mark is unchanged: the same SDF, the same expression morphs (dot ↔
+ * crescent ↔ wide oval ↔ closed line ↔ angry wedge), the same blink, the
+ * same gaze layers, the same +normal.z front fade. The SDF is simply
+ * evaluated twice — once per eye centre — and the two are unioned with min.
+ *
+ * The eyes are PAINT ON THE BODY, not geometry. Like the marking
  * (./marking.ts), an onBeforeCompile hook chained onto the character
  * material composites the eye SDF into diffuseColor, in a front projection
  * derived from the UNDEFORMED object-space position. No cap mesh floats
@@ -13,16 +25,19 @@
  * position, the mark rides every squash/lean/twist/gait exactly where the
  * vertex shader puts the surface — no CPU anchor tracking at all.
  *
- * The eye owns +z and the marking owns −z: the two knockouts are on
+ * The eyes own +z and the marking owns −z: the two knockouts are on
  * opposite faces and never overlap, so neither can dilute the other.
  *
  * The SDF itself is unchanged from the cap era: a base lens squashed
  * vertically by `openness`, bent into an upper/lower crescent by
  * subtracting an offset circle (`curve`), notched by a centered half-plane
  * cut (`wedge` — symmetric anger), with a single solid dark pupil that
- * squashes with the lid and wanders on a slow seeded glance. Fill is
- * CHARACTER.eye inside (pupil in CHARACTER.body), with a ~1.5px fwidth
- * smoothstep edge so the mark stays soft-organic rather than aliased-hard.
+ * squashes with the lid and wanders on a slow seeded glance. It is now
+ * evaluated at both eye centres (uEyeCenter ± uEyeOffset) and unioned with
+ * min — one pupil per eye, the same gaze offset in both, so the pair reads
+ * as one face. Fill is CHARACTER.eye inside (pupil in CHARACTER.body)
+ * unless the caller passes a palette pair, with a ~1.5px fwidth smoothstep
+ * edge so the mark stays soft-organic rather than aliased-hard.
  *
  * Expressions GLIDE: each SDF parameter rides its own ζ≥1 Spring (settleMs
  * = MOTION.tertiaryMs), so setExpression never snaps — it retargets, and the
@@ -73,6 +88,30 @@ import { computeEyePlacement } from './placement';
  * physical size law is unchanged), so `size` up to ~1.4 never clips. */
 const CAP_HEADROOM = 1.5;
 
+/**
+ * Per-eye radius, × the placement pair radius. **[D]** The creature brief
+ * asks for two wide-set eyes, not one cyclops mark; the board's eyes read
+ * a little larger than the bare placement radius (a mark, still not a
+ * headlight), so each eye takes 1.15× it. Starting point — tune here.
+ */
+export const EYE_SCALE = 1.15;
+
+/**
+ * Hard cap on each eye's DRAWN radius, × the pair's centre-to-centre
+ * separation. **[D]** Below 0.5 by a 4% margin, so however thin the head
+ * lobe or how large the identity jitter, the two eyes keep a gap between
+ * them and never merge into the cyclops mark the brief just retired.
+ */
+const EYE_GAP = 0.48;
+
+/**
+ * Half-separation for the frame override path (blendshell), × the frame's
+ * radius. **[D]** The frame's `r` described the old single mark's footprint;
+ * the pair spends that same footprint on two eyes — half-separation plus the
+ * capped drawn radius lands at ~1.47 r, where the cyclops mark drew 1.5 r.
+ */
+const FRAME_SEPARATION = 0.75;
+
 /** Openness the blink dips toward — not exactly 0, so the line stays a mark. */
 const BLINK_CLOSED = 0.04;
 
@@ -102,6 +141,7 @@ uniform vec3 uEyeColor;
 uniform vec3 uEyePupil;
 uniform vec2 uEyeGaze;
 uniform vec2 uEyeCenter;
+uniform vec2 uEyeOffset;
 uniform float uEyeRadius;
 uniform float uEyeAspect;
 uniform float uEyeOpenness;
@@ -115,42 +155,56 @@ varying float vEyeNz;
 
 /**
  * Fragment composite — the cap shader's SDF ported into the box-projected
- * frame. uSide is baked to 0 (the centered wedge), and 0.78086 is
+ * frame, evaluated ONCE PER EYE and unioned with min (creature brief: two
+ * wide-set eyes). uSide is baked to 0 (the centered wedge), and 0.78086 is
  * inversesqrt(1 + 0.8²) — the wedge slope's normalization, precomputed.
+ *
+ * Every expression uniform (openness, curve, wedge, size, aspect) and the
+ * gaze are shared: the two eyes are the same mark drawn twice, so the face
+ * reads as one expression rather than two independent ones.
  */
 const EYE_FRAG_BLOCK = /* glsl */ `
 {
-	vec2 pEye = (vEyePos - uEyeCenter) / (uEyeRadius * vec2(uEyeAspect, 1.0));
-	pEye /= max(uEyeSize, 0.05);
+	vec2 eyeUnit = uEyeRadius * vec2(uEyeAspect, 1.0) * max(uEyeSize, 0.05);
 	float eyeOpen = max(uEyeOpenness, 0.03);
-	vec2 qEye = vec2(pEye.x, pEye.y / eyeOpen);
-	float dEye = length(qEye) - ${MARK_R};
 
+	// The lid cutters, in lid space — identical for both eyes.
 	// Crescent: subtract a circle sliding in from above (sad) or below
 	// (happy). At curve = 0 the cutter is exactly tangent — no cut.
 	float eyeCutA = abs(uEyeCurve);
 	float eyeSgn = uEyeCurve >= 0.0 ? 1.0 : -1.0;
 	vec2 eyeCutC = vec2(0.0, -eyeSgn * (${MARK_R} + 0.75 - eyeCutA));
-	dEye = max(dEye, -(length(qEye - eyeCutC) - 0.75));
-
 	// Angry wedge: a horizontal half-plane descending with the wedge value.
 	// At wedge = 0 the line clears the disc entirely.
 	float eyeCh = ${MARK_R} * (1.6 - 1.9 * uEyeWedge);
-	dEye = max(dEye, (pEye.y / eyeOpen - eyeCh) * 0.78086);
+
+	float dEye = 1e9;
+	float dEyePupil = 1e9;
+	for (int eyeI = 0; eyeI < 2; eyeI++) {
+		float eyeS = eyeI == 0 ? -1.0 : 1.0;
+		vec2 pEye = (vEyePos - uEyeCenter - eyeS * uEyeOffset) / eyeUnit;
+		vec2 qEye = vec2(pEye.x, pEye.y / eyeOpen);
+		float d = length(qEye) - ${MARK_R};
+		d = max(d, -(length(qEye - eyeCutC) - 0.75));
+		d = max(d, (qEye.y - eyeCh) * 0.78086);
+		dEye = min(dEye, d);
+
+		// The pupil (avatar spec: one solid dark pupil, no highlight): a
+		// dark disc that squashes with the lid and glances with uEyeGaze,
+		// clipped by the mark's own SDF. uEyeGaze is in LID SPACE (qEye) —
+		// the same frame the lids cut in — so the CPU can guarantee the lids
+		// never swallow it (expressions.clampPupil), and a blink squashes
+		// the pupil with the lid instead of flinging it out of the mark.
+		// Both pupils take the same lid-space offset: the eyes look together.
+		float eyeDp = length(qEye - uEyeGaze) - uEyePupilR;
+		dEyePupil = min(dEyePupil, max(eyeDp, d));
+	}
 
 	// Soft knockout edge, ~1.5px, faded by facing so nothing shows edge-on
 	// or from behind — the silhouette stays one solid mass from any angle.
 	float eyeAa = fwidth(dEye) * 1.5 + 1e-4;
 	float eyeMask = (1.0 - smoothstep(-eyeAa, eyeAa, dEye)) * smoothstep(0.05, 0.5, vEyeNz);
-
-	// The pupil (avatar spec: one solid dark pupil, no highlight): a dark
-	// disc that squashes with the lid and glances with uEyeGaze, clipped by
-	// the mark's own SDF. uEyeGaze is in LID SPACE (qEye) — the same frame
-	// the lids cut in — so the CPU can guarantee the lids never swallow it
-	// (expressions.clampPupil), and a blink squashes the pupil with the lid
-	// instead of flinging it out of the mark.
-	float eyeDp = length(qEye - uEyeGaze) - uEyePupilR;
-	float eyePupil = 1.0 - smoothstep(-eyeAa, eyeAa, max(eyeDp, dEye));
+	float eyePupil = 1.0 - smoothstep(-eyeAa, eyeAa, dEyePupil);
 	diffuseColor.rgb = mix(diffuseColor.rgb, mix(uEyeColor, uEyePupil, eyePupil), eyeMask);
 }
 `;
@@ -158,11 +212,23 @@ const EYE_FRAG_BLOCK = /* glsl */ `
 /** Override frame for constructions whose eye anchor lives outside the
  * inflate-local placement (the blendshell path computes its own). */
 export interface EyeFrame {
-  /** Mark center in the geometry's object space. */
+  /** Midpoint between the two eyes, in the geometry's object space. */
   cx: number;
   cy: number;
-  /** Visible mark radius at expression size 1, object-space units. */
+  /** The PAIR's footprint radius at expression size 1, object-space units:
+   * the eyes straddle cx by FRAME_SEPARATION · r and each is sized by the
+   * overlap cap, so the two together fill about the same box the single
+   * mark used to. */
   r: number;
+}
+
+/** Fill colours for the pair. Defaults to the taste tokens; character.ts
+ * passes the hatchling's palette through instead. */
+export interface EyeColors {
+  /** The light oval — the eye white. */
+  eye: string;
+  /** The dark pupil inside it. */
+  pupil: string;
 }
 
 /** A read of the eye's live uniforms — for tests and the taste gates. */
@@ -217,14 +283,18 @@ function hash(n: number): number {
  *                     and the gaze/blink schedule, so two hatchlings of one
  *                     drawing never share a face. Absent → shape-only seeds.
  * @param frame        optional anchor override (blendshell spec space);
- *                     absent, the mark centers on computeEyePlacement's
- *                     pair midpoint in inflate-local space.
+ *                     absent, the pair straddles computeEyePlacement's
+ *                     left/right centres in inflate-local space.
+ * @param colors       optional fill pair (character.ts passes the palette's
+ *                     eye/pupil). Absent → the CHARACTER tokens, so a caller
+ *                     that passes nothing gets exactly the old uniforms.
  */
 export function applyEyes(
   material: MeshPhysicalMaterial,
   analysis: ShapeAnalysis,
   identitySeed?: number,
   frame?: EyeFrame,
+  colors?: EyeColors,
 ): Eyes {
   const placement = computeEyePlacement(analysis);
 
@@ -232,9 +302,11 @@ export function applyEyes(
   // 0 when unsalted, so the unsalted eye is exactly the pre-salt eye.
   const idMix = identitySeed === undefined ? 0 : (identitySeed % 4096) * 0.7717;
 
-  // One eye, always (user ruling): a single cyclops mark centered on the
-  // head lobe. Shape varies per character between circular and oval, seeded
-  // from the shape itself (and the identity salt, when present).
+  // Two wide-set eyes (creature brief, 2026-09-15 — supersedes the old
+  // one-eye ruling), straddling the head lobe on the placement's own
+  // left/right centres. Shape varies per character between circular and
+  // oval, seeded from the shape itself (and the identity salt, when
+  // present) — both eyes share it, so a face is never mismatched.
   const shapeSeed = hash(
     analysis.headLobe.x * 1.317 +
       analysis.headLobe.y * 0.577 +
@@ -243,22 +315,33 @@ export function applyEyes(
   );
   // Half circular (aspect 1), half oval — ovals span 1.2..1.45 wide.
   const aspect = shapeSeed < 0.5 ? 1 : 1.2 + (shapeSeed - 0.5) * 0.5;
-  // Identity size jitter, ±10% — unsalted characters keep the exact 1.5×.
+  // Identity size jitter, ±10% — unsalted characters keep the exact scale.
   const sizeJitter =
     identitySeed === undefined ? 1 : 0.9 + hash(idMix * 3.37 + 11.13) * 0.2;
-  // The single mark carries the whole face: 1.5× the pair radius, capped by
-  // the head's local thickness. Object-space units — the mesh's own scale
-  // carries it to world size.
-  const markR =
-    frame?.r ?? Math.min(placement.radius * 1.5 * sizeJitter, placement.separation * 1.35);
+
+  // The pair: a midpoint and the offset from it to each eye (right at +,
+  // left at −). Object-space units — the mesh's own scale carries them to
+  // world size.
   const cx = frame?.cx ?? (placement.left.x + placement.right.x) / 2;
   const cy = frame?.cy ?? (placement.left.y + placement.right.y) / 2;
+  const offX = frame ? frame.r * FRAME_SEPARATION : (placement.right.x - placement.left.x) / 2;
+  const offY = frame ? 0 : (placement.right.y - placement.left.y) / 2;
+  /** Centre-to-centre distance between the two eyes. */
+  const separation = 2 * Math.hypot(offX, offY);
+
+  // Per-eye radius, capped so the drawn marks always keep a gap (the cap is
+  // stated on the DRAWN radius, which is markR × CAP_HEADROOM).
+  const markR = Math.min(
+    frame?.r ?? placement.radius * EYE_SCALE * sizeJitter,
+    (separation * EYE_GAP) / CAP_HEADROOM,
+  );
 
   const uniforms: Record<string, IUniform> = {
-    uEyeColor: { value: new Color(CHARACTER.eye) },
-    uEyePupil: { value: new Color(CHARACTER.body) },
+    uEyeColor: { value: new Color(colors?.eye ?? CHARACTER.eye) },
+    uEyePupil: { value: new Color(colors?.pupil ?? CHARACTER.body) },
     uEyeGaze: { value: new Vector2(0, 0) },
     uEyeCenter: { value: new Vector2(cx, cy) },
+    uEyeOffset: { value: new Vector2(offX, offY) },
     // The unit-frame radius: the visible mark spans MARK_R of it (the cap
     // era's headroom kept, so the physical mark size law is unchanged).
     uEyeRadius: { value: (markR / MARK_R) * CAP_HEADROOM },
@@ -288,7 +371,7 @@ export function applyEyes(
       .replace('#include <alphamap_fragment>', `${EYE_FRAG_BLOCK}\n#include <alphamap_fragment>`);
   };
   const previousKey = material.customProgramCacheKey.bind(material);
-  material.customProgramCacheKey = () => `${previousKey()}/character-eye-v3`;
+  material.customProgramCacheKey = () => `${previousKey()}/character-eye-v4`;
 
   // One spring per SDF parameter — expressions glide, never snap.
   const settle = { settleMs: MOTION.tertiaryMs };
