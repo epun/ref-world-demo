@@ -11,7 +11,9 @@ import { SURFACE } from '../taste/tokens';
 import { CameraRig } from './camera';
 import { createEnvironment, type Environment } from './environment';
 import { GrainPass } from './grain';
-import { createGround } from './ground';
+import { createGround, FIELD_SIZE } from './ground';
+import { createPhysicsWorld, type PhysicsWorld } from '../physics/world';
+import { createPropBodies, type PropBodies } from './rocks';
 import { InkPass } from './ink';
 import { createLighting } from './lighting';
 import { createScatter, type Scatter } from './scatter';
@@ -167,6 +169,21 @@ export interface WorldHandles {
    * that owns one pointer has no claim on the operator's zoom.
    */
   setSoloDrag(enabled: boolean): void;
+  /**
+   * The rigid-body world (src/physics/world.ts), or null until it has
+   * loaded. It is created lazily and ASYNCHRONOUSLY right after the scatter
+   * — the wasm payload must never be something a projection's first frame
+   * waits on — so every consumer has to tolerate null and either poll or
+   * use `onPhysicsReady`.
+   */
+  physics(): PhysicsWorld | null;
+  /** Loose rocks, fixed prop bodies and the tree recoil
+   * (src/world/rocks.ts). Null until the physics world has loaded. */
+  bodies(): PropBodies | null;
+  /** Fires once when the physics world exists — immediately if it already
+   * does. What a later layer (creature bodies, katamari pickups) hangs its
+   * own setup on. */
+  onPhysicsReady(callback: (physics: PhysicsWorld, bodies: PropBodies) => void): void;
   /** Register per-frame work (entity drift, gaits, …). Runs before render. */
   onFrame(callback: FrameCallback): void;
   /**
@@ -220,6 +237,34 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
   const scatter = createScatter({ surface });
   const lighting = createLighting();
 
+  /**
+   * The rigid-body world, loaded off the critical path (PLAN §7).
+   *
+   * Until this resolves the world runs EXACTLY as it did before physics
+   * existed: the loop's physics block is skipped, rocks are the scatter's
+   * instance matrices and the creature layer resolves against
+   * `scatter.colliders()` as always. The terrain collider inside is sampled
+   * from the Surface seam and nothing else derives a height (see
+   * src/physics/world.ts).
+   */
+  let physics: PhysicsWorld | null = null;
+  let bodies: PropBodies | null = null;
+  /** The last scatter rebuild the bodies were reconciled against. */
+  let seenVersion = -1;
+  const physicsReady: ((p: PhysicsWorld, b: PropBodies) => void)[] = [];
+  void createPhysicsWorld(surface, FIELD_SIZE).then((p) => {
+    physics = p;
+    bodies = createPropBodies({
+      physics: p,
+      scatter,
+      surface,
+      wind: scatter.windField(),
+    });
+    seenVersion = scatter.rebuildVersion();
+    for (const callback of physicsReady) callback(p, bodies);
+    physicsReady.length = 0;
+  });
+
   const ground = createGround(surface);
   // Water sits directly on its basin's paper, under the ticks, the prop stamps
   // and the creature shadows — so a creature walking the shore still casts
@@ -261,6 +306,11 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
   (window as Window & { __refworldCamera?: unknown }).__refworldCamera = cameraRig.camera;
   // And the water, for the shoreline/ripple smokes and the stillness probe.
   (window as Window & { __refworldWater?: Water }).__refworldWater = water;
+  // The rigid-body world, for the physics smokes. Returns null until the
+  // wasm chunk has loaded — a smoke has to wait for it.
+  (
+    window as Window & { __refworldPhysics?: () => PhysicsWorld | null }
+  ).__refworldPhysics = () => physics;
 
   const resize = (): void => {
     const width = window.innerWidth;
@@ -384,6 +434,18 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
     // into the scatter's shared wind uniforms (three value writes).
     scatter.setWind(environment.state.wind, nowMs);
     for (const callback of frameCallbacks) callback(dt, nowMs);
+    // AFTER the frame callbacks (creatures step in there, and a creature
+    // pushing a stone has to be resolved in the same frame it moved) and
+    // BEFORE the render, so a rock's body transform is in its instance
+    // matrix by the time the matrix is drawn.
+    if (bodies) {
+      const version = scatter.rebuildVersion();
+      if (version !== seenVersion) {
+        seenVersion = version;
+        bodies.sync();
+      }
+      bodies.update(dt, nowMs);
+    }
     const composed = ink.render(renderer, scene, cameraRig.camera, nowMs);
     grain.compose(renderer, composed, nowMs);
 
@@ -414,6 +476,9 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
       ground.rebuild();
       scatter.refreshTerrain();
       water.refreshLevels();
+      // The ground moved under every body: the heightfield collider is
+      // resampled from the seam, throttled, on a later step.
+      physics?.requestTerrainRebuild();
     },
     terrain: (): TerrainParams => terrainParams(),
     setLandscape: (on: boolean): void => {
@@ -424,6 +489,7 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
       // so the sheets are re-seated before they are shown.
       water.refreshLevels();
       water.setVisible(on);
+      physics?.requestTerrainRebuild();
     },
     refreshScatter: (): void => {
       scatter.refreshLandscape();
@@ -440,6 +506,12 @@ export function start(canvas: HTMLCanvasElement): WorldHandles {
     landscape: (): boolean => landscapeMode() === 'landscape',
     setSoloDrag: (enabled: boolean): void => {
       soloDrag = enabled;
+    },
+    physics: (): PhysicsWorld | null => physics,
+    bodies: (): PropBodies | null => bodies,
+    onPhysicsReady: (callback: (p: PhysicsWorld, b: PropBodies) => void): void => {
+      if (physics && bodies) callback(physics, bodies);
+      else physicsReady.push(callback);
     },
     onFrame: (callback: FrameCallback): void => {
       frameCallbacks.push(callback);

@@ -1985,6 +1985,11 @@ function main(): void {
         tour,
         ink: world.ink,
         scatter: world.scatter,
+        // The rigid-body layer (src/world/rocks.ts). Null until the physics
+        // wasm chunk has loaded, which the panel folder feature-detects.
+        bodies: () => world.bodies(),
+        // …and where the view is pointed, so a dropped rock lands in frame.
+        cameraTarget: () => world.cameraRig.lookAtPoint(),
         // Grain amplitude handle (QA audit D5): the panel slider and the
         // grain gate both ride the pass's single full-frame uniform.
         setGrainAmplitude: (v) => world.grain.setAmplitude(v),

@@ -86,6 +86,18 @@ export interface DevScatterApi {
   group?: Object3D;
 }
 
+/**
+ * The rigid-body layer's dev surface — matches src/world/rocks.ts's
+ * `PropBodies`. Structural, like every other handle in this module, so the
+ * dev surface keeps importing from node and never drags the physics wasm
+ * into a test.
+ */
+export interface DevPropBodiesApi {
+  counts(): { bodies: number; awake: number; springs: number };
+  spawnRock(x: number, y: number, z: number): string | null;
+  wakeAll(): void;
+}
+
 /** Presentation-tour surface — matches src/world/tour.ts's Tour handle.
  * Structural (not the Tour type itself) so this module keeps importing from
  * node without pulling world modules in. */
@@ -139,6 +151,11 @@ export interface DevHandles {
   tour?: DevTourApi;
   ink?: DevInkApi;
   scatter?: DevScatterApi;
+  /** The rigid-body layer (`WorldHandles.bodies`), or null until the physics
+   * wasm chunk has loaded. */
+  bodies?(): DevPropBodiesApi | null;
+  /** Where the camera is looking — what `drop rock` aims at. */
+  cameraTarget?(): { x: number; y: number; z: number };
   /** WorldHandles.environment when the weather workstream has landed —
    * passed through as unknown and feature-detected here. */
   environment?: unknown;
@@ -1673,6 +1690,60 @@ export async function initDevPanel(
       return { folder };
     },
     teardown: (panelUi) => panelUi.panel.removeFolder('weather'),
+  });
+
+  // ── refworld.physics — the rigid-body world (src/physics/world.ts) ────────
+  // Small on purpose: a body count, a way to make one stone visibly tumble,
+  // and a wake-all. Everything here is feature-detected, because the physics
+  // world loads asynchronously and a panel opened in the first second of a
+  // session has no handle to talk to yet.
+
+  ui.skills.register({
+    ...metaOf('refworld.physics'),
+    apply: (panelUi) => {
+      const folder = panelUi.addFolder('physics', { collapsed: true });
+      const readout = folder.addInfo('', 'physics-readout');
+      const setReadout = (text: string): void => {
+        (readout as { setText?: (t: string) => void }).setText?.(text);
+      };
+      const bodiesOf = (): DevPropBodiesApi | null => handles.bodies?.() ?? null;
+      const refresh = (): void => {
+        const bodies = bodiesOf();
+        if (!bodies) {
+          setReadout('the rigid-body world has not loaded yet');
+          return;
+        }
+        const counts = bodies.counts();
+        setReadout(
+          `bodies ${counts.bodies} · awake ${counts.awake} · recoil springs ${counts.springs}`,
+        );
+      };
+      refresh();
+      folder.addButton('refresh counts', refresh);
+      folder.addButton('drop rock', () => {
+        const bodies = bodiesOf();
+        if (!bodies) {
+          setReadout('the rigid-body world has not loaded yet');
+          return;
+        }
+        // Three units above what the camera is looking at, so it lands in
+        // frame and the tumble is the thing you see.
+        const at = handles.cameraTarget?.() ?? { x: 0, y: 0, z: 0 };
+        const key = bodies.spawnRock(at.x, at.y + 3, at.z);
+        setReadout(key === null ? 'the dropped-rock mesh is full' : `dropped ${key}`);
+      });
+      folder.addButton('wake all', () => {
+        const bodies = bodiesOf();
+        if (!bodies) {
+          setReadout('the rigid-body world has not loaded yet');
+          return;
+        }
+        bodies.wakeAll();
+        refresh();
+      });
+      return { folder };
+    },
+    teardown: (panelUi) => panelUi.panel.removeFolder('physics'),
   });
 
   // ── refworld.character — emotes on the latest hatched character ───────────
