@@ -30,9 +30,11 @@ import { runEmote, type EmoteRun } from './emotes';
 import { createGait } from './gait';
 import { applyEyes } from './eyes';
 import type { Expression, ExpressionName } from './expressions';
-import { identitySeedOf, interpretDrawing } from './interpret';
+import { identitySeedOf, interpretDrawing, strokeSeed } from './interpret';
 import { applyMarking } from './marking';
 import { createCharacterMaterial, deformFrameOf, toBufferGeometry } from './mesh';
+import { paletteFor, paletteNamed, type CreaturePalette, type PaletteName } from './palette';
+import { createTopper } from './topper';
 
 /** Target character height in world units. Characters render small —
  * "scale is the subject" (PLAN §7). */
@@ -41,6 +43,25 @@ export const CHARACTER_HEIGHT = 3.5;
 /** Shadow stamp sits a touch inside the footprint, like the test blob's. */
 const SHADOW_FIT = 0.85;
 
+/**
+ * Dev-only colourway override (src/dev/index.ts, `character` folder). null =
+ * auto, i.e. the colourway the drawing's own motifs measure out. Module-level
+ * and mutable on purpose: the panel writes it, creatures built afterwards
+ * read it. Nothing in the shipping paths ever sets it.
+ */
+let paletteOverride: PaletteName | null = null;
+
+/** Dev only: pin every creature built afterwards to one colourway, or null
+ * to hand the choice back to the drawing. */
+export function setPaletteOverride(name: PaletteName | null): void {
+  paletteOverride = name;
+}
+
+/** Dev only: the current override (the panel seeds its select from this). */
+export function paletteOverrideName(): PaletteName | null {
+  return paletteOverride;
+}
+
 export interface Character {
   /** Add to the scene; position/rotation are owned by update(). */
   group: Group;
@@ -48,6 +69,9 @@ export interface Character {
   radius: number;
   /** The shape analysis, kept for later modules (eyes, gait). */
   analysis: ShapeAnalysis;
+  /** The creature's colourway (./palette.ts), read off the drawing's own
+   * motifs — the brief's *"color itself signals identity"*. Read-only. */
+  readonly palette: CreaturePalette;
   /** Glide the eyes to an expression (springs retarget, never snap). */
   setExpression(e: ExpressionName | Expression): void;
   /**
@@ -168,6 +192,11 @@ export function createCharacter(
   // the silhouette that actually exists.
   const analysis = interpreted.analysis;
 
+  // The colourway: measured off the drawing's motifs, unless the dev panel
+  // has pinned one.
+  const palette =
+    paletteOverride === null ? paletteFor(interpreted.motifs) : paletteNamed(paletteOverride);
+
   const geometry = toBufferGeometry(inflate(analysis));
   const box = geometry.boundingBox;
   if (!box || box.isEmpty()) {
@@ -180,7 +209,7 @@ export function createCharacter(
   const height = Math.max(box.max.y - box.min.y, 1e-6);
   const scale = (CHARACTER_HEIGHT / height) * worldScale;
 
-  const material = createCharacterMaterial();
+  const material = createCharacterMaterial(palette.body);
   // Whole-body deformation (PLAN §3.5): squash/lean/twist/reach uniforms
   // injected into the vertex shader, bending the mesh about its base.
   const frame = deformFrameOf(geometry);
@@ -195,7 +224,10 @@ export function createCharacter(
   // projection reads the undeformed position, it rides every squash / lean /
   // twist / gait exactly where the vertex shader puts the surface. The two
   // marks never meet: the eye fades in on +normal.z, the marking on −.
-  const eyes = applyEyes(material, analysis, identitySeed);
+  const eyes = applyEyes(material, analysis, identitySeed, undefined, {
+    eye: palette.eye,
+    pupil: palette.pupil,
+  });
 
   const mesh = new Mesh(geometry, material);
   mesh.scale.setScalar(scale);
@@ -204,6 +236,27 @@ export function createCharacter(
 
   const group = new Group();
   group.add(mesh);
+
+  // The creature brief's rig: a stalk from the crown ending in a topper that
+  // IS the drawing (./topper.ts). Parented to the body MESH so it inherits
+  // the mesh's scale and ground lift and needs no second transform — which
+  // also means it does NOT follow the body's squash/lean/twist/gait: those
+  // live in the body material's vertex shader and a child mesh has its own
+  // material. Accepted for v1; carrying the deform up the stalk is future
+  // work. The body stays the group's first Mesh child either way.
+  // Same recipe as the interpretation seed: the strokes, salted by identity
+  // when there is one, so two hatchlings of one drawing lean their stalks
+  // differently while either one is identical on the phone and in the world.
+  const topperSeed =
+    identitySeed === undefined ? strokeSeed(strokes) : (strokeSeed(strokes) ^ identitySeed) >>> 0;
+  const topper = createTopper({
+    body: geometry,
+    analysis,
+    source: interpreted.source,
+    palette,
+    seed: topperSeed,
+  });
+  mesh.add(topper.group);
 
   // One ζ≥1 spring per deform channel. Squash is the attack channel (the
   // quick dip in happy/angry) and settles a step faster; the rest drift at
@@ -246,8 +299,11 @@ export function createCharacter(
 
   return {
     group,
+    // The BODY's footprint: the shadow stamp and collision are the body's,
+    // never the topper's — the stalk casts no ground presence of its own.
     radius,
     analysis,
+    palette,
     setExpression(e: ExpressionName | Expression): void {
       eyes.setExpression(e);
     },
@@ -308,6 +364,8 @@ export function createCharacter(
         bubble.dispose();
       }
       eyes.dispose();
+      mesh.remove(topper.group);
+      topper.dispose();
       group.remove(mesh);
       geometry.dispose();
       material.dispose();

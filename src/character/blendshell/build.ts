@@ -32,6 +32,7 @@ import { runEmote, type EmoteRun } from '../emotes';
 import { applyEyes } from '../eyes';
 import type { Expression, ExpressionName } from '../expressions';
 import { extractMotifs, strokeSeed } from '../interpret';
+import { paletteFor } from '../palette';
 import { applyMarking } from '../marking';
 import { createOutline } from './outline';
 import { createSecondary } from './secondary';
@@ -141,6 +142,11 @@ export function createBlendshellCharacter(
     group,
     radius,
     analysis,
+    // The colourway rides the same motifs the shell is specced from. The
+    // blend-shell body does not paint itself with it yet (its material is
+    // the shared near-black recipe) — the field is here so every Character
+    // answers the same question.
+    palette: paletteFor(motifs),
     setExpression(e: ExpressionName | Expression): void {
       eyes.setExpression(e);
     },

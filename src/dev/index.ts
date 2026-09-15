@@ -35,6 +35,9 @@ import type { CreatureManager } from '../creatures/manager';
 import type { GateEntry, ModerationConsole } from '../moderation/gate';
 import type { InkParams } from '../world/ink';
 import { EMOTE_NAMES } from '../net/protocol';
+import { paletteOverrideName, setPaletteOverride } from '../character/character';
+import { PALETTE_NAMES } from '../character/palette';
+import { setTopperTunables, topperTunables } from '../character/topper';
 import { springRegistry } from '../motion/spring';
 import {
   achromaticGate,
@@ -1679,6 +1682,43 @@ export async function initDevPanel(
     apply: (panelUi) => {
       const folder = panelUi.addFolder('character');
       folder.addInfo('emotes target the most recently hatched character', 'character-hint');
+      // ── the creature rig (docs/taste/creature.md, src/character/topper.ts).
+      // There is no rebuild hook for a creature that already exists — its
+      // mesh, stalk and colourway are built once at spawn — so these three
+      // dials only affect creatures built AFTERWARDS. The fastest way to see
+      // one land is `clear creatures` then `spawn fallback creatures` in the
+      // demo folder.
+      folder.addInfo('rig dials apply to creatures spawned afterwards', 'rig-hint');
+      const dials = topperTunables();
+      folder.addSlider('stalk length', {
+        min: 0.1,
+        max: 1,
+        step: 0.01,
+        value: dials.stalkLength,
+        id: 'stalk-length',
+        tooltip: 'stalk reach as a fraction of body height — applies to creatures spawned afterwards',
+        onChange: (v) => setTopperTunables({ stalkLength: v }),
+      });
+      folder.addSlider('topper size', {
+        min: 0.1,
+        max: 0.8,
+        step: 0.01,
+        value: dials.topperSize,
+        id: 'topper-size',
+        tooltip: 'topper extent as a fraction of body height — applies to creatures spawned afterwards',
+        onChange: (v) => setTopperTunables({ topperSize: v }),
+      });
+      folder.addSelect('palette override', {
+        options: ['auto', ...PALETTE_NAMES],
+        value: paletteOverrideName() ?? 'auto',
+        id: 'palette-override',
+        tooltip: 'pin every new creature to one colourway; auto reads it off the drawing',
+        onChange: (name) => {
+          setPaletteOverride(
+            name === 'auto' ? null : (name as (typeof PALETTE_NAMES)[number]),
+          );
+        },
+      });
       const rows: (typeof EMOTE_NAMES)[number][][] = [
         EMOTE_NAMES.slice(0, 4),
         EMOTE_NAMES.slice(4),
