@@ -194,6 +194,16 @@ export const GHIBLI = {
   // grass marks
   grassBase: '#5aa845',
   grassTip: '#cfe872',
+  /** Sun-bleached blade, where the patchiness noise runs high. */
+  grassDry: '#e2d977',
+  // wild flowers — envpaint's `flowers` palette, one bloom picked per stem
+  flowerWhite: '#fff8f0',
+  flowerYellow: '#ffe45c',
+  flowerPink: '#ff9fc4',
+  flowerBlue: '#8fb4ff',
+  flowerStem: '#4f9a3c',
+  /** The bloom's eye. A blue bloom takes `flowerWhite` instead. */
+  flowerCentre: '#f7c948',
   // rocks and built things
   rockBody: '#8f8c88',
   /** The warm paper of built props. */
@@ -213,6 +223,22 @@ export const GHIBLI = {
   waterMid: '#3d8fe0',
   waterShallow: '#79c6f4',
   foam: '#f7ffff',
+  /** The thin wet line where a fill meets its shore. */
+  waterWet: '#2a62b0',
+  /** The hand-drawn wave glyph on a still surface. */
+  waterHighlight: '#f6fdff',
+  // the tropical island (2026-09-15, user ask: a tropical island, ghibli
+  // meets scavengers reign). Same palette family as the water above, pitched
+  // for open sea and dry sand rather than a lake.
+  seaDeep: '#2f7fc4',
+  seaShallow: '#7fd0ef',
+  sand: '#e9d9a8',
+  /** The darker band of sand in the last units before the waterline. */
+  sandWet: '#cbb27e',
+  /** Dry sand's own shade band, and the beach's ink-free contour. */
+  sandDark: '#a98d5c',
+  /** envpaint's terrain `wetSand`: the shallow band the ground takes under water. */
+  wetSand: '#7f7a55',
   /**
    * Cool violet-blue shadow multiplier, LINEAR — set straight onto a Color's
    * components, never through the srgb transfer curve.
