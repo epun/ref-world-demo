@@ -40,13 +40,6 @@ The traps, in order of how easily they get violated:
   lighter than the measured target — picked in the panel's color picker and exported as the
   default. `COLOR_METRICS.groundLuma` keeps the measured 0.74; the value-histogram gate
   measures against the configured paper and prints the drift. Don't "correct" it back.
-- **The `valiocon` world renders in the ghibli cel style — a recorded user override, not a
-  change to the taste.** Green meadow, warm sun, cool two-tone shadows, envpaint's ink on the
-  contours; the achromatic palette and the six-luma quantize are the only two rules it
-  relaxes, and the two palette gates report `n/a` there rather than a false failure. Every
-  other world, the public one first, renders exactly as before. Documented in
-  [`docs/TASTE.md`](docs/TASTE.md) §9; the code seams are `src/world/style.ts` and
-  `src/world/toon.ts` (chain `onBeforeCompile`, never clobber it).
 - **Grain is a full-frame post-process, never a material.** It must not vary across a
   character's fill or the silhouette stops reading as one solid shape.
 - **UI is `icon` + `ruleLine` + `border` only.** No filled panels, no cards, no shadows under
@@ -75,9 +68,6 @@ The traps, in order of how easily they get violated:
 - **Everything in `src/dev/` is gated on `isDev`** and must tree-shake out of the demo build.
 - **Scene changes — landscape, terrain dials, paint — travel as session events** over the sync
   topic and into `refworld:<world>:scene`; apply through the replay driver, never a second path.
-- **Physics runs only on the simulating page; every decision about what is stuck, loose or
-  settled travels as a scene event.** `world.enablePhysics()` is called on host election and
-  nowhere else — a viewer holds no rapier world and decides nothing (docs/PLAN.md §7.6).
 - **The geography is authored in `src/world/landscape.ts`** and is the single source every
   system samples — placement, colliders, water, minimap. Never re-derive a shoreline
   elsewhere, and the map does not ride the scatter seed. The ground has height: sample it

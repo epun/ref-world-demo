@@ -43,7 +43,7 @@ One json object: a header, then a flat array of events.
 ```jsonc
 {
   "schema": "refworld.session",
-  "version": 3,
+  "version": 2,
   "epoch": "w1x9k2j",          // the world session id src/main.ts mints
   "room": "xkcd",
   "startedAt": "2026-08-18T09:14:02.115Z",   // the ONE wall clock in the file
@@ -78,10 +78,6 @@ the log, so the log is always schedulable.
 | `keep` | `id`, `action`, `source` | somebody kept their creature: `action` is `photo` \| `model` \| `link`, `source` is `phone`. Informational — nothing in the world changed — and in the log because "somebody wanted to take this home" is what a session is judged on afterwards |
 | `operator` | `action`, `id`, `on?` | a moderation tap: `approve`, `discard`, `remove`, `block`, `unblock`, or `hold` (with `on` carrying the new hold-arrivals state). Bulk taps record one event per drawer, not one for the batch |
 | `world` | `field`, `value`, `kind?` | a world control an operator moved: `weather`, `timeOfDay`, `intensity`, `wind`, `density`, `kindDensity`/`kindScale` (with `kind`), `landscape` (`1` reveals the authored map, `0` returns the world to the flat plain it opens on), `terrain` (with `kind` — `elevation`, `tierStep` or `relief`), `grain`, `background`, `objectHue`/`objectSaturation`, `ink*`, `wanderSpeed` |
-| `stick` | `id`, `item`, `kind?`, `variant?`, `scale?`, `ox`, `oy`, `oz`, `qx`, `qy`, `qz`, `qw` | creature `id` picked `item` up. `ox`/`oy`/`oz` and the quaternion are its seat **in the carrier's clump-local frame** — every screen seats it identically from those seven floats. `kind`/`variant`/`scale` are mesh hints for a page that never had the placement drawn (all three or none); absent for a creature passenger, which already has a mesh |
-| `drop` | `id`, `item`, `x`, `z`, `qx…qw` | creature `id` shed `item`, which is now loose at `x`, `z`. Rate-limited on the host to one per carrier per `MOTION.tertiaryMs` — a pile that shed on every contact would unravel in a frame |
-| `loose` | `item`, `x`, `z` | a rooted prop was knocked out of the ground. **No creature id**: a tree comes out on its own account, and which something hit it is not a thing anybody replays. No mesh hints either — the placement key already spells out kind and variant |
-| `settle` | `item`, `x`, `z`, `qx…qw` | a loose body came to rest here |
 
 ### the two thinned kinds
 
@@ -121,14 +117,6 @@ per-frame dump wearing an event's clothes:
   they all land. Unlike a dab, the door **refuses** a malformed patch rather than
   clamping it: a dab is geometry and can be trimmed to the map, but a rect whose
   payload is the wrong length would write a shifted image into somebody's world.
-
-- **`settle`** is the one event in the format that is a POSITION, and the only reason
-  it is allowed to be is that a viewer runs no physics at all (docs/PLAN.md §7.6):
-  without it a phone would have a tree lying wherever the host last said and no way
-  to learn where the tree actually stopped. It is still discrete, not a sample —
-  `src/world/rocks.ts` fires it on the one frame a body that had been **moving** goes
-  to sleep, only past `SETTLE_REPORT_MIN_MOVE` (0.5u, [D]) and at most once per item
-  per `MOTION.secondaryMs`. A field of four hundred sleeping stones records nothing.
 
 Both still hold the rule the format is built on: an idle world records nothing,
 and nothing in the file is a per-frame sample of anything.
@@ -370,22 +358,6 @@ and a serverless handler alike.
 | `world` with `field: landscape` | `world` with `weather`, `timeOfDay`, `grain`, `background`, `ink*`, `density`, `wanderSpeed` … |
 | `world` with `field: terrain` (`kind` is `elevation` \| `tierStep` \| `relief`) | every other kind: `drawing`, `egg`, `hatch`, `drive`, `keep`, `operator` … |
 | `paint` — every dab, `{ tool: 'clear' }`, and `{ tool: 'patch' }` (an undo) | |
-| `stick`, `drop`, `loose`, `settle` — the katamari four | |
-
-**The katamari four are the first CREATURE kinds in the scene layer**, and the rule
-until 2026-09-15 was "the ground, not the cast". They do not break it. `stick`,
-`drop`, `loose` and `settle` say where the world's **props** have got to — which
-stone is on which creature, which tree is lying down, where it came to rest. A phone
-watching the room has to see the same pile and the same fallen tree as the projection
-or it is watching a different world.
-
-And unlike a creature's path, these **cannot be re-derived**. The format's whole
-argument is that positions are derived: same strokes, same id, same seeded agent, same
-path (§1). A pickup breaks that — it depends on where a stone had rolled to, which
-depends on a rapier simulation that runs on exactly one page and is explicitly not
-bit-identical anywhere else. So the one page that knows has to *say*, and it says it on
-the same outbox, the same topic and into the same store as a dab of the brush. No second
-channel, which is the rule this layer exists to keep.
 
 The line is **the ground, not the look**. Weather and paper are cheap to set
 per page and a room where one person's phone re-tints everybody else's is a
@@ -418,19 +390,7 @@ becoming a megabyte on arrival. Two rules, neither of which reorders anything:
   world ended up somewhere, and only the last one is true.
 - **a clear is a horizon.** Every dab before the last `tool: 'clear'` was
   thrown away by the person who painted it, and the clear goes with them — a
-  page that never stamped anything has nothing to clear. It buries the katamari
-  four as well: the map those stones were standing on is the map somebody threw
-  away. The `world` dials survive it, as they always did.
-- **a drop cancels the stick before it**, for the same carrier and the same item.
-  A stone picked up and put down again is a stone lying on the ground, and a fresh
-  page that replayed both would slide it onto the pile and then take it off —
-  which is *visible*, because the entrance slides. **One** drop cancels one stick,
-  so a stone picked up twice and dropped once is still being carried. The drop
-  itself survives: it is what tells a fresh page to stop drawing the standing
-  placement and show the thing lying where it fell.
-- **a settle keeps only its last value, per item** — it is where the thing ended
-  up, and every earlier answer was superseded by the body coming to rest again.
-  Every `loose` survives: each one is a different prop leaving the ground.
+  page that never stamped anything has nothing to clear.
 
 Everything that survives keeps its order, because a flatten depends on the
 ground it is flattening and a landscape switch decides what a dab lands on.

@@ -35,7 +35,6 @@ import { applyMarking } from './marking';
 import { createCharacterMaterial, deformFrameOf, toBufferGeometry } from './mesh';
 import { paletteFor, paletteNamed, type CreaturePalette, type PaletteName } from './palette';
 import { createTopper } from './topper';
-import { applyToon } from '../world/toon';
 
 /** Target character height in world units. Characters render small —
  * "scale is the subject" (PLAN §7). */
@@ -230,12 +229,6 @@ export function createCharacter(
     pupil: palette.pupil,
   });
 
-  // Cel lighting (src/world/toon.ts), chained LAST — after deform → marking →
-  // eye, so it wraps that chain instead of replacing it. Inert until a world
-  // on the ghibli style switches it on, and it is the same shared uniform set
-  // the ground and the props carry, so the creature lights with them.
-  applyToon(material);
-
   const mesh = new Mesh(geometry, material);
   mesh.scale.setScalar(scale);
   // Rest on the ground: bounding-box min.y lands exactly at y = 0.
@@ -264,12 +257,7 @@ export function createCharacter(
     seed: topperSeed,
   });
   mesh.add(topper.group);
-  for (const m of topper.materials) {
-    // `deform.attach` ASSIGNS onBeforeCompile rather than chaining it, so the
-    // toon wrap has to come after it on every topper material too.
-    deform.attach(m);
-    applyToon(m);
-  }
+  for (const m of topper.materials) deform.attach(m);
 
   // One ζ≥1 spring per deform channel. Squash is the attack channel (the
   // quick dip in happy/angry) and settles a step faster; the rest drift at

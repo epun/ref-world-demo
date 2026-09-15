@@ -6,15 +6,12 @@
  * → grain (the final paper layer). GENERATOR §ink rendering pass.
  */
 
-import { Color, Scene, Vector3, WebGLRenderer, type Texture } from 'three';
-import { GHIBLI, SURFACE, WORLD } from '../taste/tokens';
+import { Color, Scene, WebGLRenderer, type Texture } from 'three';
+import { SURFACE } from '../taste/tokens';
 import { CameraRig } from './camera';
 import { createEnvironment, type Environment } from './environment';
 import { GrainPass } from './grain';
-import { createGround, FIELD_SIZE } from './ground';
-import { createPhysicsWorld, type PhysicsWorld } from '../physics/world';
-import { deviceTier } from './device';
-import { createPropBodies, type PropBodies } from './rocks';
+import { createGround } from './ground';
 import { InkPass } from './ink';
 import { createLighting } from './lighting';
 import { createScatter, type Scatter } from './scatter';
@@ -26,9 +23,7 @@ import {
   terrainParams,
   type TerrainParams,
 } from './landscape';
-import { sanitizeStyle, type WorldStyle } from './style';
 import { ROLLING_SURFACE, type Surface } from './surface';
-import { setToonEnabled, setToonSun } from './toon';
 import { createWater, type Water } from './water';
 
 export type FrameCallback = (dt: number, nowMs: number) => void;
@@ -172,40 +167,6 @@ export interface WorldHandles {
    * that owns one pointer has no claim on the operator's zoom.
    */
   setSoloDrag(enabled: boolean): void;
-  /**
-   * The rigid-body world (src/physics/world.ts), or null on a page that is
-   * not simulating — which is MOST pages (see `enablePhysics`).
-   *
-   * Every consumer has to tolerate null and either poll or use
-   * `onPhysicsReady`, and a consumer that finds null must not assume it is
-   * merely early: on a viewer it stays null for the life of the page.
-   */
-  physics(): PhysicsWorld | null;
-  /** Loose rocks, fixed prop bodies and the tree recoil
-   * (src/world/rocks.ts). Null until, and unless, physics is enabled. */
-  bodies(): PropBodies | null;
-  /**
-   * Load rapier and build the bodies. Idempotent — call it as often as you
-   * like; the first call owns the promise and the rest await it.
-   *
-   * ONLY THE PAGE THAT SIMULATES CALLS THIS (docs/PLAN.md §7.6). Most people
-   * watch the world from a phone, each running its own copy of this page
-   * (docs/SESSION.md §6), and until the katamari rules landed all of them
-   * downloaded a wasm payload and stepped a rigid-body world whose answers
-   * they then threw away, because the host's events are the truth. A viewer
-   * now runs no physics at all: the host decides what is stuck, loose and
-   * settled, and every decision travels as a scene event.
-   *
-   * `src/main.ts` calls it when the election says this page is hosting, and
-   * at startup on a page that is pinned as host (`?host=1`, the moderator
-   * secret, the dev build, or an installation room with nobody to elect
-   * against).
-   */
-  enablePhysics(): Promise<void>;
-  /** Fires once when the physics world exists — immediately if it already
-   * does, and NEVER on a page that never enables it. What a later layer
-   * (creature bodies, katamari pickups) hangs its own setup on. */
-  onPhysicsReady(callback: (physics: PhysicsWorld, bodies: PropBodies) => void): void;
   /** Register per-frame work (entity drift, gaits, …). Runs before render. */
   onFrame(callback: FrameCallback): void;
   /**
@@ -218,31 +179,9 @@ export interface WorldHandles {
    * free for whatever is on top.
    */
   setPaused(paused: boolean): void;
-  /**
-   * Switch the whole frame between the two looks (docs/TASTE.md §9).
-   *
-   * ONE place, deliberately: the background, the ground's paper and its mark
-   * ink, the three light colours, the cel lighting switch, the ink composite,
-   * the prop palette, both shadow palettes and the water all move together,
-   * because a frame half in one look and half in the other is not a style —
-   * it is a bug nobody can name. `setStyle('ink')` restores every one of them
-   * to the shipped tokens exactly, so this is reversible in a demo.
-   */
-  setStyle(style: WorldStyle): void;
-  /** The look this world is rendering in. */
-  style(): WorldStyle;
 }
 
-export interface WorldOptions {
-  /**
-   * The look this world opens in (src/world/style.ts). Defaults to `ink` —
-   * the shipped one, and the only one the taste describes — so a caller that
-   * says nothing gets the frame this project has always drawn.
-   */
-  style?: WorldStyle;
-}
-
-export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): WorldHandles {
+export function start(canvas: HTMLCanvasElement): WorldHandles {
   const renderer = new WebGLRenderer({ canvas, antialias: true });
   /*
    * Pixel ratio cap. The frame is four full-resolution passes (colour,
@@ -254,17 +193,9 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
    * 1.5, which is 44% fewer pixels per pass for a line the eye cannot
    * separate at arm's length. **[D]**
    */
-  /*
-   * ONE read of what kind of screen this is (src/world/device.ts). The cap
-   * below and the debris ceiling the destruction task needs are the same
-   * question asked twice, and they used to be two inline media queries.
-   */
-  const tier = deviceTier(
-    typeof window.matchMedia === 'function'
-      ? (query) => window.matchMedia(query).matches
-      : () => false,
-  );
-  const pixelRatio = Math.min(window.devicePixelRatio, tier === 'phone' ? 1.5 : 2);
+  const coarse =
+    typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches;
+  const pixelRatio = Math.min(window.devicePixelRatio, coarse ? 1.5 : 2);
   renderer.setPixelRatio(pixelRatio);
 
   const scene = new Scene();
@@ -288,45 +219,6 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
   const surface = ROLLING_SURFACE;
   const scatter = createScatter({ surface });
   const lighting = createLighting();
-
-  /**
-   * The rigid-body world, loaded off the critical path (PLAN §7.6) and only
-   * on the page that simulates.
-   *
-   * Until `enablePhysics` is called — and forever, on a viewer — the world
-   * runs EXACTLY as it did before physics existed: the loop's physics block
-   * is skipped, rocks are the scatter's instance matrices and the creature
-   * layer resolves against `scatter.colliders()` as always. The terrain
-   * collider inside is sampled from the Surface seam and nothing else
-   * derives a height (see src/physics/world.ts).
-   *
-   * It used to load unconditionally here, which meant every phone watching
-   * the room downloaded the wasm and stepped a simulation it was then told
-   * to ignore. `deviceTier` says most of the audience is on one.
-   */
-  let physics: PhysicsWorld | null = null;
-  let bodies: PropBodies | null = null;
-  /** The last scatter rebuild the bodies were reconciled against. */
-  let seenVersion = -1;
-  const physicsReady: ((p: PhysicsWorld, b: PropBodies) => void)[] = [];
-  /** The one in-flight load, so N calls are one download. */
-  let physicsLoad: Promise<void> | null = null;
-  const enablePhysics = (): Promise<void> => {
-    if (physicsLoad) return physicsLoad;
-    physicsLoad = createPhysicsWorld(surface, FIELD_SIZE).then((p) => {
-      physics = p;
-      bodies = createPropBodies({
-        physics: p,
-        scatter,
-        surface,
-        wind: scatter.windField(),
-      });
-      seenVersion = scatter.rebuildVersion();
-      for (const callback of physicsReady) callback(p, bodies);
-      physicsReady.length = 0;
-    });
-    return physicsLoad;
-  };
 
   const ground = createGround(surface);
   // Water sits directly on its basin's paper, under the ticks, the prop stamps
@@ -369,11 +261,6 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
   (window as Window & { __refworldCamera?: unknown }).__refworldCamera = cameraRig.camera;
   // And the water, for the shoreline/ripple smokes and the stillness probe.
   (window as Window & { __refworldWater?: Water }).__refworldWater = water;
-  // The rigid-body world, for the physics smokes. Returns null until the
-  // wasm chunk has loaded — a smoke has to wait for it.
-  (
-    window as Window & { __refworldPhysics?: () => PhysicsWorld | null }
-  ).__refworldPhysics = () => physics;
 
   const resize = (): void => {
     const width = window.innerWidth;
@@ -456,46 +343,6 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
     { passive: false },
   );
 
-  /** Scratch for the per-frame cel sun direction — one allocation, ever. */
-  const toonSunDir = new Vector3();
-
-  // ── the look ──────────────────────────────────────────────────────────────
-  /** The ghibli stamp value: the meadow under its own cool shadow tint, the
-   * one flat tone a cel shadow takes on that paper. Computed once. */
-  const ghibliStamp = new Color(GHIBLI.meadow).multiply(new Color(...GHIBLI.shadowTint));
-  let currentStyle: WorldStyle = 'ink';
-  const applyStyle = (style: WorldStyle): void => {
-    currentStyle = style;
-    const ghibli = style === 'ghibli';
-    // The paper, and the sky beyond it — still ONE field, still dipped in
-    // value (never hue) at night by the environment engine, which keeps
-    // scaling whatever base is current.
-    backgroundBase.set(ghibli ? GHIBLI.background : SURFACE.ground);
-    background.copy(backgroundBase).multiplyScalar(backgroundLumaScale);
-    ground.material.color.set(ghibli ? GHIBLI.meadow : SURFACE.ground);
-    ground.setInk(ghibli ? GHIBLI.dirtEdge : SURFACE.ink);
-    // Light COLOURS only: environment.ts drives intensities and the key's
-    // position and never touches these, so they stick for the whole session.
-    lighting.key.color.set(ghibli ? GHIBLI.sun : WORLD.light);
-    lighting.fill.color.set(ghibli ? GHIBLI.sky : WORLD.light);
-    lighting.fill.groundColor.set(ghibli ? GHIBLI.hemiGround : WORLD.neutralMid);
-    setToonEnabled(ghibli);
-    ink.setStyle(style);
-    scatter.setStyle(style);
-    // Both stamp passes lerp paper → shadow as the sun's presence rises, so
-    // both need the pair that belongs to the paper now underneath them. The
-    // stamps stay one flat value cut sharp either way (TASTE §2.4).
-    if (ghibli) {
-      shadows.setPalette(GHIBLI.meadow, ghibliStamp);
-      scatter.setShadowPalette(GHIBLI.meadow, ghibliStamp);
-    } else {
-      shadows.setPalette(SURFACE.ground, SURFACE.shadow);
-      scatter.setShadowPalette(SURFACE.ground, SURFACE.shadow);
-    }
-    water.setStyle(style);
-  };
-  applyStyle(sanitizeStyle(opts.style));
-
   const frameCallbacks: FrameCallback[] = [];
   let last = performance.now();
   /** Nothing visible is on screen — see setPaused. */
@@ -531,34 +378,12 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
     // Sun-driven shadow stamps: one shared ellipse + one flat value per
     // frame for every stamp (scatter throttles its instanced re-lay).
     const sun = environment.sun;
-    // The cel terminator follows the SAME key the stamps and the hatch do:
-    // environment.update has just moved `lighting.key.position` along the sun
-    // arc, so its normalized world position is the direction toward the sun.
-    // Two colour copies and a normalize — no recompile, and inert while the
-    // ink style has the toon switch at 0.
-    setToonSun(
-      toonSunDir.copy(lighting.key.position),
-      lighting.key.color,
-      lighting.fill.color,
-    );
     shadows.setSun(sun.azimuth, sun.altitude, sun.presence);
     scatter.setSun(sun.azimuth, sun.altitude, sun.presence);
     // Weather-driven vertex wind: the environment's spring-glided strength
     // into the scatter's shared wind uniforms (three value writes).
     scatter.setWind(environment.state.wind, nowMs);
     for (const callback of frameCallbacks) callback(dt, nowMs);
-    // AFTER the frame callbacks (creatures step in there, and a creature
-    // pushing a stone has to be resolved in the same frame it moved) and
-    // BEFORE the render, so a rock's body transform is in its instance
-    // matrix by the time the matrix is drawn.
-    if (bodies) {
-      const version = scatter.rebuildVersion();
-      if (version !== seenVersion) {
-        seenVersion = version;
-        bodies.sync();
-      }
-      bodies.update(dt, nowMs);
-    }
     const composed = ink.render(renderer, scene, cameraRig.camera, nowMs);
     grain.compose(renderer, composed, nowMs);
 
@@ -589,9 +414,6 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
       ground.rebuild();
       scatter.refreshTerrain();
       water.refreshLevels();
-      // The ground moved under every body: the heightfield collider is
-      // resampled from the seam, throttled, on a later step.
-      physics?.requestTerrainRebuild();
     },
     terrain: (): TerrainParams => terrainParams(),
     setLandscape: (on: boolean): void => {
@@ -602,7 +424,6 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
       // so the sheets are re-seated before they are shown.
       water.refreshLevels();
       water.setVisible(on);
-      physics?.requestTerrainRebuild();
     },
     refreshScatter: (): void => {
       scatter.refreshLandscape();
@@ -620,20 +441,9 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
     setSoloDrag: (enabled: boolean): void => {
       soloDrag = enabled;
     },
-    physics: (): PhysicsWorld | null => physics,
-    bodies: (): PropBodies | null => bodies,
-    enablePhysics,
-    onPhysicsReady: (callback: (p: PhysicsWorld, b: PropBodies) => void): void => {
-      if (physics && bodies) callback(physics, bodies);
-      else physicsReady.push(callback);
-    },
     onFrame: (callback: FrameCallback): void => {
       frameCallbacks.push(callback);
     },
-    setStyle: (style: WorldStyle): void => {
-      applyStyle(sanitizeStyle(style));
-    },
-    style: (): WorldStyle => currentStyle,
     setPaused: (next: boolean): void => {
       if (next === paused) return;
       paused = next;

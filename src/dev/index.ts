@@ -54,7 +54,6 @@ import { DEFAULT_KIND_DENSITY, SCATTER_SEED, SCATTER_STEP } from '../world/scatt
 import { TERRAIN_DEFAULTS, TERRAIN_LIMITS, terrainHeight } from '../world/landscape';
 import type { PaintedWaterField } from '../world/painted-water';
 import { ROLLING_SURFACE } from '../world/surface';
-import { WORLD_STYLES, sanitizeStyle, type WorldStyle } from '../world/style';
 import { GRAIN, MOTION, SURFACE } from '../taste/tokens';
 import { countByKind } from '../session';
 import type { SessionRecorder } from '../session';
@@ -85,18 +84,6 @@ export interface DevScatterApi {
    * material's token lightness. Saturation 0 restores the exact greys. */
   setTint?(hue: number, saturation: number): void;
   group?: Object3D;
-}
-
-/**
- * The rigid-body layer's dev surface — matches src/world/rocks.ts's
- * `PropBodies`. Structural, like every other handle in this module, so the
- * dev surface keeps importing from node and never drags the physics wasm
- * into a test.
- */
-export interface DevPropBodiesApi {
-  counts(): { bodies: number; awake: number; springs: number };
-  spawnRock(x: number, y: number, z: number): string | null;
-  wakeAll(): void;
 }
 
 /** Presentation-tour surface — matches src/world/tour.ts's Tour handle.
@@ -152,11 +139,6 @@ export interface DevHandles {
   tour?: DevTourApi;
   ink?: DevInkApi;
   scatter?: DevScatterApi;
-  /** The rigid-body layer (`WorldHandles.bodies`), or null until the physics
-   * wasm chunk has loaded. */
-  bodies?(): DevPropBodiesApi | null;
-  /** Where the camera is looking — what `drop rock` aims at. */
-  cameraTarget?(): { x: number; y: number; z: number };
   /** WorldHandles.environment when the weather workstream has landed —
    * passed through as unknown and feature-detected here. */
   environment?: unknown;
@@ -166,13 +148,6 @@ export interface DevHandles {
   /** Color grade for the paper field (scene background + ground disc):
    * a css color string from the panel's picker. */
   setBackgroundColor?(color: string): void;
-  /**
-   * The per-world LOOK (`WorldHandles.setStyle`, docs/TASTE.md §9) and a
-   * readback of it. Optional like every other handle here: without them the
-   * panel shows no style select rather than one that does nothing.
-   */
-  setStyle?(style: WorldStyle): void;
-  style?(): WorldStyle;
   /**
    * Live terrain dials (src/world/landscape.ts `TerrainParams`, applied
    * through WorldHandles.setTerrain, which rebuilds the ground field, the
@@ -1412,21 +1387,6 @@ export async function initDevPanel(
           },
         });
       }
-      // The per-world look (docs/TASTE.md §9). A live switch, because the
-      // override is a user decision and an operator has to be able to put the
-      // two frames side by side rather than take a deploy's word for it.
-      const setWorldStyle = handles.setStyle;
-      if (setWorldStyle) {
-        style.addSelect('style', {
-          options: [...WORLD_STYLES],
-          value: handles.style?.() ?? 'ink',
-          id: 'world-style',
-          tooltip: 'the shipped ink look, or the ghibli cel override',
-          onChange: (v) => {
-            setWorldStyle(sanitizeStyle(v));
-          },
-        });
-      }
       // Background color: a real picker (swatch + popover + hex field).
       // Starts on the ground token; picking it again restores the shipped
       // achromatic look exactly.
@@ -1715,62 +1675,6 @@ export async function initDevPanel(
     teardown: (panelUi) => panelUi.panel.removeFolder('weather'),
   });
 
-  // ── refworld.physics — the rigid-body world (src/physics/world.ts) ────────
-  // Small on purpose: a body count, a way to make one stone visibly tumble,
-  // and a wake-all. Everything here is feature-detected, and since the
-  // katamari rules that is not merely about timing: physics loads on HOST
-  // ELECTION and nowhere else (docs/PLAN.md §7.6), so on a page that is only
-  // watching the room there are no bodies to talk to and never will be. The
-  // readout says which of the two it is.
-
-  ui.skills.register({
-    ...metaOf('refworld.physics'),
-    apply: (panelUi) => {
-      const folder = panelUi.addFolder('physics', { collapsed: true });
-      const readout = folder.addInfo('', 'physics-readout');
-      const setReadout = (text: string): void => {
-        (readout as { setText?: (t: string) => void }).setText?.(text);
-      };
-      const bodiesOf = (): DevPropBodiesApi | null => handles.bodies?.() ?? null;
-      const refresh = (): void => {
-        const bodies = bodiesOf();
-        if (!bodies) {
-          setReadout('not simulating — this page runs no rigid bodies');
-          return;
-        }
-        const counts = bodies.counts();
-        setReadout(
-          `bodies ${counts.bodies} · awake ${counts.awake} · recoil springs ${counts.springs}`,
-        );
-      };
-      refresh();
-      folder.addButton('refresh counts', refresh);
-      folder.addButton('drop rock', () => {
-        const bodies = bodiesOf();
-        if (!bodies) {
-          setReadout('not simulating — nothing here to drop a rock into');
-          return;
-        }
-        // Three units above what the camera is looking at, so it lands in
-        // frame and the tumble is the thing you see.
-        const at = handles.cameraTarget?.() ?? { x: 0, y: 0, z: 0 };
-        const key = bodies.spawnRock(at.x, at.y + 3, at.z);
-        setReadout(key === null ? 'the dropped-rock mesh is full' : `dropped ${key}`);
-      });
-      folder.addButton('wake all', () => {
-        const bodies = bodiesOf();
-        if (!bodies) {
-          setReadout('not simulating — no rigid bodies to wake');
-          return;
-        }
-        bodies.wakeAll();
-        refresh();
-      });
-      return { folder };
-    },
-    teardown: (panelUi) => panelUi.panel.removeFolder('physics'),
-  });
-
   // ── refworld.character — emotes on the latest hatched character ───────────
 
   ui.skills.register({
@@ -1861,26 +1765,7 @@ export async function initDevPanel(
         setReadout(`damping audit — ${result.pass ? 'pass' : 'fail'}: ${result.detail}`);
         refreshStillness();
       });
-      /**
-       * The two PALETTE gates measure the achromatic taste (TASTE §7), and the
-       * ghibli style is a recorded user override of exactly that — a saturated
-       * cel palette and no six-luma snap (docs/TASTE.md §9). Running them
-       * there would print a failure for a decision that was made on purpose,
-       * which is worse than printing nothing: an operator would go looking for
-       * a bug. So they report `n/a` and pass, and every other gate — damping,
-       * stillness, density, mark set, grain — still runs, because the override
-       * relaxes nothing those measure.
-       */
-      const paletteGateWaived = (): boolean => handles.style?.() === 'ghibli';
-      const waivedReadout = (name: string): void => {
-        setReadout(`${name} — pass: n/a — ghibli style (user override)`);
-        refreshStillness();
-      };
       folder.addButton('achromatic', () => {
-        if (paletteGateWaived()) {
-          waivedReadout('achromatic');
-          return;
-        }
         void readFramePixels().then((pixels) => {
           const result = achromaticGate(pixels);
           setReadout(`achromatic — ${result.pass ? 'pass' : 'fail'}: ${result.detail}`);
@@ -1888,10 +1773,6 @@ export async function initDevPanel(
         });
       });
       folder.addButton('value histogram', () => {
-        if (paletteGateWaived()) {
-          waivedReadout('value histogram');
-          return;
-        }
         void readFramePixels().then((pixels) => {
           const result = valueHistogramGate(pixels);
           setReadout(`value histogram — ${result.pass ? 'pass' : 'fail'}: ${result.detail}`);

@@ -16,9 +16,6 @@
  *   world                   → hand the recorded control change to the driver
  *   drive                   → steer that creature again, and let go again
  *   paint                   → re-stamp that dab of terrain
- *   stick | drop            → put that item on, or take it off, that
- *                             carrier's pile — if the carrier is standing
- *   loose | settle          → that prop is off the ground / lying here
  *   keep                    → nothing. Informational, like `egg`
  *
  * TWO of those only mean anything IN TIME. A drive is "push, hold, let go"
@@ -37,16 +34,7 @@
  */
 
 import type { StrokeList } from '../shape/types';
-import type {
-  DropEvent,
-  LooseEvent,
-  OperatorAction,
-  PaintEvent,
-  SessionEvent,
-  SessionLog,
-  SettleEvent,
-  StickEvent,
-} from './events';
+import type { OperatorAction, PaintEvent, SessionEvent, SessionLog } from './events';
 
 /** One creature to bring back, exactly as the session first saw it. */
 export interface ReplaySpawn {
@@ -85,24 +73,6 @@ export interface ReplayDriver {
    * has no apply path and the events pass through unread rather than faked.
    */
   paint?(event: PaintEvent): void;
-  /**
-   * The katamari four (src/creatures/sticky.ts).
-   *
-   * STATE, NOT MOTION — which is why, unlike `drive` and `paint`, they are
-   * applied by `replayNow` too. A pile is a fact about the world right now:
-   * a restore that skipped it would put the room's stones back on the
-   * ground and leave every creature its drawn size, and nobody would be
-   * able to tell that from a world where none of it had happened. A drive
-   * is skipped because it is made of pacing (a push with no release); a
-   * pickup has no duration in it at all.
-   *
-   * Optional, like the two above: a page with no creature manager simply
-   * does not offer them and the events pass through unread.
-   */
-  stick?(event: StickEvent): void;
-  drop?(event: DropEvent): void;
-  loose?(event: LooseEvent): void;
-  settle?(event: SettleEvent): void;
 }
 
 /** How a log is being applied. The kinds that only mean something in time
@@ -205,30 +175,6 @@ export function applyEvent(
     case 'paint': {
       if (options.instant) return;
       driver.paint?.(event);
-      return;
-    }
-    case 'stick': {
-      // Onto a creature that is STANDING, the same rule an emote and a
-      // drive follow: a pile belongs to a carrier, and a stick applied to
-      // an id that is still an egg (or was removed under it) would file
-      // the item against nothing and lose it.
-      if (!state.live.has(event.id)) return;
-      driver.stick?.(event);
-      return;
-    }
-    case 'drop': {
-      if (!state.live.has(event.id)) return;
-      driver.drop?.(event);
-      return;
-    }
-    case 'loose': {
-      // No carrier to be alive: a tree comes out of the ground on its own
-      // account, and the prop it names is the world's, not a creature's.
-      driver.loose?.(event);
-      return;
-    }
-    case 'settle': {
-      driver.settle?.(event);
       return;
     }
     case 'keep': {
