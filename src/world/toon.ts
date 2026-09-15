@@ -83,7 +83,7 @@ const TOON_FLAG = 'toonApplied';
  * function definition in one shader is a compile error. `toonFbm` takes an
  * octave count like envpaint's `fbm` so the ported lines read unchanged.
  */
-const TOON_NOISE_GLSL = /* glsl */ `
+export const TOON_NOISE_GLSL = /* glsl */ `
 float toonHash21(vec2 p) {
   vec3 p3 = fract(vec3(p.xyx) * 0.1031);
   p3 += dot(p3, p3.yzx + 33.33);
@@ -114,7 +114,7 @@ float toonFbm(vec2 p, int octaves) {
 
 /** The ported lighting model. `fbm` → `toonFbm`, `vWorldPos` → `vToonWorldPos`,
  * grain removed (see the header). Signatures match envpaint's exactly. */
-const TOON_LIGHTING_GLSL = /* glsl */ `
+export const TOON_LIGHTING_GLSL = /* glsl */ `
 varying vec3 vToonWorldPos;
 varying vec3 vToonNormal;
 
@@ -173,6 +173,21 @@ vec3 toonLight(vec3 albedo, vec3 n, float shadow, float bands) {
 
   return col;
 }`;
+
+/**
+ * The two varyings `TOON_LIGHTING_GLSL` reads, for a shader that writes them
+ * itself.
+ *
+ * `applyToon` injects these declarations into a STOCK material's vertex
+ * shader (see `applyToon` below). A bespoke `ShaderMaterial` — every module
+ * under src/world/ghibli/ — has no stock chain to inject into, so it pastes
+ * this block at the head of its own vertex shader and assigns both varyings
+ * before `gl_Position`. Same names, same meaning: world-space position and
+ * world-space normal of the shaded point.
+ */
+export const TOON_VARYINGS_GLSL = /* glsl */ `
+varying vec3 vToonWorldPos;
+varying vec3 vToonNormal;`;
 
 /**
  * World position and world normal, from the stock vertex pipeline.
