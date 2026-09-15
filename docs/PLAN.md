@@ -298,6 +298,29 @@ so the marker never jitters or snaps.
 - **Shadows**: **hard-edged, flat-filled** — a single value cut sharp, no penumbra, no PCF,
   no AO smear (TASTE §2.4). Shadow as a stamped graphic shape. This is a custom pass, not
   Three.js's default shadow mapping.
+- **Style is per world [D].** `src/world/style.ts` resolves one of two looks — `ink`, the
+  shipped one and the only one the taste describes, or `ghibli`, a recorded user override
+  (TASTE §9). It is pure: `sanitizeStyle` mirrors `scripts/world-build.mjs` exactly, and
+  `readWorldStyle` takes `?style=` then `<meta name="refworld:style">` then `ink`. Each
+  world's `worlds.json` entry carries the field and the build injects the tag ONLY for a
+  world that asked, so the public html stays byte-identical. `src/main.ts` reads it once,
+  beside the world's name, and hands it to `start`; `WorldHandles.setStyle` is the ONE place
+  that moves the background, the ground's paper and mark ink, the three light colours, the
+  cel switch, the ink composite, the prop palette, both shadow palettes and the water
+  together — a frame half in one look is a bug nobody can name.
+- **The cel lighting is a CHAINED injection [D].** `src/world/toon.ts` ports envpaint's
+  `ghibliLightingGLSL` onto the stock three materials through `onBeforeCompile`, replacing
+  `#include <opaque_fragment>` (the one point where `outgoingLight` and `diffuseColor` are in
+  scope on basic, standard and physical alike). **It captures the hook already there and
+  calls it first**, and suffixes `customProgramCacheKey` with `+toon-v1`, because half these
+  materials already own their hook — the ground's terrace marks, the scatter's
+  wind/nudge/variation stack, the character's deform → marking → eye chain, the egg's crack.
+  So it is applied LAST, after `deform.attach` (which assigns rather than chains). Its noise
+  helpers are uniquely named (`toonHash21`/`toonVnoise`/`toonFbm`): a duplicate definition
+  beside the ground's `groundHash` fails the compile. One shared uniform set, so `uToonOn`
+  flips the whole frame with no recompile. Two omissions from the port, both on purpose: no
+  shadow-map term (shadow maps stay off — TASTE §2.4) and no per-material grain (grain is a
+  post-process — TASTE §2.7).
 - **Scale is the subject.** The world brief's whole thesis is a tiny inhabitant in an
   enormous field. Characters render small. Resist the urge to frame them close.
 

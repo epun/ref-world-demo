@@ -54,6 +54,7 @@ import { DEFAULT_KIND_DENSITY, SCATTER_SEED, SCATTER_STEP } from '../world/scatt
 import { TERRAIN_DEFAULTS, TERRAIN_LIMITS, terrainHeight } from '../world/landscape';
 import type { PaintedWaterField } from '../world/painted-water';
 import { ROLLING_SURFACE } from '../world/surface';
+import { WORLD_STYLES, sanitizeStyle, type WorldStyle } from '../world/style';
 import { GRAIN, MOTION, SURFACE } from '../taste/tokens';
 import { countByKind } from '../session';
 import type { SessionRecorder } from '../session';
@@ -148,6 +149,13 @@ export interface DevHandles {
   /** Color grade for the paper field (scene background + ground disc):
    * a css color string from the panel's picker. */
   setBackgroundColor?(color: string): void;
+  /**
+   * The per-world LOOK (`WorldHandles.setStyle`, docs/TASTE.md §9) and a
+   * readback of it. Optional like every other handle here: without them the
+   * panel shows no style select rather than one that does nothing.
+   */
+  setStyle?(style: WorldStyle): void;
+  style?(): WorldStyle;
   /**
    * Live terrain dials (src/world/landscape.ts `TerrainParams`, applied
    * through WorldHandles.setTerrain, which rebuilds the ground field, the
@@ -1387,6 +1395,21 @@ export async function initDevPanel(
           },
         });
       }
+      // The per-world look (docs/TASTE.md §9). A live switch, because the
+      // override is a user decision and an operator has to be able to put the
+      // two frames side by side rather than take a deploy's word for it.
+      const setWorldStyle = handles.setStyle;
+      if (setWorldStyle) {
+        style.addSelect('style', {
+          options: [...WORLD_STYLES],
+          value: handles.style?.() ?? 'ink',
+          id: 'world-style',
+          tooltip: 'the shipped ink look, or the ghibli cel override',
+          onChange: (v) => {
+            setWorldStyle(sanitizeStyle(v));
+          },
+        });
+      }
       // Background color: a real picker (swatch + popover + hex field).
       // Starts on the ground token; picking it again restores the shipped
       // achromatic look exactly.
@@ -1765,7 +1788,26 @@ export async function initDevPanel(
         setReadout(`damping audit — ${result.pass ? 'pass' : 'fail'}: ${result.detail}`);
         refreshStillness();
       });
+      /**
+       * The two PALETTE gates measure the achromatic taste (TASTE §7), and the
+       * ghibli style is a recorded user override of exactly that — a saturated
+       * cel palette and no six-luma snap (docs/TASTE.md §9). Running them
+       * there would print a failure for a decision that was made on purpose,
+       * which is worse than printing nothing: an operator would go looking for
+       * a bug. So they report `n/a` and pass, and every other gate — damping,
+       * stillness, density, mark set, grain — still runs, because the override
+       * relaxes nothing those measure.
+       */
+      const paletteGateWaived = (): boolean => handles.style?.() === 'ghibli';
+      const waivedReadout = (name: string): void => {
+        setReadout(`${name} — pass: n/a — ghibli style (user override)`);
+        refreshStillness();
+      };
       folder.addButton('achromatic', () => {
+        if (paletteGateWaived()) {
+          waivedReadout('achromatic');
+          return;
+        }
         void readFramePixels().then((pixels) => {
           const result = achromaticGate(pixels);
           setReadout(`achromatic — ${result.pass ? 'pass' : 'fail'}: ${result.detail}`);
@@ -1773,6 +1815,10 @@ export async function initDevPanel(
         });
       });
       folder.addButton('value histogram', () => {
+        if (paletteGateWaived()) {
+          waivedReadout('value histogram');
+          return;
+        }
         void readFramePixels().then((pixels) => {
           const result = valueHistogramGate(pixels);
           setReadout(`value histogram — ${result.pass ? 'pass' : 'fail'}: ${result.detail}`);

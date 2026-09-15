@@ -327,3 +327,55 @@ Tagging discipline is unchanged: the six body hexes are **[D]** (the brief's tok
 sheets' palette, not the creatures'), the stalk length and topper size are **[D]** starting
 points to tune in the ghost panel, and nothing here is attributed to the brief that the
 brief does not show.
+
+
+---
+
+## 9. Ghibli style — user override *(2026-09-15)* **[D]**
+
+**User decision, recorded as one.** The world `valiocon` renders in envpaint's `ghibli-toon`
+look instead of the shipped ink look: a green meadow ground, a warm sun and a cool sky, flat
+two-tone shading whose shadow is *hue-shifted* rather than merely darker, a hard sun-coloured
+rim on the shade side, a blue sky field, and envpaint's violet-blue `#2a2340` on the contour
+lines. The palette and the lighting model are ported verbatim
+(`src/taste/tokens.ts` `GHIBLI`, `src/world/toon.ts`).
+
+**Nothing here is attributable to the taste.** Neither brief shows a saturated cel palette;
+§3's *"no neon or saturated color"* and §2.2's near-achromatic ground are measured, and this
+override sits on top of them for one deployment. It is tagged **[D]** and it is a preference,
+not evidence — the tokens above are untouched, `COLOR_METRICS` still records the measured
+`saturation 0.188`, and the public world and `meridian` render exactly as they did.
+
+**What the override relaxes — and only these two:**
+
+- **The achromatic palette.** The ground is green, the props take canopy and stone colours,
+  water is blue. §1's environmental near-black floor is replaced by the cel shadow: the
+  darkest environmental value becomes the meadow under `shadowTint`, which is a tinted mid,
+  not a near-black.
+- **The six-luma quantize.** The ink pass's snap onto the measured palette anchors is off
+  (`uQuantize`), because the cel bands now come from the material lighting. Snapping a
+  two-tone cel frame onto six greys would delete the thing the override exists to show.
+
+**What still holds, unchanged:**
+
+- **All motion.** ζ ≥ 1, no overshoot, no bounce, no cut, no abrupt stop, the ambient drift
+  floor. §2.1 is confidence 1.00 and a palette has nothing to say about it.
+- **Stamped shadows.** Three.js shadow mapping stays off; the toon shadow term is a constant
+  1.0 and the flat hard-edged stamps (§2.4) are still the cast shadows. They lerp between the
+  meadow and the meadow's own cel shadow instead of the grey pair — one flat value, cut sharp.
+- **Grain is a post-process.** envpaint's painterly per-material grain is deliberately *not*
+  ported: §2.7 puts grain over the whole image, never on the mark.
+- **No uppercase, the `icon`/`ruleLine`/`border` mark set, no rectilinear geometry, the
+  isometric grid placing and never forming.** §2.5, §4, §5 are untouched.
+
+**The gates.** The **achromatic** and **value histogram** buttons report
+`n/a — ghibli style (user override)` and pass under this style — a gate that prints a failure
+for a decision made on purpose sends an operator hunting a bug. Every other gate (damping,
+uppercase, stillness, density, mark set, grain) still runs, because the override relaxes
+nothing any of them measure.
+
+**Where it lives.** `worlds.json` carries `"style": "ghibli"` per world; the build injects
+`<meta name="refworld:style">` only for a world that asked, so the public html stays
+byte-identical (`test/worlds/build.test.ts`). `?style=ink|ghibli` overrides it on the address
+and the ghost panel's *shader style* folder switches it live, so the two frames can be put
+side by side rather than argued about.
