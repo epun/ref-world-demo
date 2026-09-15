@@ -28,6 +28,7 @@ import {
   createCreatureManager,
   measureBodyRadius,
   spawnSpot,
+  SPAWN_RADIUS,
 } from '../../src/creatures/manager';
 import { BehaviorAgent } from '../../src/behavior/agent';
 import { generatedName } from '../../src/creatures/naming';
@@ -36,6 +37,7 @@ import { EGG_RADIUS } from '../../src/egg/egg';
 import type { Collider } from '../../src/physics/colliders';
 import type { WorldHandles } from '../../src/world/scene';
 import { FLAT_SURFACE, ROLLING_SURFACE, type Surface } from '../../src/world/surface';
+import { isWater } from '../../src/world/landscape';
 import { bird, quadruped, snowman, circleBlob } from '../fixtures/strokes';
 
 // createEgg paints its shell texture through a 2d canvas; off-DOM the
@@ -118,8 +120,8 @@ describe('measureBodyRadius — radius truth from the generated mesh', () => {
 });
 
 describe('spawn placement', () => {
-  it('projects an egg clear of a hard prop sitting on its spiral spot', () => {
-    const spot = spawnSpot(0);
+  it('projects an egg clear of a hard prop sitting on its own spot', () => {
+    const spot = spawnSpot('egg-on-rock');
     const rock: Collider = { x: spot.x, z: spot.z, r: 1.5, hard: true };
     const world = stubWorld([rock]);
     const manager = createCreatureManager(world, { autoHatch: true, surface: FLAT_SURFACE });
@@ -536,23 +538,28 @@ describe('grown arrivals — a creature that is already here', () => {
     manager.clearAll();
   }, 120_000);
 
-  it('wraps the spawn spiral at the population cap, never below it', () => {
-    // At `% 64` a room of 68 put four creatures on EXACTLY the first four
-    // spots, and zero distance has no separation direction, so no later
-    // pass could undo it. A literal here is the bug: the wrap has to track
-    // the cap, so pin the relationship rather than either number.
+  it('spawns from the id, not the arrival order — the same spot on every device', () => {
+    // A phone's world view builds its own eggs from the same ids, so the
+    // spot must be a function of the id alone (src/net/worldsync.ts).
     const src = readFileSync(join(process.cwd(), 'src/creatures/manager.ts'), 'utf8');
-    expect(src).toMatch(/spawnSpot\(orderCounter % MAX_POPULATION\)/);
+    expect(src).toMatch(/spawnSpot\(id\)/);
+    expect(spawnSpot('drawer-a')).toEqual(spawnSpot('drawer-a'));
+    expect(spawnSpot('drawer-a')).not.toEqual(spawnSpot('drawer-b'));
+  });
 
-    // ...and the spiral really is injective across that whole range, so
-    // the cap is a safe modulus to wrap at.
-    const seen = new Set<string>();
-    for (let i = 0; i < MAX_POPULATION; i++) {
-      const spot = spawnSpot(i);
-      const key = `${spot.x.toFixed(4)},${spot.z.toFixed(4)}`;
-      expect(seen.has(key)).toBe(false);
-      seen.add(key);
-    }
+  it('scatters a room over the whole map, on land, inside the spawn disc', () => {
+    // User ask, 2026-09-15: random over the map, not a clutch at the origin.
+    const spots = Array.from({ length: MAX_POPULATION }, (_, i) => spawnSpot(`device-${i}`));
+    const radii = spots.map((p) => Math.hypot(p.x, p.z)).sort((a, b) => a - b);
+    expect(radii[radii.length - 1]).toBeLessThanOrEqual(SPAWN_RADIUS);
+    // Uniform over a disc puts the median radius at R/√2 ≈ 0.71R; anything
+    // near the centre would be the spiral back again.
+    expect(radii[(radii.length / 2) | 0]).toBeGreaterThan(SPAWN_RADIUS * 0.5);
+    // No two ids share a spot.
+    const seen = new Set(spots.map((p) => `${p.x.toFixed(3)},${p.z.toFixed(3)}`));
+    expect(seen.size).toBe(spots.length);
+    // And none of them is in the lake.
+    for (const p of spots) expect(isWater(p.x, p.z)).toBe(false);
   });
 });
 

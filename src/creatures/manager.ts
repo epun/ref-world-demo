@@ -48,6 +48,7 @@ import { FOLLOW_TAU_MS, followFraction, shortestAngle } from '../net/worldsync';
 import type { WorldHandles } from '../world/scene';
 import type { ShadowHandle } from '../world/shadows';
 import { ROLLING_SURFACE, type Surface } from '../world/surface';
+import { isWater } from '../world/landscape';
 import { resolveName } from './naming';
 
 /** Shipped wander-speed multiplier (panel export, user ask): a touch
@@ -217,14 +218,68 @@ const HATCH_STAGGER_MS = MOTION.tertiaryMs;
 const CRACK_TEASER = 0.3;
 
 /**
- * Deterministic spawn spot for the nth creature: a golden-angle spiral
- * around the origin, so any population reads as a loose organic scatter —
- * never a row, never a grid (grid governs placement of props, not beings).
+ * How far from the origin a creature may spawn, world units. **[D]**
+ *
+ * Inside `TERRAIN.farStart` (150), where the authored geography is still at
+ * full height, with a margin so a spot never lands on the ramp down to the
+ * flat outer disc. Wide on purpose: the point is a population that reads as
+ * scattered over the whole field, not a clutch at the hatch clearing.
  */
-export function spawnSpot(index: number): { x: number; z: number } {
-  const angle = index * 2.39996322972865332; // golden angle, radians
-  const radius = 3.2 + 2.1 * Math.sqrt(index);
-  return { x: Math.cos(angle) * radius, z: Math.sin(angle) * radius };
+export const SPAWN_RADIUS = 120;
+
+/** How many candidate spots one id tries before settling for the last. */
+const SPAWN_ATTEMPTS = 8;
+
+/** A spot this close to a shoreline is refused — an egg on the bank, never
+ * in the shallows. Egg footprint plus the clearance a rock gets. */
+const SPAWN_WATER_PAD = EGG_RADIUS + 0.25 + 1;
+
+/** fnv-1a over a string, then one round of mixing — a seed, not a hash
+ * anyone reads. Same string → same number on every device. */
+function hashId(id: string, salt: number): number {
+  let h = 2166136261 ^ salt;
+  for (let i = 0; i < id.length; i++) {
+    h ^= id.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  h ^= h >>> 15;
+  h = Math.imul(h, 2246822507);
+  h ^= h >>> 13;
+  return h >>> 0;
+}
+
+/**
+ * Deterministic spawn spot for a creature, anywhere on the map.
+ *
+ * User ask, 2026-09-15: *"we should spawn randomly on the map not in one
+ * place"*. It used to be a golden-angle spiral out from the origin, so a
+ * room of two hundred was a disc of eggs around the hatch clearing and
+ * everybody's creature woke up in the same crowd.
+ *
+ * RANDOM TO THE EYE, DETERMINISTIC IN FACT. Every phone's world view builds
+ * its own copy of the eggs from the same drawing ids (src/net/worldsync.ts:
+ * poses only place creatures that are alive, an egg stands where it was
+ * built), so a spot has to come from the id and nothing else — no
+ * `Math.random`, no clock, no arrival order. The id is hashed to a point
+ * drawn uniformly over the spawn disc (√ on the radius, so the density is
+ * even rather than bunched at the centre), and a candidate that lands in
+ * water is skipped for the next hash in the sequence. The same id always
+ * walks the same sequence, so every device settles on the same bank.
+ *
+ * Never a row, never a grid (grid governs placement of props, not beings).
+ * Props and standing residents are cleared afterwards by `clearSpawnSpot`.
+ */
+export function spawnSpot(id: string): { x: number; z: number } {
+  let spot = { x: 0, z: 0 };
+  for (let attempt = 0; attempt < SPAWN_ATTEMPTS; attempt++) {
+    const u = hashId(id, attempt * 2 + 1) / 0x100000000;
+    const v = hashId(id, attempt * 2 + 2) / 0x100000000;
+    const radius = SPAWN_RADIUS * Math.sqrt(u);
+    const angle = v * Math.PI * 2;
+    spot = { x: Math.cos(angle) * radius, z: Math.sin(angle) * radius };
+    if (!isWater(spot.x, spot.z, SPAWN_WATER_PAD)) return spot;
+  }
+  return spot;
 }
 
 function smoothstep(edge0: number, edge1: number, x: number): number {
@@ -816,8 +871,13 @@ export function createCreatureManager(
       {
         onBurst: (root) => {
           becomeAlive(slot, root, next);
-          // the egg's disposal belongs to the hatch from here
-          world.cameraRig.frameAt(root.position);
+          // the egg's disposal belongs to the hatch from here.
+          // The camera stays where it is (user ask, 2026-09-15: *"we
+          // shouldn't have the camera follow the spawn, it should be in one
+          // place"*). It used to slide to every shell that broke; at two
+          // hundred hatches that is a camera that never rests. The tour and
+          // the operator's `h` moment (src/world/tour.ts) still frame what
+          // they choose to.
         },
         onDone: () => {
           slot.hatch = null;
@@ -907,12 +967,10 @@ export function createCreatureManager(
         if (going) beginRetire(going, performance.now());
       }
 
-      // Projected clear of props and residents — an egg never incubates
-      // half-inside a rock (the raw spiral can reach planted ground).
-      // Wrap at the population cap, not below it: at `% 64` a room of 68
-      // put four creatures on EXACTLY the spot of the first four, which no
-      // separation pass can undo cleanly (zero distance has no direction).
-      const spot = clearSpawnSpot(spawnSpot(orderCounter % MAX_POPULATION));
+      // Its own spot on the map, from its id (see `spawnSpot`), then
+      // projected clear of props and residents — an egg never incubates
+      // half-inside a rock.
+      const spot = clearSpawnSpot(spawnSpot(id));
       /*
        * A creature that is ALREADY HERE never had an egg here.
        *
@@ -993,7 +1051,8 @@ export function createCreatureManager(
       // reads as one thing across both phases.
       egg.group.name = `egg ${slot.name}`;
       world.scene.add(egg.group);
-      world.cameraRig.frameAt(new Vector3(spot.x, 0, spot.z));
+      // No reframe on arrival — see `onBurst` above for why. An egg lands
+      // where its id puts it, and the camera is somebody else's to move.
       observer?.egg(id, spot.x, spot.z);
       return true;
     },
