@@ -138,7 +138,18 @@ function stubScatter(): {
     windField: () => field,
   } as unknown as Scatter;
 
-  return { scatter, taken: () => taken, refs, version: () => version };
+  return {
+    scatter,
+    taken: () => taken,
+    refs,
+    version: () => version,
+    /** What the real `rebuild()` does to the physics layer: every instance
+     * matrix back to the placement pose, fresh refs, version bumped. */
+    rebuild: () => {
+      version++;
+      build();
+    },
+  };
 }
 
 describe('hullPoints', () => {
@@ -232,6 +243,43 @@ describe('prop bodies', () => {
     const m = new Matrix4();
     ref.mesh.getMatrixAt(ref.index, m);
     expect(m.elements[13]).toBeCloseTo(t.y, 3);
+  });
+
+  it('writes a SLEEPING survivor back after a rebuild instead of snapping it home', () => {
+    // The regression this pins: `rebuild()` resets every instance matrix to
+    // the placement pose, and `update()` deliberately skips a rock that is
+    // asleep — so a stone that rolled away and then bedded down used to be
+    // DRAWN back at its original spot with its collider still where it
+    // rolled. An invisible stone for a creature to walk into.
+    const item = bodies.items().find((i) => i.x === -20)!;
+    const rolled = { x: -20 + 10, y: 0.5, z: 0 };
+    item.body.setTranslation(rolled, true);
+    item.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+    item.body.sleep();
+    item.awake = false;
+    expect(item.body.isSleeping()).toBe(true);
+
+    stub.rebuild();
+    // The rebuild really did put the row back at the placement.
+    const staleRef = stub.scatter.instanceRefs('rock').find((r) => r.key === item.key)!;
+    const stale = new Matrix4();
+    staleRef.mesh.getMatrixAt(staleRef.index, stale);
+    expect(stale.elements[12]).toBeCloseTo(item.x, 5);
+    staleRef.mesh.instanceMatrix.needsUpdate = false;
+
+    bodies.sync();
+
+    const ref = stub.scatter.instanceRefs('rock').find((r) => r.key === item.key)!;
+    const m = new Matrix4();
+    ref.mesh.getMatrixAt(ref.index, m);
+    expect(m.elements[12]).toBeCloseTo(rolled.x, 5);
+    expect(m.elements[13]).toBeCloseTo(rolled.y, 5);
+    expect(m.elements[14]).toBeCloseTo(rolled.z, 5);
+    // Still the same body, still asleep: a reconcile is not a disturbance.
+    expect(bodies.items().find((i) => i.key === item.key)!.body).toBe(item.body);
+    expect(item.body.isSleeping()).toBe(true);
+    // …and the upload was marked, without waiting for the next frame.
+    expect(ref.mesh.instanceMatrix.needsUpdate).toBe(true);
   });
 
   it('re-seats a body that ended up under the ground', () => {

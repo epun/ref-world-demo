@@ -268,6 +268,12 @@ export function createPropBodies(opts: PropBodiesOptions): PropBodies {
   /** The collider handle of a body's one collider. */
   const handleOf = (body: RapierRigidBody): number => body.collider(0).handle;
 
+  /** One `needsUpdate` per touched mesh, never one per instance. */
+  const flushMatrices = (): void => {
+    for (const mesh of dirtyMatrix) mesh.instanceMatrix.needsUpdate = true;
+    dirtyMatrix.clear();
+  };
+
   /** Read an instance's drawn transform out of its mesh. */
   const readInstance = (ref: InstanceRef): void => {
     ref.mesh.getMatrixAt(ref.index, matrix);
@@ -377,6 +383,18 @@ export function createPropBodies(opts: PropBodiesOptions): PropBodies {
   const sync = (): void => {
     const seenRocks = new Set<string>();
     const seenFixed = new Set<string>();
+    /**
+     * Rocks that already had a body before this rebuild. Their bodies are
+     * KEPT — identity is the placement key, so a stone shoved downhill is
+     * still that stone — but `rebuild()` has just reset every instance
+     * matrix to the placement pose, and `update()` will not put a SLEEPING
+     * rock's transform back (it skips anything asleep whose `awake` flag is
+     * already false). A rock that rolled away and then bedded down would be
+     * drawn back at its original spot with its collider still where it
+     * rolled: an invisible stone for a creature to walk into. So every
+     * survivor is written back once, here.
+     */
+    const survivors: InstanceRef[] = [];
     rockRefs.clear();
     swayRefs.clear();
 
@@ -385,7 +403,8 @@ export function createPropBodies(opts: PropBodiesOptions): PropBodies {
         if (kind === 'rock') {
           rockRefs.set(ref.key, ref);
           seenRocks.add(ref.key);
-          if (!rocks.has(ref.key)) createRock(ref);
+          if (rocks.has(ref.key)) survivors.push(ref);
+          else createRock(ref);
           continue;
         }
         // Swaying kinds carry the recoil row whether or not they are hard.
@@ -403,6 +422,19 @@ export function createPropBodies(opts: PropBodiesOptions): PropBodies {
           createFixed(ref, footprintR);
         }
       }
+    }
+
+    // Survivors: re-read the scale the rebuild drew them at (a per-kind
+    // scale dial may have moved under them) and put the body's own
+    // transform back into the fresh row.
+    for (const ref of survivors) {
+      const item = rocks.get(ref.key);
+      const state = rockState.get(ref.key);
+      if (!item || !state) continue;
+      readInstance(ref);
+      state.scl.copy(scl);
+      item.r = ref.radius;
+      writeRock(item);
     }
 
     for (const [key, item] of rocks) {
@@ -425,6 +457,11 @@ export function createPropBodies(opts: PropBodiesOptions): PropBodies {
       recoil.z.dispose();
       recoils.delete(key);
     }
+    // Upload whatever the survivor pass wrote. `sync` is called immediately
+    // before `update` in the loop, which would flush it anyway — but a
+    // reconcile has to leave the meshes correct on its own, not depend on
+    // being followed by a frame.
+    flushMatrices();
     ready = true;
   };
 
@@ -571,8 +608,7 @@ export function createPropBodies(opts: PropBodiesOptions): PropBodies {
       }
     }
 
-    for (const mesh of dirtyMatrix) mesh.instanceMatrix.needsUpdate = true;
-    dirtyMatrix.clear();
+    flushMatrices();
     for (const mesh of dirtyBend) {
       const attr = mesh.geometry.getAttribute('aBend');
       if (attr) attr.needsUpdate = true;
