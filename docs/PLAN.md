@@ -808,6 +808,33 @@ passenger rolls with its carrier's ball, because a carried creature is out of th
 pass entirely. **No roll phase is on the wire** (`poses` carry x/z/heading): roll is arc length
 over radius, so every page derives the same turn from the same travel.
 
+**Walk first, roll with mass** *(2026-09-16)* **[D]**. User ask: *"let's have them start
+walking at first and once they hit a few objects they begin to roll because they have mass."*
+The gait used to be fed a flat zero on a katamari world, so a hatchling that had picked nothing
+up slid across the field like a decal. It is a BLEND now — one ζ ≥ 1 `Spring` per creature over
+`MOTION.primaryMs`, retargeted every frame at `rollTarget(items, growth)`: 1 once the clump
+holds `ROLL_MASS_ITEMS` (**3**) or `growth` reaches `ROLL_GROWTH` (**1.08**), whichever comes
+first, and back to 0 if the pile is shed. Three things read it, and the whole point is that they
+move together:
+
+- the **gait amplitude** target is scaled by `1 − blend` (`setLocomotion`'s third argument, a
+  new optional `gaitAmp` on `Character` and `GaitController`): the step frequency still follows
+  the real travel, so a creature becoming a ball stops waddling rather than being told it has
+  stopped moving, and one that sheds its pile picks the walk up mid-stride;
+- the **roll accumulation** is scaled by it (`Clump.roll(dx, dz, blend)` scales the ANGLE, not
+  the travel, so the axis is unchanged): at 0 the `ball` node stays upright, at 1 it is the
+  no-slip roll it always was, and in between the same distance turns it partly — no snap;
+- the **drive ceiling** lerps `MAX_SPEED × KATAMARI_WALK_MUL` → `MAX_SPEED × KATAMARI_SPEED_MUL`
+  by it (`driveMult`), so a hatchling drives at 3 u/s and the same creature three stones later
+  drives at 7.2. The wander does NOT lerp: an agent always walks (see **Speed** below).
+
+A **passenger rides its carrier's blend** (`rollOf` walks up the carriers): a creature sitting
+on a pile has no locomotion of its own — it is inside somebody else's ball. And **nothing about
+the blend is on the wire**: it is derived in `growPass`, which runs on every page, from the
+clump's own item count and growth — both of which a viewer holds off the `stick` and `drop`
+events. `CreatureManager.rollBlend(id)` and `driveCeiling(id)` are readouts for the panel and
+the tests; nothing sets either.
+
 **Speed** — two ceilings, both **[D]**, both katamari-only *(raised 2026-09-16 on the user
 report: "we need to up the speed and velocity by a lot")*. `KATAMARI_SPEED_MUL = 6` is the
 ROLLING ceiling — `MAX_SPEED × 6` = **7.2 u/s**, which crosses the ~100 u island in fourteen
