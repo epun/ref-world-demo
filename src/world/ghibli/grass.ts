@@ -11,14 +11,15 @@
  *
  * WHAT CHANGED IN THE PORT, and why:
  *
- *   - **height comes from a callback, not a texture.** envpaint displaces its
- *     ground from a `height` layer and its blades read the same sampler. Here
- *     the ground's displacement is geometry and the only legal height source
- *     is the `Surface` seam (`src/world/surface.ts`, CLAUDE.md). So the
- *     caller hands in `heightAt(x, z)` at BUILD time and each blade's ground
- *     height is baked into an `aGround` attribute. `rebuild(heightAt)` is
- *     what `refreshTerrain` calls: same blades, put back down on the new
- *     hillside.
+ *   - **height comes from a BAKE of the seam, read in the shader.** envpaint
+ *     displaces its ground from a `height` layer and its blades read the same
+ *     sampler. Here the ground's displacement is geometry and the only legal
+ *     height source is the `Surface` seam (`src/world/surface.ts`, CLAUDE.md),
+ *     so the seam is baked into one texture per terrain rebuild
+ *     (`src/world/ghibli/height.ts`) and the vertex shader taps it. It began
+ *     as an `aGround` attribute baked per blade, which cost 651ms of seam
+ *     sampling every time the window moved — measured, and a dropped frame
+ *     every six units of camera travel.
  *   - **the map grows grass, not just the brush.** `uRegion`
  *     (src/world/ghibli/region.ts) carries meadow weight, beach weight and
  *     water proximity, so an unpainted island still has a meadow, the sand
@@ -74,6 +75,7 @@ import { GHIBLI } from '../../taste/tokens';
 import { PAINTED_SIZE } from '../painted';
 import { TOON_LIGHTING_GLSL, TOON_VARYINGS_GLSL, toonUniforms } from '../toon';
 import { WIND_FIELD_GLSL, type WindField } from '../wind';
+import { GG_HEIGHT_GLSL, GG_WINDOW_GLSL, HEIGHT_RES } from './height';
 import {
   GG_WIND_NOISE_GLSL,
   createWindUniforms,
@@ -97,6 +99,25 @@ const SEG = 4;
  */
 export const GRASS_COUNT_PROJECTION = 150000;
 export const GRASS_COUNT_PHONE = 40000;
+
+/** [D] How far a blade's normal leans to the ground's own up — see the
+ * vertex shader, where it is the difference between a meadow and a grey
+ * patch. 0.6 closed half the gap the cel shadow band opened (44 units of blue
+ * down to 21, measured); 0.85 closes most of the rest, and the terminator is
+ * still broken up by the painted noise inside `toonLight` rather than by the
+ * blades' own facets.
+ *
+ * 0.94 and not 0.85 because of where the last of the blue was coming from: a
+ * blade in the cel SHADOW band takes `shadowTint` (cool) plus a sixteenth of
+ * the sky colour, so every blade still shaded put blue into the field's mean.
+ * The flatter the field, the more of it shares the ground's own band. */
+const NORMAL_UPRIGHT = 0.94;
+
+/** [D] How far a dry patch goes toward the bleached colour — see the fragment. */
+const DRY_MIX = 0.35;
+
+/** [D] Strength of the hard cel dab on a sunlit tip — see the fragment. */
+const TIP_DAB = 0.08;
 
 /** The layout seed. A constant, never a clock (see `mulberry32`). */
 const GRASS_SEED = 0x9e3779b9;
@@ -150,9 +171,7 @@ const DEFAULTS = {
 export const GRASS_SPAN_PROJECTION = 44;
 export const GRASS_SPAN_PHONE = 26;
 
-/** [D] Where the window's fade begins, as a fraction of its half-span. The
- * blades shorten into the ground rather than ending on a line. */
-const FADE_IN = 0.72;
+
 
 const VERTEX = /* glsl */ `
 const float GG_SIZE = ${ggFloat(PAINTED_SIZE)};
@@ -160,6 +179,8 @@ const float GG_TAU = 6.2831853;
 ${TOON_VARYINGS_GLSL}
 ${WIND_FIELD_GLSL}
 ${GG_WIND_NOISE_GLSL}
+${GG_HEIGHT_GLSL}
+${GG_WINDOW_GLSL}
 
 uniform sampler2D uGrass;
 uniform sampler2D uComb;
@@ -178,8 +199,6 @@ uniform float uDirectionJitter;
 uniform float uCombStrength;
 uniform float uWindResponse;
 uniform float uZoom;
-uniform vec2 uCenter;
-uniform float uSpan;
 
 uniform float uWindTime;
 uniform vec2 uWindDir;
@@ -189,7 +208,6 @@ uniform vec3 uSunDir;
 
 attribute vec2 aOffset;
 attribute vec4 aRand;
-attribute float aGround;
 attribute vec2 aBlade;
 
 varying float vT;
@@ -199,7 +217,12 @@ varying float vNoise;
 const vec2 GG_NOISE_SEED = vec2(17.3, 41.7);
 
 void main() {
-  vec2 luv = aOffset / GG_SIZE + 0.5;
+  // The window's centre is the shader's, so a slide is one uniform write (see
+  // the header). Everything below reads this world position and not the raw
+  // offset: the layers, the map, the wind phase and the ground under the blade
+  // all belong to where the blade IS.
+  vec2 wpos = aOffset + uCenter;
+  vec2 luv = wpos / GG_SIZE + 0.5;
 
   float paint = texture2D(uGrass, luv).r;
   vec3 region = texture2D(uRegion, luv).rgb;
@@ -237,12 +260,11 @@ void main() {
 
   float heightNoise = mix(0.65, 1.35, windFbm(luv * 25.0 + 7.3, 3));
   float bh = uBladeHeight * heightNoise * mix(0.7, 1.3, aRand.z);
-  // The window's fade (see the header): the last quarter of the window
-  // shortens into the ground shader's own meadow green, so the field has an
-  // edge nobody can see rather than a line somebody can (TASTE §2.1).
-  vec2 fromCenter = abs(aOffset - uCenter) / max(uSpan * 0.5, 1e-3);
-  float edge = max(fromCenter.x, fromCenter.y);
-  bh *= 1.0 - smoothstep(${ggFloat(FADE_IN)}, 1.0, edge);
+  // The window's fade (ggWindow, src/world/ghibli/height.ts): the blades
+  // shorten into a ground the ghibli terrain shader has already tinted to this
+  // field's own colour, over the same squircle — so the field has an edge
+  // nobody can see rather than a line somebody can (TASTE §2.1).
+  bh *= ggWindow(wpos);
   float width = uBladeWidth * (1.0 - pow(t, 1.3));
 
   // Where the comb layer is painted it replaces the global lean entirely and
@@ -258,8 +280,8 @@ void main() {
 
   // The world's own gust-front field, plus a smooth perpendicular flutter.
   // No derivative lead, no spring back past neutral (see the header).
-  float phase = ggWindHash(dot(aOffset, vec2(127.1, 311.7))) * ${ggFloat(PHASE_JITTER)};
-  vec2 push = refWindAt(aOffset, uWindTime * ${ggFloat(GUST_HZ)},
+  float phase = ggWindHash(dot(wpos, vec2(127.1, 311.7))) * ${ggFloat(PHASE_JITTER)};
+  vec2 push = refWindAt(wpos, uWindTime * ${ggFloat(GUST_HZ)},
     uWindDir, uWindStrength, uWindGust);
   vec2 windV = push * uWindResponse;
   windV += vec2(-uWindDir.y, uWindDir.x) * (uWindStrength * ${ggFloat(FLUTTER)}
@@ -288,7 +310,7 @@ void main() {
   vec3 sideDir = vec3(cos(r), 0.0, sin(r));
   pos += sideDir * width * sideS * 0.5;
 
-  vec3 world = vec3(aOffset.x, aGround, aOffset.y) + pos;
+  vec3 world = vec3(wpos.x, ggGroundAt(wpos), wpos.y) + pos;
 
   // One flat normal for the whole blade (tangent at mid-height) so each blade
   // lands wholly in one cel band.
@@ -302,7 +324,16 @@ void main() {
   // neighbours — but zoomed out a blade is a pixel wide and the nudge reads
   // as speckle, so it fades with distance.
   float far = smoothstep(9.0, 22.0, uZoom);
-  nrm = normalize(nrm + uSunDir * (aRand.w - 0.5) * 0.35 * (1.0 - 0.85 * far));
+  nrm = normalize(nrm + uSunDir * (aRand.w - 0.5) * 0.18 * (1.0 - 0.85 * far));
+  // …and then mostly UPRIGHT [D]. A blade's own facet normal points every
+  // which way, so about half the field landed in the cel SHADOW band, which
+  // is hue-shifted cool (GHIBLI.shadowTint) — measured on screen, that put the
+  // field 44 units of blue above the meadow it stands in and made the window
+  // read as a grey patch even with every colour matched. A cel meadow is lit
+  // as a field, not blade by blade: the normal leans toward the ground's own
+  // up so the field takes the ground's band, keeping enough of its own tilt to
+  // break the terminator up.
+  nrm = normalize(mix(nrm, vec3(0.0, 1.0, 0.0), ${ggFloat(NORMAL_UPRIGHT)}));
 
   vT = t;
   vRand = aRand;
@@ -329,7 +360,11 @@ void main() {
   vec3 n = normalize(vToonNormal) * (gl_FrontFacing ? 1.0 : -1.0);
 
   vec3 col = mix(uColorBase, uColorTip, pow(vT, 0.7));
-  col = mix(col, uColorDry, smoothstep(0.55, 0.9, vNoise) * 0.55);
+  // The dry patches, at ${ggFloat(DRY_MIX)} rather than envpaint's 0.55 [D]:
+  // sun-bleached yellow is the other thing that was lifting the field's blue
+  // above the meadow's (measured, 2026-09-15), and a meadow with a third of it
+  // bleached still reads as one that has had a dry week.
+  col = mix(col, uColorDry, smoothstep(0.55, 0.9, vNoise) * ${ggFloat(DRY_MIX)});
   col *= mix(0.95, 1.05, vRand.w);
   col *= mix(0.72, 1.0, smoothstep(0.0, 0.5, vT));
 
@@ -340,7 +375,10 @@ void main() {
 
   vec3 lit = toonLight(col, n, 1.0, 2.0);
   // Tip highlight: a hard cel dab, the ghibli branch of envpaint's switch.
-  lit += uSunColor * 0.2
+  // 0.08 and not envpaint's 0.2 [D]: at this world's density the dab landed on
+  // enough tips to lift the whole field a value above the meadow around it, and
+  // a window you can see is worse than a highlight you cannot (2026-09-15).
+  lit += uSunColor * ${ggFloat(TIP_DAB)}
     * smoothstep(0.6, 1.0, vT)
     * smoothstep(0.4, 0.9, dot(n, uSunDir));
 
@@ -361,8 +399,9 @@ export interface GrassLayers {
 export interface GrassFieldOptions {
   /** Blades. The caller passes its tier's count (see the two constants). */
   count?: number;
-  /** Ground height at a world point — the `Surface` seam, and nothing else. */
-  heightAt: (x: number, z: number) => number;
+  /** The baked ground (src/world/ghibli/height.ts) — the `Surface` seam's own
+   * answers and nothing else. Absent means flat paper. */
+  height?: Texture | null;
   /** The baked geography (src/world/ghibli/region.ts). */
   region?: Texture | null;
   /** How much grass the MAP grows where nobody has painted, 0–1. */
@@ -382,20 +421,20 @@ export interface GrassField {
   setRegion(region: Texture | null): void;
   /** How much grass the map grows unpainted. */
   setBaseDensity(value: number): void;
-  /** Re-bake every blade's ground height — `refreshTerrain`'s call. */
-  rebuild(heightAt: (x: number, z: number) => number): void;
   /**
-   * Slide the window to a new centre and re-lay the field inside it (see the
-   * header).
-   *
-   * The caller QUANTISES: this re-writes every blade's offset and re-bakes
-   * every blade's ground height, so it is a once-in-a-while call keyed on the
-   * camera having actually gone somewhere, not a per-frame one. The layout
-   * itself stays deterministic — the same seeded jitter, translated — so the
-   * field never reshuffles as it slides.
+   * Point the field at the baked ground — `refreshTerrain`'s call, and the
+   * whole of it: the bake is re-run in place by whoever owns it
+   * (src/world/ground.ts), so a terrain change costs this field nothing.
    */
-  setCenter(x: number, z: number, heightAt: (x: number, z: number) => number): void;
-  /** Where the window is centred, world x/z. */
+  setHeight(height: Texture | null): void;
+  /**
+   * Slide the window's centre. ONE uniform write, so this is a per-frame call
+   * (see the header) — and the centre is quantised to the layout's own cell
+   * inside here, so the blades slide along their own world lattice instead of
+   * travelling with the camera.
+   */
+  setCenter(x: number, z: number): void;
+  /** Where the window is centred, world x/z — quantised, as applied. */
   center(): { x: number; z: number };
   /** Re-lay the field at a new blade count (the tier changed). */
   setCount(count: number): void;
@@ -440,6 +479,8 @@ export function createGrassField(opts: GrassFieldOptions): GrassField {
     uZoom: { value: DEFAULTS.zoom },
     uCenter: { value: new Vector2(0, 0) },
     uSpan: { value: span },
+    uHeight: { value: (opts.height ?? restGrass) as Texture },
+    uHeightRes: { value: HEIGHT_RES },
     uColorBase: { value: new Color(GHIBLI.grassBase) },
     uColorTip: { value: new Color(GHIBLI.grassTip) },
     uColorDry: { value: new Color(GHIBLI.grassDry) },
@@ -453,43 +494,33 @@ export function createGrassField(opts: GrassFieldOptions): GrassField {
     side: DoubleSide,
   });
 
-  let heightAt = opts.heightAt;
   let count = Math.max(1, Math.round(opts.count ?? GRASS_COUNT_PROJECTION));
   let centerX = 0;
   let centerZ = 0;
+  /** The lattice step the layout lays blades on, and the quantum `setCenter`
+   * snaps to — so a slide moves the field by whole cells and every blade lands
+   * where a blade already was. */
+  let cell = span / Math.ceil(Math.sqrt(count));
 
   /**
-   * Lay `n` blades on the seeded jittered grid inside the window, and bake
-   * each one's ground height through the `Surface` seam.
-   *
-   * Pulled out of `build` because the window MOVES: sliding it re-runs
-   * exactly this, into the same buffers, rather than re-allocating a geometry
-   * (`setCenter`). The rand stream is re-seeded from the module constant every
-   * time, so the jitter and the four per-blade randoms are the same numbers at
-   * every centre and the field translates instead of reshuffling.
+   * Lay `n` blades on the seeded jittered grid, WINDOW-LOCAL: the offsets are
+   * relative to the window's centre and the vertex shader adds `uCenter`, so
+   * this runs once per count and never again as the window slides.
    */
-  const lay = (
-    n: number,
-    offsets: Float32Array,
-    rands: Float32Array,
-    ground: Float32Array,
-  ): void => {
+  const lay = (n: number, offsets: Float32Array, rands: Float32Array): void => {
     const k = Math.ceil(Math.sqrt(n));
-    const cell = span / k;
+    cell = span / k;
     const half = span / 2;
     const rand = mulberry32(GRASS_SEED);
     for (let i = 0; i < n; i++) {
       const gx = i % k;
       const gz = (i / k) | 0;
-      const x = centerX - half + (gx + 0.5 + (rand() - 0.5) * 0.95) * cell;
-      const z = centerZ - half + (gz + 0.5 + (rand() - 0.5) * 0.95) * cell;
-      offsets[i * 2] = x;
-      offsets[i * 2 + 1] = z;
+      offsets[i * 2] = -half + (gx + 0.5 + (rand() - 0.5) * 0.95) * cell;
+      offsets[i * 2 + 1] = -half + (gz + 0.5 + (rand() - 0.5) * 0.95) * cell;
       rands[i * 4] = rand();
       rands[i * 4 + 1] = rand();
       rands[i * 4 + 2] = rand();
       rands[i * 4 + 3] = rand();
-      ground[i] = heightAt(x, z);
     }
   };
 
@@ -525,11 +556,9 @@ export function createGrassField(opts: GrassFieldOptions): GrassField {
 
     const offsets = new Float32Array(n * 2);
     const rands = new Float32Array(n * 4);
-    const ground = new Float32Array(n);
-    lay(n, offsets, rands, ground);
+    lay(n, offsets, rands);
     geometry.setAttribute('aOffset', new InstancedBufferAttribute(offsets, 2));
     geometry.setAttribute('aRand', new InstancedBufferAttribute(rands, 4));
-    geometry.setAttribute('aGround', new InstancedBufferAttribute(ground, 1));
     geometry.instanceCount = n;
     return geometry;
   };
@@ -558,32 +587,16 @@ export function createGrassField(opts: GrassFieldOptions): GrassField {
     setBaseDensity(value: number): void {
       uniforms.uBaseDensity.value = Math.min(1, Math.max(0, value));
     },
-    rebuild(next: (x: number, z: number) => number): void {
-      heightAt = next;
-      const offsets = geometry.getAttribute('aOffset');
-      const ground = geometry.getAttribute('aGround');
-      for (let i = 0; i < ground.count; i++) {
-        ground.setX(i, heightAt(offsets.getX(i), offsets.getY(i)));
-      }
-      ground.needsUpdate = true;
+    setHeight(height: Texture | null): void {
+      uniforms.uHeight.value = height ?? restGrass;
     },
-    setCenter(x: number, z: number, next: (x: number, z: number) => number): void {
-      centerX = x;
-      centerZ = z;
-      heightAt = next;
-      uniforms.uCenter.value.set(x, z);
-      const offsets = geometry.getAttribute('aOffset') as InstancedBufferAttribute;
-      const rands = geometry.getAttribute('aRand') as InstancedBufferAttribute;
-      const ground = geometry.getAttribute('aGround') as InstancedBufferAttribute;
-      lay(
-        count,
-        offsets.array as Float32Array,
-        rands.array as Float32Array,
-        ground.array as Float32Array,
-      );
-      offsets.needsUpdate = true;
-      rands.needsUpdate = true;
-      ground.needsUpdate = true;
+    setCenter(x: number, z: number): void {
+      // Snapped to the lattice: a blade that slides by whole cells stands
+      // where a blade already stood, so the field reads as world-fixed even
+      // though the buffer is window-local.
+      centerX = Math.round(x / cell) * cell;
+      centerZ = Math.round(z / cell) * cell;
+      uniforms.uCenter.value.set(centerX, centerZ);
     },
     center(): { x: number; z: number } {
       return { x: centerX, z: centerZ };

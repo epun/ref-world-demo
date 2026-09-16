@@ -35,6 +35,7 @@ import { GHIBLI, MOTION } from '../../taste/tokens';
 import { TERRAIN, terrainParams } from '../landscape';
 import { PAINTED_SIZE } from '../painted';
 import { TOON_LIGHTING_GLSL, TOON_VARYINGS_GLSL, toonUniforms } from '../toon';
+import { GG_WINDOW_GLSL } from './height';
 import { emptyLayerTexture, ggFloat } from './shared';
 
 // ── the shipped ground's mark dials, mirrored (src/world/ground.ts) ─────────
@@ -69,18 +70,19 @@ const SCORCH_INK = 0.82;
 const SNOW_HEIGHT = 7;
 
 /**
- * [D] How far the meadow is pulled toward the blade field's own colour where
- * the map grows a full one.
+ * [D] How far the meadow goes toward the blade field's own colour INSIDE the
+ * field's window.
  *
- * MEASURED off the headless render rather than guessed. The blade field's mean
- * pixel is rgb(164, 200, 124) at the default view; the ground's mean under it
- * goes rgb(108, 175, 58) at 0 → rgb(143, 187, 71) at 0.5 → rgb(160, 195, 77)
- * at 0.8, so 0.8 is where the two agree in VALUE — which is what makes a patch
- * read as a patch. What is left is saturation: the blade field is bluer than
- * any green in the palette, because envpaint's `grassTip` is, and closing that
- * would mean retuning the ghibli grass tokens rather than the ground.
+ * Not a global tint any more (2026-09-15, user direction): the ground is
+ * tinted where the blades are, through the SAME squircle fade the blades
+ * themselves shorten on (`ggWindow`), so the two meet by construction and
+ * there is no seam to measure. Outside the window the meadow is the meadow.
+ *
+ * Nearly all of the way, because that is what makes the match: what is left of
+ * the meadow under it is the ground's own value break-up, which a real blade
+ * field shows between its blades anyway.
  */
-const BLADE_GROUND_MIX = 0.8;
+const BLADE_GROUND_MIX = 0.92;
 
 /** [D] Where the wet-sand band sits inside the region texture's water-proximity
  * ramp. `region.ts` encodes land as `0.9 · (1 − d / WATER_NEAR)`, so 0.62
@@ -102,6 +104,7 @@ void main() {
 const FRAGMENT = /* glsl */ `
 const float GG_SIZE = ${ggFloat(PAINTED_SIZE)};
 ${TOON_LIGHTING_GLSL}
+${GG_WINDOW_GLSL}
 
 uniform sampler2D uGrass;
 uniform sampler2D uPath;
@@ -154,26 +157,38 @@ void main() {
   vec2 uv = vToonWorldPos.xz / GG_SIZE + 0.5;
   vec3 n = normalize(vToonNormal);
 
-  // Painted grass, OR the map's own meadow (2026-09-15, user direction: the
-  // ghibli meadow is full by default — the blade field only covers the window
-  // around the camera, src/world/ghibli/grass.ts, and this is what carries the
-  // same read from there to the horizon).
   vec3 region = texture2D(uRegion, uv).rgb;
-  float grass = clamp(max(texture2D(uGrass, uv).r, region.r), 0.0, 1.0);
+  // TWO grass terms, and the difference matters.
+  //
+  // painted is somebody's brushstroke, and it is what turns the meadow LUSH
+  // — a darker, richer green than the meadow token. Driving that from the
+  // map's own meadow weight instead (which is 1 over the whole meadow) turned
+  // the entire ground lush and left the blade field's window reading as a pale
+  // patch on a dark lawn: measured on screen, 2026-09-15.
+  //
+  // grass is where it stands at all, brush or map, and it is what the
+  // blade-field tint below rides — so the ground takes the FIELD's colour
+  // exactly where the field is drawn and the meadow's everywhere else.
+  float painted = clamp(texture2D(uGrass, uv).r, 0.0, 1.0);
+  float grass = clamp(max(painted, region.r), 0.0, 1.0);
   float path = texture2D(uPath, uv).r * step(0.5, uPathOn);
   float burn = texture2D(uScorch, uv).r * step(0.5, uScorchOn);
 
   // Meadow -> lush green under dense grass.
-  vec3 albedo = mix(uMeadow, uLush, pow(grass, 0.7));
-  // …and then toward the BLADE FIELD's own colour, because where the map
-  // grows a full meadow that is what is standing on this ground: the blade
-  // field only covers a window around the camera (src/world/ghibli/grass.ts),
-  // and the two have to be the same green or the window reads as a pale
-  // lozenge on the lawn — which is exactly what the first render showed
-  // (2026-09-15). uBladeField is the colour a blade collapses to when it is
-  // too far away to draw, so this is the same field at two distances rather
-  // than two different greens.
-  albedo = mix(albedo, uBladeField, pow(grass, 0.7) * ${ggFloat(BLADE_GROUND_MIX)});
+  vec3 albedo = mix(uMeadow, uLush, pow(painted, 0.7));
+  // …and then toward the BLADE FIELD's own colour, INSIDE THAT FIELD'S WINDOW
+  // and on the same squircle fade the blades shorten on: where the blades are,
+  // the ground under them is their colour; where they have faded out, it is the
+  // meadow again; in between, both cross over together. That is what makes the
+  // window invisible rather than a pale lozenge on the lawn, which is what the
+  // first render showed (2026-09-15). uBladeField is the colour a blade
+  // collapses to when it is too far away to draw — the same field, at two
+  // distances, rather than two different greens.
+  albedo = mix(
+    albedo,
+    uBladeField,
+    pow(grass, 0.7) * ${ggFloat(BLADE_GROUND_MIX)} * ggWindow(vToonWorldPos.xz)
+  );
 
   // Large-scale colour break-up so flat ground isn't a solid slab.
   float cn = ggGroundNoise(uv * 6.0);
@@ -303,6 +318,12 @@ export interface GhibliGround {
   setPaintedScorch(texture: Texture | null): void;
   /** The baked geography, after a landscape change. */
   setRegion(texture: Texture | null): void;
+  /**
+   * Where the blade field's window is and how wide it is, so the meadow can be
+   * that field's colour exactly where the field is (see `BLADE_GROUND_MIX`).
+   * A span of zero is no window at all, which is the ground on its own.
+   */
+  setFieldWindow(x: number, z: number, span: number): void;
   /** Recolour the drawn marks (`Ground.setInk`). */
   setInk(color: Color | string): void;
   /** Advance the pen wobble (`Ground.update`). */
@@ -344,6 +365,8 @@ export function createGroundMaterial(opts: GhibliGroundOptions = {}): GhibliGrou
     // handed on this style (src/world/scene.ts) — a violet-black contour on
     // green meadow reads as a crack, not as a drawn line.
     uInk: { value: new Color(GHIBLI.dirtEdge) },
+    uCenter: { value: new Vector2(0, 0) },
+    uSpan: { value: 1e-3 },
     uStep: { value: terrainParams().tierStep },
     uRiser: { value: new Vector2(TERRAIN.terraceRiser[0], TERRAIN.terraceRiser[1]) },
     uGroundTime: { value: 0 },
@@ -371,6 +394,10 @@ export function createGroundMaterial(opts: GhibliGroundOptions = {}): GhibliGrou
     },
     setRegion(texture: Texture | null): void {
       uniforms.uRegion.value = texture ?? empty;
+    },
+    setFieldWindow(x: number, z: number, span: number): void {
+      uniforms.uCenter.value.set(x, z);
+      uniforms.uSpan.value = Math.max(1e-3, span);
     },
     setInk(color: Color | string): void {
       uniforms.uInk.value.set(color);
