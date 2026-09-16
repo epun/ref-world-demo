@@ -103,26 +103,92 @@ float ggGroundAt(vec2 world) {
   return mix(mix(h00, h10, f.x), mix(h01, h11, f.x), f.y);
 }`;
 
-/** [D] Fraction of the window's half-span the fade runs over. */
-export const WINDOW_FADE = 0.45;
+/**
+ * [D] The field's shape, in world units from the look-target.
+ *
+ * A WINDOW WITH DISTANCE LOD (2026-09-16, user direction: the old
+ * constant-density square read as *"a textured oval on a flat green field"* —
+ * the eye finds texture against no-texture long after the colours match). The
+ * tier's budget is spent as a radial profile instead: full density in the
+ * core, falling away with distance, out to a reach that covers the whole
+ * default view. Beyond the reach the ghibli ground's own blade stipple carries
+ * the meadow (src/world/ghibli/ground.ts).
+ *
+ * THE INTEGRAL IS THE CONSTRAINT, and it is what picked every number here.
+ * At envpaint's 77 blades a square unit, a core of radius 18 alone is 78 000
+ * blades — half a projection's whole budget — and a flat 8 a square unit out
+ * to 70 is another 123 000. The curve is an INVERSE SQUARE clamped at
+ * `RIM_DENSITY`, which is the one shape that spends a fixed budget over a
+ * wide reach without either starving the core or thinning to nothing: a
+ * 10-unit core at full density is 24 000 blades, the 1/r² skirt out to 38
+ * units is 64 000, and the clamped rim from there to 70 is 59 000 — about
+ * 147 000, against the 150 000 the tier carries. A gentler fall was tried
+ * first and measured: it left the core at 16 blades a square unit, a fifth of
+ * envpaint's, because the area weighting ate the budget on the way out.
+ */
+export const FIELD_CORE = 10;
+export const FIELD_REACH = 70;
+
+/** [D] Density at the reach, as a fraction of the core's — 7 blades a square
+ * unit against 77, which still reads as grass at this world's scale and is
+ * what the budget affords over an area sixty times the core's. */
+export const RIM_DENSITY = 0.07;
+
+/** [D] How much of its height a blade keeps at the rim: the field thins in
+ * SIZE as well as in count, so the transition is never a line where blades
+ * stop (TASTE §2.1). */
+export const RIM_HEIGHT = 0.6;
 
 /**
- * The squircle window fade, shared by the blade field, the bloom field and the
- * ground that has to agree with both (2026-09-15, user direction: the window
- * *"must be invisible"* and *"NOT a diamond"*).
+ * The field's radial profile, shared by the blade field, the bloom field and
+ * the ground that has to agree with both.
  *
- * A DIAMOND is what `max(|dx|, |dz|)` draws once the isometric camera turns it
- * 45°, and it was plainly visible on screen. The cubic sum is a squircle: a
- * rounded square with no corner pointing at the viewer, and the fade runs over
- * the last 45% of it, which is about ten units of ground at the shipped span.
+ *   `ggFieldDensity` — the density curve, 1 in the core and `RIM_DENSITY` at
+ *     the reach, 0 beyond it. The blade cull multiplies by this.
+ *   `ggFieldHeight`  — 1 in the core, `RIM_HEIGHT` at the reach.
+ *   `ggFieldDense`   — how much the BLADES own this ground: 1 in the core,
+ *     0 by the reach. The ground tints to the field's colour by it, and
+ *     suppresses its own stipple by it (the blades are the texture there).
+ *
+ * `uCenter` is the look-target, quantised by the caller; `uSpan` is twice the
+ * reach, kept under that name because every consumer already writes it.
  */
-export const GG_WINDOW_GLSL = /* glsl */ `
+export const GG_FIELD_GLSL = /* glsl */ `
 uniform vec2 uCenter;
 uniform float uSpan;
 
-float ggWindow(vec2 world) {
-  vec2 d = abs(world - uCenter) / max(uSpan * 0.5, 1e-3);
-  float r = pow(pow(d.x, 3.0) + pow(d.y, 3.0), 1.0 / 3.0);
-  return 1.0 - smoothstep(${ggFloat(1 - WINDOW_FADE)}, 1.0, r);
-}`;
+float ggFieldR(vec2 world) {
+  return length(world - uCenter) / max(uSpan * 0.5, 1e-3);
+}
 
+/**
+ * The hard cut at the reach, and nothing else.
+ *
+ * What the BLADE field's cull uses, because its LAYOUT already carries the
+ * density curve (an inverse-CDF draw — src/world/ghibli/grass.ts): applying
+ * the curve in both places would square it and leave the rim bare. The BLOOM
+ * field is the other way round — an area-even layout and the curve in the
+ * cull — because a bloom field is sparse enough that the cull can afford to
+ * throw most of them away.
+ */
+float ggFieldReach(vec2 world) {
+  return step(ggFieldR(world), 1.0);
+}
+
+float ggFieldDensity(vec2 world) {
+  float r = ggFieldR(world);
+  // Flat through the core, then 1/r² — the header's integral — clamped so the
+  // rim still has grass in it rather than a handful of survivors.
+  float rel = clamp(${ggFloat(FIELD_CORE / FIELD_REACH)} / max(r, 1e-4), 0.0, 1.0);
+  return step(r, 1.0) * max(${ggFloat(RIM_DENSITY)}, rel * rel);
+}
+
+float ggFieldHeight(vec2 world) {
+  float r = ggFieldR(world);
+  return mix(1.0, ${ggFloat(RIM_HEIGHT)}, smoothstep(0.0, 1.0, r)) * step(r, 1.0);
+}
+
+float ggFieldDense(vec2 world) {
+  float r = ggFieldR(world);
+  return 1.0 - smoothstep(${ggFloat(FIELD_CORE / FIELD_REACH)}, 0.6, r);
+}`;

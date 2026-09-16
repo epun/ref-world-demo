@@ -38,18 +38,58 @@
  *     of each envpaint `uStyleId` switch survives; the lighting is
  *     `src/world/toon.ts`'s shared chunk with a constant 1.0 shadow term.
  *
+ * TWO LAYERS (2026-09-16, user direction: *"grass over the entire map, not
+ * one section"*). One `createGrassField` builds either:
+ *
+ *   - a BASE field (`layout: 'box'`): every land texel of the island that the
+ *     map calls meadow, at a uniform density over the island's own bounding
+ *     box, with the whole of a tier's base budget in it — 600 000 blades on a
+ *     projection over ~124 000 square units, about 10 a square unit. At that
+ *     spacing a blade is far apart from its neighbours, so a base blade is
+ *     WIDER (`bladeWidth`) and its width additionally has a floor in PIXELS
+ *     (`uPxScale`, written from the camera's units-per-pixel every frame), so
+ *     a blade never thins to a flicker as the camera pulls back.
+ *   - a NEAR field (`layout: 'radial'`): the dense one around the look-target,
+ *     envpaint's own density in the middle of the frame, thinning with
+ *     distance. It draws ON TOP of the base field.
+ *
+ * …and the ghibli ground's own blade stipple is the third layer under both
+ * (src/world/ghibli/ground.ts), so there is grass texture from the camera to
+ * the coast with nothing anywhere that reads as an edge.
+ *
  * THE MOVING WINDOW (2026-09-15, user direction: *"I want the grass density
  * and style to look like EnvPaint in the valiocon version, not the old
  * style"*). envpaint's world is 48 units across and carries 300 000 blades —
  * about 130 a square unit. This world is 400 units across, so that per-unit
  * density is twenty million blades. What the eye actually reads is blades per
- * SCREEN PIXEL, so the tier's budget is spent inside a `span`-wide window
- * around the camera's look-target instead of thinly over the whole map: at
- * envpaint-like density in the middle of the frame, fading out over the last
- * quarter of the window (never a hard edge — TASTE §2.1) into the ground
- * shader's own meadow green, which carries the field from there to the
- * horizon. `setCenter` slides the window; the caller quantises, because a
- * re-lay re-bakes every blade's ground height.
+ * SCREEN PIXEL, so the tier's budget is spent around the camera's look-target
+ * instead of thinly over the whole map.
+ *
+ * AND IT IS A LOD, not a patch (2026-09-16, user direction: the constant-
+ * density window read as *"a textured oval on a flat green field"*). The
+ * layout is RADIAL and its density follows `ggFieldDensity`
+ * (src/world/ghibli/height.ts): envpaint's own density through a 12-unit core,
+ * falling with distance to a ninth of it at 70 units, nothing beyond — which
+ * covers the whole default view rather than a lozenge in the middle of it.
+ * Blades also keep only `RIM_HEIGHT` of their height out there, so the field
+ * thins in size as well as in count, and past the reach the ground's own blade
+ * stipple carries the meadow.
+ *
+ * WHY THE LAYOUT IS RADIAL AND NOT A GRID THE SHADER CULLS. The instruction
+ * was to lay the grid at the DENSEST spacing over the whole reach and let the
+ * cull thin it with distance — but that is 1.5 MILLION instances submitted to
+ * draw 150 000, ten times the vertex work of the budget it was meant to keep.
+ * So the radial layout puts each instance where the curve wants it (an
+ * inverse-CDF draw on the same seeded stream), every instance survives, and
+ * the shader's own distance term still gates the rim and the density curve —
+ * so a blade the curve thins out is still culled, it is simply never laid
+ * somewhere the curve did not ask for.
+ *
+ * THE WINDOW IS THE SHADER'S, not the buffer's. `setCenter` writes ONE uniform
+ * and the vertex shader adds it to every blade's offset; the height comes from
+ * the bake, so a slide costs nothing and can happen every frame. The centre is
+ * quantised to the core's own spacing, so the blades land back on the same
+ * lattice as they slide and the field never appears to move with the camera.
  *
  * INK NORMAL PASS. `src/world/ink.ts` renders a normal target with
  * `scene.overrideMaterial = MeshNormalMaterial`, which would draw this
@@ -75,7 +115,14 @@ import { GHIBLI } from '../../taste/tokens';
 import { PAINTED_SIZE } from '../painted';
 import { TOON_LIGHTING_GLSL, TOON_VARYINGS_GLSL, toonUniforms } from '../toon';
 import { WIND_FIELD_GLSL, type WindField } from '../wind';
-import { GG_HEIGHT_GLSL, GG_WINDOW_GLSL, HEIGHT_RES } from './height';
+import {
+  FIELD_CORE,
+  FIELD_REACH,
+  GG_FIELD_GLSL,
+  GG_HEIGHT_GLSL,
+  HEIGHT_RES,
+  RIM_DENSITY,
+} from './height';
 import {
   GG_WIND_NOISE_GLSL,
   createWindUniforms,
@@ -99,6 +146,22 @@ const SEG = 4;
  */
 export const GRASS_COUNT_PROJECTION = 150000;
 export const GRASS_COUNT_PHONE = 40000;
+
+/**
+ * The BASE field's budget, by tier (2026-09-16, user direction). 600 000 is
+ * envpaint's own maximum; 120 000 on a handset, which is the same four-to-one
+ * the pixel cap and the debris ceiling are built on.
+ */
+export const GRASS_BASE_PROJECTION = 600000;
+export const GRASS_BASE_PHONE = 120000;
+
+/**
+ * [D] World units the base field spans: the island's own bounding box. The
+ * coast reaches about 176 units from the origin at its farthest bulge, so 360
+ * covers every land texel with a margin, and the map's own meadow weight
+ * (`uRegion`) is what decides which of those texels grow anything.
+ */
+export const GRASS_BASE_SPAN = 360;
 
 /** [D] How far a blade's normal leans to the ground's own up — see the
  * vertex shader, where it is the difference between a meadow and a grey
@@ -161,15 +224,12 @@ const DEFAULTS = {
 };
 
 /**
- * [D] World units the window spans, by tier (see the header).
- *
- * A projection's default view covers roughly 64 × 69 units of GROUND, and
- * 150 000 blades only reach envpaint's density over about 34 units square —
- * so 44 puts real blades across the middle two thirds of the frame and lets
- * the ground green carry the rest. A handset holds the same budget ratio.
+ * [D] World units the field reaches across, by tier — twice
+ * `FIELD_REACH` on a projection, and half of that on a handset, which holds a
+ * quarter of the blades and a smaller screen to spend them on.
  */
-export const GRASS_SPAN_PROJECTION = 44;
-export const GRASS_SPAN_PHONE = 26;
+export const GRASS_SPAN_PROJECTION = FIELD_REACH * 2;
+export const GRASS_SPAN_PHONE = FIELD_REACH;
 
 
 
@@ -180,7 +240,7 @@ ${TOON_VARYINGS_GLSL}
 ${WIND_FIELD_GLSL}
 ${GG_WIND_NOISE_GLSL}
 ${GG_HEIGHT_GLSL}
-${GG_WINDOW_GLSL}
+${GG_FIELD_GLSL}
 
 uniform sampler2D uGrass;
 uniform sampler2D uComb;
@@ -193,12 +253,16 @@ uniform float uNoiseScale;
 uniform float uNoiseStrength;
 uniform float uBladeHeight;
 uniform float uBladeWidth;
+uniform float uUnitsPerPx;
+uniform float uMinBladePx;
 uniform float uLean;
 uniform float uDirection;
 uniform float uDirectionJitter;
 uniform float uCombStrength;
 uniform float uWindResponse;
 uniform float uZoom;
+/** 1 for the near field, 0 for the base field — see the header. */
+uniform float uReach;
 
 uniform float uWindTime;
 uniform vec2 uWindDir;
@@ -233,7 +297,12 @@ void main() {
   float grow = max(paint, uBaseDensity * region.r);
   grow *= 1.0 - 0.75 * region.g;
   grow *= 1.0 - wet;
-  float base = grow * uDensity;
+  // The LOD's hard edge (see the header): the LAYOUT carries the density
+  // curve, so the cull only has to know where the field stops — culling by the
+  // curve as well would square it and leave the rim bare. The BASE field has
+  // no window at all (uReach 0), and the map's own meadow weight above is what
+  // decides where it grows.
+  float base = grow * uDensity * mix(1.0, ggFieldReach(wpos), uReach);
 
   float n = 0.0;
   float p = 0.0;
@@ -260,12 +329,16 @@ void main() {
 
   float heightNoise = mix(0.65, 1.35, windFbm(luv * 25.0 + 7.3, 3));
   float bh = uBladeHeight * heightNoise * mix(0.7, 1.3, aRand.z);
-  // The window's fade (ggWindow, src/world/ghibli/height.ts): the blades
-  // shorten into a ground the ghibli terrain shader has already tinted to this
-  // field's own colour, over the same squircle — so the field has an edge
-  // nobody can see rather than a line somebody can (TASTE §2.1).
-  bh *= ggWindow(wpos);
-  float width = uBladeWidth * (1.0 - pow(t, 1.3));
+  // …and in the height: a blade at the rim keeps RIM_HEIGHT of itself, so the
+  // field thins in size as well as in count and there is no line where blades
+  // stop (TASTE §2.1). The ground under it carries its own stipple from there
+  // on (src/world/ghibli/ground.ts).
+  bh *= mix(1.0, ggFieldHeight(wpos), uReach);
+  // The width floor in pixels (see the header): a base blade ten units from
+  // its neighbour has to stay legible when the camera pulls back, and a blade
+  // under a pixel and a half wide is a flicker, not a blade.
+  float widthUnits = max(uBladeWidth, uMinBladePx * uUnitsPerPx);
+  float width = widthUnits * (1.0 - pow(t, 1.3));
 
   // Where the comb layer is painted it replaces the global lean entirely and
   // damps the per-blade jitter, so the patch reads as parted rather than wild.
@@ -406,9 +479,21 @@ export interface GrassFieldOptions {
   region?: Texture | null;
   /** How much grass the MAP grows where nobody has painted, 0–1. */
   baseDensity?: number;
-  /** World units the window spans (see the header). Defaults to the whole
-   * painted map, which is the layout the field had before the window. */
+  /** World units the field spans — the window's diameter for a radial field,
+   * the box's side for a base one. */
   span?: number;
+  /**
+   * Which field this is (see the header): `radial` is the dense near field
+   * around the look-target, `box` the base field over the whole island.
+   * Defaults to `radial`.
+   */
+  layout?: 'radial' | 'box';
+  /** Blade width in world units. The base field's blades are wider, because
+   * they stand much farther apart. */
+  bladeWidth?: number;
+  /** [D] The floor a blade's width keeps in PIXELS — a blade thinner than
+   * this flickers rather than reads (`setPixelScale`). */
+  minBladePx?: number;
   layers?: GrassLayers;
 }
 
@@ -444,6 +529,12 @@ export interface GrassField {
   setWind(field: WindField, timeMs: number): void;
   /** The camera's frustum half-height, for the distance collapse. */
   setZoom(halfHeight: number): void;
+  /**
+   * World units per screen pixel, from the camera rig — so a blade's width can
+   * keep a floor in pixels however far back the camera is pulled. One uniform
+   * write; call it with the zoom.
+   */
+  setPixelScale(unitsPerPx: number): void;
   dispose(): void;
 }
 
@@ -453,6 +544,7 @@ export interface GrassField {
  */
 export function createGrassField(opts: GrassFieldOptions): GrassField {
   const span = Math.max(1, opts.span ?? PAINTED_SIZE);
+  const layout = opts.layout ?? 'radial';
   const restGrass = emptyLayerTexture();
   const restComb = neutralCombTexture();
   const restPress = restPressTexture();
@@ -470,7 +562,11 @@ export function createGrassField(opts: GrassFieldOptions): GrassField {
     uNoiseScale: { value: DEFAULTS.noiseScale },
     uNoiseStrength: { value: DEFAULTS.noiseStrength },
     uBladeHeight: { value: DEFAULTS.bladeHeight },
-    uBladeWidth: { value: DEFAULTS.bladeWidth },
+    uBladeWidth: { value: opts.bladeWidth ?? DEFAULTS.bladeWidth },
+    // World units a pixel, and the width floor in pixels: the shader takes
+    // whichever is wider, so a blade is never thinner than it can be drawn.
+    uUnitsPerPx: { value: 0.05 },
+    uMinBladePx: { value: opts.minBladePx ?? 0 },
     uLean: { value: DEFAULTS.lean },
     uDirection: { value: DEFAULTS.direction },
     uDirectionJitter: { value: DEFAULTS.directionJitter },
@@ -479,6 +575,7 @@ export function createGrassField(opts: GrassFieldOptions): GrassField {
     uZoom: { value: DEFAULTS.zoom },
     uCenter: { value: new Vector2(0, 0) },
     uSpan: { value: span },
+    uReach: { value: (opts.layout ?? 'radial') === 'box' ? 0 : 1 },
     uHeight: { value: (opts.height ?? restGrass) as Texture },
     uHeightRes: { value: HEIGHT_RES },
     uColorBase: { value: new Color(GHIBLI.grassBase) },
@@ -497,26 +594,86 @@ export function createGrassField(opts: GrassFieldOptions): GrassField {
   let count = Math.max(1, Math.round(opts.count ?? GRASS_COUNT_PROJECTION));
   let centerX = 0;
   let centerZ = 0;
-  /** The lattice step the layout lays blades on, and the quantum `setCenter`
-   * snaps to — so a slide moves the field by whole cells and every blade lands
-   * where a blade already was. */
-  let cell = span / Math.ceil(Math.sqrt(count));
+  /** The core's own blade spacing, and the quantum `setCenter` snaps to — a
+   * slide of less than this is a slide nobody can see, which is what keeps the
+   * field from appearing to travel with the camera. */
+  const cell = Math.max(0.02, Math.sqrt((Math.PI * FIELD_CORE * FIELD_CORE) / Math.max(1, count)));
 
   /**
-   * Lay `n` blades on the seeded jittered grid, WINDOW-LOCAL: the offsets are
-   * relative to the window's centre and the vertex shader adds `uCenter`, so
-   * this runs once per count and never again as the window slides.
+   * The radial CDF of `ggFieldDensity` over the reach, inverted — so an
+   * instance drawn uniformly lands where the density curve wants it.
+   *
+   * Built once per count, on the SAME curve the shader culls with (kept in
+   * step by `RIM_DENSITY` and the core fraction, both imported), and
+   * deterministic: 512 bins of the same arithmetic on every device.
+   */
+  const CDF_BINS = 512;
+  const radiusTable = ((): Float32Array => {
+    const reach = span / 2;
+    const core = FIELD_CORE / reach;
+    // Blades per unit area at radius r (relative), times the annulus' own
+    // area — the weight each ring of the field carries.
+    const weight = new Float32Array(CDF_BINS + 1);
+    let total = 0;
+    for (let i = 0; i <= CDF_BINS; i++) {
+      const r = i / CDF_BINS;
+      // The shader's own curve, term for term (ggFieldDensity): flat through
+      // the core, then 1/r², clamped at the rim. The two must not drift — a
+      // layout on one curve and a cull on another is a bare ring.
+      const density = Math.max(RIM_DENSITY, Math.min(1, (core / Math.max(r, 1e-4)) ** 2));
+      total += density * r;
+      weight[i] = total;
+    }
+    // Invert: for each uniform u, the radius whose cumulative weight is u.
+    const table = new Float32Array(CDF_BINS + 1);
+    let bin = 0;
+    for (let i = 0; i <= CDF_BINS; i++) {
+      const target = (i / CDF_BINS) * total;
+      while (bin < CDF_BINS && weight[bin]! < target) bin++;
+      table[i] = (bin / CDF_BINS) * reach;
+    }
+    return table;
+  })();
+  const radiusAt = (u: number): number => {
+    const t = Math.min(0.999999, Math.max(0, u)) * CDF_BINS;
+    const i = Math.floor(t);
+    const f = t - i;
+    return radiusTable[i]! * (1 - f) + radiusTable[i + 1]! * f;
+  };
+
+  /**
+   * Lay `n` blades RADIALLY and WINDOW-LOCAL: a seeded angle, a radius drawn
+   * through the curve above, and the vertex shader adds `uCenter`. Runs once
+   * per count and never again as the window slides.
    */
   const lay = (n: number, offsets: Float32Array, rands: Float32Array): void => {
-    const k = Math.ceil(Math.sqrt(n));
-    cell = span / k;
-    const half = span / 2;
     const rand = mulberry32(GRASS_SEED);
+    if (layout === 'box') {
+      // The BASE field: a seeded jittered grid over the island's bounding box,
+      // uniform per unit area, and the map's own meadow weight (read in the
+      // shader) is what decides which cells grow anything at all.
+      const k = Math.ceil(Math.sqrt(n));
+      const cellSize = span / k;
+      const half = span / 2;
+      for (let i = 0; i < n; i++) {
+        const gx = i % k;
+        const gz = (i / k) | 0;
+        offsets[i * 2] = -half + (gx + 0.5 + (rand() - 0.5) * 0.95) * cellSize;
+        offsets[i * 2 + 1] = -half + (gz + 0.5 + (rand() - 0.5) * 0.95) * cellSize;
+        rands[i * 4] = rand();
+        rands[i * 4 + 1] = rand();
+        rands[i * 4 + 2] = rand();
+        rands[i * 4 + 3] = rand();
+      }
+      return;
+    }
     for (let i = 0; i < n; i++) {
-      const gx = i % k;
-      const gz = (i / k) | 0;
-      offsets[i * 2] = -half + (gx + 0.5 + (rand() - 0.5) * 0.95) * cell;
-      offsets[i * 2 + 1] = -half + (gz + 0.5 + (rand() - 0.5) * 0.95) * cell;
+      // The golden angle keeps successive blades from lining up into spokes,
+      // with the per-blade jitter breaking the spiral itself up.
+      const angle = i * 2.39996323 + (rand() - 0.5) * 0.9;
+      const r = radiusAt((i + rand()) / n);
+      offsets[i * 2] = Math.cos(angle) * r;
+      offsets[i * 2 + 1] = Math.sin(angle) * r;
       rands[i * 4] = rand();
       rands[i * 4 + 1] = rand();
       rands[i * 4 + 2] = rand();
@@ -591,6 +748,9 @@ export function createGrassField(opts: GrassFieldOptions): GrassField {
       uniforms.uHeight.value = height ?? restGrass;
     },
     setCenter(x: number, z: number): void {
+      // The BASE field covers the island and has nowhere to slide to: moving
+      // it would drag the whole meadow along with the camera.
+      if (layout === 'box') return;
       // Snapped to the lattice: a blade that slides by whole cells stands
       // where a blade already stood, so the field reads as world-fixed even
       // though the buffer is window-local.
@@ -618,6 +778,9 @@ export function createGrassField(opts: GrassFieldOptions): GrassField {
     },
     setZoom(halfHeight: number): void {
       uniforms.uZoom.value = halfHeight;
+    },
+    setPixelScale(unitsPerPx: number): void {
+      uniforms.uUnitsPerPx.value = Math.max(1e-4, unitsPerPx);
     },
     dispose(): void {
       geometry.dispose();

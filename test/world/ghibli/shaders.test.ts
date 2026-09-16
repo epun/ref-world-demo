@@ -155,7 +155,11 @@ describe('ghibli element shaders', () => {
       // in (src/world/ghibli/height.ts).
       'ggGroundAt',
       'ggShoreAt',
-      'ggWindow',
+      'ggFieldR',
+      'ggFieldReach',
+      'ggFieldDensity',
+      'ggFieldHeight',
+      'ggFieldDense',
     ];
     for (const { material } of materials()) {
       const all = definitions(material.vertexShader).concat(definitions(material.fragmentShader));

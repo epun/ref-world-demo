@@ -35,7 +35,7 @@ import { GHIBLI, MOTION } from '../../taste/tokens';
 import { TERRAIN, terrainParams } from '../landscape';
 import { PAINTED_SIZE } from '../painted';
 import { TOON_LIGHTING_GLSL, TOON_VARYINGS_GLSL, toonUniforms } from '../toon';
-import { GG_WINDOW_GLSL } from './height';
+import { GG_FIELD_GLSL } from './height';
 import { emptyLayerTexture, ggFloat } from './shared';
 
 // ── the shipped ground's mark dials, mirrored (src/world/ground.ts) ─────────
@@ -68,6 +68,38 @@ const SCORCH_INK = 0.82;
 /** [D] Height above which snow takes the ground, world units. envpaint's 7.0
  * on a map whose terraces top out near 8 — so the tallest tier catches it. */
 const SNOW_HEIGHT = 7;
+
+/**
+ * [D] The blade STIPPLE (2026-09-16, user direction: the ground *"must look
+ * like grass everywhere the blades are not"* — the eye reads texture against
+ * no-texture long after the colours match, and the field's window was still
+ * plainly an oval).
+ *
+ * Cycles a world unit ACROSS the strokes, and how far they are stretched
+ * ALONG them: 3.5 and 3:1, so at the default view (0.05 units a pixel) a
+ * stroke is about six pixels long and a pixel and a half wide — a blade, seen
+ * from where the blades are drawn. The direction is world (1,1) normalised,
+ * which is very nearly screen-vertical under this world's isometric camera
+ * (azimuth 45°), so the strokes stand up the way the blades do.
+ *
+ * `VALUE` is the modulation the strokes carry, `TIP` how far a bright stroke
+ * goes toward the blade tip's own colour, and `SPECK` the sparse single-texel
+ * scatter that stands in for the tips and roots the far field would have.
+ * Every one of them is tuned so the ground's own texture CONTRAST matches the
+ * blade field's — measured as the local standard deviation of luminance in a
+ * 32×32 pixel patch at the dense middle of the frame against one at its far
+ * corner. At ±7% of value the corner came back a third flatter than the
+ * middle (sd 5.6 against 8.35); ±12% brought the corner to 6.0 against 7.9,
+ * and ±15% is where the two stop being distinguishable. The last of the
+ * spread is the ground ITSELF: a dirt path has no grass texture on it, which
+ * is the point of weighting the stipple by how much grass grows here.
+ */
+const STIPPLE_CYCLES = 3.5;
+const STIPPLE_STRETCH = 3;
+const STIPPLE_VALUE = 0.3;
+const STIPPLE_TIP = 0.18;
+const STIPPLE_SPECK_CYCLES = 7;
+const STIPPLE_SPECK = 0.22;
 
 /**
  * [D] How far the meadow goes toward the blade field's own colour INSIDE the
@@ -104,7 +136,7 @@ void main() {
 const FRAGMENT = /* glsl */ `
 const float GG_SIZE = ${ggFloat(PAINTED_SIZE)};
 ${TOON_LIGHTING_GLSL}
-${GG_WINDOW_GLSL}
+${GG_FIELD_GLSL}
 
 uniform sampler2D uGrass;
 uniform sampler2D uPath;
@@ -116,6 +148,7 @@ uniform sampler2D uRegion;
 uniform vec3 uMeadow;
 uniform vec3 uLush;
 uniform vec3 uBladeField;
+uniform vec3 uBladeTip;
 uniform vec3 uDirt;
 uniform vec3 uDirtEdge;
 uniform vec3 uWetSand;
@@ -176,19 +209,42 @@ void main() {
 
   // Meadow -> lush green under dense grass.
   vec3 albedo = mix(uMeadow, uLush, pow(painted, 0.7));
-  // …and then toward the BLADE FIELD's own colour, INSIDE THAT FIELD'S WINDOW
-  // and on the same squircle fade the blades shorten on: where the blades are,
+  // …and then toward the BLADE FIELD's own colour, INSIDE THAT FIELD and on
+  // the same radial curve the blades thin on: where the blades are,
   // the ground under them is their colour; where they have faded out, it is the
   // meadow again; in between, both cross over together. That is what makes the
   // window invisible rather than a pale lozenge on the lawn, which is what the
   // first render showed (2026-09-15). uBladeField is the colour a blade
   // collapses to when it is too far away to draw — the same field, at two
   // distances, rather than two different greens.
-  albedo = mix(
-    albedo,
-    uBladeField,
-    pow(grass, 0.7) * ${ggFloat(BLADE_GROUND_MIX)} * ggWindow(vToonWorldPos.xz)
-  );
+  float dense = ggFieldDense(vToonWorldPos.xz);
+  albedo = mix(albedo, uBladeField, pow(grass, 0.7) * ${ggFloat(BLADE_GROUND_MIX)} * dense);
+
+  // ── the blade stipple (see STIPPLE_*) ───────────────────────────────────
+  // What the ground looks like where the blades are not: short vertical
+  // strokes of a slightly different green, a few lighter tips and darker
+  // roots, and nothing at all under the dense middle of the field, which owns
+  // its own texture. Weighted by how much grass grows here, so sand, rock and
+  // a dirt path stay smooth.
+  {
+    vec2 dir = normalize(vec2(1.0, 1.0));
+    vec2 perp = vec2(-dir.y, dir.x);
+    vec2 sp = vec2(
+      dot(vToonWorldPos.xz, perp) * ${ggFloat(STIPPLE_CYCLES)},
+      dot(vToonWorldPos.xz, dir) * ${ggFloat(STIPPLE_CYCLES / STIPPLE_STRETCH)}
+    );
+    float blades = ggGroundNoise(sp) - 0.5;
+    float speck = ggGroundHash(floor(vToonWorldPos.xz * ${ggFloat(STIPPLE_SPECK_CYCLES)}));
+    float tips = step(0.93, speck) - step(speck, 0.07);
+    float amount = (1.0 - dense) * pow(grass, 0.7);
+    albedo *= 1.0 + blades * ${ggFloat(STIPPLE_VALUE)} * amount;
+    albedo *= 1.0 + tips * ${ggFloat(STIPPLE_SPECK)} * amount;
+    albedo = mix(
+      albedo,
+      uBladeTip,
+      smoothstep(0.12, 0.48, blades) * ${ggFloat(STIPPLE_TIP)} * amount
+    );
+  }
 
   // Large-scale colour break-up so flat ground isn't a solid slab.
   float cn = ggGroundNoise(uv * 6.0);
@@ -347,6 +403,7 @@ export function createGroundMaterial(opts: GhibliGroundOptions = {}): GhibliGrou
     uLush: { value: new Color(GHIBLI.lush) },
     // The blade field's far-zoom collapse colour, verbatim from its fragment
     // shader (src/world/ghibli/grass.ts `mix(uColorBase, uColorTip, 0.55)`).
+    uBladeTip: { value: new Color(GHIBLI.grassTip) },
     uBladeField: {
       value: new Color(GHIBLI.grassBase).lerp(new Color(GHIBLI.grassTip), 0.55),
     },
