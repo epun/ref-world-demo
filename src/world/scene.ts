@@ -791,7 +791,16 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
   /** Nothing visible is on screen — see setPaused. */
   let paused = false;
 
-  const loop = (nowMs: number): void => {
+  /**
+   * The frame body. Its caller, `loop`, re-arms the next frame in a
+   * `finally`, so a throw in here costs ONE frame and not the world: a
+   * pickup that read a removed rapier body (2026-09-16) threw out of
+   * `update()`, and because the next frame was requested at the bottom of
+   * this function, the host stopped simulating and every creature in the
+   * room froze where it stood. The first throw is reported once per message
+   * so the console does not drown at 60 Hz.
+   */
+  const frame = (nowMs: number): void => {
     // Integrate real elapsed time up to DT_CLAMP_MS so low fps never turns
     // into slow motion (QA audit D3): every spring is ζ≥1 and substeps at
     // 16ms internally, so a 250ms step settles without overshoot. Beyond the
@@ -805,10 +814,7 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
     // stop spending a phone's battery and main thread drawing what nobody
     // can see. The clock is NOT advanced past the pause, so the world does
     // not lurch forward on the frame it comes back.
-    if (paused) {
-      requestAnimationFrame(loop);
-      return;
-    }
+    if (paused) return;
 
     cameraRig.update(dt, nowMs);
     environment.update(dt, nowMs);
@@ -879,8 +885,20 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
     }
     const composed = ink.render(renderer, scene, cameraRig.camera, nowMs);
     grain.compose(renderer, composed, nowMs);
-
-    requestAnimationFrame(loop);
+  };
+  const reported = new Set<string>();
+  const loop = (nowMs: number): void => {
+    try {
+      frame(nowMs);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!reported.has(message)) {
+        reported.add(message);
+        console.error('[refworld] a frame threw — the loop goes on:', error);
+      }
+    } finally {
+      requestAnimationFrame(loop);
+    }
   };
   requestAnimationFrame(loop);
 
