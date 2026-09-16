@@ -243,6 +243,15 @@ export const GHIBLI = {
   // the tropical island (2026-09-15, user ask: a tropical island, ghibli
   // meets scavengers reign). Same palette family as the water above, pitched
   // for open sea and dry sand rather than a lake.
+  /** [D] The deep of a painted lake — Ponyo's cobalt, flat and saturated
+   * (2026-09-16, user direction: studio ghibli water, hand-painted and never
+   * realistic). */
+  waterCobalt: '#1f5fb4',
+  /** [D] The white of the foam lace at a shore — paper-white, a shade cooler
+   * than `foam`, so a broken lace line reads against the turquoise. */
+  waterLace: '#ffffff',
+  /** [D] The pale blue of a drifting wave line across the deep. */
+  waterLine: '#a8d8f0',
   seaDeep: '#2f7fc4',
   seaShallow: '#7fd0ef',
   sand: '#e9d9a8',
