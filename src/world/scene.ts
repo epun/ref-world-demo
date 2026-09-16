@@ -581,72 +581,19 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
     flowers: null,
     comb: null,
   };
-  /**
-   * The blade field's window slides with the camera (src/world/ghibli/grass.ts
-   * — the density has to be envpaint's where the eye is, and the tier's budget
-   * only covers a patch), and every slide re-bakes 150 000 ground heights.
-   * Straight off the Surface seam that is 651ms, measured — so the seam is
-   * sampled on a GRID over the window and each blade reads a bilinear tap of
-   * it: ~9 400 samples for the same window, at a step under half a unit, which
-   * still puts a blade beside a terrace lip on the lip rather than in it.
-   *
-   * Still the Surface seam and nothing else: this is a cache of its answers,
-   * exactly as the region bake is (src/world/ghibli/region.ts). Nothing here
-   * derives a height.
-   */
-  const GRID_SAMPLES = 97;
-  /** [D] How far the look-target may drift before the window is re-seated.
-   * The window is 44 units wide, so six keeps the dense patch under the eye
-   * and a pan re-lays the field a handful of times rather than every frame. */
-  const WINDOW_QUANTUM = 6;
-  const windowGrid = new Float32Array(GRID_SAMPLES * GRID_SAMPLES);
-  let gridX0 = 0;
-  let gridZ0 = 0;
-  let gridStep = 1;
-  let gridReady = false;
-  const bakeWindowGrid = (cx: number, cz: number, span: number): void => {
-    gridStep = span / (GRID_SAMPLES - 1);
-    gridX0 = cx - span / 2;
-    gridZ0 = cz - span / 2;
-    for (let iz = 0; iz < GRID_SAMPLES; iz++) {
-      const z = gridZ0 + iz * gridStep;
-      for (let ix = 0; ix < GRID_SAMPLES; ix++) {
-        windowGrid[iz * GRID_SAMPLES + ix] = surface.sampleHeight(gridX0 + ix * gridStep, z);
-      }
-    }
-    gridReady = true;
-  };
-  const windowHeightAt = (x: number, z: number): number => {
-    if (!gridReady) return surface.sampleHeight(x, z);
-    const fx = (x - gridX0) / gridStep;
-    const fz = (z - gridZ0) / gridStep;
-    // Outside the window every blade is faded out entirely, so the seam's own
-    // answer is both correct and rare.
-    if (fx < 0 || fz < 0 || fx > GRID_SAMPLES - 1 || fz > GRID_SAMPLES - 1) {
-      return surface.sampleHeight(x, z);
-    }
-    const ix = Math.min(GRID_SAMPLES - 2, Math.floor(fx));
-    const iz = Math.min(GRID_SAMPLES - 2, Math.floor(fz));
-    const tx = fx - ix;
-    const tz = fz - iz;
-    const row = iz * GRID_SAMPLES + ix;
-    const h00 = windowGrid[row]!;
-    const h10 = windowGrid[row + 1]!;
-    const h01 = windowGrid[row + GRID_SAMPLES]!;
-    const h11 = windowGrid[row + GRID_SAMPLES + 1]!;
-    return h00 * (1 - tx) * (1 - tz) + h10 * tx * (1 - tz) + h01 * (1 - tx) * tz + h11 * tx * tz;
-  };
-
   const fieldSpan = tier === 'phone' ? GRASS_SPAN_PHONE : GRASS_SPAN_PROJECTION;
   const ensureFields = (): void => {
     if (grass && flowers) return;
     const phone = tier === 'phone';
-    const look = cameraRig.lookAtPoint();
-    bakeWindowGrid(look.x, look.z, fieldSpan);
     grass ??= createGrassField({
       count: phone ? GRASS_COUNT_PHONE : GRASS_COUNT_PROJECTION,
       span: fieldSpan,
-      heightAt: windowHeightAt,
+      // The ground the blades stand on is a BAKE of the Surface seam, owned by
+      // `ground` and re-run there on every rebuild — so sliding the window
+      // costs one uniform write instead of 651ms of seam sampling, which is
+      // what it cost when every blade carried its own height
+      // (src/world/ghibli/height.ts).
+      height: ground.heightTexture(),
       region: ground.region(),
       // FULL by default (2026-09-15, user direction): the ghibli meadow is
       // envpaint's `fillMeadow` — grass everywhere the map says meadow,
@@ -657,44 +604,42 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
     });
     flowers ??= createFlowerField({
       count: phone ? FLOWER_COUNT_PHONE : FLOWER_COUNT_PROJECTION,
+      // The blade field's own window: blooms belong in the grass.
       span: phone ? FLOWER_SPAN_PHONE : FLOWER_SPAN_PROJECTION,
-      heightAt: windowHeightAt,
+      height: ground.heightTexture(),
       region: ground.region(),
       // A bloom wants meadow under it (`uNeedGrass`), so it reads the grass
       // weight as well as its own.
       layers: { flowers: paintedLayers.flowers, grass: paintedLayers.grass },
     });
-    grass.setCenter(look.x, look.z, windowHeightAt);
-    flowers.setCenter(look.x, look.z, windowHeightAt);
     scene.add(grass.mesh, flowers.mesh);
   };
-  /** Slide the window onto the look-target, re-baking the height grid under
-   * it — the once-in-a-while call, keyed on the camera having actually gone
-   * somewhere (see `WINDOW_QUANTUM`). */
-  const reseatFields = (x: number, z: number): void => {
+  /**
+   * Slide the window onto the look-target — three uniform writes, so this runs
+   * every frame. The ground takes the same window, because the ghibli terrain
+   * shader tints the meadow to the blade field's own colour exactly where the
+   * field is drawn; that is what makes the window invisible instead of a pale
+   * lozenge on the lawn (src/world/ghibli/ground.ts).
+   */
+  const followFields = (): void => {
     if (!grass || !flowers) return;
-    bakeWindowGrid(x, z, fieldSpan);
-    grass.setCenter(x, z, windowHeightAt);
-    flowers.setCenter(x, z, windowHeightAt);
+    const look = cameraRig.lookAtPoint();
+    grass.setCenter(look.x, look.z);
+    flowers.setCenter(look.x, look.z);
+    const at = grass.center();
+    ground.setFieldWindow(at.x, at.z, fieldSpan);
   };
-  /** Re-bake every blade's and bloom's ground height. Runs wherever
-   * `ground.rebuild()` does — the ground moved, so the field standing on it
-   * did too. */
+  /** Re-point both fields at the bakes `ground.rebuild()` has just re-run —
+   * the ground moved, so the field standing on it did too. Both textures are
+   * re-baked IN PLACE, so this is only here for a field built before the first
+   * bake existed. */
   const rebuildFields = (): void => {
-    if (grass) {
-      // The ground moved under the window, so its height grid is stale before
-      // a single blade is re-seated.
-      const at = grass.center();
-      bakeWindowGrid(at.x, at.z, fieldSpan);
-    }
-    grass?.rebuild(windowHeightAt);
-    flowers?.rebuild(windowHeightAt);
-    // `ground.rebuild()` re-bakes the region texture IN PLACE, so both fields
-    // are already holding the new one — but a field built before the first
-    // bake is holding null, so this is also where it arrives.
     const region = ground.region();
+    const height = ground.heightTexture();
     grass?.setRegion(region);
     flowers?.setRegion(region);
+    grass?.setHeight(height);
+    flowers?.setHeight(height);
   };
 
   // ── the look ──────────────────────────────────────────────────────────────
@@ -731,6 +676,7 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
     if (ghibli) {
       ensureFields();
       rebuildFields();
+      followFields();
       grass?.setLayers({ grass: paintedLayers.grass, comb: paintedLayers.comb });
       flowers?.setLayers({ flowers: paintedLayers.flowers, grass: paintedLayers.grass });
       ground.setPaintedGrass(paintedLayers.grass);
@@ -815,14 +761,10 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
         (cameraRig.camera.top - cameraRig.camera.bottom) / 2 / Math.max(0.01, cameraRig.camera.zoom);
       grass?.setZoom(halfHeight);
       flowers?.setZoom(halfHeight);
-      // …and the window follows the eye, on its quantum.
-      if (grass) {
-        const look = cameraRig.lookAtPoint();
-        const at = grass.center();
-        if (Math.hypot(look.x - at.x, look.z - at.z) > WINDOW_QUANTUM) {
-          reseatFields(look.x, look.z);
-        }
-      }
+      // …and the window follows the eye. Three uniform writes: the field's
+      // layout is window-local and its heights come from the bake, so there is
+      // nothing on the CPU to re-lay (src/world/ghibli/height.ts).
+      followFields();
     }
     water.setWind(scatter.windField(), nowMs);
     for (const callback of frameCallbacks) callback(dt, nowMs);

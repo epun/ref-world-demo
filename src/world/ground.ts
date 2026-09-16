@@ -66,6 +66,7 @@ import {
 } from 'three';
 import { MOTION, SURFACE } from '../taste/tokens';
 import { createGroundMaterial, type GhibliGround } from './ghibli/ground';
+import { bakeHeightTexture, rebakeHeight } from './ghibli/height';
 import { bakeRegionTexture, rebakeRegion } from './ghibli/region';
 import { applyToon } from './toon';
 import { TERRAIN, terrainParams } from './landscape';
@@ -306,6 +307,23 @@ export interface Ground {
    * 128² texture for a world that will never read it.
    */
   region(): DataTexture | null;
+  /**
+   * The baked ground the ghibli blade and bloom fields stand on
+   * (src/world/ghibli/height.ts) — the `Surface` seam's own answers, sampled
+   * once per rebuild so a quarter of a million blades can read a height
+   * without the CPU touching them.
+   *
+   * Baked HERE, beside the region, because `rebuild()` is the one call that
+   * knows the ground moved. Null until the ghibli style has been switched on
+   * once.
+   */
+  heightTexture(): DataTexture | null;
+  /**
+   * Tell the ghibli ground where the blade field's window is, so the meadow
+   * takes that field's own colour exactly where the field is drawn
+   * (src/world/ghibli/ground.ts). A no-op on `ink`, which has no such field.
+   */
+  setFieldWindow(x: number, z: number, span: number): void;
 }
 
 export function createGround(surface: Surface): Ground {
@@ -499,6 +517,10 @@ ${groundNoiseGlsl}`,
    */
   let ghibli: GhibliGround | null = null;
   let regionTexture: DataTexture | null = null;
+  let heightTexture: DataTexture | null = null;
+  /** The window the blade field is drawing, replayed into the ghibli material
+   * when it is built (the style can switch after the camera has moved). */
+  let fieldWindow: { x: number; z: number; span: number } = { x: 0, z: 0, span: 0 };
   /** The layers handed over so far, replayed into the ghibli material when it
    * is built (see above). */
   let paintedPath: Texture | null = null;
@@ -508,7 +530,9 @@ ${groundNoiseGlsl}`,
   const ensureGhibli = (): GhibliGround => {
     if (ghibli) return ghibli;
     regionTexture = bakeRegionTexture();
+    heightTexture = bakeHeightTexture((x, z) => surface.sampleHeight(x, z));
     const built = createGroundMaterial({ region: regionTexture });
+    built.setFieldWindow(fieldWindow.x, fieldWindow.z, fieldWindow.span);
     built.setPaintedPath(paintedPath);
     built.setPaintedScorch(paintedScorch);
     built.setPaintedGrass(paintedGrass);
@@ -560,6 +584,11 @@ ${groundNoiseGlsl}`,
       else wearMaterial(material);
     },
     region: (): DataTexture | null => regionTexture,
+    heightTexture: (): DataTexture | null => heightTexture,
+    setFieldWindow: (x: number, z: number, span: number): void => {
+      fieldWindow = { x, z, span };
+      ghibli?.setFieldWindow(x, z, span);
+    },
     rebuild: (): void => {
       displace();
       // The ring moves with the dials now: the sea floor is `SEA_LEVEL` and
@@ -572,6 +601,10 @@ ${groundNoiseGlsl}`,
       // IN PLACE, so every element holding this texture sees the new coast
       // without being handed anything.
       if (regionTexture) rebakeRegion(regionTexture);
+      // …and the ground the blades stand on, re-sampled from the same seam the
+      // field above was just re-displaced from. One bake, 65k samples, and
+      // every blade in the world comes with it (src/world/ghibli/height.ts).
+      if (heightTexture) rebakeHeight(heightTexture, (x, z) => surface.sampleHeight(x, z));
       ghibli?.refresh();
     },
   };
