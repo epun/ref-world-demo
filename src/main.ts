@@ -99,7 +99,7 @@ import { residentsFrom } from './world/residents';
 import { readHatchMode } from './world/hatchmode';
 import { storeNote } from './world/storeline';
 import { start } from './world/scene';
-import { readWorldGame } from './world/game';
+import { opensOnLandscape, readWorldGame } from './world/game';
 import { readWorldStyle } from './world/style';
 import { createTour } from './world/tour';
 
@@ -477,7 +477,16 @@ function main(): void {
    * the world is going to keep.
    */
   const landscapeParam = (params.get('landscape') ?? '').toLowerCase();
-  const wantsLandscape = landscapeParam === '1' || landscapeParam === 'on';
+  /**
+   * A KATAMARI world opens on the map, not the plain (2026-09-16, user
+   * report: "there is no island on the version you pushed"). Its map IS the
+   * island — the sea, the beach and the coast are the authored landscape
+   * (docs/PLAN.md §7) — so the deployed link has to open with it revealed;
+   * nobody can reach the panel's toggle from a phone. `?landscape=0` still
+   * opens it plain for a comparison. Every other world opens plain, as it
+   * shipped.
+   */
+  const wantsLandscape = opensOnLandscape(worldGame, landscapeParam);
   if (wantsLandscape) world.setLandscape(true);
   /**
    * …and the panel's own toggle writes the same parameter back, the way the

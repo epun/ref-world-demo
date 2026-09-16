@@ -55,3 +55,21 @@ export function readWorldGame(search: string, metaContent: string | null): World
   if ((WORLD_GAMES as readonly string[]).includes(asked)) return asked as WorldGame;
   return sanitizeGame(metaContent);
 }
+
+/**
+ * Does this page open with the authored map revealed, or on the plain?
+ *
+ * Every world OPENS PLAIN (src/world/landscape.ts) unless the address says
+ * `?landscape=1` — that is the shipped rule and it stands. A KATAMARI world
+ * is the one exception (2026-09-16, user report: "there is no island on the
+ * version you pushed"): its map IS the island, and the panel's toggle is not
+ * reachable from a phone, so it opens on the map unless the address says
+ * `?landscape=0` outright. Pure, so the rule is pinned by a test rather than
+ * re-discovered on a deployed link.
+ */
+export function opensOnLandscape(game: WorldGame, landscapeParam: string | null): boolean {
+  const asked = (landscapeParam ?? '').trim().toLowerCase();
+  if (asked === '1' || asked === 'on') return true;
+  if (asked === '0' || asked === 'off') return false;
+  return game === 'katamari';
+}

@@ -11,7 +11,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { WORLD_GAMES, readWorldGame, sanitizeGame } from '../../src/world/game';
+import { WORLD_GAMES, opensOnLandscape, readWorldGame, sanitizeGame } from '../../src/world/game';
 import { sanitizeGame as sanitizeGameBuild } from '../../scripts/world-build.mjs';
 
 describe('sanitizeGame — only the exact word opts in', () => {
@@ -89,5 +89,26 @@ describe('readWorldGame — the address, then the tag, then the shipped world', 
     for (const asked of ['katamar', 'katamari!', 'sticky', 'true', '1']) {
       expect(readWorldGame(`?game=${asked}`, null)).toBe('none');
     }
+  });
+});
+
+describe('opensOnLandscape — a katamari world opens on its island', () => {
+  it('every other world opens plain unless the address asks for the map', () => {
+    expect(opensOnLandscape('none', null)).toBe(false);
+    expect(opensOnLandscape('none', '')).toBe(false);
+    expect(opensOnLandscape('none', '1')).toBe(true);
+    expect(opensOnLandscape('none', 'on')).toBe(true);
+    expect(opensOnLandscape('none', 'yes')).toBe(false);
+  });
+
+  it('the katamari world opens on the map — the island is the map', () => {
+    expect(opensOnLandscape('katamari', null)).toBe(true);
+    expect(opensOnLandscape('katamari', '')).toBe(true);
+    expect(opensOnLandscape('katamari', '1')).toBe(true);
+  });
+
+  it('but the address can still open it plain for a comparison', () => {
+    expect(opensOnLandscape('katamari', '0')).toBe(false);
+    expect(opensOnLandscape('katamari', 'off')).toBe(false);
   });
 });
