@@ -68,13 +68,19 @@ const SCORCH_INK = 0.82;
  * on a map whose terraces top out near 8 — so the tallest tier catches it. */
 const SNOW_HEIGHT = 7;
 
-/** [D] How far the meadow is pulled toward the blade field's own colour where
- * the map grows a full one. HALF, landed on screen: at 0.8 the ground went all
- * the way to the blade tips' pale yellow-green and the window read as a cooler
- * patch on a paler lawn — the same lozenge the other way round. A blade field
- * is bare ground between blades and darker at the roots, so half way is where
- * the two stop being distinguishable. */
-const BLADE_GROUND_MIX = 0.5;
+/**
+ * [D] How far the meadow is pulled toward the blade field's own colour where
+ * the map grows a full one.
+ *
+ * MEASURED off the headless render rather than guessed. The blade field's mean
+ * pixel is rgb(164, 200, 124) at the default view; the ground's mean under it
+ * goes rgb(108, 175, 58) at 0 → rgb(143, 187, 71) at 0.5 → rgb(160, 195, 77)
+ * at 0.8, so 0.8 is where the two agree in VALUE — which is what makes a patch
+ * read as a patch. What is left is saturation: the blade field is bluer than
+ * any green in the palette, because envpaint's `grassTip` is, and closing that
+ * would mean retuning the ghibli grass tokens rather than the ground.
+ */
+const BLADE_GROUND_MIX = 0.8;
 
 /** [D] Where the wet-sand band sits inside the region texture's water-proximity
  * ramp. `region.ts` encodes land as `0.9 · (1 − d / WATER_NEAR)`, so 0.62
