@@ -198,7 +198,40 @@ export function katamariTransform(
   geometry.computeBoundingBox();
   const box = geometry.boundingBox;
   if (!box || box.isEmpty()) throw new Error('katamari model built to nothing');
-  return variantTransform(box, heightUnits);
+  return variantTransform(box, heightUnits * heightFraction(box));
+}
+
+/**
+ * THE FOOTPRINT CAP (2026-09-16, read off a frame — docs/katamari-props.md).
+ *
+ * How many times its own height a prop may be wide before its WIDTH sets the
+ * scale instead. **[D]**
+ *
+ * Scaling to a height alone is the right rule for a tree and the wrong one
+ * for a pizza: the catalog's `heightUnits` is a height, a pizza is two
+ * centimetres of it and a foot across, and a pizza normalised to 0.3 units
+ * tall came out six units wide — bigger than the tree beside it, which is
+ * exactly what the first render of the wired library showed. 2.2 keeps a
+ * boat, a wall and a bench looking like themselves (all under it) and reins
+ * in the flat food, the shells and the cassette tape: past the cap
+ * `heightUnits` reads as "how big is this", not "how tall".
+ */
+export const KATAMARI_ASPECT_CAP = 2.2;
+
+/**
+ * How much of `heightUnits` a model's own height gets — 1 for anything
+ * within the cap, less for something flatter, so the uniform scale falls
+ * until the footprint fits. Exactly 1 in the common case, so a prop that is
+ * taller than it is wide is normalised to its catalog height to the bit.
+ */
+function heightFraction(box: {
+  min: { x: number; y: number; z: number };
+  max: { x: number; y: number; z: number };
+}): number {
+  const rawHeight = Math.max(box.max.y - box.min.y, 1e-6);
+  const rawWidth = Math.max(box.max.x - box.min.x, box.max.z - box.min.z);
+  const effective = Math.max(rawHeight, rawWidth / KATAMARI_ASPECT_CAP);
+  return rawHeight / effective;
 }
 
 /** Apply one `katamariTransform` in place: scale first, then translate — the
@@ -222,11 +255,17 @@ export function normalizeKatamariGeometry(
   geometry: BufferGeometry,
   heightUnits: number,
 ): { geometry: BufferGeometry; height: number; radius: number; transform: ReturnType<typeof katamariTransform> } {
+  geometry.computeBoundingBox();
+  // The height it actually ENDS at, which is `heightUnits` unless the
+  // footprint cap bit (see `KATAMARI_ASPECT_CAP`). `PropVariant.height` is
+  // read as a real height — the wind bake and the material's drift both
+  // divide by it — so it must be the one on screen.
+  const height = heightUnits * heightFraction(geometry.boundingBox!);
   const transform = katamariTransform(geometry, heightUnits);
   applyKatamariTransform(geometry, transform);
   const box = geometry.boundingBox!;
   const radius = Math.max(box.max.x - box.min.x, box.max.z - box.min.z) / 2;
-  return { geometry, height: heightUnits, radius, transform };
+  return { geometry, height, radius, transform };
 }
 
 /**

@@ -66,13 +66,20 @@ import {
 import { PLANT_BRUSHES, type PlantBrush, type PlantingWeights } from './painted';
 import { combLean } from './comb';
 import {
+  activePropCounts,
+  activePropSource,
+  setActivePropSource,
   BUILDING_COURTYARD_VARIANT,
-  buildPropGeometries,
   MOUNTAIN_FOOTPRINT,
   PROP_KINDS,
-  PROP_VARIANT_COUNTS,
+  stockPropSource,
   type PropKind,
+  type PropSource,
+  type PropVariant,
 } from './props';
+import { KATAMARI_KIND_DENSITY } from './katamari/source';
+import { createKatamariMaterialSet, type KatamariMaterialSet } from './katamari/material';
+import type { KatamariLibrary, KatamariModel } from './katamari/models';
 import { stampEllipse, stampRotationY, type StampEllipse } from './shadows';
 import type { WorldStyle } from './style';
 import { ROLLING_SURFACE, type Surface } from './surface';
@@ -119,9 +126,18 @@ export const MARK_VARIANT_COUNTS: Record<MarkKind, number> = {
   waterfall: WATERFALL_VARIANTS,
 };
 
-/** Authored variant count for any scatter kind, marks included. */
+/**
+ * Variant count for any scatter kind, marks included — from the prop source
+ * in force (`activePropCounts`, src/world/props.ts), which is the authored
+ * table unless a world installed a library.
+ *
+ * It reads the source and not a frozen table because the katamari's kinds
+ * have a different number of variants than the authored ones do, and a roll
+ * of 3 against a two-entry array is the one bug the whole seam exists to
+ * prevent (docs/katamari-props.md §a.1).
+ */
 export function variantCount(kind: ScatterKind): number {
-  return isMark(kind) ? MARK_VARIANT_COUNTS[kind] : PROP_VARIANT_COUNTS[kind];
+  return isMark(kind) ? MARK_VARIANT_COUNTS[kind] : (activePropCounts()[kind] ?? 0);
 }
 
 export interface Placement {
@@ -257,6 +273,19 @@ const SEED_PROB: Record<ScatterKind, number> = {
   // A waterfall never rolls either: it is placed one at a time by the brush
   // and appended to the frame after the roll (see `rebuild`).
   waterfall: 0,
+  /*
+   * The katamari's junk tiers (2026-09-16, the object library). A katamari
+   * town is DENSE with small things and sparse with large ones, so the three
+   * step down hard — `small` is the commonest prop on the plain after the
+   * tick texture, `large` is a landmark. **[D]**
+   *
+   * Reachable only where the tier kinds have variants AND a density: their
+   * `DEFAULT_KIND_DENSITY` is 0, so on every world but a katamari one this
+   * whole row multiplies out to nothing and no cell ever rolls one.
+   */
+  small: 0.07,
+  medium: 0.045,
+  large: 0.02,
 };
 
 // ── painted planting (2026-09-09, user ask) ──────────────────────────────────
@@ -345,6 +374,11 @@ const FOREST_SEED: RegionSeed = {
   stump: 0.03,
   rock: 0.006,
   tick: 0.1,
+  // The junk tiers are the TOWN's texture, not the wood's: a few dropped
+  // things under the trees and nothing built. **[D]**
+  small: 0.02,
+  medium: 0.008,
+  large: 0.004,
 };
 
 /** On the range: scree, stubborn conifers, standing stones, thin grass. */
@@ -370,6 +404,10 @@ const ISLAND_SEED: RegionSeed = {
   rock: 0.05,
   bush: 0.05,
   tick: 0.16,
+  // Flotsam on a crown nobody walks to. **[D]**
+  small: 0.04,
+  medium: 0.014,
+  large: 0.006,
 };
 
 /**
@@ -394,6 +432,18 @@ const BEACH_SEED: RegionSeed = {
   palm: 0.05,
   cactus: 0.012,
   tick: 0.04,
+  /*
+   * THE SAND SET (2026-09-16, the katamari library). The beach is where the
+   * catalog's `beach: true` rows go — shells and fish among the small stuff,
+   * parasols and beached boats above them, the fishing boat and the sailboat
+   * as the large ones. The per-VARIANT region filter below is what admits
+   * them and keeps the mailboxes and the vending machines off the sand, so
+   * these three numbers are the sand set's own density and not the town's.
+   * Small is the commonest thing on a beach after the shingle. **[D]**
+   */
+  small: 0.08,
+  medium: 0.03,
+  large: 0.012,
 };
 
 /** [D] Planting keep-out from every shoreline. A cell this close to water
@@ -557,6 +607,12 @@ const PROP_ROLL_ORDER: PropKind[] = [
   // from the world's own rules — this entry exists so the painted term has
   // a roll to ride in on.
   'cloud',
+  // The katamari tiers, appended for the same reason: every kind that rolled
+  // before the library existed still rolls the exact salt it rolled then, so
+  // a meridian world is placement-identical (docs/katamari-props.md).
+  'small',
+  'medium',
+  'large',
 ];
 
 /**
@@ -636,8 +692,63 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
    * multiplied by a default that is already baked into them — but a slider
    * still has to scale them, and 0 still has to mean none.
    */
-  const userMult = (kind: ScatterKind): number =>
-    Math.max(0, kindDensity[kind] ?? 1) / (DEFAULT_KIND_DENSITY[kind] ?? 1);
+  const userMult = (kind: ScatterKind): number => {
+    // A shipped default of ZERO (the katamari tier kinds, which no other
+    // world places at all) would divide by nothing; it reads as 1 instead,
+    // so the slider's own value IS the multiplier on the regional tables.
+    const shipped = DEFAULT_KIND_DENSITY[kind] ?? 1;
+    return Math.max(0, kindDensity[kind] ?? 1) / (shipped > 0 ? shipped : 1);
+  };
+
+  /*
+   * WHICH VARIANTS MAY STAND HERE (2026-09-16, the katamari library).
+   *
+   * The authored props have no per-variant region: every build of a kind is
+   * as welcome as any other and the roll is uniform over the kind's whole
+   * set. A library model does have one — a parasol belongs on the sand and a
+   * mailbox does not (`beach` in src/world/katamari/catalog.ts) — so the
+   * variant is rolled over the subset the REGION admits: on the beach the
+   * `beach: true` rows only, everywhere else the rest.
+   *
+   * The determinism is unchanged and that is the point: the kind rolls
+   * first, exactly as it did, and then the SAME hash indexes the admitted
+   * list rather than the whole one. With no library installed the admitted
+   * list is every variant, `pickVariant` collapses to the expression that
+   * shipped, and the world is placement-identical.
+   *
+   * A kind with nothing admitted in a region places nothing there. That is
+   * the honest outcome rather than a fallback: the catalog has no beach rock
+   * in it, so a katamari beach has no rocks on it, and quietly putting a
+   * vending machine on the sand instead would be worse than an empty dune.
+   */
+  const source = activePropSource();
+  const admittedCache = new Map<string, number[]>();
+  const admitted = (kind: ScatterKind, beach: boolean): number[] => {
+    const key = beach ? `${kind}|beach` : kind;
+    const cached = admittedCache.get(key);
+    if (cached) return cached;
+    const meta = isMark(kind) ? undefined : source?.meta.get(kind as PropKind);
+    const list: number[] = [];
+    for (let v = 0; v < variantCount(kind); v++) {
+      if (meta && (meta[v]?.beach === true) !== beach) continue;
+      list.push(v);
+    }
+    admittedCache.set(key, list);
+    return list;
+  };
+  /** Is this point on the sand? Asked only where a per-variant region
+   * filter exists, so the shipped world never samples for it. */
+  const onBeach = (x: number, z: number): boolean =>
+    source ? sampleLandscape(x, z).region === 'beach' : false;
+  /**
+   * The variant a roll of `h` picks for this kind at this point, or null
+   * when the region admits none of them.
+   */
+  const pickVariant = (kind: ScatterKind, x: number, z: number, h: number): number | null => {
+    const list = admitted(kind, onBeach(x, z));
+    if (list.length === 0) return null;
+    return list[Math.min(list.length - 1, Math.floor(h * list.length))]!;
+  };
 
   /** Ground a PAINTED cottage has swept for its dooryard. Recorded only for
    * buildings a brush placed — see BUILDING_CLEAR_RADIUS. */
@@ -744,9 +855,15 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
     at?: { sx: number; sz: number },
   ): void => {
     const { sx, sz } = at ?? seedPos(ix, iz);
-    const count = variantCount(kind);
-    // The cluster's species: uniform over the kind's variants.
-    const clusterVariant = Math.min(count - 1, Math.floor(cellHash(ix, iz, 31.1) * count));
+    // The cluster's species: uniform over the variants this REGION admits
+    // (every variant, unless a library is installed — see `admitted`). The
+    // region is the cluster's seat, so a grove is one species even where a
+    // neighbour lands a step over the tideline.
+    const beach = onBeach(sx, sz);
+    const list = admitted(kind, beach);
+    if (list.length === 0) return;
+    const pick = (h: number): number => list[Math.min(list.length - 1, Math.floor(h * list.length))]!;
+    const clusterVariant = pick(cellHash(ix, iz, 31.1));
     push(kind, clusterVariant, sx, sz, 1);
     for (let n = 0; n < extras; n++) {
       const a = cellHash(ix, iz, 21.3 + n * 5.7) * Math.PI * 2;
@@ -755,7 +872,7 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
       const variant =
         cellHash(ix, iz, 32.2 + n * 5.7) < CLUSTER_VARIANT_BIAS
           ? clusterVariant
-          : Math.min(count - 1, Math.floor(cellHash(ix, iz, 33.3 + n * 5.7) * count));
+          : pick(cellHash(ix, iz, 33.3 + n * 5.7));
       push(kind, variant, sx + Math.cos(a) * r, sz + Math.sin(a) * r, 2 + n);
     }
   };
@@ -765,8 +882,13 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
   const placeBuilding = (ix: number, iz: number, painted: boolean): void => {
     const { sx, sz } = seedPos(ix, iz);
     if (sx * sx + sz * sz < ORIGIN_CLEAR_PROPS * ORIGIN_CLEAR_PROPS) return;
-    const count = PROP_VARIANT_COUNTS.building;
-    let variant = Math.min(count - 1, Math.floor(cellHash(ix, iz, 31.1) * count));
+    // The variants the region admits, in order — one entry per admissible
+    // build, so the cyclic advance below walks those and no others.
+    const list = admitted('building', onBeach(sx, sz));
+    if (list.length === 0) return;
+    const count = list.length;
+    let slot = Math.min(count - 1, Math.floor(cellHash(ix, iz, 31.1) * count));
+    let variant = list[slot]!;
     for (let tries = 0; tries < count; tries++) {
       const clash =
         buildings.some(
@@ -779,7 +901,8 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
         (variant === BUILDING_COURTYARD_VARIANT &&
           buildings.some((b) => b.variant === BUILDING_COURTYARD_VARIANT));
       if (!clash) break;
-      variant = (variant + 1) % count;
+      slot = (slot + 1) % count;
+      variant = list[slot]!;
     }
     buildings.push({ x: sx, z: sz, variant });
     const before = out.length;
@@ -807,9 +930,15 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
       )
     )
       return;
-    const count = PROP_VARIANT_COUNTS.waterTower;
-    let variant = Math.min(count - 1, Math.floor(cellHash(ix, iz, 31.1) * count));
-    if (towers.some((t) => t.variant === variant)) variant = (variant + 1) % count;
+    const list = admitted('waterTower', onBeach(sx, sz));
+    if (list.length === 0) return;
+    const count = list.length;
+    let slot = Math.min(count - 1, Math.floor(cellHash(ix, iz, 31.1) * count));
+    let variant = list[slot]!;
+    if (towers.some((t) => t.variant === variant)) {
+      slot = (slot + 1) % count;
+      variant = list[slot]!;
+    }
     towers.push({ x: sx, z: sz, variant });
     push('waterTower', variant, sx, sz, 1);
   };
@@ -817,7 +946,7 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
   /** Place one mountain and record the ground it covers. Mountains are the
    * only kind exempt from their own clearing, so a range is a merged mass
    * rather than a ring of separated cones. */
-  const mountainCount = PROP_VARIANT_COUNTS.mountain;
+  const mountainCount = variantCount('mountain');
   const pushMountain = (variant: number, x: number, z: number, salt: number): void => {
     if (mountains.length >= MOUNTAIN_MAX) return;
     // The weight gate applies to the extras too, not just the cell that
@@ -842,20 +971,21 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
       const prob = MOUNTAIN_SEED_PROB * m * m * density * userMult('mountain');
       if (cellHash(ix, iz, MOUNTAIN_SALT) >= prob) continue;
       const { sx, sz } = seeds[cellAt(ix, iz)]!;
-      const variant = Math.min(
-        mountainCount - 1,
-        Math.floor(cellHash(ix, iz, MOUNTAIN_SALT + 1.3) * mountainCount),
-      );
+      const variant = pickVariant('mountain', sx, sz, cellHash(ix, iz, MOUNTAIN_SALT + 1.3));
+      if (variant === null) continue;
       pushMountain(variant, sx, sz, 1);
       // 0–2 more summits at 1.2–2.2 steps: a range, never a lone cone.
       const extras = Math.floor(cellHash(ix, iz, MOUNTAIN_SALT + 2.6) * 3);
       for (let n = 0; n < extras; n++) {
         const a = cellHash(ix, iz, MOUNTAIN_SALT + 4.1 + n * 5.7) * Math.PI * 2;
         const r = (1.2 + cellHash(ix, iz, MOUNTAIN_SALT + 5.3 + n * 5.7)) * SCATTER_STEP;
-        const v = Math.min(
-          mountainCount - 1,
-          Math.floor(cellHash(ix, iz, MOUNTAIN_SALT + 6.7 + n * 5.7) * mountainCount),
+        const v = pickVariant(
+          'mountain',
+          sx + Math.cos(a) * r,
+          sz + Math.sin(a) * r,
+          cellHash(ix, iz, MOUNTAIN_SALT + 6.7 + n * 5.7),
         );
+        if (v === null) continue;
         pushMountain(v, sx + Math.cos(a) * r, sz + Math.sin(a) * r, 2 + n);
       }
     }
@@ -1001,6 +1131,11 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
         paintedCell: boolean,
         at?: { sx: number; sz: number },
       ): boolean => {
+        // A kind with no variants behind it is not placeable — the three
+        // katamari tiers on every world that has no library, and any kind
+        // whose models all failed to load. Returning true keeps the base
+        // loop's `break` semantics: the cell was claimed by the roll.
+        if (variantCount(kind) === 0) return true;
         if (kind === 'building') {
           if (buildings.length >= BUILDING_MAX) return false;
           placeBuilding(ix, iz, paintedCell);
@@ -2124,8 +2259,13 @@ export interface Scatter {
    * collider hull from the shape actually on screen. */
   geometryFor(kind: PropKind, variant: number): BufferGeometry | null;
   /**
-   * The albedo this kind's instances are drawn with — the SAME object, not
-   * a copy.
+   * The albedo this (kind, variant)'s instances are drawn with — the SAME
+   * object, not a copy.
+   *
+   * The VARIANT matters only for a library-backed source, where each model
+   * carries its own texture (docs/katamari-props.md §b); a stock kind
+   * answers the same material for all of them, which is why the argument
+   * defaults.
    *
    * For `src/world/loose.ts`, which draws a prop that has come out of the
    * ground as a mesh of its own. Sharing the material is the point: a style
@@ -2136,7 +2276,20 @@ export interface Scatter {
    * one extra program variant without `USE_INSTANCING`, which is one
    * compile and no per-frame cost.
    */
-  materialFor(kind: PropKind): Material;
+  materialFor(kind: PropKind, variant?: number): Material;
+  /**
+   * Swap the prop source and rebuild on it (docs/katamari-props.md §e).
+   *
+   * The ONE caller is the katamari world, when its library has finished
+   * loading: the placement does not move (the counts came off the in-bundle
+   * catalog, not the download), the geometry appears, and every consumer
+   * re-reads off the `rebuildVersion()` bump. There is no transition and
+   * nothing pops: the props slide in on a rebuild the world already knows
+   * how to do (TASTE §2.1).
+   */
+  setPropSource(source: PropSource): void;
+  /** The source currently drawn (dev panel / tests). */
+  propSource(): PropSource;
   /** Bumps on every `rebuild()`. Cheap to compare once a frame. */
   rebuildVersion(): number;
   /**
@@ -2190,6 +2343,18 @@ export interface Scatter {
 export const DEFAULT_KIND_DENSITY: Partial<Record<ScatterKind, number>> = {
   tree: 0.15,
   conifer: 0.15,
+  /*
+   * The katamari's junk tiers ship at ZERO, which is how a kind that only
+   * one world can draw lives in the shared tables without appearing in the
+   * others: `SEED_PROB` has a row for each of them, `variantCount` answers 0
+   * for them, and this multiplies the whole term out. A katamari world
+   * raises them to `KATAMARI_KIND_DENSITY` when it installs the library
+   * (src/world/katamari/source.ts); the panel's sliders drive them from
+   * there like every other kind's.
+   */
+  small: 0,
+  medium: 0,
+  large: 0,
 };
 
 export const KIND_GROUP_LABELS: Record<ScatterKind, string> = {
@@ -2212,6 +2377,11 @@ export const KIND_GROUP_LABELS: Record<ScatterKind, string> = {
   flower: 'flowers',
   flame: 'flames',
   waterfall: 'waterfalls',
+  // The katamari tiers (src/world/katamari/catalog.ts). Lowercase, like
+  // every label in this world (TASTE §5).
+  small: 'small props',
+  medium: 'medium props',
+  large: 'large props',
 };
 
 export interface ScatterOptions {
@@ -2221,6 +2391,14 @@ export interface ScatterOptions {
    * terrain; tests pass FLAT_SURFACE to get the old flat field back.
    */
   surface?: Surface;
+  /**
+   * WHICH PROPS this world is made of (docs/katamari-props.md §a). Defaults
+   * to `stockPropSource()` — the authored inflated and architectural props,
+   * which is every world but a katamari one. A katamari world hands in
+   * `katamariPendingSource()` and then swaps in `katamariPropSource(library)`
+   * through `setPropSource` when the glbs arrive.
+   */
+  source?: PropSource;
 }
 
 /** Mark kinds in build order — the render loop's counterpart to PROP_KINDS. */
@@ -2261,9 +2439,27 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
     group.add(g);
   }
   const groupFor = (kind: ScatterKind): Group => kindGroups.get(kind) ?? group;
-  const geometries = buildPropGeometries();
-
-  const variantOf = (p: Placement) => geometries.get(p.kind as PropKind)![p.variant]!;
+  /**
+   * WHICH PROPS this world draws (`ScatterOptions.source`). The authored
+   * props unless a world installed a library, and swappable ONCE the
+   * library arrives (`setPropSource`) — which is a rebuild like any other,
+   * not a second draw path (docs/katamari-props.md §e).
+   */
+  let source: PropSource = opts.source ?? stockPropSource();
+  setActivePropSource(source);
+  /** A kind's variants, or none — a katamari world has no geometry at all
+   * for the first second, and a kind whose models all failed to load never
+   * gets any. */
+  const variantsOf = (kind: PropKind): PropVariant[] => source.variants.get(kind) ?? [];
+  /**
+   * The variant one placement is drawn with, or null when nothing is behind
+   * it yet. Every consumer that measures a prop (the rebuild, `positions`,
+   * the colliders, the shadow stamps) goes through here and skips a
+   * placement with no geometry: the roll is pure and runs before the library
+   * lands, so for a moment there are placements with nothing to draw.
+   */
+  const variantOf = (p: Placement): PropVariant | null =>
+    variantsOf(p.kind as PropKind)[p.variant] ?? null;
 
   // Light paper albedo, fully matte — the ink pass draws the form. Never a
   // grey mass (GENERATOR §ink rendering pass). Rigid kinds (building, stump,
@@ -2529,7 +2725,7 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
     let total = 0;
     let n = 0;
     for (const kind of kinds) {
-      for (const variant of geometries.get(kind) ?? []) {
+      for (const variant of variantsOf(kind)) {
         total += variant.height * 0.6;
         n++;
       }
@@ -2574,7 +2770,12 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
    * have no element shader of their own and keep the recoloured standard
    * material.
    */
-  const materialFor = (kind: PropKind): Material => {
+  const materialFor = (kind: PropKind, variant = 0): Material => {
+    // A source that draws its own variants answers first — the katamari
+    // library, whose every model carries its own baked texture and would
+    // read as a grey lump under the stock albedo (docs/katamari-props.md §b).
+    const own = source.draw?.materialFor(kind, variant, scatterStyle);
+    if (own) return own;
     if (scatterStyle === 'ghibli') {
       const g = ensureGhibliMaterials();
       if (kind === 'cloud') return g.cloud;
@@ -2597,16 +2798,23 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
             : swayKindSet.has(kind)
               ? swayMaterial
               : propMaterial;
-  for (const kind of WIND_SWAY_KINDS) {
-    for (const variant of geometries.get(kind)!) {
-      const position = variant.geometry.getAttribute('position');
-      const heights = new Float32Array(position.count);
-      for (let i = 0; i < position.count; i++) {
-        heights[i] = Math.min(Math.max(position.getY(i) / variant.height, 0), 1);
+  /** Bake the per-vertex wind height on every swaying kind's variants. Run
+   * again after a source swap: a library variant is a different geometry and
+   * the stock sway materials read this attribute by name. */
+  const bakeWindHeights = (): void => {
+    for (const kind of WIND_SWAY_KINDS) {
+      for (const variant of variantsOf(kind)) {
+        if (variant.geometry.getAttribute('aWindHeight')) continue;
+        const position = variant.geometry.getAttribute('position');
+        const heights = new Float32Array(position.count);
+        for (let i = 0; i < position.count; i++) {
+          heights[i] = Math.min(Math.max(position.getY(i) / variant.height, 0), 1);
+        }
+        variant.geometry.setAttribute('aWindHeight', new BufferAttribute(heights, 1));
       }
-      variant.geometry.setAttribute('aWindHeight', new BufferAttribute(heights, 1));
     }
-  }
+  };
+  bakeWindHeights();
   // Flat stamped shadow discs, one hard value (TASTE §2.4). The sun retints
   // the ONE shared value (toward the ground as presence falls) and reshapes
   // the shared ellipse — the fill itself never gradates.
@@ -2640,7 +2848,13 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
   let shadowSpots: ShadowSpot[] = [];
 
   let globalDensity = 1;
-  const kindDensity: Partial<Record<ScatterKind, number>> = { ...DEFAULT_KIND_DENSITY };
+  const kindDensity: Partial<Record<ScatterKind, number>> = {
+    ...DEFAULT_KIND_DENSITY,
+    // A library world raises the junk tiers off their shipped zero — the
+    // only kinds whose default depends on the prop source, because they are
+    // the only kinds no other world can draw.
+    ...(source.library ? KATAMARI_KIND_DENSITY : {}),
+  };
   const kindScale: Partial<Record<ScatterKind, number>> = {};
   let placements = computePlacements();
   let exclusions: Exclusion[] = [];
@@ -2754,11 +2968,11 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
 
     // One InstancedMesh per (kind, variant) — ~30 draws total.
     for (const kind of PROP_KINDS) {
-      const variants = geometries.get(kind)!;
+      const variants = variantsOf(kind);
       for (let v = 0; v < variants.length; v++) {
         const of = visible.filter((p) => p.kind === kind && p.variant === v);
         if (of.length === 0) continue;
-        const material = materialFor(kind);
+        const material = materialFor(kind, v);
         const mesh = new InstancedMesh(variants[v]!.geometry, material, of.length);
         // Named so the ghost-panel scene outliner represents environment
         // objects legibly, like it does each created character (user ask).
@@ -2767,6 +2981,9 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
         // Which kind this mesh draws, so `setStyle` can re-material every
         // standing instance without a rebuild (docs/ghibli-port.md §3).
         mesh.userData.scatterKind = kind;
+        // …and which VARIANT, because a library-backed material is chosen
+        // per variant and `setStyle` re-materials in place.
+        mesh.userData.scatterVariant = v;
         mesh.frustumCulled = false;
         const kMult = scaleOf(kind);
         // Rocks squash flat and wide — the anti-egg silhouette bias.
@@ -2885,7 +3102,7 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
     // and a mountain's footprint is far past SHADOW_MAX_RADIUS so the
     // filter below drops it too (a mountain is its own ground figure).
     // Matrices are laid by layShadows from the current sun ellipse.
-    const shadowed = visible.filter((p) => !isMark(p.kind));
+    const shadowed = visible.filter((p) => !isMark(p.kind) && variantOf(p) !== null);
     // The ground under each stamp is sampled HERE, once per rebuild: a
     // re-lay runs on every ~1° the sun glides through, and the terrain is
     // the one thing in that loop that never changes.
@@ -2894,7 +3111,7 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
         x: p.x,
         z: p.z,
         r:
-          variantOf(p).radius *
+          variantOf(p)!.radius *
           p.scale *
           scaleOf(p.kind) *
           (p.kind === 'rock' ? ROCK_WIDEN_XZ : 1) *
@@ -2925,13 +3142,13 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
     group,
     positions() {
       return standing()
-        .filter((p) => !isMark(p.kind))
+        .filter((p) => !isMark(p.kind) && variantOf(p) !== null)
         .map((p) => ({
           x: p.x,
           z: p.z,
           kind: p.kind as PropKind,
           r:
-            variantOf(p).radius *
+            variantOf(p)!.radius *
             p.scale *
             scaleOf(p.kind) *
             (p.kind === 'rock' ? ROCK_WIDEN_XZ : 1),
@@ -3005,9 +3222,13 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
       // field in the same write — a canopy and a tick can never be bent by
       // two different weathers. Nothing exists here until the style has been
       // switched at least once.
-      if (ghibliMaterials) {
+      if (ghibliMaterials || source.draw) {
         const field = windFieldNow();
-        for (const m of Object.values(ghibliMaterials)) setWindOnMaterial(m, field, timeMs);
+        if (ghibliMaterials)
+          for (const m of Object.values(ghibliMaterials)) setWindOnMaterial(m, field, timeMs);
+        // The library's cel materials own the same four uniform names, so
+        // one write reaches a canopy, a tick and a vending machine alike.
+        for (const m of source.draw?.windMaterials() ?? []) setWindOnMaterial(m, field, timeMs);
       }
     },
     windField(): WindField {
@@ -3025,7 +3246,9 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
         colliderCache = [];
         for (const p of standing()) {
           if (isMark(p.kind)) continue;
-          const c = colliderFor(p, variantOf(p).radius, scaleOf(p.kind));
+          const v = variantOf(p);
+          if (!v) continue;
+          const c = colliderFor(p, v.radius, scaleOf(p.kind));
           if (c) colliderCache.push(c);
         }
         // Water blocks creatures. The landscape's circles are static (the
@@ -3043,8 +3266,23 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
       return instanceRefsByKind.get(kind) ?? [];
     },
     materialFor,
+    setPropSource(next: PropSource): void {
+      source = next;
+      setActivePropSource(next);
+      // The counts came off the catalog and not the download, so the
+      // placement is the same world it was a moment ago — but the geometry
+      // is new, so the swaying kinds need their height attribute and every
+      // instance needs re-laying. A rebuild, exactly like a density change:
+      // every consumer that keys off `rebuildVersion()` re-reads and none of
+      // them has to learn why (docs/katamari-props.md §e.3).
+      bakeWindHeights();
+      rebuild();
+    },
+    propSource(): PropSource {
+      return source;
+    },
     geometryFor(kind: PropKind, variant: number): BufferGeometry | null {
-      return geometries.get(kind)?.[variant]?.geometry ?? null;
+      return variantsOf(kind)[variant]?.geometry ?? null;
     },
     rebuildVersion: (): number => rebuildCount,
     setTaken(keys: ReadonlySet<string>): void {
@@ -3088,7 +3326,7 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
       for (const mesh of meshes) {
         const kind = mesh.userData.scatterKind as PropKind | undefined;
         if (kind === undefined) continue;
-        mesh.material = materialFor(kind);
+        mesh.material = materialFor(kind, (mesh.userData.scatterVariant as number | undefined) ?? 0);
       }
       // The tick, grass and flower INK MARKS are what the GPU blade field
       // replaces on this style (src/world/ghibli/grass.ts): drawn together
@@ -3132,7 +3370,8 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
     },
     dispose(): void {
       clearMeshes();
-      for (const variants of geometries.values())
+      source.draw?.dispose();
+      for (const variants of source.variants.values())
         for (const v of variants) v.geometry.dispose();
       for (const variants of Object.values(markGeometries))
         for (const g of variants) g.dispose();

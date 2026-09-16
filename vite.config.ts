@@ -1,7 +1,13 @@
 /// <reference types="vitest/config" />
 import { defineConfig, type Plugin } from 'vite';
+import { rmSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
-import { applyWorldToHtml, readWorlds, resolveWorld } from './scripts/world-build.mjs';
+import {
+  applyWorldToHtml,
+  readWorlds,
+  resolveWorld,
+  sanitizeGame,
+} from './scripts/world-build.mjs';
 
 /**
  * A client's world is a deployment of its own.
@@ -42,8 +48,36 @@ function worldIdentity(world: ReturnType<typeof resolveWorld>): Plugin {
   };
 }
 
+/**
+ * The katamari object library ships to the KATAMARI WORLD only.
+ *
+ * `public/katamari/` is a personal-use extraction from a retail copy of
+ * *Katamari Damacy* (`public/katamari/README.md`); the assets remain
+ * Namco's. The app already never fetches them without the game
+ * (`startKatamariWorld`, src/world/katamari/source.ts), and this is the
+ * other half of that statement: a deployment whose world did not ask for
+ * the game does not carry the files at all. Vite copies `public/` wholesale,
+ * so the drop happens after the copy — the one place that knows both the
+ * output directory and which world this build is for.
+ */
+function katamariAssets(world: ReturnType<typeof resolveWorld>): Plugin {
+  const keep = sanitizeGame(world?.game) === 'katamari';
+  let outDir = 'dist';
+  return {
+    name: 'ref-world-katamari-assets',
+    apply: 'build',
+    configResolved(config) {
+      outDir = config.build.outDir;
+    },
+    closeBundle() {
+      if (keep) return;
+      rmSync(resolve(__dirname, outDir, 'katamari'), { recursive: true, force: true });
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [worldIdentity(WORLD)],
+  plugins: [worldIdentity(WORLD), katamariAssets(WORLD)],
   build: {
     rollupOptions: {
       input: {

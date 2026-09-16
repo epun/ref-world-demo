@@ -65,9 +65,15 @@ describe('STICKY — every prop kind has a row', () => {
     }
   });
 
-  it('makes the rock the one unrooted kind — it is already a rigid body', () => {
+  it('makes the rock the one unrooted AUTHORED kind — it is already a rigid body', () => {
     const unrooted = PROP_KINDS.filter((k) => !STICKY[k].rooted);
-    expect(unrooted).toEqual(['rock']);
+    // `small` joins it (2026-09-16, the katamari object library): the junk
+    // tier is mugs, cans and shells lying on the ground, which is what the
+    // rock's row already described. Every library kind's rootedness can be
+    // overridden per MODEL — a bench is not planted and the vending machine
+    // beside it is — through `stickyFor`, which is tested below; these rows
+    // are the kind's common case.
+    expect(unrooted).toEqual(['rock', 'small']);
   });
 
   it('never lets a cloud be worn', () => {

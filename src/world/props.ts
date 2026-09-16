@@ -39,10 +39,20 @@ import {
   Shape,
   Vector2,
 } from 'three';
+import type { Material, ShaderMaterial } from 'three';
 import { toBufferGeometry } from '../character/mesh';
+import { KATAMARI_NEW_KINDS } from './katamari/catalog';
 import { inflate } from '../inflate/inflate';
 import { analyze } from '../shape/analyze';
 import type { Stroke, StrokeList } from '../shape/types';
+import type { WorldStyle } from './style';
+import {
+  activePropSource,
+  propVariantMeta,
+  setActivePropSource,
+  type PropPlacementSource,
+  type PropVariantMeta,
+} from './props-source';
 
 /** Prop kinds that go through the inflate pipeline. New kinds APPEND, so the
  * pre-existing ones keep their index (scatter's roll order and its hash salts
@@ -64,9 +74,33 @@ export type InflatedPropKind = (typeof INFLATED_PROP_KINDS)[number];
 export const ARCH_PROP_KINDS = ['building', 'palm', 'picnicTable', 'waterTower'] as const;
 export type ArchPropKind = (typeof ARCH_PROP_KINDS)[number];
 
-/** Every prop kind, both construction paths. */
-export const PROP_KINDS = [...INFLATED_PROP_KINDS, ...ARCH_PROP_KINDS] as const;
+/**
+ * The katamari's own tiers of junk (2026-09-15, the object library): kinds
+ * with NO stock construction path at all — no strokes, no arch builder, no
+ * variant of any sort in this file. They exist in `PropKind` so the scatter,
+ * `STICKY`, the colliders and the chunk map can all name them on a katamari
+ * world; on every other world their variant count is 0 and their default
+ * density is 0, so nothing ever rolls one and nothing is ever drawn.
+ *
+ * Imported from the katamari catalog rather than re-listed, so the tier names
+ * have one home. That module is type-only in its own imports, so this is data
+ * and not a cycle.
+ */
+export { KATAMARI_NEW_KINDS as KATAMARI_TIER_KINDS } from './katamari/catalog';
+
+/** Every prop kind: both stock construction paths, then the library tiers. */
+export const PROP_KINDS = [
+  ...INFLATED_PROP_KINDS,
+  ...ARCH_PROP_KINDS,
+  ...KATAMARI_NEW_KINDS,
+] as const;
 export type PropKind = (typeof PROP_KINDS)[number];
+
+/** True for one of the three library tier kinds — a kind this file builds
+ * nothing for (see `KATAMARI_TIER_KINDS`). */
+export function isPropTierKind(kind: string): boolean {
+  return (KATAMARI_NEW_KINDS as readonly string[]).includes(kind);
+}
 
 /** Mask resolution for inflated props — smaller than the character's 512.
  * Small, ground-hugging kinds drop to 128: at ~60px on screen the
@@ -1716,6 +1750,10 @@ export const ARCH_VARIANT_DEFS: Record<ArchPropKind, ArchVariantDef[]> = {
 export const BUILDING_COURTYARD_VARIANT = 3;
 
 function variantMetaOf(kind: PropKind): { name: string; height: number }[] {
+  // A library tier kind has nothing authored behind it: no strokes, no arch
+  // builder, no variant. Zero here is what keeps the stock world from ever
+  // rolling one (see `KATAMARI_TIER_KINDS`).
+  if (isPropTierKind(kind)) return [];
   return (INFLATED_PROP_KINDS as readonly string[]).includes(kind)
     ? PROP_VARIANT_DEFS[kind as InflatedPropKind]
     : ARCH_VARIANT_DEFS[kind as ArchPropKind];
@@ -1734,6 +1772,61 @@ export interface PropVariant {
   height: number;
   /** Footprint radius in world units at scale 1, for shadows + exclusions. */
   radius: number;
+  /** Set only by a non-stock prop source (the katamari library): the facts
+   * about THIS variant that a stock kind carries per KIND. Absent means the
+   * kind's own rules answer for it, which is every variant in this file. */
+  meta?: PropVariantMeta;
+}
+
+/**
+ * A prop source: the pure half (`src/world/props-source.ts` — counts and
+ * per-variant meta) plus the geometry the scatter draws.
+ *
+ * `buildPropGeometries()` is the stock one's geometry and always was; the
+ * katamari library's is `katamariPropSource` (src/world/katamari/source.ts).
+ */
+export interface PropSource extends PropPlacementSource {
+  variants: Map<PropKind, PropVariant[]>;
+  /**
+   * Set when the source draws its OWN variants rather than wearing the
+   * scatter's stock albedos — which the katamari library does, because every
+   * model carries its own baked texture (docs/katamari-props.md §b).
+   */
+  draw?: PropDraw;
+}
+
+/** How a source that owns its look answers the scatter. */
+export interface PropDraw {
+  /**
+   * The material for one (kind, variant) in the world's current style, or
+   * null to fall back on the stock albedo for the kind.
+   *
+   * The scatter builds one `InstancedMesh` per (kind, variant) already, so a
+   * material per variant costs no extra draw call.
+   */
+  materialFor(kind: PropKind, variant: number, style: WorldStyle): Material | null;
+  /** The materials that take the frame's wind write (`setWindOnMaterial`). */
+  windMaterials(): ShaderMaterial[];
+  dispose(): void;
+}
+
+export type { PropPlacementSource, PropVariantMeta };
+export { activePropSource, propVariantMeta, setActivePropSource };
+
+/** The variant counts in force: the installed source's, or the authored
+ * table. The ONE place the pure placement math asks. */
+export function activePropCounts(): Record<PropKind, number> {
+  return activePropSource()?.counts ?? PROP_VARIANT_COUNTS;
+}
+
+/** The stock source: the authored geometry, the authored counts, no meta. */
+export function stockPropSource(): PropSource {
+  return {
+    counts: PROP_VARIANT_COUNTS,
+    meta: new Map<PropKind, readonly PropVariantMeta[]>(),
+    library: false,
+    variants: buildPropGeometries(),
+  };
 }
 
 /**
@@ -1828,6 +1921,9 @@ export function buildPropGeometries(): Map<PropKind, PropVariant[]> {
       PROP_VARIANT_DEFS[kind].map((_def, i) => buildInflatedVariant(kind, i)),
     );
   }
+  // The library tiers have no stock build at all: an empty list, so the
+  // scatter's rebuild finds the kind and draws nothing of it.
+  for (const kind of KATAMARI_NEW_KINDS) out.set(kind, []);
   for (const kind of ARCH_PROP_KINDS) {
     const variants: PropVariant[] = [];
     for (const def of ARCH_VARIANT_DEFS[kind]) {

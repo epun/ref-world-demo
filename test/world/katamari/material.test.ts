@@ -201,10 +201,13 @@ describe('katamari sources', () => {
   });
 
   it('does not import the files other delegates own', () => {
-    // props.ts is imported on purpose (the normalise rule and the hash
-    // family live there and must not be copied); everything else in the
-    // scatter/scene/destruction stack belongs to another delegate at merge
-    // time and is reached through the wiring plan instead.
+    // props.ts is imported on purpose (the normalise rule, the hash family
+    // and — since the wiring landed, 2026-09-16 — the prop-source types live
+    // there and must not be copied). Everything else in the
+    // scatter/scene/destruction stack is reached the other way round: those
+    // files ask the library, the library never reaches into them. That is
+    // what keeps the seam one-directional, and it is why `KatamariPart` is
+    // its own type rather than an import of `Chunk`.
     const forbidden = [
       '../scatter',
       '../chunks',

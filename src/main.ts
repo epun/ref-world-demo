@@ -663,7 +663,18 @@ function main(): void {
    * the first crack or shatter pays for it once.
    */
   let chunkSet: Map<ChunkKind, Chunk[][]> | null = null;
-  const chunks = (): Map<ChunkKind, Chunk[][]> => (chunkSet ??= buildChunkGeometries());
+  /** Which library the memoised set was built from, so a set built before
+   * the glbs landed is not the one a katamari world keeps (the library
+   * arrives late — docs/katamari-props.md §c, §e). */
+  let chunkLibrary: unknown = null;
+  const chunks = (): Map<ChunkKind, Chunk[][]> => {
+    // On a katamari world the props ARE the library's models, so their
+    // chunks are the models' own parts and the authored pipeline never runs.
+    const library = world.katamariChunks();
+    if (chunkSet && chunkLibrary === library) return chunkSet;
+    chunkLibrary = library;
+    return (chunkSet = buildChunkGeometries(library));
+  };
   const looseMeshes = katamari
     ? createLooseMeshes(world.scatter, world.scene, () => chunkSet)
     : null;

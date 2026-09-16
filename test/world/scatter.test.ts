@@ -293,14 +293,20 @@ describe('scatter placement', () => {
     expect(SCATTER_KINDS).toContain('mountain');
     expect(SCATTER_KINDS).toContain('reed');
     expect(new Set(SCATTER_KINDS).size).toBe(SCATTER_KINDS.length);
-    // 12 prop kinds (clouds appended with the brush kit) plus the four flat
-    // mark kinds — ticks, reeds, and the painted grass / flower alphabets.
+    // 12 prop kinds (clouds appended with the brush kit) plus the three
+    // katamari junk tiers (2026-09-16, the object library — they have no
+    // variants and no density on any other world, but they are kinds and the
+    // panel controls them), plus the flat mark kinds — ticks, reeds, and the
+    // painted grass / flower alphabets.
     expect(SCATTER_KINDS).toContain('cloud');
     expect(SCATTER_KINDS).toContain('grass');
     expect(SCATTER_KINDS).toContain('flower');
     // …and the flame the fire brush places (2026-09-10).
     expect(SCATTER_KINDS).toContain('flame');
-    expect(SCATTER_KINDS.length).toBe(18);
+    for (const kind of ['small', 'medium', 'large'] as const) {
+      expect(SCATTER_KINDS).toContain(kind);
+    }
+    expect(SCATTER_KINDS.length).toBe(21);
   });
 
   it('new kinds land at their authored rarities and cluster shapes', () => {

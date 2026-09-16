@@ -14,7 +14,7 @@
  * and would fail it.
  */
 
-import { beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { BoxGeometry, InstancedBufferAttribute, Group, Matrix4 } from 'three';
 import { createPhysicsWorld, type PhysicsWorld } from '../../src/physics/world';
 import {
@@ -30,7 +30,11 @@ import {
   type Placement,
   type Scatter,
 } from '../../src/world/scatter';
-import type { PropKind } from '../../src/world/props';
+import {
+  PROP_VARIANT_COUNTS,
+  setActivePropSource,
+  type PropKind,
+} from '../../src/world/props';
 import type { Surface } from '../../src/world/surface';
 import { gustAt, type WindField } from '../../src/world/wind';
 
@@ -575,5 +579,87 @@ describe('the impact seam', () => {
     expect(bodies.items().some((i) => i.key === key)).toBe(false);
     // …and no scatter rebuild for a key the scatter never drew.
     expect(stub.taken().size).toBe(takenBefore);
+  });
+});
+
+/**
+ * A LIBRARY VARIANT DECIDES FOR ITSELF (2026-09-16, docs/katamari-props.md
+ * decision 2).
+ *
+ * `kind === 'rock'` used to be the whole test for "is this a dynamic body",
+ * and for the authored props it is the same answer: the rock is the one
+ * unrooted kind. On a katamari world the rootedness is per MODEL — a bench
+ * is a loose body from the start and the vending machine beside it is a
+ * fixed cylinder — so what the routing asks is `stickyFor(kind, variant)`,
+ * and this is that generalisation, with a prop source installed the way a
+ * katamari world installs one.
+ */
+describe('unrooted library variants', () => {
+  const MEDIUM: Placement[] = [
+    // Variant 0 is planted, variant 1 is not — the split the catalog has.
+    { kind: 'medium', variant: 0, x: -40, z: 30, scale: 1, rotY: 0 },
+    { kind: 'medium', variant: 1, x: -30, z: 30, scale: 1, rotY: 0 },
+  ];
+
+  let physics: PhysicsWorld;
+  let bodies: PropBodies;
+
+  beforeAll(async () => {
+    setActivePropSource({
+      library: true,
+      counts: { ...PROP_VARIANT_COUNTS, medium: 2 },
+      meta: new Map([
+        [
+          'medium' as PropKind,
+          [
+            { id: '0284', rooted: true, tier: 'medium' as const },
+            { id: '0394', rooted: false, tier: 'medium' as const },
+          ],
+        ],
+      ]),
+    });
+    physics = await createPhysicsWorld(flat, FIELD);
+    const geometry = new BoxGeometry(1, 1, 1);
+    const mesh = fakeMesh(MEDIUM.length, false);
+    const m = new Matrix4();
+    const refs: InstanceRef[] = MEDIUM.map((p, i) => {
+      mesh.setMatrixAt(i, m.makeTranslation(p.x, 0, p.z));
+      return {
+        key: placementKey(p),
+        placement: p,
+        mesh,
+        index: i,
+        scale: p.scale,
+        radius: 0.5 * p.scale,
+      };
+    });
+    const field: WindField = { dirX: 1, dirZ: 0, strength: 1, speed: 1, gust: gustAt(0) };
+    const scatter = {
+      group: new Group(),
+      instanceRefs: (kind: PropKind): InstanceRef[] => (kind === 'medium' ? refs : []),
+      geometryFor: () => geometry,
+      rebuildVersion: () => 1,
+      setTaken: () => {},
+      windField: () => field,
+    } as unknown as Scatter;
+    bodies = createPropBodies({ physics, scatter, surface: flat, wind: field });
+  });
+
+  afterAll(() => {
+    setActivePropSource(null);
+  });
+
+  it('gives the unrooted one a dynamic body and the planted one a fixed', () => {
+    const items = bodies.items();
+    expect(items.length).toBe(1);
+    const loose = items[0]!;
+    expect(loose.key).toBe(placementKey(MEDIUM[1]!));
+    expect(loose.kind).toBe('medium');
+    expect(loose.body.isFixed()).toBe(false);
+    // Asleep until something disturbs it, exactly as a stone is.
+    expect(loose.body.isSleeping()).toBe(true);
+    // The planted one is the other body, and it is not an item.
+    expect(bodies.counts().bodies).toBe(MEDIUM.length);
+    expect(items.some((i) => i.key === placementKey(MEDIUM[0]!))).toBe(false);
   });
 });

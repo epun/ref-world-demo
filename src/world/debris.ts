@@ -54,7 +54,7 @@
 
 import { Vector3 } from 'three';
 import { MOTION } from '../taste/tokens';
-import { STICKY, debrisLifetimeMs } from '../creatures/sticky';
+import { debrisLifetimeMs, stickyFor } from '../creatures/sticky';
 import type { PhysicsWorld } from '../physics/world';
 import type { Chunk, ChunkKind } from './chunks';
 import { DEBRIS_CAP, type DeviceTier } from './device';
@@ -356,7 +356,7 @@ export function createDebris(opts: DebrisOptions): Debris {
       scale: parent.scale,
       r,
       bornMs: nowMs,
-      lifetimeMs: debrisLifetimeMs(STICKY[parent.kind]),
+      lifetimeMs: debrisLifetimeMs(stickyFor(parent.kind, parent.variant)),
       body: null,
       sink: null,
     };

@@ -58,6 +58,7 @@ import { MOTION, WORLD } from '../taste/tokens';
 import { colliderFor, ROCK_SQUASH_Y, ROCK_WIDEN_XZ, type InstanceRef, type Scatter } from './scatter';
 import { instanceVariation } from './scatter';
 import { PROP_KINDS, type PropKind } from './props';
+import { stickyFor } from '../creatures/sticky';
 import type { Surface } from './surface';
 import { windAt, type WindField } from './wind';
 
@@ -475,6 +476,19 @@ export function createPropBodies(opts: PropBodiesOptions): PropBodies {
       .setActiveEvents(rapier.ActiveEvents.COLLISION_EVENTS);
   };
 
+  /**
+   * Is this placement in the ground?
+   *
+   * `STICKY[kind].rooted` used to be the whole answer, and for the authored
+   * props it still is: the rock is the one unrooted kind. A LIBRARY variant
+   * decides for itself — a bench is not planted and the vending machine
+   * beside it is (`stickyFor`, src/creatures/sticky.ts) — so the routing
+   * below asks per variant. Everything unrooted takes the rock's path: a
+   * dynamic body, asleep until something disturbs it.
+   */
+  const rootedRef = (ref: InstanceRef): boolean =>
+    stickyFor(ref.placement.kind as PropKind, ref.placement.variant).rooted;
+
   const createRock = (ref: InstanceRef): void => {
     const p = ref.placement;
     readInstance(ref);
@@ -487,7 +501,9 @@ export function createPropBodies(opts: PropBodiesOptions): PropBodies {
       // Asleep until disturbed: a field of four hundred stones costs nothing
       // until a creature walks into one.
       .setSleeping(true);
-    const geometry = scatter.geometryFor('rock', p.variant);
+    // The hull of the thing actually on screen, whatever kind it is: a
+    // library bench beds down on its own facets exactly as a stone does.
+    const geometry = scatter.geometryFor(p.kind as PropKind, p.variant);
     const body = physics.addRigidBody(
       desc,
       rockCollider(geometry, scl.x, scl.y, scl.z, ref.radius),
@@ -496,7 +512,7 @@ export function createPropBodies(opts: PropBodiesOptions): PropBodies {
     byCollider.set(handle, ref.key);
     rocks.set(ref.key, {
       key: ref.key,
-      kind: 'rock',
+      kind: p.kind as PropKind,
       variant: p.variant,
       scale: ref.scale,
       meshDrawn: false,
@@ -546,7 +562,9 @@ export function createPropBodies(opts: PropBodiesOptions): PropBodies {
   /** The hard footprint radius of a placement, or null when it has none. */
   const hardFootprint = (ref: InstanceRef): number | null => {
     const p = ref.placement;
-    if (p.kind === 'rock') return null;
+    // Anything UNROOTED is a dynamic body and never a fixed cylinder — the
+    // rock, and every library variant the catalog says is not planted.
+    if (!rootedRef(ref)) return null;
     // Recover the per-kind dials from the ref: `scale` is placement × kind
     // multiplier, and `radius` is the variant radius at that scale.
     const kindMult = p.scale > 0 ? ref.scale / p.scale : 1;
@@ -577,7 +595,7 @@ export function createPropBodies(opts: PropBodiesOptions): PropBodies {
 
     for (const kind of PROP_KINDS) {
       for (const ref of scatter.instanceRefs(kind)) {
-        if (kind === 'rock') {
+        if (!rootedRef(ref)) {
           rockRefs.set(ref.key, ref);
           seenRocks.add(ref.key);
           if (rocks.has(ref.key)) survivors.push(ref);

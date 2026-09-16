@@ -13,6 +13,7 @@ import {
   buildPropGeometries,
   extrudeWobbled,
   INFLATED_PROP_KINDS,
+  KATAMARI_TIER_KINDS,
   latheWobbled,
   PROP_KINDS,
   MOUNTAIN_FOOTPRINT,
@@ -35,6 +36,10 @@ function maskSize(kind: InflatedPropKind): number {
 
 /** name+height meta for any kind, either construction path. */
 function metaOf(kind: PropKind): { name: string; height: number }[] {
+  // The katamari tier kinds have no authored build at all (2026-09-16, the
+  // object library): they exist in PROP_KINDS so the shared tables can name
+  // them, and this file builds nothing for them.
+  if ((KATAMARI_TIER_KINDS as readonly string[]).includes(kind)) return [];
   return (INFLATED_PROP_KINDS as readonly string[]).includes(kind)
     ? PROP_VARIANT_DEFS[kind as InflatedPropKind]
     : ARCH_VARIANT_DEFS[kind as ArchPropKind];
