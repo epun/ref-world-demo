@@ -1334,10 +1334,12 @@ export async function initDevPanel(
       }
       if (ink) {
         const params = ink.getParams();
+        // World units now, not normalised depth (src/world/ink.ts:
+        // EDGE_WORLD_UNITS) — the same 0.05x..1x span as the old 0.0002..0.004.
         style.addSlider('ink edge threshold', {
-          min: 0.0002,
-          max: 0.004,
-          step: 0.0001,
+          min: 0.1,
+          max: 1.92,
+          step: 0.02,
           value: params.edgeThreshold,
           id: 'ink-edge-threshold',
           onChange: (v) => {

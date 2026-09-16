@@ -6,12 +6,19 @@
  * t.primary and settle by drifting into the ambient floor, which runs on the
  * look-target forever. Frustum is sized by viewport height so resizes widen
  * the view without rescaling the world.
+ *
+ * Two of its numbers are DERIVED from the world rather than chosen: the zoom
+ * floor, which is whatever holds the whole island on the narrower screen axis
+ * (`zoomMinFor`), and the eye distance, which is whatever keeps the sea disc
+ * inside the depth range at any orbit (`CAMERA_DISTANCE`).
  */
 
 import { OrthographicCamera, Vector3 } from 'three';
 import { sampleDrift } from '../motion/ambient';
 import { Spring } from '../motion/spring';
 import { MOTION } from '../taste/tokens';
+import { GROUND_RADIUS } from './ground';
+import { coastRadius } from './landscape';
 
 /** True isometric elevation: atan(1/√2). */
 const ELEVATION = Math.atan(1 / Math.SQRT2);
@@ -20,15 +27,47 @@ const AZIMUTH = Math.PI / 4;
 /** World units visible top-to-bottom. Width follows the viewport aspect. */
 export const FRUSTUM_HEIGHT = 40;
 
-/** Distance from look-target along the iso axis. Arbitrary for an ortho
- * camera; large enough to keep the whole ground inside the depth range. */
-const CAMERA_DISTANCE = 120;
+/** Pan bounds: the look-target stays inside the populated region, so no
+ * combination of pan, orbit, and zoom reaches the world's edge. */
+const PAN_LIMIT = 200;
+
+/**
+ * Furthest any drawn ground point can sit from the look-target: the sea disc
+ * (src/world/ground.ts) plus the whole pannable region, because the target
+ * can stand `PAN_LIMIT` off the origin while the disc still reaches
+ * `GROUND_RADIUS`. Everything drawn lives inside this ball. [D]
+ */
+const DEPTH_REACH = GROUND_RADIUS + PAN_LIMIT;
+
+/** [D] Slack on both ends of the depth range, for the terrain's own height,
+ * props, and the cloud deck standing above the plane. */
+const DEPTH_MARGIN = 200;
+
+/**
+ * Distance from look-target along the iso axis. Free for an ortho camera —
+ * moving the eye back along the view direction changes nothing on screen —
+ * so it is set by the DEPTH RANGE, not by framing: far enough back that no
+ * geometry can ever fall behind the near plane.
+ *
+ * At 120 (the original) a low orbit put the ground between the eye and the
+ * target in front of the camera plane and the near plane cut the front edge
+ * of the map off (user report, 2026-09-15). At `DEPTH_REACH + DEPTH_MARGIN`
+ * the nearest drawable point still sits `DEPTH_MARGIN` in front of the eye.
+ */
+export const CAMERA_DISTANCE = DEPTH_REACH + DEPTH_MARGIN;
+
+/** Ortho depth range. `far` clears the sea disc on the far side too — at the
+ * old `CAMERA_DISTANCE * 4` = 480 the horizon was clipped clean through,
+ * which is a hard cut (TASTE §2.1). Ortho depth is linear, so a 3600-unit
+ * range costs no precision that matters here. */
+export const CAMERA_NEAR = 0.1;
+export const CAMERA_FAR = CAMERA_DISTANCE + DEPTH_REACH + DEPTH_MARGIN;
 
 /** Stable seed for the camera's own ambient drift channel. */
 const DRIFT_SEED = 41.7;
 
-/** Zoom bounds: multiplier on the base frustum (higher = closer). */
-const ZOOM_MIN = 0.45;
+/** Zoom ceiling: multiplier on the base frustum (higher = closer). The FLOOR
+ * is not a literal — it comes from the island (see `zoomMinFor`). */
 const ZOOM_MAX = 2.6;
 
 /** OrbitControls dampingFactor 0.05 at 60hz ≈ exp decay with this τ. */
@@ -38,9 +77,52 @@ const ORBIT_DAMPING_TAU_MS = 325;
 const ELEVATION_MIN = 0.3;
 const ELEVATION_MAX = 1.45;
 
-/** Pan bounds: the look-target stays inside the populated region, so no
- * combination of pan, orbit, and zoom reaches the world's edge. */
-const PAN_LIMIT = 200;
+/**
+ * [D] Sea shown past the beach at the widest zoom: one `shoreRamp`-ish 20
+ * units, so the coast reads as an edge with water around it rather than as
+ * the edge of the frame.
+ */
+export const ISLAND_VIEW_MARGIN = 20;
+
+/** Angular samples of the coast. The coast is a union of wobbled lobes with
+ * no closed form, so its widest reach is MEASURED off the authored geography
+ * rather than restated here (CLAUDE.md: never re-derive a shoreline). */
+const COAST_SAMPLES = 360;
+
+let coastMaxCache: number | null = null;
+
+/** Largest coast radius from the origin, sampled once and memoized —
+ * `coastRadius` is deterministic, so the number is stable per build. */
+function coastMaxRadius(): number {
+  if (coastMaxCache === null) {
+    let max = 0;
+    for (let i = 0; i < COAST_SAMPLES; i++) {
+      max = Math.max(max, coastRadius((i / COAST_SAMPLES) * Math.PI * 2));
+    }
+    coastMaxCache = max;
+  }
+  return coastMaxCache;
+}
+
+/**
+ * The zoom FLOOR for a viewport aspect: the widest the view is allowed to
+ * get, which is exactly wide enough to hold the WHOLE island plus
+ * `ISLAND_VIEW_MARGIN` of sea (user ask, 2026-09-15: "zoom out so that you
+ * can see the entire island on pinch").
+ *
+ * The island is a disc of radius R on the ground plane. Seen down the iso
+ * axis it measures `2R` across the screen and `2R·sin(elevation)` up it —
+ * the ground foreshortens vertically, and only vertically. The frustum is
+ * `FRUSTUM_HEIGHT / zoom` tall and `FRUSTUM_HEIGHT·aspect / zoom` wide, so
+ * both fits give a ceiling on the zoom and the floor is the smaller one: a
+ * portrait phone is bound by its width, a landscape one by its height.
+ */
+export function zoomMinFor(aspect: number): number {
+  const r = coastMaxRadius() + ISLAND_VIEW_MARGIN;
+  const byWidth = (FRUSTUM_HEIGHT * Math.max(0.01, aspect)) / (2 * r);
+  const byHeight = FRUSTUM_HEIGHT / (2 * r * Math.sin(ELEVATION));
+  return Math.min(ZOOM_MAX, byWidth, byHeight);
+}
 
 export class CameraRig {
   readonly camera: OrthographicCamera;
@@ -58,6 +140,9 @@ export class CameraRig {
   /** Ortho zoom multiplier; wheel retargets (drift settle), pinch is 1:1. */
   private readonly zoomSpring: Spring;
   private zoomTarget = 1;
+  /** Live zoom floor — derived from the island and the viewport aspect, so
+   * rotating the phone to landscape raises it (see `zoomMinFor`). */
+  private zoomMin: number;
   /** Continuous azimuth drift rate (rad/s), fed by the presentation tour.
    * Applied to the orbit *target* each frame, so the damped follow smooths
    * every start and stop — no step is representable. */
@@ -78,7 +163,8 @@ export class CameraRig {
   constructor(aspect: number) {
     const halfH = FRUSTUM_HEIGHT / 2;
     const halfW = halfH * aspect;
-    this.camera = new OrthographicCamera(-halfW, halfW, halfH, -halfH, 0.1, CAMERA_DISTANCE * 4);
+    this.camera = new OrthographicCamera(-halfW, halfW, halfH, -halfH, CAMERA_NEAR, CAMERA_FAR);
+    this.zoomMin = zoomMinFor(aspect);
     // Reframes slide at t.primary — never snap, never cut (TASTE §2.1).
     this.targetX = new Spring(0, { settleMs: MOTION.primaryMs });
     this.targetZ = new Spring(0, { settleMs: MOTION.primaryMs });
@@ -150,7 +236,7 @@ export class CameraRig {
 
   /** Wheel zoom: retargets the spring so steps drift in — never a snap. */
   zoomBy(factor: number): void {
-    this.zoomTarget = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, this.zoomTarget * factor));
+    this.zoomTarget = Math.min(ZOOM_MAX, Math.max(this.zoomMin, this.zoomTarget * factor));
     this.zoomSpring.retarget(this.zoomTarget);
   }
 
@@ -160,7 +246,7 @@ export class CameraRig {
    * path, so a snap is unrepresentable here (TASTE §2.1).
    */
   zoomTo(target: number): void {
-    this.zoomTarget = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, target));
+    this.zoomTarget = Math.min(ZOOM_MAX, Math.max(this.zoomMin, target));
     this.zoomSpring.retarget(this.zoomTarget);
   }
 
@@ -174,7 +260,7 @@ export class CameraRig {
 
   /** Pinch zoom: direct 1:1 while the fingers move. */
   zoomDirect(factor: number): void {
-    this.zoomTarget = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, this.zoomTarget * factor));
+    this.zoomTarget = Math.min(ZOOM_MAX, Math.max(this.zoomMin, this.zoomTarget * factor));
     this.zoomSpring.reset(this.zoomTarget);
   }
 
@@ -227,6 +313,16 @@ export class CameraRig {
   /** Preserve the iso frustum on resize: height fixed, width follows aspect. */
   resize(width: number, height: number): void {
     const aspect = width / Math.max(1, height);
+    // The floor moves with the aspect — a portrait frame can open wider than
+    // a landscape one before the island runs out of room — so a view parked
+    // at the old floor can find itself below the new one (rotate a phone to
+    // landscape). It RETARGETS: the zoom drifts up on its ζ≥1 spring, never
+    // a cut (TASTE §2.1).
+    this.zoomMin = zoomMinFor(aspect);
+    if (this.zoomTarget < this.zoomMin) {
+      this.zoomTarget = this.zoomMin;
+      this.zoomSpring.retarget(this.zoomTarget);
+    }
     const halfH = FRUSTUM_HEIGHT / 2;
     const halfW = halfH * aspect;
     this.camera.left = -halfW;
