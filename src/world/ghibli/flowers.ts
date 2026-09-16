@@ -42,7 +42,7 @@ import { GHIBLI } from '../../taste/tokens';
 import { PAINTED_SIZE } from '../painted';
 import { TOON_LIGHTING_GLSL, TOON_VARYINGS_GLSL, toonUniforms } from '../toon';
 import { WIND_FIELD_GLSL, type WindField } from '../wind';
-import { GG_HEIGHT_GLSL, GG_WINDOW_GLSL, HEIGHT_RES } from './height';
+import { FIELD_REACH, GG_FIELD_GLSL, GG_HEIGHT_GLSL, HEIGHT_RES } from './height';
 import {
   GG_WIND_NOISE_GLSL,
   createWindUniforms,
@@ -76,13 +76,13 @@ const PHASE_JITTER = 2.0;
  * explains why there is one at all).
  */
 /**
- * The BLADE window, exactly (2026-09-15, user direction: *"cut the flower span
- * to the blade span"*). Blooms belong in the grass, so they live in the same
- * window as the grass — and the density below is what keeps them from reading
- * as confetti, rather than spreading the same budget over more ground.
+ * The BLADE field's own reach (2026-09-15, user direction: *"cut the flower
+ * span to the blade span"*) — blooms belong in the grass, so they thin out
+ * with distance on the same radial curve the blades do
+ * (src/world/ghibli/height.ts).
  */
-export const FLOWER_SPAN_PROJECTION = 44;
-export const FLOWER_SPAN_PHONE = 26;
+export const FLOWER_SPAN_PROJECTION = FIELD_REACH * 2;
+export const FLOWER_SPAN_PHONE = FIELD_REACH;
 
 const DEFAULTS = {
   density: 1,
@@ -116,7 +116,7 @@ ${TOON_VARYINGS_GLSL}
 ${WIND_FIELD_GLSL}
 ${GG_WIND_NOISE_GLSL}
 ${GG_HEIGHT_GLSL}
-${GG_WINDOW_GLSL}
+${GG_FIELD_GLSL}
 
 uniform sampler2D uFlowers;
 uniform sampler2D uGrass;
@@ -180,7 +180,9 @@ void main() {
   float grow = max(paint, uBaseDensity * region.r * drift);
   grow *= 1.0 - 0.75 * region.g;
   grow *= 1.0 - wet;
-  float base = grow * uDensity;
+  // The same radial LOD the blades ride: blooms thin with distance and stop
+  // at the reach (src/world/ghibli/height.ts).
+  float base = grow * uDensity * ggFieldDensity(wpos);
   // Wild flowers grow in the meadow, not on bare ground: painted grass under
   // the bloom, or the map's own meadow weight.
   base *= mix(1.0, step(0.15, max(grassV, region.r)), step(0.5, uNeedGrass));
@@ -205,9 +207,9 @@ void main() {
   float far = smoothstep(9.0, 22.0, uZoom);
 
   float bh = uStemHeight * mix(0.25, 0.6, aRand.z);
-  // The window's fade, the blade field's exactly — the same squircle, the same
-  // 45% (ggWindow, src/world/ghibli/height.ts).
-  float windowFade = ggWindow(wpos);
+  // …and the same size fade at the rim, so a bloom out there is a smaller
+  // bloom rather than the last one before a line.
+  float windowFade = ggFieldHeight(wpos);
   bh *= windowFade;
 
   float phase = ggWindHash(dot(wpos, vec2(127.1, 311.7))) * ${ggFloat(PHASE_JITTER)};
@@ -416,23 +418,26 @@ export function createFlowerField(opts: FlowerFieldOptions): FlowerField {
   let count = Math.max(1, Math.round(opts.count ?? FLOWER_COUNT_PROJECTION));
   let centerX = 0;
   let centerZ = 0;
-  /** The lattice step, and the quantum `setCenter` snaps to — see the blade
-   * field's own. */
-  let cell = span / Math.ceil(Math.sqrt(count));
+  /** The quantum `setCenter` snaps to — see the blade field's own. */
+  const cell = Math.max(0.05, span / Math.max(1, Math.sqrt(count)) / 8);
 
-  /** Sow `n` blooms on the seeded jittered grid, WINDOW-LOCAL: the vertex
-   * shader adds `uCenter`, so this runs once per count and never again as the
-   * window slides. */
+  /**
+   * Sow `n` blooms RADIALLY and WINDOW-LOCAL, thinning with distance the way
+   * the blades do — the same construction as `GrassField`'s `lay`, on the
+   * bloom seed. The density curve is the shader's; this only has to put the
+   * instances where it will not cull them all.
+   */
   const lay = (n: number, offsets: Float32Array, rands: Float32Array): void => {
-    const k = Math.ceil(Math.sqrt(n));
-    cell = span / k;
-    const half = span / 2;
+    const reach = span / 2;
     const rand = mulberry32(FLOWER_SEED);
     for (let i = 0; i < n; i++) {
-      const gx = i % k;
-      const gz = (i / k) | 0;
-      offsets[i * 2] = -half + (gx + 0.5 + (rand() - 0.5) * 0.95) * cell;
-      offsets[i * 2 + 1] = -half + (gz + 0.5 + (rand() - 0.5) * 0.95) * cell;
+      const angle = i * 2.39996323 + (rand() - 0.5) * 0.9;
+      // sqrt keeps the sowing even per unit AREA before the shader's own curve
+      // thins it — a bloom field is sparse enough that the curve alone carries
+      // the falloff.
+      const r = Math.sqrt((i + rand()) / n) * reach;
+      offsets[i * 2] = Math.cos(angle) * r;
+      offsets[i * 2 + 1] = Math.sin(angle) * r;
       rands[i * 4] = rand();
       rands[i * 4 + 1] = rand();
       rands[i * 4 + 2] = rand();

@@ -83,6 +83,7 @@ import {
   ShapeGeometry,
   type Material,
   type ShaderMaterial,
+  type Texture,
   type WebGLProgramParametersWithUniforms,
 } from 'three';
 import { GHIBLI, MOTION, SURFACE, WORLD } from '../taste/tokens';
@@ -108,7 +109,11 @@ import {
 } from './landscape';
 import { GROUND_RADIUS } from './ground';
 import { setWindOnMaterial } from './ghibli/shared';
-import { createSeaSurfaceMaterial, createWaterSurfaceMaterial } from './ghibli/water';
+import {
+  createSeaSurfaceMaterial,
+  createWaterSurfaceMaterial,
+  setShoreTexture,
+} from './ghibli/water';
 import type { PaintedWaterField } from './painted-water';
 import type { WindField } from './wind';
 import type { WorldStyle } from './style';
@@ -124,6 +129,32 @@ import type { WorldStyle } from './style';
 // sheets ride that number plus its lift. `waterLevel` is the one height this
 // file reads directly — it is not a ground height at all but the flat the
 // geography authored for the body, and the terrain is built to meet it.
+
+/**
+ * WHY THESE STAY SMALL AND THE FILLS LEAVE THE NORMAL PASS (2026-09-16, user
+ * report: *"geometry breaking through the map for the puddles"*).
+ *
+ * A pond's basin floor is cut to EXACTLY its water level — measured: every
+ * texel inside pond-1's outline is at 1.15 and the sheet sits 0.008 above it —
+ * so the sheet and the ground are coplanar to within a hair. That was fine
+ * while the camera's far plane was 480 units away. The island moved the eye
+ * out to 1800 and the far plane to 3600 (src/world/camera.ts), and one step of
+ * the ink pass's NORMAL target — a plain 16-bit depth attachment — is now
+ * 3600/65536 ≈ 0.055 units, seven times the lift. So the ground and the water
+ * traded depth wins texel by texel in that pass and the ink composite drew the
+ * fight: puddles poking through the map.
+ *
+ * The lifts do NOT go up, because their ORDER is load-bearing: every flat mark
+ * in the world is stacked in these few hundredths (the scatter's ticks at
+ * 0.015, its prop stamps at 0.018, the creature shadows at 0.02), and a
+ * creature walking the shore has to cast its stamp ACROSS the water. Instead
+ * the fills leave the normal pass altogether (`ghibliNormalPassSkip`): a fill
+ * is a flat sheet coplanar with the ground, its silhouette is drawn by its own
+ * ink ribbon, and a flat sheet contributes nothing to a normal target but the
+ * fight. The beauty pass keeps them, where the depth attachment is a 32-bit
+ * float and 0.008 resolves fine, and `polygonOffset` biases them there anyway
+ * — the same -2/-2 the shadow stamps have carried all along.
+ */
 
 /** The flat water value. */
 export const WATER_LIFT = 0.008;
@@ -251,224 +282,6 @@ type Point = [number, number];
  * from vanishing whole. The threshold is the polygon's own median segment,
  * so it self-tunes per body.
  */
-/** [D] How far from a shoreline the ghibli water shader still has a band in
- * it: the deep band lands at `1.2 / DEPTH_SCALE` ≈ 5.5 units out and nothing
- * changes past it, so eight is a comfortable margin — and it is the region the
- * fill is refined inside. */
-const SHORE_BAND = 8;
-
-/** [D] Bucket size for the segment index, world units — a few times the
- * densified ring's own step, so a near-shore query touches a handful of
- * segments rather than the whole polygon. */
-const SHORE_CELL = 4;
-
-/** Bucket shells a query walks before it gives up and scans every segment.
- * The walk is what makes the refinement cheap; the brute-force fallback is
- * what keeps a FAR vertex's distance exact, and there are few of those (the
- * sea disc's outer rim, and nothing else — every earcut vertex of a body's
- * fill lies on the shoreline itself). */
-const SHORE_SHELLS = 6;
-
-/** [D] Edge length a fill triangle is refined down to inside the band. The
- * bands are per VERTEX (the shader interpolates across a triangle), so a
- * shelf spanned by one triangle draws the foam rim as a smear; 1.5 units puts
- * a vertex about every pixel-and-a-half of shelf at the default zoom. */
-const SHORE_REFINE_EDGE = 1.5;
-
-/** Refinement passes, so a pathological polygon cannot subdivide forever.
- * Each pass halves ONE edge (see `refineFill`), so nine of them take a
- * 400-unit span down under the target. */
-const SHORE_REFINE_LEVELS = 9;
-
-/**
- * Distance from a point to the nearest shoreline, in WORLD UNITS — exact, and
- * answered off a bucketed index of the rings' segments.
- *
- * EXACT and not clamped, because the shader's bands are interpolated across a
- * triangle: a vertex a thousand units out to sea that reported "far" as some
- * small number would drag the whole shelf out across the ocean with it.
- *
- * The rings are the very arrays the fill was cut from: a body's outer outline
- * plus every island, and for the sea the coast alone.
- */
-function shoreProbe(rings: readonly (readonly Point[])[]): (x: number, z: number) => number {
-  const buckets = new Map<string, [Point, Point][]>();
-  const all: [Point, Point][] = [];
-  const key = (cx: number, cz: number): string => `${cx},${cz}`;
-  for (const ring of rings) {
-    for (let i = 0; i < ring.length; i++) {
-      const a = ring[i]!;
-      const b = ring[(i + 1) % ring.length]!;
-      all.push([a, b]);
-      const x0 = Math.floor(Math.min(a[0], b[0]) / SHORE_CELL);
-      const x1 = Math.floor(Math.max(a[0], b[0]) / SHORE_CELL);
-      const z0 = Math.floor(Math.min(a[1], b[1]) / SHORE_CELL);
-      const z1 = Math.floor(Math.max(a[1], b[1]) / SHORE_CELL);
-      for (let cx = x0; cx <= x1; cx++) {
-        for (let cz = z0; cz <= z1; cz++) {
-          const k = key(cx, cz);
-          const list = buckets.get(k);
-          if (list) list.push([a, b]);
-          else buckets.set(k, [[a, b]]);
-        }
-      }
-    }
-  }
-  const toSegment = (x: number, z: number, a: Point, b: Point): number => {
-    const dx = b[0] - a[0];
-    const dz = b[1] - a[1];
-    const len2 = dx * dx + dz * dz;
-    const t =
-      len2 <= 1e-12 ? 0 : Math.min(1, Math.max(0, ((x - a[0]) * dx + (z - a[1]) * dz) / len2));
-    const px = a[0] + dx * t - x;
-    const pz = a[1] + dz * t - z;
-    return Math.sqrt(px * px + pz * pz);
-  };
-  return (x: number, z: number): number => {
-    const cx = Math.floor(x / SHORE_CELL);
-    const cz = Math.floor(z / SHORE_CELL);
-    let best = Infinity;
-    // Shells of buckets outward: once the best distance found is inside the
-    // clearance the current shell guarantees, no farther bucket can beat it.
-    for (let r = 0; r <= SHORE_SHELLS; r++) {
-      for (let ix = cx - r; ix <= cx + r; ix++) {
-        for (let iz = cz - r; iz <= cz + r; iz++) {
-          // Only the new shell each pass.
-          if (r > 0 && Math.abs(ix - cx) !== r && Math.abs(iz - cz) !== r) continue;
-          const list = buckets.get(key(ix, iz));
-          if (!list) continue;
-          for (const [a, b] of list) {
-            const d = toSegment(x, z, a, b);
-            if (d < best) best = d;
-          }
-        }
-      }
-      if (best <= r * SHORE_CELL) return best;
-    }
-    // Far from every shoreline: the exact answer, the honest way.
-    for (const [a, b] of all) {
-      const d = toSegment(x, z, a, b);
-      if (d < best) best = d;
-    }
-    return best;
-  };
-}
-
-/**
- * Refine a flat fill inside the shore band and bake `aShore` on it
- * (docs/ghibli-port.md §6).
- *
- * WHY THE REFINEMENT. The port doc says to bake the distance per fill vertex,
- * and that is right — but every vertex of a `ShapeGeometry` fill lies ON the
- * outline it was cut from (earcut triangulates and invents no points), so
- * baked as it stands the attribute is zero everywhere and the shader paints
- * the whole body as foam. Verified on screen before this existed: the lake and
- * both ponds rendered as white sheets. So the fill is subdivided FIRST, and
- * only where it matters — a triangle is split into four while it still has a
- * corner inside the band and an edge longer than `SHORE_REFINE_EDGE`, which
- * puts vertices across the shelf and leaves the deep interior as the handful
- * of big triangles it already was.
- *
- * A SECOND geometry comes back — non-indexed, an up normal on every vertex (a
- * flat sheet has one facing, and the ink pass's normal target reads this
- * attribute) — and the shipped fill is left exactly as it was, so the `ink`
- * style draws the same triangles it always drew.
- */
-function refineFill(
-  geometry: BufferGeometry,
-  rings: readonly (readonly Point[])[],
-): BufferGeometry {
-  const shoreAt = shoreProbe(rings);
-  const position = geometry.getAttribute('position') as BufferAttribute;
-  const index = geometry.getIndex();
-  // A triangle soup in world x/z — the fill was laid flat by the −90° turn
-  // about x, so the attribute holds world coordinates directly and y is the
-  // body's own zero (the mesh carries the level).
-  let tris: number[] = [];
-  const count = index ? index.count : position.count;
-  for (let i = 0; i < count; i += 3) {
-    for (let k = 0; k < 3; k++) {
-      const v = index ? index.getX(i + k) : i + k;
-      tris.push(position.getX(v), position.getZ(v));
-    }
-  }
-  for (let level = 0; level < SHORE_REFINE_LEVELS; level++) {
-    const next: number[] = [];
-    let split = false;
-    for (let t = 0; t < tris.length; t += 6) {
-      const ax = tris[t]!;
-      const az = tris[t + 1]!;
-      const bx = tris[t + 2]!;
-      const bz = tris[t + 3]!;
-      const cx = tris[t + 4]!;
-      const cz = tris[t + 5]!;
-      // THE CENTROID, not a corner: every earcut vertex of a fill lies ON the
-      // shoreline, so "a corner is near the shore" is true of every triangle
-      // in the body and refining on it tessellates the whole lake (measured:
-      // 150k triangles for one lake). What wants refining is the SHELF — the
-      // triangles whose own middle is inside the band — while a long thin
-      // triangle reaching from the shore into the deep interpolates its two
-      // ends correctly and is left alone.
-      const near = shoreAt((ax + bx + cx) / 3, (az + bz + cz) / 3);
-      const longest = Math.max(
-        Math.hypot(bx - ax, bz - az),
-        Math.hypot(cx - bx, cz - bz),
-        Math.hypot(ax - cx, az - cz),
-      );
-      if (near >= SHORE_BAND || longest <= SHORE_REFINE_EDGE) {
-        next.push(ax, az, bx, bz, cx, cz);
-        continue;
-      }
-      split = true;
-      // LONGEST-EDGE BISECTION, not a four-way split. earcut hands over long
-      // thin slivers along a shoreline, and quartering one of those makes four
-      // slivers — measured, that turned the sea into 458k triangles. Halving
-      // the long edge instead grows the count with the edge length rather than
-      // with its square, and the new vertex is the exact midpoint of the
-      // neighbour's edge, so the sheet stays watertight.
-      const ab = Math.hypot(bx - ax, bz - az);
-      const bc = Math.hypot(cx - bx, cz - bz);
-      if (ab >= bc && ab >= Math.hypot(ax - cx, az - cz)) {
-        const mx = (ax + bx) / 2;
-        const mz = (az + bz) / 2;
-        next.push(ax, az, mx, mz, cx, cz);
-        next.push(mx, mz, bx, bz, cx, cz);
-      } else if (bc >= Math.hypot(ax - cx, az - cz)) {
-        const mx = (bx + cx) / 2;
-        const mz = (bz + cz) / 2;
-        next.push(ax, az, bx, bz, mx, mz);
-        next.push(ax, az, mx, mz, cx, cz);
-      } else {
-        const mx = (cx + ax) / 2;
-        const mz = (cz + az) / 2;
-        next.push(ax, az, bx, bz, mx, mz);
-        next.push(mx, mz, bx, bz, cx, cz);
-      }
-    }
-    tris = next;
-    if (!split) break;
-  }
-  const vertices = tris.length / 2;
-  const positions = new Float32Array(vertices * 3);
-  const normals = new Float32Array(vertices * 3);
-  const shore = new Float32Array(vertices);
-  for (let i = 0; i < vertices; i++) {
-    const x = tris[i * 2]!;
-    const z = tris[i * 2 + 1]!;
-    positions[i * 3] = x;
-    positions[i * 3 + 2] = z;
-    normals[i * 3 + 1] = 1;
-    shore[i] = shoreAt(x, z);
-  }
-  const refined = new BufferGeometry();
-  refined.name = `${geometry.name || 'water-fill'}-ghibli`;
-  refined.setAttribute('position', new BufferAttribute(positions, 3));
-  refined.setAttribute('normal', new BufferAttribute(normals, 3));
-  refined.setAttribute('aShore', new BufferAttribute(shore, 1));
-  refined.computeBoundingSphere();
-  return refined;
-}
-
 function densify(poly: readonly Point[]): Point[] {
   const n = poly.length;
   const lengths: number[] = [];
@@ -769,6 +582,13 @@ export interface Water {
    * the crowns do. A no-op on `ink`, where no such material exists.
    */
   setWind(field: WindField, timeMs: number): void;
+  /**
+   * Hand over the baked shore field every ghibli surface bands off
+   * (src/world/ghibli/shore.ts) — the foam rim, the wet line, the shelf and
+   * the depth ramp are all thresholds on it. A no-op on `ink`, which draws its
+   * shoreline as an ink ribbon instead.
+   */
+  setShore(shore: Texture | null): void;
   setVisible(on: boolean): void;
   /**
    * Draw the painted water a person has laid down, replacing whatever
@@ -847,7 +667,14 @@ export function createWater(): Water {
   // DoubleSide: a flat sheet has no back to save, and this means a zero-area
   // sliver — whose winding is float noise — can never become a culled hole in
   // the water if the geography is ever re-authored.
-  const fillMaterial = new MeshBasicMaterial({ color: WORLD.neutralMid, side: DoubleSide });
+  const fillMaterial = new MeshBasicMaterial({
+    color: WORLD.neutralMid,
+    side: DoubleSide,
+    // Coplanar with the basin floor it sits on — see the lifts above.
+    polygonOffset: true,
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -2,
+  });
   materials.push(fillMaterial);
 
   // ── the ghibli surfaces (docs/ghibli-port.md §6) ──────────────────────────
@@ -862,9 +689,15 @@ export function createWater(): Water {
   let ghibliFill: ShaderMaterial | null = null;
   let ghibliSea: ShaderMaterial | null = null;
   let waterStyle: WorldStyle = 'ink';
+  /** The baked shore field, handed over by whoever owns the bakes
+   * (src/world/ground.ts) and replayed into the materials whenever they are
+   * built — the style can switch long after the bake landed. */
+  let shoreTexture: Texture | null = null;
   const ensureGhibli = (): void => {
     ghibliFill ??= createWaterSurfaceMaterial();
     ghibliSea ??= createSeaSurfaceMaterial();
+    setShoreTexture(ghibliFill, shoreTexture);
+    setShoreTexture(ghibliSea, shoreTexture);
   };
   const fillFor = (which: 'body' | 'sea'): Material => {
     if (waterStyle !== 'ghibli') return fillMaterial;
@@ -872,47 +705,31 @@ export function createWater(): Water {
     return which === 'sea' ? ghibliSea! : ghibliFill!;
   };
   /**
-   * Every flat fill on screen: which palette it belongs to, the rings its
-   * shoreline is, the SHIPPED geometry and — once the ghibli style has been
-   * switched on — the refined one that carries `aShore` (see `refineFill`).
-   *
-   * Two geometries rather than one attribute on one, so that `ink` really is
-   * untouched: it keeps drawing the earcut triangles it always drew, and the
-   * refinement is built on the first switch and kept for every later one.
+   * Every flat fill on screen and which palette it belongs to — the list
+   * `setStyle` walks, so a live switch needs no rebuild and no geometry of its
+   * own. The shore distance the ghibli surface bands off is a TEXTURE now
+   * (src/world/ghibli/shore.ts), so a fill is the plain earcut sheet in both
+   * styles and the ink pass keeps the triangles it always drew.
    */
   interface Fill {
     mesh: Mesh;
     which: 'body' | 'sea';
-    rings: readonly (readonly Point[])[];
-    ink: BufferGeometry;
-    ghibli: BufferGeometry | null;
     painted: boolean;
   }
   const fillMeshes: Fill[] = [];
-  /** Put a fill on the geometry and the material its style calls for. */
   const wearFill = (fill: Fill): void => {
-    if (waterStyle === 'ghibli') {
-      if (!fill.ghibli) {
-        fill.ghibli = refineFill(fill.ink, fill.rings);
-        (fill.painted ? paintedGeometries : geometries).push(fill.ghibli);
-      }
-      fill.mesh.geometry = fill.ghibli;
-    } else {
-      fill.mesh.geometry = fill.ink;
-    }
     fill.mesh.material = fillFor(fill.which);
   };
-  const addFill = (
-    mesh: Mesh,
-    which: 'body' | 'sea',
-    geometry: BufferGeometry,
-    rings: readonly (readonly Point[])[],
-    painted = false,
-  ): void => {
-    const fill: Fill = { mesh, which, rings, ink: geometry, ghibli: null, painted };
+  const addFill = (mesh: Mesh, which: 'body' | 'sea', painted = false): void => {
+    // Out of the ink pass's normal target (see the lifts above): a flat sheet
+    // coplanar with the ground contributes nothing there but a depth fight,
+    // and its silhouette is drawn by its own ink ribbon.
+    mesh.userData.ghibliNormalPassSkip = true;
+    const fill: Fill = { mesh, which, painted };
     fillMeshes.push(fill);
     wearFill(fill);
   };
+
   /** A ring in shape space: built in (x, −z) and laid flat by a −90° turn
    * about x, which maps (x, y, 0) → (x, 0, −y) — the shape's y comes back as
    * world z, and its +z normal comes back pointing up. */
@@ -934,9 +751,7 @@ export function createWater(): Water {
     geometries.push(geometry);
     const mesh = new Mesh(geometry, fillMaterial);
     mesh.name = `water-${body.kind}-${index}`;
-    // …and the shore distance the ghibli surface bands off, from the very
-    // rings this fill was cut from (see `refineFill`).
-    addFill(mesh, 'body', geometry, island ? [outlines[index]!, island] : [outlines[index]!]);
+    addFill(mesh, 'body');
     mesh.position.y = waterLevel(body) + WATER_LIFT;
     sheets.push({ mesh, body, lift: WATER_LIFT });
     group.add(mesh);
@@ -947,7 +762,13 @@ export function createWater(): Water {
   // was cut from — a pond has one, the lake has its outer shore and its
   // island's. The island's is seeded off the island so its pen lifts in
   // different places than the shore across the water from it.
-  const shoreMaterial = new MeshBasicMaterial({ color: SURFACE.ink, side: DoubleSide });
+  const shoreMaterial = new MeshBasicMaterial({
+    color: SURFACE.ink,
+    side: DoubleSide,
+    polygonOffset: true,
+    polygonOffsetFactor: -3,
+    polygonOffsetUnits: -3,
+  });
   materials.push(shoreMaterial);
   const addShore = (
     name: string,
@@ -991,7 +812,13 @@ export function createWater(): Water {
   geometries.push(rippleGeometry);
 
   const rippleUniforms = { uTime: { value: 0 } };
-  const rippleMaterial = new MeshBasicMaterial({ color: SURFACE.ink, side: DoubleSide });
+  const rippleMaterial = new MeshBasicMaterial({
+    color: SURFACE.ink,
+    side: DoubleSide,
+    polygonOffset: true,
+    polygonOffsetFactor: -4,
+    polygonOffsetUnits: -4,
+  });
   // The one live uniform, parked where the dev panel and the tests can read it
   // without the material pretending to be a ShaderMaterial.
   rippleMaterial.userData.rippleUniforms = rippleUniforms;
@@ -1042,9 +869,7 @@ export function createWater(): Water {
     geometries.push(geometry);
     const fill = new Mesh(geometry, fillMaterial);
     fill.name = 'sea-fill';
-    // The COAST only: the far disc's rim is the horizon, not a shore, and a
-    // distance to it would ring the world's edge in foam.
-    addFill(fill, 'sea', geometry, [coastRing]);
+    addFill(fill, 'sea');
     fill.position.y = seaLevel() + WATER_LIFT;
     seaSheets.push({ mesh: fill, lift: WATER_LIFT });
     group.add(fill);
@@ -1153,6 +978,11 @@ export function createWater(): Water {
       // surface jump.
       rippleUniforms.uTime.value = nowMs / 1000;
     },
+    setShore: (shore: Texture | null): void => {
+      shoreTexture = shore;
+      if (ghibliFill) setShoreTexture(ghibliFill, shore);
+      if (ghibliSea) setShoreTexture(ghibliSea, shore);
+    },
     setWind: (field: WindField, timeMs: number): void => {
       // The glyphs travel on the SAME field the blades and the crowns are bent
       // by (src/world/wind.ts) — a surface drifting one way while the trees
@@ -1221,7 +1051,7 @@ export function createWater(): Water {
         paintedGeometries.push(geometry);
         const fill = new Mesh(geometry, fillMaterial);
         fill.name = `painted-water-${body.id}`;
-        addFill(fill, 'body', geometry, [body.outline, ...holes], true);
+        addFill(fill, 'body', true);
         // Absolute: a painted level is a world height, so no dial moves it.
         fill.position.y = body.level + WATER_LIFT;
         paintedGroup.add(fill);
