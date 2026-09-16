@@ -52,7 +52,10 @@ export function deviceTier(matches: (query: string) => boolean = defaultMatch): 
  * Exported and not yet read by anything. Said plainly rather than left for
  * the next task to invent twice.
  */
-export const DEBRIS_CAP: Record<DeviceTier, number> = { projection: 96, phone: 24 };
+export const DEBRIS_CAP: Record<DeviceTier, number> = {
+  projection: 96,
+  phone: 24,
+};
 
 /**
  * THE TIER IN FORCE, as module state (2026-09-16).
@@ -91,3 +94,50 @@ export function setRenderTier(tier: DeviceTier): void {
 export function isPhoneTier(): boolean {
   return activeTier === 'phone';
 }
+
+/**
+ * COULD RAPIER EVER ARRIVE ON THIS PAGE — the rule, as one pure function
+ * (2026-09-16, the slow-network work).
+ *
+ * > User ask: *"we need to be able to run this on a slow network on people's
+ * > devices."*
+ *
+ * Two `no`s. A world with no game has nothing to simulate (2026-09-15 user
+ * ruling, src/world/game.ts). And a HANDSET: `@dimforge/rapier3d-compat` is
+ * 2.06 mb of javascript with its wasm inlined, 760 kb compressed, 4.1
+ * seconds of a 1.5 Mbit link — and it was paid by every phone testing alone
+ * in a room, because a phone alone on the link wins its own election and
+ * becomes the host (`HostRole` in src/main.ts).
+ *
+ * A phone host runs the game off the PURE resolve and the scatter's own
+ * colliders instead: rocks and unrooted props stand where they were placed,
+ * the resolve still blocks on anything too big to carry, and the sticky pass
+ * still decides and still says so as scene events (docs/PLAN.md §7.6 — the
+ * decisions were always the events, never the bodies). What it does not have
+ * is rolling stones and tumbling debris.
+ *
+ * Here rather than inside `src/world/scene.ts` so it is testable without a
+ * canvas: `WorldHandles.physicsExpected` is this function over the tier
+ * `setRenderTier` published, and `src/creatures/manager.ts` reads the handle.
+ */
+export function physicsExpectedFor(game: string, tier: DeviceTier): boolean {
+  if (game !== 'katamari') return false;
+  return PHONE_RUNS_RAPIER || tier !== 'phone';
+}
+
+/**
+ * ONE FLAG TO GIVE THE PHONES RAPIER BACK.
+ *
+ * `true` restores the behaviour that shipped before 2026-09-16 exactly: a
+ * phone that is elected host loads the solver, its stones roll and its debris
+ * tumbles, and it pays 760 kb for the privilege. Nothing else in the
+ * codebase branches on the tier for physics — the creature manager asks
+ * `WorldHandles.physicsExpected()` and gets its answer from here — so this
+ * boolean is the whole of the decision and reversing it needs no other edit.
+ *
+ * It is a constant and not a url parameter or a panel toggle on purpose: a
+ * page that could change its mind about whether it holds rigid bodies is a
+ * page whose host handover has two shapes, and the host rules are hard
+ * enough (docs/PLAN.md §7.6).
+ */
+export const PHONE_RUNS_RAPIER = false;

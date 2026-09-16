@@ -78,6 +78,13 @@ The traps, in order of how easily they get violated:
 - **Physics runs only on the simulating page; every decision about what is stuck, loose or
   settled travels as a scene event.** `world.enablePhysics()` is called on host election and
   nowhere else — a viewer holds no rapier world and decides nothing (docs/PLAN.md §7.6).
+  **And a HANDSET never loads rapier at all (2026-09-16)** — 760 kB compressed, paid by
+  every phone testing alone in a room, because a phone alone on the link hosts. A phone host
+  runs the game off the pure resolve and the scatter's own colliders instead and still
+  decides everything; what it does not have is rolling stones and tumbling debris. So
+  "does this page hold rigid bodies" and "is this page the authority" are now TWO questions
+  (`rapierOwns` / `deciding` in `src/creatures/manager.ts`) — don't collapse them back into
+  `bodies() !== null`. One flag reverses it: `PHONE_RUNS_RAPIER` in `src/world/device.ts`.
 - **The katamari is a PER-WORLD GAME (user ruling, 2026-09-15). `worlds.json`
   `game: katamari` is the only switch; meridian and the public world are byte-identical and
   behaviourally unchanged by it.** The default branch builds every world's deployment at

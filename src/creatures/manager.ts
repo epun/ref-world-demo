@@ -1060,7 +1060,12 @@ export interface CreatureManager {
    */
   isDriven(id: string, nowMs: number): boolean;
   /** Live slots as the population guard sees them (see chooseEviction). */
-  evictable(): { id: string; order: number; resident: boolean; phase: string }[];
+  evictable(): {
+    id: string;
+    order: number;
+    resident: boolean;
+    phase: string;
+  }[];
   /** Live creature ids, in a stable order — the roster a host publishes. */
   liveIds(): string[];
   /**
@@ -1465,7 +1470,10 @@ export function createCreatureManager(
    * against props after each resident push so the final spot is clear of
    * both.
    */
-  function clearSpawnSpot(spot: { x: number; z: number }): { x: number; z: number } {
+  function clearSpawnSpot(spot: { x: number; z: number }): {
+    x: number;
+    z: number;
+  } {
     const grid = ensureColliderGrid();
     let p = projectOutOfHard(spot, grid, SPAWN_CLEARANCE);
     for (let pass = 0; pass < 4; pass++) {
@@ -1781,6 +1789,33 @@ export function createCreatureManager(
   const looseMeshes = options.loose ?? null;
   const bodiesOf = (): PropBodies | null => world.bodies?.() ?? null;
   /**
+   * IS THIS PAGE THE ONE DECIDING — and it is not the same question as
+   * "does this page hold rapier bodies" (2026-09-16, the slow-network work).
+   *
+   * It used to be. Every gate below read `bodiesOf() !== null`, which was a
+   * sound proxy while the bodies arrived on exactly the page that was
+   * elected host and on no other (docs/PLAN.md §7.6). A HANDSET now never
+   * loads rapier at all — 2.06 mb of wasm-bearing javascript that a phone on
+   * a slow link cannot afford (`WorldHandles.physicsExpected`) — and a phone
+   * alone in a room still wins its own election and still has to run the
+   * game. So the two questions came apart:
+   *
+   *   `rapierOwns()`  — are there rigid bodies, i.e. does the solver own the
+   *     stones and the debris? Only where a real question about rapier is
+   *     being asked: dropping `rock` out of the pure resolve's collider set,
+   *     because a stone the solver has rolled away is no longer where its
+   *     footprint circle says.
+   *
+   *   `deciding()` — is this page the authority for what is stuck, loose and
+   *     settled? True on a page holding bodies, and true on a page where
+   *     they are never coming. `physicsExpected` is absent on a stub world,
+   *     and absent means "yes, expected" — so every existing test and every
+   *     projection reads exactly the condition it did before.
+   */
+  const rapierOwns = (): boolean => bodiesOf() !== null;
+  const physicsExpected = (): boolean => world.physicsExpected?.() ?? true;
+  const deciding = (): boolean => rapierOwns() || !physicsExpected();
+  /**
    * The frame time this module was last given.
    *
    * The impact seam fires from inside `PropBodies.update` — rapier's own
@@ -1886,7 +1921,11 @@ export function createCreatureManager(
       // the prop's own object space, so seating it needs the turn the
       // placement was drawn at (src/world/chunks.ts).
       if (ref.key === key) {
-        return { scale: ref.scale, r: ref.radius, rotY: ref.placement?.rotY ?? 0 };
+        return {
+          scale: ref.scale,
+          r: ref.radius,
+          rotY: ref.placement?.rotY ?? 0,
+        };
       }
     }
     return null;
@@ -2213,10 +2252,28 @@ export function createCreatureManager(
    */
   function refreshCracks(): void {
     const ink = (
-      world as { ink?: { setCracks?(marks: readonly { x: number; z: number; r: number; seed: number; y?: number }[]): void } }
+      world as {
+        ink?: {
+          setCracks?(
+            marks: readonly {
+              x: number;
+              z: number;
+              r: number;
+              seed: number;
+              y?: number;
+            }[],
+          ): void;
+        };
+      }
     ).ink;
     if (!ink?.setCracks) return;
-    const marks: { x: number; z: number; r: number; seed: number; y: number }[] = [];
+    const marks: {
+      x: number;
+      z: number;
+      r: number;
+      seed: number;
+      y: number;
+    }[] = [];
     for (const state of wrecks.values()) {
       if (state.stage < 1 || state.stage >= 3) continue;
       const measured = placementDrawn(state.key, state.kind);
@@ -2247,7 +2304,14 @@ export function createCreatureManager(
    * gone. */
   function ensureWreck(
     item: string,
-    hint?: { kind: PropKind; variant: number; scale: number; x: number; z: number; rotY: number },
+    hint?: {
+      kind: PropKind;
+      variant: number;
+      scale: number;
+      x: number;
+      z: number;
+      rotY: number;
+    },
   ): WreckState | null {
     const existing = wrecks.get(item);
     if (existing) return existing;
@@ -2308,7 +2372,12 @@ export function createCreatureManager(
     const cos = Math.cos(state.rotY);
     const sin = Math.sin(state.rotY);
     const baseY = surface.sampleHeight(state.x, state.z);
-    const q = { x: 0, y: Math.sin(state.rotY / 2), z: 0, w: Math.cos(state.rotY / 2) };
+    const q = {
+      x: 0,
+      y: Math.sin(state.rotY / 2),
+      z: 0,
+      w: Math.cos(state.rotY / 2),
+    };
     for (const index of standing) {
       const chunk = chunks[index];
       if (!chunk) continue;
@@ -2553,7 +2622,11 @@ export function createCreatureManager(
       }
       return;
     }
-    slot.kinematic.body.setNextKinematicTranslation({ x: root.position.x, y, z: root.position.z });
+    slot.kinematic.body.setNextKinematicTranslation({
+      x: root.position.x,
+      y,
+      z: root.position.z,
+    });
     // The ball grows with the pile: a creature the size of a house that
     // still shouldered stones aside on its drawn radius would read as a
     // creature walking through the world rather than into it.
@@ -3012,7 +3085,15 @@ export function createCreatureManager(
    * whatever hit it.
    */
   function hitRooted(
-    bodies: PropBodies,
+    /**
+     * NULL ON A PAGE WITH NO SOLVER (2026-09-16) — a phone host
+     * (`WorldHandles.physicsExpected`). The verdict, the break ladder and the
+     * staged damage are all this function's own arithmetic and need nothing;
+     * what the bodies are for is the RECOIL spring and handing a loosened
+     * prop to rapier, and both of those stand down. A knocked prop then lies
+     * down where it stood rather than rolling — see the two `bodies?.` below.
+     */
+    bodies: PropBodies | null,
     prop: { key: string; kind: PropKind; r: number; x: number; z: number },
     impact: number,
     carrierR: number,
@@ -3030,7 +3111,9 @@ export function createCreatureManager(
     // even when it holds, and that flinch is the read that the world is
     // being pushed around. `/6` puts a walking creature at a gentle lean and
     // a loaded pile at the `BEND_MAX` cap. **[D]**
-    bodies.bump(prop.key, dirX, dirZ, Math.min(1, impact / 6));
+    // …where there is a spring to bend. On a page with no solver the props
+    // have no bend springs, so the flinch is simply not there.
+    bodies?.bump(prop.key, dirX, dirZ, Math.min(1, impact / 6));
     const outcome = decideContact({
       itemR: prop.r,
       rooted: true,
@@ -3043,8 +3126,20 @@ export function createCreatureManager(
       return;
     }
     if (outcome === 'loose') {
-      const item = bodies.loosen(prop.key);
+      /*
+       * WITH A SOLVER, `loosen` hands the prop to rapier and answers where
+       * it now is. WITHOUT one (a phone host) there is nothing to hand it
+       * to, so the prop is let go where it STOOD: the placement is hidden,
+       * the loose mesh is drawn on the spot, and the `loose` event says the
+       * same thing it always said — the decision is the event, and every
+       * other page draws it identically (docs/PLAN.md §7.6). What is missing
+       * is the roll away, which is the one thing a rigid body was for.
+       */
+      const item = bodies
+        ? bodies.loosen(prop.key)
+        : { x: prop.x, z: prop.z, scale: placementDrawn(prop.key, prop.kind)?.scale ?? 1 };
       if (item) {
+        if (!bodies) hidePlacement(prop.key);
         showLoose(prop.key, item.x, item.z, item.scale);
         observer?.loose(prop.key, item.x, item.z);
       }
@@ -3152,7 +3247,13 @@ export function createCreatureManager(
         // Away from the creature: the prop leans off the thing that hit it.
         hitRooted(
           bodies,
-          { key: other.key, kind: other.kind as PropKind, r: other.r, x: other.x, z: other.z },
+          {
+            key: other.key,
+            kind: other.kind as PropKind,
+            r: other.r,
+            x: other.x,
+            z: other.z,
+          },
           impact,
           slot.bodyR,
           other.x - creature.x,
@@ -3178,7 +3279,13 @@ export function createCreatureManager(
     const item = a.rooted ? b : a;
     hitRooted(
       bodies,
-      { key: rooted.key, kind: rooted.kind as PropKind, r: rooted.r, x: rooted.x, z: rooted.z },
+      {
+        key: rooted.key,
+        kind: rooted.kind as PropKind,
+        r: rooted.r,
+        x: rooted.x,
+        z: rooted.z,
+      },
       impactOf(speed, item.r),
       item.r,
       rooted.x - item.x,
@@ -3187,72 +3294,15 @@ export function createCreatureManager(
   }
 
   /**
-   * THE HOST'S FRAME (docs/PLAN.md §7.6) — after `stepCreatures`, before the
-   * ground pass.
+   * THE LOOSE THINGS RAPIER IS CARRYING, and whoever rolls over one — what
+   * was section 3 of `simulateSticky`, lifted out whole (2026-09-16) so the
+   * pass can run on a page with no solver at all.
    *
-   * Four decisions, in this order, and the order is the game: what the
-   * creature ran INTO is settled first (a tree either comes out of the ground
-   * or stops you), then what it can pick up, then whether it picked up another
-   * creature, then whether the impact knocked something off. Deciding pickups
-   * before impacts would let a creature eat the tree that just stopped it.
+   * Takes the bodies as an argument rather than reading `bodiesOf()`: the
+   * caller has already established there are some, and a second read could
+   * answer differently.
    */
-  function simulateSticky(nowMs: number): void {
-    const bodies = bodiesOf();
-    if (!bodies) return;
-    ensureHooks();
-    ensureSettle();
-    ensureImpact();
-
-    // ── 4. what we ran into ────────────────────────────────────────────────
-    for (const report of contacts) {
-      const key = report.collider.key;
-      const kind = report.collider.kind as PropKind | undefined;
-      if (!key || !kind || !Object.prototype.hasOwnProperty.call(STICKY, kind)) continue;
-      const props = stickyFor(kind, parseItemKey(key)?.variant ?? 0);
-      const impact = impactOf(report.speed, report.slot.bodyR);
-      // The verdict, the recoil and the staged damage are `hitRooted`'s —
-      // one rule, whether the contact came from the pure resolve (here) or
-      // from rapier's own events (the impact seam above).
-      if (props.rooted) {
-        /*
-         * SIZE FIRST — the character has priority (`decideContact`, 2026-09-16).
-         *
-         * A planted thing inside this creature's carry limit is not an
-         * obstacle at all: it comes up and goes on the pile, with no impact
-         * threshold and no `loose` on the way. Only what it cannot carry
-         * reaches `hitRooted`, which is where the recoil, the break ladder
-         * and the staged damage all still live, unchanged.
-         */
-        const verdict = decideContact({
-          itemR: report.collider.r,
-          rooted: true,
-          props,
-          impact,
-          carrierR: report.slot.bodyR,
-        });
-        const root = report.slot.characterRoot;
-        if (verdict === 'stick' && root) {
-          uprootOntoPile(report.slot, root, report.collider);
-        } else {
-          hitRooted(
-            bodies,
-            { key, kind, r: report.collider.r, x: report.collider.x, z: report.collider.z },
-            impact,
-            report.slot.bodyR,
-            -report.nx,
-            -report.nz,
-          );
-        }
-      }
-      // ── 6. and whether it knocked something off ──────────────────────────
-      const stuck = report.slot.clump?.outermost();
-      if (stuck && shouldDrop({ ...props, attachmentStrength: attachmentOf(stuck) }, impact)) {
-        dropOutermost(report.slot, nowMs);
-      }
-    }
-    contacts.length = 0;
-
-    // ── 3. pickups ─────────────────────────────────────────────────────────
+  function pickUpLoose(bodies: PropBodies): void {
     itemList.length = 0;
     itemPoints.length = 0;
     for (const item of bodies.items()) {
@@ -3308,6 +3358,132 @@ export function createCreatureManager(
         stickItem(slot, item, root, pose);
       }
     }
+  }
+
+  /**
+   * THE HOST'S FRAME (docs/PLAN.md §7.6) — after `stepCreatures`, before the
+   * ground pass.
+   *
+   * Four decisions, in this order, and the order is the game: what the
+   * creature ran INTO is settled first (a tree either comes out of the ground
+   * or stops you), then what it can pick up, then whether it picked up another
+   * creature, then whether the impact knocked something off. Deciding pickups
+   * before impacts would let a creature eat the tree that just stopped it.
+   */
+  function simulateSticky(nowMs: number): void {
+    /*
+     * THE BODIES ARE OPTIONAL HERE (2026-09-16, the slow-network work).
+     *
+     * This used to open with `if (!bodies) return`, which was the same proxy
+     * `deciding()` replaced: no bodies meant not the host. A PHONE HOST has
+     * no bodies and is the host, so the pass runs either way and the three
+     * things that genuinely need rapier are the ones that stand down:
+     *
+     *   `ensureHooks` / `ensureSettle` / `ensureImpact` already return on a
+     *     null `bodiesOf()` — they wire rapier's own callbacks and there are
+     *     none to wire.
+     *   the RECOIL and the LOOSEN inside `hitRooted` — a bend spring and a
+     *     rigid body to hand the prop to. Without them a knocked prop lies
+     *     down where it stood instead of rolling, which is the one thing a
+     *     phone host visibly does not do.
+     *   section 3 below, the pickups off `bodies.items()` — the loose things
+     *     rapier is carrying. A page with no solver has no loose items on
+     *     the ground; what it picks up comes through the CONTACTS in section
+     *     4, which is the pure resolve and needs nothing.
+     */
+    const bodies = bodiesOf();
+    ensureHooks();
+    ensureSettle();
+    ensureImpact();
+
+    // ── 4. what we ran into ────────────────────────────────────────────────
+    for (const report of contacts) {
+      const key = report.collider.key;
+      const kind = report.collider.kind as PropKind | undefined;
+      if (!key || !kind || !Object.prototype.hasOwnProperty.call(STICKY, kind)) continue;
+      const props = stickyFor(kind, parseItemKey(key)?.variant ?? 0);
+      const impact = impactOf(report.speed, report.slot.bodyR);
+      // The verdict, the recoil and the staged damage are `hitRooted`'s —
+      // one rule, whether the contact came from the pure resolve (here) or
+      // from rapier's own events (the impact seam above).
+      if (props.rooted) {
+        /*
+         * SIZE FIRST — the character has priority (`decideContact`, 2026-09-16).
+         *
+         * A planted thing inside this creature's carry limit is not an
+         * obstacle at all: it comes up and goes on the pile, with no impact
+         * threshold and no `loose` on the way. Only what it cannot carry
+         * reaches `hitRooted`, which is where the recoil, the break ladder
+         * and the staged damage all still live, unchanged.
+         */
+        const verdict = decideContact({
+          itemR: report.collider.r,
+          rooted: true,
+          props,
+          impact,
+          carrierR: report.slot.bodyR,
+        });
+        const root = report.slot.characterRoot;
+        if (verdict === 'stick' && root) {
+          uprootOntoPile(report.slot, root, report.collider);
+        } else {
+          hitRooted(
+            bodies,
+            {
+              key,
+              kind,
+              r: report.collider.r,
+              x: report.collider.x,
+              z: report.collider.z,
+            },
+            impact,
+            report.slot.bodyR,
+            -report.nx,
+            -report.nz,
+          );
+        }
+      } else if (bodies === null) {
+        /*
+         * AN UNROOTED PROP, ON A PAGE WITH NO SOLVER (2026-09-16).
+         *
+         * Where rapier is running, everything unrooted is already a dynamic
+         * body and is picked up in section 3 off `bodies.items()`: the
+         * footprint circle is dropped out of the resolve (`skipKind: 'rock'`)
+         * precisely because the solver has moved the thing. A phone host has
+         * neither, so a stone stands where it was placed, IS in the resolve's
+         * collider set, and reports a contact here like anything else —
+         * which is the whole route it has to being picked up.
+         *
+         * Same verdict function, same carry limit, same `stick` event: what
+         * changes is only which pass noticed the stone. `rooted: false` is
+         * the honest input, and `decideContact` answers `stick` for anything
+         * inside the limit with no impact threshold to clear — a stone is
+         * junk on the ground (src/creatures/sticky.ts).
+         */
+        const verdict = decideContact({
+          itemR: report.collider.r,
+          rooted: false,
+          props,
+          impact,
+          carrierR: report.slot.bodyR,
+        });
+        const root = report.slot.characterRoot;
+        if (verdict === 'stick' && root) uprootOntoPile(report.slot, root, report.collider);
+      }
+      // ── 6. and whether it knocked something off ──────────────────────────
+      const stuck = report.slot.clump?.outermost();
+      if (stuck && shouldDrop({ ...props, attachmentStrength: attachmentOf(stuck) }, impact)) {
+        dropOutermost(report.slot, nowMs);
+      }
+    }
+    contacts.length = 0;
+
+    // ── 3. pickups ─────────────────────────────────────────────────────────
+    // …of the LOOSE things, which only exist where rapier is carrying them.
+    // A page with no solver picked its props up in section 4, above, and
+    // still runs section 5 below — a creature carrying a creature is this
+    // module's own rule and has never needed a rigid body.
+    if (bodies !== null) pickUpLoose(bodies);
 
     // ── 5. creature onto creature ──────────────────────────────────────────
     /*
@@ -3665,7 +3841,12 @@ export function createCreatureManager(
     },
 
     positions() {
-      const out: { x: number; z: number; r: number; kind: 'egg' | 'character' }[] = [];
+      const out: {
+        x: number;
+        z: number;
+        r: number;
+        kind: 'egg' | 'character';
+      }[] = [];
       for (const slot of slots.values()) {
         const p = worldPositionOf(slot);
         if (p) {
@@ -4003,7 +4184,10 @@ export function createCreatureManager(
             // of them, so the release is a drift-stop from the real speed
             // at the real facing.
             const hold: AgentHold | null = held
-              ? { speed: Math.hypot(driveVx, driveVz), heading: root.rotation.y }
+              ? {
+                  speed: Math.hypot(driveVx, driveVz),
+                  heading: root.rotation.y,
+                }
               : null;
             const out = slot.agent.update(
               dt,
@@ -4049,7 +4233,7 @@ export function createCreatureManager(
             const pass = passLimit(bodyR);
             /** Pushing past something too big to wear — slowed, not stopped. */
             let pushingPast = false;
-            if (katamari && bodiesOf() !== null) {
+            if (katamari && deciding()) {
               for (const c of near) {
                 if (!c.hard || c.key === undefined || !(c.r <= pass)) continue;
                 const dx = root.position.x - c.x;
@@ -4058,7 +4242,13 @@ export function createCreatureManager(
                 if (d > bodyR + c.r + CONTACT_PAD) continue;
                 const nx = d > 1e-9 ? dx / d : 1;
                 const nz = d > 1e-9 ? dz / d : 0;
-                contacts.push({ slot, collider: c, nx, nz, speed: Math.hypot(vx, vz) });
+                contacts.push({
+                  slot,
+                  collider: c,
+                  nx,
+                  nz,
+                  speed: Math.hypot(vx, vz),
+                });
                 if (c.r > limit) pushingPast = true;
               }
             }
@@ -4087,7 +4277,7 @@ export function createCreatureManager(
               // colliders only, and a bush is soft. So it reports here, with
               // the same outward-normal convention, and then nothing else
               // happens to the velocity.
-              if (soft.key !== undefined && bodiesOf() !== null) {
+              if (soft.key !== undefined && deciding()) {
                 const dx = root.position.x - soft.x;
                 const dz = root.position.z - soft.z;
                 const d = Math.hypot(dx, dz);
@@ -4120,7 +4310,7 @@ export function createCreatureManager(
                * would make a bush harder to flatten the better it worked.
                */
               const intent = Math.hypot(vx, vz);
-              if (soft.key !== undefined && bodiesOf() !== null && intent > 0) {
+              if (soft.key !== undefined && deciding() && intent > 0) {
                 const dx = root.position.x - soft.x;
                 const dz = root.position.z - soft.z;
                 const d = Math.hypot(dx, dz);
@@ -4164,7 +4354,7 @@ export function createCreatureManager(
              * with.
              */
             if (katamari && (vx !== 0 || vz !== 0)) {
-              const physicsNow = bodiesOf() !== null;
+              const physicsNow = rapierOwns();
               for (const c of near) {
                 if (!c.hard) continue;
                 // A prop this creature rolls up or pushes past is not a wall.
@@ -4310,7 +4500,10 @@ export function createCreatureManager(
          * strongest per collider survives, because a corner pocket sweeps
          * more than once.
          */
-        const physicsOn = bodiesOf() !== null;
+        // `deciding()`, not `rapierOwns()`: what hangs off this is the
+        // pickup path and the impact report, and a phone host runs both with
+        // no rigid bodies at all (see `deciding`).
+        const physicsOn = deciding();
         /*
          * HOW FAST IT WAS GOING WHEN IT HIT THE THING — captured BEFORE the
          * step, and that is the whole point.
@@ -4337,7 +4530,12 @@ export function createCreatureManager(
         }
         stepCreatures(stepBodies, dt, gatherNear, {
           hardPadFrac: HARD_PAD_FRAC,
-          ...(physicsOn ? { skipKind: 'rock' } : {}),
+          // `rapierOwns`, NOT `deciding`: this one is a real question about
+          // the solver. A stone is only somewhere other than its footprint
+          // circle says if a rigid body has rolled it there, and on a phone
+          // host there is no such body — the stone stands where it was
+          // placed and the resolve must keep meeting it (see `rapierOwns`).
+          ...(rapierOwns() ? { skipKind: 'rock' } : {}),
           /*
            * `skipIf` — THE CHARACTER HAS PRIORITY (2026-09-16 ruling: *"it
            * shouldn't impede the character from moving unless the mass isn't
@@ -4552,10 +4750,25 @@ export function createCreatureManager(
      * `SpawnOptions.resident` actually reaches the slot, rather than
      * proving `chooseEviction` is correct about a field nothing sets.
      */
-    evictable(): { id: string; order: number; resident: boolean; phase: string }[] {
-      const out: { id: string; order: number; resident: boolean; phase: string }[] = [];
+    evictable(): {
+      id: string;
+      order: number;
+      resident: boolean;
+      phase: string;
+    }[] {
+      const out: {
+        id: string;
+        order: number;
+        resident: boolean;
+        phase: string;
+      }[] = [];
       for (const slot of slots.values()) {
-        out.push({ id: slot.id, order: slot.order, resident: slot.resident, phase: slot.phase });
+        out.push({
+          id: slot.id,
+          order: slot.order,
+          resident: slot.resident,
+          phase: slot.phase,
+        });
       }
       return out;
     },
@@ -4665,7 +4878,12 @@ export function createCreatureManager(
           });
           continue;
         }
-        out.push({ id: slot.id, x: root.position.x, z: root.position.z, heading: root.rotation.y });
+        out.push({
+          id: slot.id,
+          x: root.position.x,
+          z: root.position.z,
+          heading: root.rotation.y,
+        });
       }
       return out;
     },
@@ -4731,7 +4949,7 @@ export function createCreatureManager(
       // Then the bodies, which exist only on a page that was elected host
       // (docs/PLAN.md §7.6), and a page that lost the election a second ago
       // still has them — `aiPaused` is what that page set on the way down.
-      return katamari && bodiesOf() !== null && !aiPaused;
+      return katamari && deciding() && !aiPaused;
     },
 
     applyStick(record): void {
@@ -4795,7 +5013,11 @@ export function createCreatureManager(
     wrecks(): { item: string; stage: number; removed: number }[] {
       const out: { item: string; stage: number; removed: number }[] = [];
       for (const state of wrecks.values()) {
-        out.push({ item: state.key, stage: state.stage, removed: state.removed.size });
+        out.push({
+          item: state.key,
+          stage: state.stage,
+          removed: state.removed.size,
+        });
       }
       return out;
     },
