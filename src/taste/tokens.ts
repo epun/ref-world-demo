@@ -243,14 +243,33 @@ export const GHIBLI = {
   // the tropical island (2026-09-15, user ask: a tropical island, ghibli
   // meets scavengers reign). Same palette family as the water above, pitched
   // for open sea and dry sand rather than a lake.
-  /** [D] The deep of a painted lake — Ponyo's cobalt, flat and saturated
-   * (2026-09-16, user direction: studio ghibli water, hand-painted and never
-   * realistic). */
-  waterCobalt: '#1f5fb4',
-  /** [D] The white of the foam lace at a shore — paper-white, a shade cooler
-   * than `foam`, so a broken lace line reads against the turquoise. */
+  /**
+   * [D] The deep of the water, and the whole of its new hue: a dark, slightly
+   * GREEN-SHIFTED teal-blue, well under the grass in value (2026-09-16, user
+   * reference: the Tiny Delivery clip). It replaced a cobalt `#1f5fb4`, which
+   * was the wrong hue and far too light — sampled off the reference frames,
+   * its deep water sits at rgb(8, 33, 47) and rgb(4, 31, 39) under an exposure
+   * about 0.7 of this world's, so ours lands near rgb(14, 58, 74).
+   *
+   * Hue is what the ghibli relaxation permits (docs/TASTE.md §9): the
+   * achromatic palette and the six-luma quantize are the two rules it relaxes,
+   * and nothing else here moves.
+   */
+  waterTealDeep: '#0e3a4a',
+  /** [D] The mid body, between the shallows and the deep — the reference's
+   * rgb(5, 41, 50) brought into this world's exposure. */
+  waterTeal: '#17636b',
+  /**
+   * [D] What a shallow reads as where the bed shows THROUGH it: the sand's own
+   * colour pulled toward this turquoise, never a flat turquoise paint. The
+   * reference's shallows sit near rgb(48, 96, 93) over rock and brighter over
+   * sand; this is the tint, and `sand` is what it tints.
+   */
+  waterBed: '#6fd3c0',
+  /** [D] The white of the foam at a shore — paper-white, a shade cooler than
+   * `foam`, so a broken rim reads against the turquoise. */
   waterLace: '#ffffff',
-  /** [D] The pale blue of a drifting wave line across the deep. */
+  /** [D] The pale blue-green of a drifting wave line across the deep. */
   waterLine: '#a8d8f0',
   seaDeep: '#2f7fc4',
   seaShallow: '#7fd0ef',
