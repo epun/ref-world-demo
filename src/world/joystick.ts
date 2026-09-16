@@ -57,7 +57,7 @@ export const KNOB_RATIO = 0.38;
  * every small correction a re-grab. A tenth of the travel costs nothing in
  * range and turns the middle into somewhere you can actually be.
  */
-export const DEADZONE = 0.1;
+export const DEADZONE = 0.07;
 
 /**
  * How far the knob may leave the centre, as a fraction of the radius.
@@ -82,16 +82,17 @@ export const KNOB_TRAVEL = 0.5;
  * Linear travel is linear in SPEED, and that is not what a hand expects from
  * a stick: half a push reads as "a walk", not as "half of my top speed",
  * because the top speed is the thing the hand is calibrated against. An
- * exponent above 1 spends more of the travel in the slow half — at 1.6, half
- * a push is a third of the ceiling and a quarter push is a tenth — and the
+ * exponent above 1 spends more of the travel in the slow half — at 1.35, half
+ * a push is two fifths of the ceiling and a quarter push is a sixth — and the
  * rim is still exactly the ceiling, so nothing is lost at the top.
  *
- * 1.6 rather than 2: squaring makes the first third of the travel almost
+ * 1.35 (1.6 until the 2026-09-16 "make the joystick slightly more
+ * responsive" ask, with the deadzone 0.1 → 0.07) rather than 2: squaring makes the first third of the travel almost
  * nothing, and a control with a dead-feeling half is the deadzone complaint
  * again in a different costume. Monotone and continuous either way, with
  * `f(0) = 0` and `f(1) = 1`, so it adds no cut and no step anywhere.
  */
-export const DRIVE_CURVE = 1.6;
+export const DRIVE_CURVE = 1.35;
 
 /**
  * The strength a push of `mag` is asking for, after the curve.

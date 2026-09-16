@@ -150,7 +150,7 @@ describe('stickToWorld', () => {
       // are a slow walk, and the same half push means the same thing at
       // every camera angle.
       expect(v.mag).toBeCloseTo(0.5 ** DRIVE_CURVE, 12);
-      expect(v.mag).toBeCloseTo(0.33, 2);
+      expect(v.mag).toBeCloseTo(0.39, 2);
       // The direction stays a unit vector; `mag` carries the strength, so
       // the manager can scale by the creature's own speed rather than
       // inheriting a magnitude from screen geometry.
@@ -178,7 +178,7 @@ describe('stickToWorld', () => {
   it('is proportional all the way down, so a small push is a slow walk', () => {
     // The whole ask, as four numbers on one curve.
     expect(driveResponse(0.25)).toBeCloseTo(0.25 ** DRIVE_CURVE, 12);
-    expect(driveResponse(0.25)).toBeLessThan(0.12);
+    expect(driveResponse(0.25)).toBeLessThan(0.17);
     expect(driveResponse(0.5)).toBeGreaterThan(0.3);
     expect(driveResponse(0.75)).toBeGreaterThan(0.6);
     expect(DRIVE_CURVE).toBeGreaterThan(1);

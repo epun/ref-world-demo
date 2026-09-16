@@ -835,7 +835,7 @@ export async function initDevPanel(
         // to leave room above it for the next guess. The slider moves the
         // whole range there — the walk ceiling is a fraction of it — and on
         // every other world it is the one multiplier it always was.
-        max: 8,
+        max: 12,
         step: 0.05,
         // What the manager is ACTUALLY running: a katamari world starts at
         // KATAMARI_SPEED_MUL, not at the shipped walk default.
@@ -1374,7 +1374,7 @@ export async function initDevPanel(
         });
         style.addSlider('ink wobble', {
           min: 0,
-          max: 8,
+          max: 12,
           step: 0.1,
           value: params.wobble,
           id: 'ink-wobble',

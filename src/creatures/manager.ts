@@ -111,7 +111,9 @@ export const DRIVE_SPEED = MAX_SPEED;
  * TUNNELLING, since this is the number the substep guard is sized against:
  * `stepCreatures` clamps dt at 250 ms and advances at most `MAX_STEP_TRAVEL`
  * (0.25 u) per substep over at most `MAX_SUBSTEPS` (16), so 4 u of travel per
- * frame. At 7.2 u/s a clamped frame is 1.8 u — 8 of the 16 substeps — and
+ * frame. At 10.8 u/s a clamped frame is 2.7 u — 11 of the 16 substeps — and
+ * (raised again by half on 2026-09-16: "increase it by 50%", after 7.2 u/s
+ * was "still too slow"; the walk went up by the same half) —
  * 0.25 u is still under the smallest thing on the map to tunnel through (a
  * 0.5 u stone's footprint, a ~0.9 u creature), so no step can leap one. The
  * guard covers this ceiling with half of itself spare; `MAX_SUBSTEPS` did not
@@ -120,14 +122,15 @@ export const DRIVE_SPEED = MAX_SPEED;
  * EVERY OTHER WORLD IS UNCHANGED: outside the game the multiplier is
  * `WANDER_SPEED_DEFAULT` and the walk cycle keeps the speeds it shipped with.
  */
-export const KATAMARI_SPEED_MUL = 6;
+export const KATAMARI_SPEED_MUL = 9;
 
 /**
  * And the WALK ceiling in a katamari world. **[D]**
  *
  * A creature that is carrying nothing is not a ball yet — it walks (PLAN
  * §7.6, the roll blend) — and walking at the rolling ceiling would be a
- * hatchling sprinting. `MAX_SPEED × 2.5` = **3 u/s**: brisker than the
+ * hatchling sprinting. `MAX_SPEED × 3.75` = **4.5 u/s** (2.5 → 3.75 on the
+ * 2026-09-16 "increase it by 50%" ask, together with the roll): brisker than the
  * shipped walk (`WANDER_SPEED_DEFAULT`, 1.68 u/s) because the island is
  * bigger than the field that number was tuned on, and far enough under the
  * rolling ceiling that the ball is the thing that goes fast.
@@ -136,7 +139,7 @@ export const KATAMARI_SPEED_MUL = 6;
  * creature crossing the island at 7.2 u/s reads as a world running away from
  * the person watching it, and nobody asked for faster ai.
  */
-export const KATAMARI_WALK_MUL = 2.5;
+export const KATAMARI_WALK_MUL = 3.75;
 
 /**
  * [D] How much of a blocked push is turned along the wall instead.
@@ -181,7 +184,7 @@ export const DRIVE_TURN_TAU_MS = 90;
  * however hard the stick is thrown (TASTE §2.1, confidence 1.00). Sixty is a
  * shorter constant, not a springier one.
  */
-export const KATAMARI_TURN_TAU_MS = 60;
+export const KATAMARI_TURN_TAU_MS = 45;
 
 /**
  * How long the stick keeps the creature after the last push. **[D]**
