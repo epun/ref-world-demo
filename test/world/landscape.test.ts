@@ -541,7 +541,7 @@ describe('landscape — the polygons the water is drawn from', () => {
     // small on the outside and slightly large on the hole.
     expect(ring / measured).toBeGreaterThan(0.95);
     expect(ring / measured).toBeLessThan(1.02);
-  });
+  }, 30000); // a whole-field walk: over the 5 s budget on the doubled island
 
   it('is deterministic and honours the requested point budget', () => {
     expect(waterOutline(LAKE)).toEqual(waterOutline(LAKE));

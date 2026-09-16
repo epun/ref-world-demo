@@ -342,7 +342,7 @@ describe('ground — it rebuilds under the terrain dials', () => {
     setTerrainParams({ tierStep: TERRAIN.terraceStep });
     ground.rebuild();
     expect(uStep.value).toBe(TERRAIN.terraceStep);
-  });
+  }, 30000); // a whole-field walk: over the 5 s budget on the doubled island
 });
 
 describe('ground — the plain mode is a flat field', () => {
