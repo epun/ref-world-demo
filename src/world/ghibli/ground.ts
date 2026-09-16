@@ -139,10 +139,14 @@ void main() {
   vec2 uv = vToonWorldPos.xz / GG_SIZE + 0.5;
   vec3 n = normalize(vToonNormal);
 
-  float grass = clamp(texture2D(uGrass, uv).r, 0.0, 1.0);
+  // Painted grass, OR the map's own meadow (2026-09-15, user direction: the
+  // ghibli meadow is full by default — the blade field only covers the window
+  // around the camera, src/world/ghibli/grass.ts, and this is what carries the
+  // same read from there to the horizon).
+  vec3 region = texture2D(uRegion, uv).rgb;
+  float grass = clamp(max(texture2D(uGrass, uv).r, region.r), 0.0, 1.0);
   float path = texture2D(uPath, uv).r * step(0.5, uPathOn);
   float burn = texture2D(uScorch, uv).r * step(0.5, uScorchOn);
-  vec3 region = texture2D(uRegion, uv).rgb;
 
   // Meadow -> lush green under dense grass.
   vec3 albedo = mix(uMeadow, uLush, pow(grass, 0.7));

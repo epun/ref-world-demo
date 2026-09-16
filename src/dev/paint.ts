@@ -450,6 +450,21 @@ export interface PaintHandles {
    * broken world.
    */
   setPaintedScorch?(texture: Texture | null): void;
+  /**
+   * Hand over the planting layers the ghibli elements read as live textures —
+   * the `grass` and `flowers` weights and the comb's direction layer
+   * (`WorldHandles.setPaintedLayers`). The drawing half of a planting stroke
+   * on that style: the blade field grows where the grass weight is, leans
+   * where the comb points, and the ground goes lush under it.
+   *
+   * Optional, like the two above: a world with no handle grows its meadow
+   * through the placement roll alone, which is the shipped look exactly.
+   */
+  setPaintedLayers?(layers: {
+    grass?: Texture | null;
+    flowers?: Texture | null;
+    comb?: Texture | null;
+  }): void;
   /** The terrain dials in force (`WorldHandles.terrain()`). A pond chooses
    * its level with `basinDrop` at the dials the painter is looking at. */
   terrain(): { elevation: number; tierStep: number; relief: number };
@@ -670,6 +685,14 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
   // map's like every other, so this is handed over once and never again: the
   // frame's `commitAll` uploads whatever the brush has written into it.
   handles.setPaintedPath?.(plantLayers.path.texture as Texture);
+  // …and the three the ghibli elements read (docs/ghibli-port.md §1, §2, §7).
+  // Same deal: the buffers are the map's, so this is handed over once and the
+  // frame's `commitAll` uploads whatever the brush has written into them.
+  handles.setPaintedLayers?.({
+    grass: plantLayers.grass.texture as Texture,
+    flowers: plantLayers.flowers.texture as Texture,
+    comb: combLayer.texture as Texture,
+  });
 
   // ── the comb, and the fire ────────────────────────────────────────────────
   // Both ride the same kind of seam the planting weights do: a pure sampler
@@ -2274,6 +2297,7 @@ function applyPaintSkill(panelUi: GhostPanelUi, handles: PaintHandles): PaintSki
       setPaintedFire(null);
       handles.setPaintedPath?.(null);
       handles.setPaintedScorch?.(null);
+      handles.setPaintedLayers?.({ grass: null, flowers: null, comb: null });
       setPaintedWater(null);
       handles.setPaintedWater(null);
       setWaterfallMarks(null);

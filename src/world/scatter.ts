@@ -34,12 +34,18 @@ import {
   Matrix4,
   MeshBasicMaterial,
   MeshStandardMaterial,
+  type Material,
   Quaternion,
+  ShaderMaterial,
   Vector2,
   Vector3,
   Vector4,
 } from 'three';
 import type { Collider } from '../physics/colliders';
+import { createCloudMaterial } from './ghibli/clouds';
+import { createRockMaterial } from './ghibli/rocks';
+import { setWindOnMaterial } from './ghibli/shared';
+import { createCanopyMaterial } from './ghibli/trees';
 import { GHIBLI, MOTION, SURFACE, WORLD } from '../taste/tokens';
 import {
   activeWaterBodies,
@@ -2130,7 +2136,7 @@ export interface Scatter {
    * one extra program variant without `USE_INSTANCING`, which is one
    * compile and no per-frame cost.
    */
-  materialFor(kind: PropKind): MeshStandardMaterial;
+  materialFor(kind: PropKind): Material;
   /** Bumps on every `rebuild()`. Cheap to compare once a frame. */
   rebuildVersion(): number;
   /**
@@ -2341,6 +2347,23 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
   };
   let windTimeMs = 0;
 
+  /** The live wind as the gust-front field wants it — the ONE reader every
+   * consumer goes through (`Scatter.windField`, and the ghibli materials'
+   * per-frame write in `setWind`). */
+  const windFieldNow = (): WindField => {
+    const dir = windUniforms.uWindDir.value;
+    return {
+      dirX: dir.x,
+      dirZ: dir.y,
+      strength: windUniforms.uWindStrength.value,
+      // The tempo the ROOTED kinds ride (`WIND_PROFILE_SWAY.gustHz`): a rock
+      // skittering in a gust has to be pushed by the same front that is
+      // bending the grass beside it, or the two read as separate weathers.
+      speed: WIND_PROFILE_SWAY.gustHz,
+      gust: windUniforms.uWindGust.value,
+    };
+  };
+
   const injectWind = (
     material: MeshStandardMaterial | MeshBasicMaterial,
     profile: WindProfile,
@@ -2480,6 +2503,60 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
   // deliberately never get this attribute (taste guard: tests assert it).
   const swayKindSet = new Set<PropKind>(WIND_SWAY_KINDS);
 
+  // ── the ghibli element materials (docs/ghibli-port.md §3–§5) ─────────────
+  /**
+   * envpaint's rock, canopy and cloud shaders, built on the FIRST switch to
+   * the ghibli style and never before it: a world on `ink` compiles no extra
+   * program and allocates no uniform block, so the shipped look pays exactly
+   * nothing for a style it is not rendering.
+   *
+   * One material per SWAY PROFILE, not per kind — the three rooted recipes
+   * are the three programs, and a kind only picks which one it wears.
+   */
+  interface GhibliMaterials {
+    rock: ShaderMaterial;
+    sway: ShaderMaterial;
+    palm: ShaderMaterial;
+    cactus: ShaderMaterial;
+    cloud: ShaderMaterial;
+  }
+  let ghibliMaterials: GhibliMaterials | null = null;
+  /** The crown's centroid height for a group of kinds, object units — the one
+   * input the canopy's blob-normal approximation takes (the port doc's
+   * `variant.height * 0.6`, averaged over the variants that share a
+   * material). Deterministic: the geometries are. */
+  const crownYOf = (kinds: readonly PropKind[]): number => {
+    let total = 0;
+    let n = 0;
+    for (const kind of kinds) {
+      for (const variant of geometries.get(kind) ?? []) {
+        total += variant.height * 0.6;
+        n++;
+      }
+    }
+    return n === 0 ? 1.6 : total / n;
+  };
+  const ensureGhibliMaterials = (): GhibliMaterials => {
+    if (ghibliMaterials) return ghibliMaterials;
+    ghibliMaterials = {
+      rock: createRockMaterial(),
+      sway: createCanopyMaterial({
+        profile: 'sway',
+        crownY: crownYOf(['tree', 'conifer', 'bush']),
+      }),
+      palm: createCanopyMaterial({
+        profile: 'palm',
+        doubleSide: true,
+        crownY: crownYOf(['palm']),
+      }),
+      cactus: createCanopyMaterial({ profile: 'cactus', crownY: crownYOf(['cactus']) }),
+      cloud: createCloudMaterial({ cloudSpan: crownYOf(['cloud']) / 0.6 }),
+    };
+    return ghibliMaterials;
+  };
+  /** The look the scatter is drawing (`setStyle`). */
+  let scatterStyle: WorldStyle = 'ink';
+
   /**
    * The ONE place a kind's albedo is chosen (see `Scatter.materialFor`).
    *
@@ -2489,8 +2566,26 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
    * object — so a style override, a dev tint or a ghibli recolour lands on
    * the fallen tree and the standing ones together, with no code knowing
    * there are two kinds of draw.
+   *
+   * On `ghibli` the choice is the same shape over envpaint's element
+   * shaders: stone for rock and monolith, a canopy per sway profile, the
+   * cloud material for clouds — and the stock paper albedo for the rigid
+   * built kinds (building, stump, picnicTable, waterTower, mountain), which
+   * have no element shader of their own and keep the recoloured standard
+   * material.
    */
-  const materialFor = (kind: PropKind): MeshStandardMaterial =>
+  const materialFor = (kind: PropKind): Material => {
+    if (scatterStyle === 'ghibli') {
+      const g = ensureGhibliMaterials();
+      if (kind === 'cloud') return g.cloud;
+      if (kind === 'rock' || kind === 'monolith') return g.rock;
+      if (kind === 'palm') return g.palm;
+      if (kind === 'cactus') return g.cactus;
+      if (swayKindSet.has(kind)) return g.sway;
+    }
+    return stockMaterialFor(kind);
+  };
+  const stockMaterialFor = (kind: PropKind): MeshStandardMaterial =>
     kind === 'cloud'
       ? cloudMaterial
       : kind === 'rock' || kind === 'monolith'
@@ -2669,6 +2764,9 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
         // objects legibly, like it does each created character (user ask).
         // The `kind-` prefix stays machine-parseable (tests split on it).
         mesh.name = `${kind}-${v + 1} (${of.length})`;
+        // Which kind this mesh draws, so `setStyle` can re-material every
+        // standing instance without a rebuild (docs/ghibli-port.md §3).
+        mesh.userData.scatterKind = kind;
         mesh.frustumCulled = false;
         const kMult = scaleOf(kind);
         // Rocks squash flat and wide — the anti-egg silhouette bias.
@@ -2902,20 +3000,18 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
       windUniforms.uWindGust.value = gustAt(timeMs / 1000);
       const azimuth = windAzimuth(timeMs);
       windUniforms.uWindDir.value.set(Math.cos(azimuth), Math.sin(azimuth));
+      // The ghibli element materials own their own copy of the four wind
+      // names (their shaders are not the stock chain), so they take the SAME
+      // field in the same write — a canopy and a tick can never be bent by
+      // two different weathers. Nothing exists here until the style has been
+      // switched at least once.
+      if (ghibliMaterials) {
+        const field = windFieldNow();
+        for (const m of Object.values(ghibliMaterials)) setWindOnMaterial(m, field, timeMs);
+      }
     },
     windField(): WindField {
-      const dir = windUniforms.uWindDir.value;
-      return {
-        dirX: dir.x,
-        dirZ: dir.y,
-        strength: windUniforms.uWindStrength.value,
-        // The tempo the ROOTED kinds ride (`WIND_PROFILE_SWAY.gustHz`): a
-        // rock skittering in a gust has to be pushed by the same front that
-        // is bending the grass beside it, or the two read as separate
-        // weathers.
-        speed: WIND_PROFILE_SWAY.gustHz,
-        gust: windUniforms.uWindGust.value,
-      };
+      return windFieldNow();
     },
     windState(): { strength: number; azimuth: number; timeMs: number } {
       return {
@@ -2983,6 +3079,24 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
     },
     setStyle(style: WorldStyle): void {
       const ghibli = style === 'ghibli';
+      scatterStyle = style;
+      // Ghibli SWAPS materials rather than recolouring them (the elements are
+      // their own shaders now — docs/ghibli-port.md §3–§5). Every mesh that is
+      // already standing is re-materialled in place, so the ghost panel's
+      // style switch is live and costs no rebuild; `materialFor` answers for
+      // the next rebuild and for `src/world/loose.ts` at the same time.
+      for (const mesh of meshes) {
+        const kind = mesh.userData.scatterKind as PropKind | undefined;
+        if (kind === undefined) continue;
+        mesh.material = materialFor(kind);
+      }
+      // The tick, grass and flower INK MARKS are what the GPU blade field
+      // replaces on this style (src/world/ghibli/grass.ts): drawn together
+      // they read as two meadows in one field. Reeds, flames and waterfall
+      // marks stay — nothing in the port draws those.
+      for (const kind of ['tick', 'grass', 'flower'] as const) {
+        groupFor(kind).visible = !ghibli;
+      }
       propMaterial.color.set(ghibli ? GHIBLI.rockWarm : WORLD.light);
       rockMaterial.color.set(ghibli ? GHIBLI.rockBody : WORLD.neutral);
       swayMaterial.color.set(ghibli ? GHIBLI.canopyLight : WORLD.light);
@@ -3031,6 +3145,7 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
       tickMaterial.dispose();
       cloudMaterial.dispose();
       shadowMaterial.dispose();
+      if (ghibliMaterials) for (const m of Object.values(ghibliMaterials)) m.dispose();
     },
   };
 }

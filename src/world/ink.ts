@@ -51,7 +51,7 @@ import {
   Vector3,
   WebGLRenderTarget,
 } from 'three';
-import type { Camera, Texture, WebGLRenderer } from 'three';
+import type { Camera, Object3D, Texture, WebGLRenderer } from 'three';
 import { CHARACTER, GHIBLI, MOTION, SURFACE, WORLD } from '../taste/tokens';
 import { OVERLAY_LAYER } from './layers';
 import { KEY_DIRECTION } from './lighting';
@@ -87,8 +87,15 @@ export interface InkParams {
   hatchStrength: number;
 }
 
-/** [D] Landed by screenshot iteration against the reference read. */
-const DEFAULTS: InkParams = {
+/**
+ * [D] Landed by screenshot iteration against the reference read.
+ *
+ * Exported because the style switch has to be able to come BACK: the ghibli
+ * look moves three of these (src/world/ghibli/post.ts) and `ink` restores
+ * exactly this object, so there is one copy of the shipped line rather than a
+ * second set of literals in `scene.ts`.
+ */
+export const INK_DEFAULTS: InkParams = {
   // 0.0009 produced spurious edge clipping at grazing view angles once the
   // camera could orbit freely (user report); 0.004 keeps silhouettes inked
   // without the depth-noise artifacts.
@@ -435,7 +442,7 @@ export class InkPass {
    * sun arcs. Defaults to the calibrated constant. */
   private readonly keyDirection = KEY_DIRECTION.clone();
   private readonly normalClear = new Color(0.5, 0.5, 1);
-  private readonly params: InkParams = { ...DEFAULTS };
+  private readonly params: InkParams = { ...INK_DEFAULTS };
   /** Which look this pass composites for (src/world/style.ts). */
   private style: WorldStyle = 'ink';
   /**
@@ -651,8 +658,20 @@ export class InkPass {
     const background = scene.background;
     scene.background = this.normalClear;
     scene.overrideMaterial = this.normalMaterial;
+    // The override draws every mesh's REST-POSE `position`, which is wrong for
+    // anything whose form only exists in its own vertex shader — the ghibli
+    // blade and bloom fields, whose geometry is a flat strip until the shader
+    // stands it up (src/world/ghibli/grass.ts). Those hide for this one pass
+    // and come back immediately after: a tuft of contour at the origin is not
+    // a line the pen ever drew (docs/ghibli-port.md §1).
+    const skipped: Object3D[] = [];
+    scene.traverse((object) => {
+      if (object.userData.ghibliNormalPassSkip === true && object.visible) skipped.push(object);
+    });
+    for (const object of skipped) object.visible = false;
     renderer.setRenderTarget(this.normalTarget);
     renderer.render(scene, camera);
+    for (const object of skipped) object.visible = true;
     scene.overrideMaterial = null;
     scene.background = background;
 
