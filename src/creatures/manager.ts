@@ -1120,6 +1120,30 @@ export interface CreatureManager {
    * arithmetic stays in one place. 0 for an id nobody holds.
    */
   driveCeiling(id: string): number;
+  /**
+   * HOW BIG THIS CREATURE'S BALL IS, in world units across (user ask,
+   * 2026-09-16: *"for the mobile ui on the world view i want to show ball
+   * diameter in the top left hand side"*).
+   *
+   * `2 × bodyR`, and `bodyR` is `baseR × clump.growth()` rewritten by
+   * `growPass` on every page — so this is the same radius the resolve pass,
+   * the pickup reach and the scatter's exclusion radius already run on,
+   * rather than a second measurement of the same ball.
+   *
+   * A PASSENGER ANSWERS WITH ITS CARRIER'S. A creature riding on a pile has
+   * no ball of its own — it is part of somebody else's, exactly as it has no
+   * walk of its own (`rollOf`) — so the number its phone shows is the ball it
+   * is actually inside.
+   *
+   * 0 for an id nobody holds, 0 for a creature still in its shell (there is
+   * no measured footprint until hatch), and 0 for the whole of any world
+   * without the game: no pickups means no pile, so there is no ball to put a
+   * size on and a readout of one would be a number about nothing.
+   *
+   * A readout, not a control — the units are this world's, and the seam that
+   * turns them into a length a person reads is `src/ui/size.ts`.
+   */
+  ballDiameter(id: string): number;
 }
 
 export function createCreatureManager(
@@ -1154,15 +1178,27 @@ export function createCreatureManager(
    * walk while it is up there. The walk up the carriers is bounded because a
    * pile cannot be inside itself, and the guard is belt and braces.
    */
-  const rollOf = (slot: Slot): number => {
+  /**
+   * The slot whose BALL this one is part of: itself, or the carrier at the
+   * bottom of the pile it is riding on.
+   *
+   * Walked rather than stored, and bounded at eight hops: a pile cannot be
+   * inside itself (`seat` refuses it), so the guard is belt and braces. Two
+   * readouts share it — the locomotion blend below and `ballDiameter`, which
+   * has to answer with the carrier's size for exactly the same reason a
+   * passenger has no walk of its own.
+   */
+  const ballOf = (slot: Slot): Slot => {
     let at: Slot = slot;
     for (let hop = 0; hop < 8; hop++) {
       const carrier = at.carriedBy === null ? null : slots.get(at.carriedBy);
       if (!carrier) break;
       at = carrier;
     }
-    return at.roll;
+    return at;
   };
+
+  const rollOf = (slot: Slot): number => ballOf(slot).roll;
 
   /**
    * How much of the WALK to show — the other side of the same blend.
@@ -4482,6 +4518,16 @@ export function createCreatureManager(
     driveCeiling(id): number {
       const slot = slots.get(id);
       return slot ? DRIVE_SPEED * driveMult(rollOf(slot)) : 0;
+    },
+
+    ballDiameter(id): number {
+      // The game first, like `simulating()` and the six presentations: a
+      // world with no pile has no ball, whatever a slot's measured footprint
+      // happens to be.
+      if (!katamari) return 0;
+      const slot = slots.get(id);
+      if (!slot) return 0;
+      return 2 * ballOf(slot).bodyR;
     },
 
     setWanderSpeed(mult): void {

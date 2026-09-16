@@ -2096,6 +2096,40 @@ function main(): void {
       : null;
   if (stick && tray?.middle) tray.middle.appendChild(stick.el);
 
+  /*
+   * HOW BIG YOUR BALL IS, top left (user ask, 2026-09-16, with a frame of
+   * *Katamari Damacy* and its own `34cm5mm` readout: *"for the mobile ui on
+   * the world view i want to show ball diameter in the top left hand
+   * side"*).
+   *
+   * Three conditions, and they are the ones the stick and the follow camera
+   * are already under plus the game:
+   *
+   * - the KATAMARI world and nowhere else (src/world/game.ts, 2026-09-15
+   *   user ruling). There is no pile in any other world, so there is no ball
+   *   and no size for one — and the module is reached through a DYNAMIC
+   *   import so meridian and the public world never carry the chunk either,
+   *   the same discipline the object library is loaded under;
+   * - a HANDSET looking at the world (`tray?.middle`), because that is what
+   *   was asked for and a projection frames the whole room rather than one
+   *   creature;
+   * - with a creature OF ITS OWN. `myDrawerId` is the same identity the
+   *   minimap's self mark, the follow camera and the stick all read — there
+   *   is exactly one answer to "which of these is mine" on this page and
+   *   this is not allowed to be a second one.
+   *
+   * The readout itself decides when to appear: `ballDiameter` is 0 until the
+   * shell opens, and the corner shows nothing until it is not.
+   */
+  if (worldGame === 'katamari' && tray?.middle && myDrawerId.length > 0) {
+    void import('./ui/size').then((m) =>
+      m.installBallSize({
+        diameter: () => creatures.ballDiameter(myDrawerId),
+        mount: document.body,
+      }),
+    );
+  }
+
   /** The stick as a direction on the ground, under the camera right now. */
   const worldDrive = (): WorldVector =>
     stick ? stickToWorld(stickVec, world.cameraRig.azimuth) : WORLD_REST;
