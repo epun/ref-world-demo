@@ -359,10 +359,12 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
    * linking — which also throws away the parallel compile every modern driver
    * does for you. Measured on the katamari world (host page, library loaded,
    * profiled from the frame the props first drew): **52% of the whole JS
-   * thread in `getProgramInfoLog`**, ~600ms a program under swiftshader across
-   * the eighteen programs this frame needs, all of it landing in the seconds
-   * right after the object library arrives. That is the user report *"my
-   * character can't move now"*: the page is not slow, it is stopped, linking.
+   * thread in `getProgramInfoLog`** — 11.2 seconds of a 21.6-second window,
+   * across the thirty-eight programs a katamari frame needs, all of it landing
+   * in the seconds right after the object library arrives. That is the user
+   * report *"my character can't move now"*: the page is not slow there, it is
+   * stopped, linking. Measured after: the longest frame from load fell 21.8s
+   * to 11.0s and the steady frame ~11s to ~5s (swiftshader, host 1280×800).
    *
    * It costs nothing visible: three still compiles and links, it simply does
    * not stand there reading the log. What it costs is the console message when
@@ -426,9 +428,9 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
    * the frame that draws it. The katamari library arrives as three tiers of
    * models, each with its own material, so the frames right after a tier
    * lands were where every one of those links happened — measured as 52% of
-   * the whole JS thread sitting in `gl.getProgramInfoLog`, and on a phone GPU
-   * a run of sequential first-draw links is a multi-second hitch a person
-   * reads as *"my character can't move"*.
+   * the whole JS thread sitting in `gl.getProgramInfoLog` across thirty-eight
+   * programs, and on a phone GPU a run of sequential first-draw links is a
+   * multi-second hitch a person reads as *"my character can't move"*.
    *
    * `compileAsync` asks the driver to link them all at once and, where
    * `KHR_parallel_shader_compile` exists, to do it in parallel and off this
