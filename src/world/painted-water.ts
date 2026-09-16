@@ -98,8 +98,12 @@ const INF = Infinity;
  * Rows with no source at all are SKIPPED in the column pass rather than
  * carrying an infinite parabola, which would make the intersection maths
  * `Infinity - Infinity`.
+ *
+ * EXPORTED because the ghibli water surface wants the same exact field baked
+ * into a texture (src/world/ghibli/shore.ts): its foam rim is a band a couple
+ * of units wide, and a chamfer's diagonal error is wider than the band.
  */
-function distanceTransform(
+export function distanceTransform(
   res: number,
   source: Uint8Array,
 ): { dist: Float64Array; nearest: Int32Array } {

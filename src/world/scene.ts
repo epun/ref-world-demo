@@ -640,6 +640,8 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
     flowers?.setRegion(region);
     grass?.setHeight(height);
     flowers?.setHeight(height);
+    // …and the water's own bake, for the same reason: the shoreline moved.
+    water.setShore(ground.shoreTexture());
   };
 
   // ── the look ──────────────────────────────────────────────────────────────

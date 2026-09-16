@@ -154,6 +154,7 @@ describe('ghibli element shaders', () => {
       // The shared bakes: the ground under a blade, and the window it stands
       // in (src/world/ghibli/height.ts).
       'ggGroundAt',
+      'ggShoreAt',
       'ggWindow',
     ];
     for (const { material } of materials()) {
