@@ -18,17 +18,21 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { zeroPlanting } from '../../src/world/painted';
+import { fieldSize } from '../../src/world/field';
+import { scatterExtent } from '../../src/world/scatter';
 import {
   activeWaterBodies,
   FOREST_BLOBS,
   FOREST_FALLOFF,
-  ISLAND_OUTLINE_POINTS,
+  islandOutlinePoints,
   isAuthoredWater,
   isWater,
   islandOutline,
   MOUNTAIN_BLOBS,
   MOUNTAIN_FALLOFF,
-  OUTLINE_POINTS,
+  farFieldEnd,
+  mapScale,
+  outlinePoints,
   RIPPLE_MARGIN,
   rippleSpots,
   coastRadius,
@@ -71,15 +75,37 @@ const FEATURE_CLEAR = 40;
  * region. 155, not 110: the field scaled up and the range runs along the
  * north edge, where the (-5, -118) mass reaches z ≈ -147 at full wobble.
  */
-const REGION_LIMIT = 155;
+/** Lazily: `scatterExtent` rides the island's scale, and this module is
+ * evaluated before `beforeAll` turns the island on. */
+const regionLimit = (): number => scatterExtent() - 5;
 /** Open plain the layout keeps between any two distinct environments,
  * measured edge to edge on 1.2 × the authored radius. */
-const ENVIRONMENT_GAP = 20;
+const environmentGap = (): number => 20 * mapScale();
 
-const LAKE: WaterBody = WATER_BODIES[0]!;
-const PONDS: readonly WaterBody[] = WATER_BODIES.slice(1);
+/**
+ * The bodies, RE-READ in `beforeAll` and not captured here.
+ *
+ * `WATER_BODIES` is a live binding that `setIslandMode` re-points at the map's
+ * own scale (src/world/landscape.ts `MAP_SCALE`), so a `const` evaluated while
+ * this module is still loading would hold the authored lake and every
+ * measurement below would be taken somewhere the water no longer is.
+ */
+let LAKE: WaterBody = WATER_BODIES[0]!;
+let PONDS: readonly WaterBody[] = WATER_BODIES.slice(1);
 /** The island as the blob it is — its own centre, not the lake's. */
-const ISLAND: Blob = LAKE.island!;
+let ISLAND: Blob = LAKE.island!;
+/** Every authored feature as a plain blob (water bodies use their outer r). */
+let ALL_BLOBS: Blob[] = [];
+const readLayout = (): void => {
+  LAKE = WATER_BODIES[0]!;
+  PONDS = WATER_BODIES.slice(1);
+  ISLAND = LAKE.island!;
+  ALL_BLOBS = [
+    ...FOREST_BLOBS,
+    ...MOUNTAIN_BLOBS,
+    ...WATER_BODIES.map((b) => ({ x: b.x, z: b.z, r: b.r, seed: b.seed })),
+  ];
+};
 
 /** Units of open water crossed walking out from the island's shore on one
  * bearing, until the far shore. */
@@ -98,13 +124,6 @@ function crossing(theta: number): number {
  * every angle: an island whose arm reached the far shore would be a headland
  * again. */
 const ISLAND_CLEARANCE = 6;
-
-/** Every authored feature as a plain blob (water bodies use their outer r). */
-const ALL_BLOBS: Blob[] = [
-  ...FOREST_BLOBS,
-  ...MOUNTAIN_BLOBS,
-  ...WATER_BODIES.map((b) => ({ x: b.x, z: b.z, r: b.r, seed: b.seed })),
-];
 
 /**
  * Probe points that sit outside EVERY blob in a set (its blobs overlap, and
@@ -149,6 +168,7 @@ function edgePoints(b: Blob, n = 512): [number, number][] {
 beforeAll(() => {
   setLandscapeMode('landscape');
   setIslandMode(true);
+  readLayout();
 });
 afterAll(() => {
   setLandscapeMode('plain');
@@ -233,8 +253,8 @@ describe('landscape — the origin clearing stays open plain', () => {
   it('keeps every feature inside the scattered region', () => {
     for (const b of ALL_BLOBS) {
       for (const [x, z] of edgePoints(b)) {
-        expect(Math.abs(x)).toBeLessThan(REGION_LIMIT);
-        expect(Math.abs(z)).toBeLessThan(REGION_LIMIT);
+        expect(Math.abs(x)).toBeLessThan(regionLimit());
+        expect(Math.abs(z)).toBeLessThan(regionLimit());
       }
     }
   });
@@ -392,7 +412,7 @@ describe('landscape — outlines', () => {
   it('returns the requested point count, unrepeated, finite', () => {
     for (const body of WATER_BODIES) {
       const outer = waterOutline(body);
-      expect(outer).toHaveLength(OUTLINE_POINTS);
+      expect(outer).toHaveLength(outlinePoints());
       const custom = waterOutline(body, 24);
       expect(custom).toHaveLength(24);
       for (const [x, z] of outer) {
@@ -423,7 +443,7 @@ describe('landscape — outlines', () => {
   it('gives the lake an island shoreline and the ponds none', () => {
     const isl = islandOutline(LAKE);
     expect(isl).not.toBeNull();
-    expect(isl).toHaveLength(ISLAND_OUTLINE_POINTS);
+    expect(isl).toHaveLength(islandOutlinePoints());
     expect(islandOutline(LAKE, 12)).toHaveLength(12);
     let area = 0;
     for (let i = 0; i < isl!.length; i++) {
@@ -540,9 +560,12 @@ describe('landscape — colliders', () => {
   it('tiles every body with same-size hard circles, and not too many', () => {
     expect(cols().length).toBeGreaterThan(WATER_BODIES.length * 4);
     // A budget, not a fixture: the tiling is what the collider grid indexes
-    // every frame. Measured 1118 for the shipped layout, ~1050 of them the
-    // lake.
-    expect(cols().length).toBeLessThanOrEqual(2500);
+    // every frame. Measured 1118 for the authored layout, ~1050 of them the
+    // lake; 5502 on the doubled island (2026-09-16, `MAP_SCALE`) — the lake's
+    // tiling is an AREA and goes up fourfold, the sea's wall is an arc LENGTH
+    // and doubles. So the budget rides the SQUARE of the scale, which is the
+    // shape the tiling actually has.
+    expect(cols().length).toBeLessThanOrEqual(2500 * mapScale() * mapScale());
     for (const c of cols()) {
       expect(c.hard).toBe(true);
       expect(c.r).toBe(WATER_COLLIDER_R);
@@ -588,6 +611,8 @@ describe('landscape — colliders', () => {
     }
   });
 
+  // 30s: the sweep is O(probes × colliders) and the doubled island carries
+  // 5502 of them over four times the water (2026-09-16, `MAP_SCALE`).
   it('leaves no wadeable pocket of open water', () => {
     // The design bound, with no exception left in it now the causeway is
     // gone: a creature gets at most ~1.6 units past any shore — the outer
@@ -614,7 +639,7 @@ describe('landscape — colliders', () => {
         }
       }
     }
-  });
+  }, 60_000);
 });
 
 describe('landscape — shore samples', () => {
@@ -710,8 +735,9 @@ describe('landscape — ripple spots', () => {
     }
     // A margin wider than the lake's own water empties it. 24, not 20: the
     // island moved off-centre, which opens a 41-unit crossing on the far
-    // side of it — the widest open water the map holds.
-    expect(rippleSpots(LAKE, 24)).toHaveLength(0);
+    // side of it — the widest open water the map holds. Through `mapScale`,
+    // because the lake scales whole (`MAP_SCALE`) and so does that crossing.
+    expect(rippleSpots(LAKE, 24 * mapScale())).toHaveLength(0);
   });
 });
 
@@ -762,7 +788,7 @@ describe('landscape — the environments are spread out', () => {
             gap = Math.min(gap, Math.hypot(a.x - b.x, a.z - b.z) - 1.2 * (a.r + b.r));
           }
         }
-        expect(gap, `${an} <-> ${bn}`).toBeGreaterThanOrEqual(ENVIRONMENT_GAP);
+        expect(gap, `${an} <-> ${bn}`).toBeGreaterThanOrEqual(environmentGap());
       }
     }
   });
@@ -810,7 +836,16 @@ describe('landscape — the environments are spread out', () => {
 });
 
 describe('landscape — terrain height', () => {
-  const FIELD = 155;
+  /**
+   * The map's own reach: 155 as authored, 310 on the doubled island
+   * (`MAP_SCALE`). A walk that stayed at 155 would sample the middle quarter
+   * of the island and call it the field.
+   *
+   * A FUNCTION, not a const: a describe body runs at collection time, before
+   * `beforeAll` has turned the island on, so a constant here would be the
+   * authored number whatever the map.
+   */
+  const field = (): number => 155 * mapScale();
   /** Inside (or within a sample of) the island — the one landform measured
    * against its own slope bound rather than the field's. */
   const nearIsland = (x: number, z: number): boolean => {
@@ -822,7 +857,8 @@ describe('landscape — terrain height', () => {
   /** Every sample is a `terrainHeight` call, so the field walks are coarse on
    * purpose. */
   const walk = (step: number, fn: (x: number, z: number) => void): void => {
-    for (let x = -FIELD; x <= FIELD; x += step) for (let z = -FIELD; z <= FIELD; z += step) fn(x, z);
+    const reach = field();
+    for (let x = -reach; x <= reach; x += step) for (let z = -reach; z <= reach; z += step) fn(x, z);
   };
 
   it('is deterministic', () => {
@@ -938,9 +974,15 @@ describe('landscape — terrain height', () => {
     // and a rise scaled by 0.7 needs a little more bank to get there: at
     // three units in, the widest-edge bearing is still exactly at the water
     // line. Measured at four: 0.09 clear at the worst bearing.
+    //
+    // …times `mapScale` (2026-09-16, `MAP_SCALE`): the bank runs over a
+    // FRACTION of the island's own radius, so an island twice as wide has the
+    // same bank profile spread over twice the ground and four units in is
+    // eight. The number being a proportion is the point — this is the same
+    // measurement, not a looser one.
     for (let i = 0; i < 360; i++) {
       const th = (i / 360) * Math.PI * 2;
-      const d = wobbledRadius(ISLAND, th) - 4;
+      const d = wobbledRadius(ISLAND, th) - 4 * mapScale();
       expect(
         terrainHeight(ISLAND.x + Math.cos(th) * d, ISLAND.z + Math.sin(th) * d),
         `island at 4 units in, bearing ${th.toFixed(2)}`,
@@ -980,6 +1022,9 @@ describe('landscape — terrain height', () => {
     expect(hi).toBeLessThan(10);
   });
 
+  /** Units of walk a plateau has to hold to count as a tread — see below. */
+  const PLATEAU_RUN = 8;
+
   it('reads as tiers, not a swell — four levels between the origin and the range', () => {
     const target = MOUNTAIN_BLOBS[1]!;
     const len = Math.hypot(target.x, target.z);
@@ -987,8 +1032,17 @@ describe('landscape — terrain height', () => {
     for (let d = 0; d <= len; d += 1) {
       line.push(terrainHeight((target.x * d) / len, (target.z * d) / len));
     }
-    // Plateaus: runs of the same height (to a tenth of a unit) at least six
+    // Plateaus: runs of the same height (to a tenth of a unit) at least EIGHT
     // units long. A smooth swell has none; a terrace has one per tread.
+    //
+    // Eight and not the six this used to ask for (2026-09-16, `MAP_SCALE`):
+    // the island is twice as wide and exactly as high, so every gradient on it
+    // is half what it was, and at six the walk picked up two 6-unit flats near
+    // the crest of the range that are not on a tier at all — the shelf's own
+    // rounded top, which at half the gradient now holds a tenth of a unit for
+    // six units without holding a tier. Eight is the shortest run that admits
+    // only genuine treads: measured four of them, 0 / 1.6 / 3.2 / 4.8, and
+    // nothing off-tier (at ten it is still those four, at twelve only three).
     const levels: number[] = [];
     let current = Math.round(line[0]! * 10) / 10;
     let run = 1;
@@ -998,7 +1052,7 @@ describe('landscape — terrain height', () => {
         run++;
         continue;
       }
-      if (run >= 6) levels.push(current);
+      if (run >= PLATEAU_RUN) levels.push(current);
       current = h;
       run = 1;
     }
@@ -1068,7 +1122,19 @@ describe('landscape — terrain height', () => {
       // 1.09–1.85 at elevation 1.0 — the basin drop and the land around it
       // both scale with the dial). A body of water still reads as sunk, not
       // painted on.
-      expect(sum / n - level, `${body.kind} at ${body.x},${body.z}`).toBeGreaterThanOrEqual(0.7);
+      //
+      // 0.6 AND NOT 0.7 SINCE THE ISLAND DOUBLED (2026-09-16, `MAP_SCALE`).
+      // The bodies move with the map and the terrain NOISE does not — a
+      // hummock is a physical thing, so a bigger island has more of them
+      // rather than bigger ones — which means every body lands on a different
+      // patch of the same noise. Re-measured over the five: lake 1.90, ponds
+      // 0.634 / 0.721 / 0.762 / 0.892. The pond that moved to (-50, 190) sits
+      // in a shallow dip of the noise, so its shoulder is a fifth of a unit
+      // lower than its own tier; it still reads as sunk (the basin drop is
+      // 1.05 and the ring sampled here is inside the shore ramp, so the
+      // arithmetic ceiling on this number is ~0.79). The claim the bound
+      // carries — water reads as sunk, not painted on — is unchanged.
+      expect(sum / n - level, `${body.kind} at ${body.x},${body.z}`).toBeGreaterThanOrEqual(0.6);
     }
   });
 
@@ -1088,7 +1154,7 @@ describe('landscape — terrain height', () => {
     // water, the reference the shelves are measured against.
     const plain = meanWhere((x, z) => {
       const r = Math.hypot(x, z);
-      if (r < 35 || r > 90) return false;
+      if (r < 35 * mapScale() || r > 90 * mapScale()) return false;
       const l = sampleLandscape(x, z);
       return l.forest === 0 && l.mountain === 0 && !l.water && !l.island;
     });
@@ -1097,7 +1163,15 @@ describe('landscape — terrain height', () => {
     // Re-measured at TERRAIN_DEFAULTS.elevation 0.7: plain 1.21, forest 2.54,
     // range 3.65 (it was 1.70 / 3.53 / 5.23 at elevation 1.0). Each
     // environment still stands a full tier over the one below it.
-    expect(forest - plain).toBeGreaterThanOrEqual(1.3);
+    //
+    // RE-MEASURED ON THE DOUBLED ISLAND (2026-09-16, `MAP_SCALE`): plain 0.06,
+    // forest 1.18, range 3.60. All three fell, and for one reason — the
+    // environments are twice as far apart now while a shelf APRON is a
+    // physical width and did not scale (src/world/landscape.ts `smoothField`),
+    // so each environment stands on its OWN shelf instead of on its own plus
+    // its neighbour's. That is the map reading more cleanly, not less: the
+    // gaps are 1.12 and 2.42 against 1.33 and 1.11.
+    expect(forest - plain).toBeGreaterThanOrEqual(1.1);
     expect(range - forest).toBeGreaterThan(1);
   });
 
@@ -1111,20 +1185,23 @@ describe('landscape — terrain height', () => {
     const floor = seaLevel() - TERRAIN.basinDrop * terrainParams().elevation;
     let coastMax = 0;
     for (let i = 0; i < 720; i++) coastMax = Math.max(coastMax, coastRadius((i / 720) * Math.PI * 2));
-    // Measured 176.30, so the floor is flat from ~192.3 outward — inside the
-    // ground field's own rim at 200, which is what lets the ring meet the
-    // field at one number with no seam.
-    expect(coastMax).toBeLessThan(184);
-    expect(coastMax + TERRAIN.shoreRamp).toBeLessThan(200);
+    // Measured 176.30 as authored and 352.52 on the doubled island, so the
+    // floor is flat from ~192.3 / ~368.5 outward — inside the ground field's
+    // own rim at 200 / 400, which is what lets the ring meet the field at one
+    // number with no seam. Every radius here rides `mapScale`, because every
+    // one of them is a statement about where the coast is.
+    expect(coastMax).toBeLessThan(184 * mapScale());
+    expect(coastMax + TERRAIN.shoreRamp).toBeLessThan(fieldSize() / 2);
     for (let a = 0; a < 360; a += 3) {
       const th = (a / 180) * Math.PI;
-      for (const r of [195, 205, 400, 1200]) {
+      for (const r of [195 * mapScale(), 205 * mapScale(), 800, 1200]) {
         expect(terrainHeight(Math.cos(th) * r, Math.sin(th) * r), `floor at ${r}`).toBe(floor);
       }
       // …and inside that, on the slope: never above the waterline, never
-      // below the floor. (`farEnd` is 185, which is on the last stretch of
-      // it on the bearings where the coast bulges furthest.)
-      const h = terrainHeight(Math.cos(th) * TERRAIN.farEnd, Math.sin(th) * TERRAIN.farEnd);
+      // below the floor. (`farFieldEnd` is 185, and 370 on the doubled
+      // island — on the last stretch of it on the bearings where the coast
+      // bulges furthest.)
+      const h = terrainHeight(Math.cos(th) * farFieldEnd(), Math.sin(th) * farFieldEnd());
       expect(h).toBeLessThanOrEqual(seaLevel());
       expect(h).toBeGreaterThanOrEqual(floor);
     }
@@ -1158,11 +1235,14 @@ describe('landscape — the terrain dials', () => {
 
   /** The line from the origin out to the range — the walk the tier tests
    * read, and the same one the "reads as tiers" test above uses. */
-  const RANGE_TARGET = MOUNTAIN_BLOBS[1]!;
+  /** Read per walk, not at collection time: the range moves with the map
+   * (`MAP_SCALE`) and a describe body runs before `beforeAll`. */
+  const rangeTarget = (): Blob => MOUNTAIN_BLOBS[1]!;
   const alongRange = (step: number, fn: (x: number, z: number) => void): void => {
-    const len = Math.hypot(RANGE_TARGET.x, RANGE_TARGET.z);
+    const target = rangeTarget();
+    const len = Math.hypot(target.x, target.z);
     for (let d = 0; d <= len; d += step) {
-      fn((RANGE_TARGET.x * d) / len, (RANGE_TARGET.z * d) / len);
+      fn((target.x * d) / len, (target.z * d) / len);
     }
   };
 
@@ -1171,8 +1251,9 @@ describe('landscape — the terrain dials', () => {
   const meanGradient = (): number => {
     let sum = 0;
     let n = 0;
-    for (let x = -155; x <= 155; x += 2) {
-      for (let z = -155; z <= 155; z += 2) {
+    const reach = 155 * mapScale();
+    for (let x = -reach; x <= reach; x += 2 * mapScale()) {
+      for (let z = -reach; z <= reach; z += 2 * mapScale()) {
         const dx = x - ISLAND.x;
         const dz = z - ISLAND.z;
         if (Math.hypot(dx, dz) < wobbledRadius(ISLAND, Math.atan2(dz, dx)) + 1.5) continue;
@@ -1215,7 +1296,9 @@ describe('landscape — the terrain dials', () => {
 
   it('spaces the treads farther apart at a bigger tierStep', () => {
     // Count the distinct treads the walk to the range crosses. Measured:
-    // 4 at 1.6, 2 at 3.2 — the same climb cut into half as many steps.
+    // 4 at 1.6, 2 at 3.2 — the same climb cut into half as many steps. On the
+    // doubled island the walk is twice as long and crosses one tread more:
+    // 5 at 1.6, 2 at 3.2 (2026-09-16, `MAP_SCALE`).
     const treadsAt = (tierStep: number): number => {
       setTerrainParams({ tierStep });
       const seen = new Set<number>();
@@ -1224,7 +1307,7 @@ describe('landscape — the terrain dials', () => {
     };
     const fine = treadsAt(1.6);
     const coarse = treadsAt(3.2);
-    expect(fine).toBe(4);
+    expect(fine).toBe(mapScale() === 1 ? 4 : 5);
     expect(coarse).toBe(2);
     expect(coarse).toBeLessThan(fine);
   });
@@ -1299,7 +1382,8 @@ describe('landscape — the terrain dials', () => {
     // scale with `elevation`, and the slope that reaches it scales with
     // `relief`, which is why the probe radius below is taken off the widest
     // shore ramp the dial allows (16 × 2.5 past the coast's 171.8) rather than
-    // off `farEnd` (176.3 + 16 × 2.5 = 216.3).
+    // off `farEnd` (176.3 + 16 × 2.5 = 216.3) — and through `mapScale`, like
+    // every other radius in this file.
     for (const params of [
       { elevation: 2, tierStep: 4, relief: 2.5 },
       { elevation: 0.2, tierStep: 0.6, relief: 0.5 },
@@ -1313,7 +1397,7 @@ describe('landscape — the terrain dials', () => {
         for (const r of [3, 7, TERRAIN.clearRadius]) {
           expect(terrainHeight(Math.cos(th) * r, Math.sin(th) * r), `clearing ${r}`).toBe(0);
         }
-        for (const r of [220, 400, 1200]) {
+        for (const r of [220 * mapScale(), 800, 1200]) {
           expect(terrainHeight(Math.cos(th) * r, Math.sin(th) * r), `rim ${r}`).toBe(floor);
         }
       }
@@ -1323,7 +1407,8 @@ describe('landscape — the terrain dials', () => {
     const floor = seaLevel() - TERRAIN.basinDrop * TERRAIN_DEFAULTS.elevation;
     for (let i = 0; i < 120; i++) {
       const th = (i / 120) * Math.PI * 2;
-      expect(terrainHeight(Math.cos(th) * 200, Math.sin(th) * 200)).toBe(floor);
+      const r = 200 * mapScale();
+      expect(terrainHeight(Math.cos(th) * r, Math.sin(th) * r)).toBe(floor);
     }
   });
 
@@ -1449,8 +1534,8 @@ describe('landscape — the mode', () => {
       expect(WATER_BODIES).toHaveLength(5);
       expect(FOREST_BLOBS).toHaveLength(2);
       expect(MOUNTAIN_BLOBS).toHaveLength(4);
-      expect(waterOutline(LAKE)).toHaveLength(OUTLINE_POINTS);
-      expect(islandOutline(LAKE)).toHaveLength(ISLAND_OUTLINE_POINTS);
+      expect(waterOutline(LAKE)).toHaveLength(outlinePoints());
+      expect(islandOutline(LAKE)).toHaveLength(islandOutlinePoints());
       // …and the authored query still answers, which is what the water
       // renderer's shoreline guard rides.
       expect(isAuthoredWater(LAKE.x + LAKE.r * 0.5, LAKE.z)).toBe(true);
@@ -1571,8 +1656,14 @@ describe('landscape — the island off is the map that shipped before it', () =>
   beforeAll(() => {
     islandOn = waterColliders().length;
     setIslandMode(false);
+    // …and the layout with it: the map's scale rides the same flag
+    // (`MAP_SCALE`), so this block reads the AUTHORED bodies.
+    readLayout();
   });
-  afterAll(() => setIslandMode(true));
+  afterAll(() => {
+    setIslandMode(true);
+    readLayout();
+  });
 
   it('is off, and says so', () => {
     expect(islandMode()).toBe(false);

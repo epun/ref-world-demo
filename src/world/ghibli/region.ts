@@ -18,7 +18,7 @@
  *         "am I wet" (`step(0.95, b)`) and "how close is the sea"
  *         (the ramp) off one channel without a second sampler.
  *
- * WHY 128² [D]: the coarsest thing in it is a shoreline, `PAINTED_SIZE / 128`
+ * WHY 128² [D]: the coarsest thing in it is a shoreline, `FIELD_SIZE / 128`
  * is 3.1 world units a texel, and the two consumers both smooth it further
  * (the grass compares it against a per-blade random, the ground ramps it).
  * It is 64 KB and it re-bakes in a few milliseconds, which matters because
@@ -31,16 +31,35 @@
  */
 
 import { DataTexture, LinearFilter, RGBAFormat, UnsignedByteType } from 'three';
+import { FIELD_SIZE, fieldSize } from '../field';
 import { sampleLandscape } from '../landscape';
-import { PAINTED_SIZE } from '../painted';
 
-/** Texels a side. */
+/** Texels a side on a world with no island. */
 export const REGION_RES = 128;
 
-/** World units the bake spans, centred on the origin — the painted map's own
- * extent, so one uv mapping (`xz / PAINTED_SIZE + 0.5`) reads every layer
- * and this texture alike. */
-export const REGION_SIZE = PAINTED_SIZE;
+/** World units the bake spans on a world with no island, centred on the
+ * origin — the displaced ground field's own extent. */
+export const REGION_SIZE = FIELD_SIZE;
+
+/**
+ * …and the two the bake actually uses: both through `mapScale` (2026-09-16,
+ * `MAP_SCALE` in src/world/landscape.ts), so the TEXEL stays 3.1 world units
+ * whatever the island's size — 256² over 800 units on the doubled island.
+ *
+ * The bake spans the GROUND FIELD and the painted layers span the PAINTED
+ * MAP, and on the doubled island those are no longer the same square: the
+ * consumers read the region at `xz / GG_MAP_SIZE` and a painted layer at
+ * `xz / GG_SIZE`, two constants instead of the one they shared. The painted
+ * map stays 400 units because its extent is on the wire
+ * (`SCENE_EXTENT` in src/session/scene.ts).
+ */
+export function regionSize(): number {
+  return fieldSize();
+}
+
+export function regionRes(): number {
+  return Math.round(REGION_RES * (fieldSize() / FIELD_SIZE));
+}
 
 /** [D] How far inland the beach runs, world units. Wide enough to read as a
  * shore from the isometric camera, narrow enough that an inland pond gets a
@@ -73,7 +92,7 @@ function texelToWorld(i: number, res: number, size: number): number {
  * Bake the map into a fresh `DataTexture`. Linear-filtered: the consumers
  * want a ramp across a shoreline, not a staircase.
  */
-export function bakeRegionTexture(res: number = REGION_RES): DataTexture {
+export function bakeRegionTexture(res: number = regionRes()): DataTexture {
   const texture = new DataTexture(
     new Uint8Array(res * res * 4),
     res,
@@ -98,7 +117,7 @@ export function bakeRegionTexture(res: number = REGION_RES): DataTexture {
 export function rebakeRegion(texture: DataTexture): void {
   const res = texture.image.width;
   const data = texture.image.data as Uint8Array;
-  const size = REGION_SIZE;
+  const size = regionSize();
   const count = res * res;
 
   const meadow = new Float32Array(count);

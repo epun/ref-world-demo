@@ -18,8 +18,8 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { Color, DoubleSide, Mesh, MeshBasicMaterial, type BufferAttribute } from 'three';
 import { SURFACE, WORLD } from '../../src/taste/tokens';
 import {
-  ISLAND_OUTLINE_POINTS,
-  OUTLINE_POINTS,
+  islandOutlinePoints,
+  outlinePoints,
   RIPPLE_MARGIN,
   TERRAIN_DEFAULTS,
   WATER_BODIES,
@@ -53,6 +53,8 @@ import type { PaintedBody, PaintedWaterField } from '../../src/world/painted-wat
 beforeAll(() => {
   setLandscapeMode('landscape');
   setIslandMode(true);
+  LAKE = WATER_BODIES[0]!;
+  ISLAND = LAKE.island!;
 });
 afterAll(() => {
   setLandscapeMode('plain');
@@ -64,9 +66,16 @@ const TICK_LIFT = 0.015;
 /** The pond margin water.ts uses (ponds are too small for the default). */
 const POND_MARGIN = 1.0;
 
-const LAKE: WaterBody = WATER_BODIES[0]!;
+/**
+ * The lake and its island, RE-READ in `beforeAll` and not captured here:
+ * `WATER_BODIES` is a live binding that `setIslandMode` re-points at the map's
+ * own scale (src/world/landscape.ts `MAP_SCALE`), and a `const` evaluated
+ * while this module is still loading would hold the authored lake while the
+ * meshes below were built from the doubled one.
+ */
+let LAKE: WaterBody = WATER_BODIES[0]!;
 /** The lake's island — its own centre, not the lake's. */
-const ISLAND = LAKE.island!;
+let ISLAND = LAKE.island!;
 /** The ribbon's sampling multiple over each outline's default budget
  * (water.ts SHORE_SUBDIVISION) — the density both rings are built at. */
 const SUBDIVISION = 4;
@@ -229,7 +238,7 @@ describe('water — what gets built', () => {
       });
     // …and the same on the island's shoreline, where the bank starts: the
     // hole in the sheet is cut exactly where the ground leaves the water.
-    for (const [x, z] of islandOutline(LAKE, ISLAND_OUTLINE_POINTS * SUBDIVISION)!) {
+    for (const [x, z] of islandOutline(LAKE, islandOutlinePoints() * SUBDIVISION)!) {
       expect(terrainHeight(x, z), `island shore at ${x},${z}`).toBeLessThanOrEqual(
         waterLevel(LAKE) + 1e-6,
       );
@@ -340,16 +349,18 @@ describe('water — everything drawn is over water', () => {
 
   it('draws a broken contour — the pen lifts, and the shore is not a closed rule', () => {
     // 384 outer samples, minus roughly one segment in twelve: a complete
-    // ribbon would be every segment.
+    // ribbon would be every segment. The sample count rides the map's own
+    // scale (`outlinePoints`, src/world/landscape.ts `MAP_SCALE`), because a
+    // ring twice as long walked at the same count would double its chords.
     const quads = points(named('shore-pond-1')).length / 6;
-    expect(quads).toBeLessThan(96 * 4);
-    expect(quads).toBeGreaterThan(96 * 4 * 0.8);
+    expect(quads).toBeLessThan(outlinePoints() * SUBDIVISION);
+    expect(quads).toBeGreaterThan(outlinePoints() * SUBDIVISION * 0.8);
     // …and the island's own stroke breaks in its own places: the two rings
     // of the lake are seeded apart, so the pen does not lift twice at the
     // same bearing.
     const island = points(named('shore-island-0')).length / 6;
-    expect(island).toBeLessThan(ISLAND_OUTLINE_POINTS * SUBDIVISION);
-    expect(island).toBeGreaterThan(ISLAND_OUTLINE_POINTS * SUBDIVISION * 0.8);
+    expect(island).toBeLessThan(islandOutlinePoints() * SUBDIVISION);
+    expect(island).toBeGreaterThan(islandOutlinePoints() * SUBDIVISION * 0.8);
   });
 });
 
@@ -395,7 +406,7 @@ describe('water — the fill edge and the pen line are one line', () => {
       // Earcut triangulates the polygon's own points and invents none — and a
       // hole adds exactly its own points — so the fill's vertices ARE the
       // outlines'.
-      const island = islandOutline(WATER_BODIES[i]!, ISLAND_OUTLINE_POINTS * SUBDIVISION);
+      const island = islandOutline(WATER_BODIES[i]!, islandOutlinePoints() * SUBDIVISION);
       const fillAttr = bodies[i]!.geometry.getAttribute('position') as BufferAttribute;
       expect(fillAttr.count, bodies[i]!.name).toBe(poly.length + (island?.length ?? 0));
       const shore = createWater().group.getObjectByName(
@@ -407,7 +418,7 @@ describe('water — the fill edge and the pen line are one line', () => {
   });
 
   it('rides the island ring the same way, so its hole and its pen line agree', () => {
-    const island = islandOutline(LAKE, ISLAND_OUTLINE_POINTS * SUBDIVISION)!;
+    const island = islandOutline(LAKE, islandOutlinePoints() * SUBDIVISION)!;
     expect(ribbonOffPolygon(named('shore-island-0'), island)).toBeLessThan(1e-4);
   });
 
@@ -416,7 +427,7 @@ describe('water — the fill edge and the pen line are one line', () => {
     // apart if they drifted; the stroke is wider than that everywhere.
     const rings = [
       ...createWater().fills(),
-      islandOutline(LAKE, ISLAND_OUTLINE_POINTS * SUBDIVISION)!,
+      islandOutline(LAKE, islandOutlinePoints() * SUBDIVISION)!,
     ];
     for (const poly of rings) {
       let longest = 0;
@@ -435,7 +446,7 @@ describe('water — the fill edge and the pen line are one line', () => {
     createWater()
       .fills()
       .forEach((poly, i) => {
-        expect(poly).toEqual(waterOutline(WATER_BODIES[i]!, OUTLINE_POINTS * SUBDIVISION));
+        expect(poly).toEqual(waterOutline(WATER_BODIES[i]!, outlinePoints() * SUBDIVISION));
       });
   });
 });

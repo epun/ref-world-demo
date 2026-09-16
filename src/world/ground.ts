@@ -15,14 +15,17 @@
  *   field  a 400×400 plane at 1.25-unit resolution, every vertex lifted to
  *          `surface.sampleHeight` (the Surface seam, src/world/surface.ts —
  *          nothing here derives a height of its own) and re-normalled.
- *   far    a flat ring from the field's rim out to 1400.
+ *          800×800 at the same 1.25-unit resolution on the doubled island
+ *          (src/world/field.ts): the side rides `mapScale`, the QUAD does not.
+ *   far    a flat ring from the field's rim out to 1400 — 2800 on the island,
+ *          for the same reason and through the same factor.
  *
  * WHY THE FAR FIELD IS NOT PART OF THE PLANE [D]: it exists only so that no
  * orbit or pan reveals the void past the world, and a 1400-radius plane at
  * the field's density would be ~10 million triangles for ground nobody
- * looks at. The terrain is exactly 0 past TERRAIN.farEnd (185) by
- * construction, so everything outside the field is one flat sheet and a
- * couple of hundred triangles draw it.
+ * looks at. The terrain is exactly 0 past `farFieldEnd` (185, and 370 on the
+ * doubled island) by construction, so everything outside the field is one
+ * flat sheet and a couple of hundred triangles draw it.
  *
  * WHY THE NORMALS MATTER: the terraces read only because of them. The ink
  * pass hatches faces turned away from the key and draws a contour wherever
@@ -31,7 +34,7 @@
  *
  * THE FAR RING IS SEA FLOOR (2026-09-15, the map became an island). It used
  * to sit at exactly y = 0, because the terrain was exactly 0 past
- * TERRAIN.farEnd by construction. Outside the coast the ground now falls to
+ * `farFieldEnd` by construction. Outside the coast the ground now falls to
  * the sea floor and stays there, so the ring takes whatever height the Surface
  * reports at its own inner rim rather than assuming zero — one sample, read
  * through the same seam as every vertex of the field, so there is still
@@ -70,31 +73,29 @@ import { bakeHeightTexture, rebakeHeight } from './ghibli/height';
 import { bakeRegionTexture, rebakeRegion } from './ghibli/region';
 import { bakeShoreTexture, rebakeShore } from './ghibli/shore';
 import { applyToon } from './toon';
+import { fieldSize, fieldSegments, groundRadius } from './field';
 import { isWater, TERRAIN, terrainParams } from './landscape';
 import { PAINTED_SIZE } from './painted';
 import type { WorldStyle } from './style';
 import type { Surface } from './surface';
 
-/** Outer radius of the flat far field. Exported because the water pass
- * builds the SEA's own sheet out to the same horizon — one disc of ocean with
- * the island punched out of it, seated on the same floor this ring stands on
- * (src/world/water.ts). */
-export const GROUND_RADIUS = 1400;
-const GROUND_SEGMENTS = 96;
+/**
+ * The field's own numbers live in src/world/field.ts — the three geography
+ * bakes below span the same field and this module imports all three, so a
+ * number they share cannot live here. Re-exported, because this is the name
+ * every existing consumer reads.
+ */
+export {
+  FIELD_SIZE,
+  FIELD_SEGMENTS,
+  GROUND_RADIUS,
+  fieldSize,
+  fieldSegments,
+  fieldQuad,
+  groundRadius,
+} from './field';
 
-/**
- * Side of the displaced field, world units: ±200 in x and z. Comfortably
- * past TERRAIN.farEnd, so the rim is flat land and not a cut through a tier.
- */
-export const FIELD_SIZE = 400;
-/**
- * Segments per side — 1.25 units a quad, ~205k triangles. A ceiling, not a
- * starting point [D]: the terrace risers are the finest thing on the map
- * and a few units of run each, so this puts several vertices across one,
- * and doubling it quadruples both the build and the draw for a shape the
- * ink pass would render the same.
- */
-export const FIELD_SEGMENTS = 320;
+const GROUND_SEGMENTS = 96;
 
 /**
  * [D] Pen-wobble drift rate, noise units per second: a twentieth of a noise
@@ -475,7 +476,12 @@ ${groundNoiseGlsl}`,
   // ghibli style turns it on (src/world/toon.ts).
   applyToon(material, { slopeRock: true });
 
-  const field = new PlaneGeometry(FIELD_SIZE, FIELD_SIZE, FIELD_SEGMENTS, FIELD_SEGMENTS);
+  // The field's side and its cut, read ONCE at build: both ride the island's
+  // scale (src/world/field.ts) and the island is decided before the ground is
+  // built (src/world/scene.ts `start`), so there is no live switch to follow.
+  const side = fieldSize();
+  const segments = fieldSegments();
+  const field = new PlaneGeometry(side, side, segments, segments);
   // Laid flat first, so the attribute holds world x/z and the height sample
   // reads straight off it — no local-space bookkeeping in between.
   field.rotateX(-Math.PI / 2);
@@ -495,7 +501,7 @@ ${groundNoiseGlsl}`,
   fieldMesh.name = 'ground-field';
   group.add(fieldMesh);
 
-  const far = new RingGeometry(FIELD_SIZE / 2, GROUND_RADIUS, GROUND_SEGMENTS);
+  const far = new RingGeometry(side / 2, groundRadius(), GROUND_SEGMENTS);
   far.rotateX(-Math.PI / 2);
   const farMesh = new Mesh(far, material);
   farMesh.name = 'ground-far';
@@ -509,7 +515,7 @@ ${groundNoiseGlsl}`,
   // farthest bulge plus its floor slope lands well inside that rim at the
   // shipped dials, so the whole rim really is one flat number.
   const seatFar = (): void => {
-    farMesh.position.y = surface.sampleHeight(FIELD_SIZE / 2, 0);
+    farMesh.position.y = surface.sampleHeight(side / 2, 0);
   };
   seatFar();
   group.add(farMesh);

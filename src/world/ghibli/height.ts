@@ -19,23 +19,46 @@
  * R32F, NEAREST. A float texture so a height can be negative (the basins are)
  * and needs no encoding; nearest because linear filtering of a 32-bit float
  * texture is an extension (`OES_texture_float_linear`) rather than a promise,
- * so the shaders do their own bilinear tap (`GG_HEIGHT_GLSL`). The resolution
- * is 256 over the painted map's 400 units — 1.56 units a texel, which is
+ * so the shaders do their own bilinear tap (`ggHeightGlsl`). The resolution
+ * is 256 over the ground field's 400 units — 1.56 units a texel, which is
  * coarser than a terrace riser is wide, so a blade within a unit of a lip
  * stands on a smoothed version of it. That is the trade the frame time bought:
  * 65 000 seam samples a rebuild instead of 150 000 a window slide. **[D]**
+ *
+ * BOTH numbers ride `mapScale` (2026-09-16, the island doubled): 512² over
+ * 800 units keeps the texel at exactly 1.56, so the trade above is the same
+ * trade on a map four times the area and the bake costs 262k samples instead
+ * of 65k.
  */
 
 import { DataTexture, FloatType, NearestFilter, RedFormat } from 'three';
-import { PAINTED_SIZE } from '../painted';
+import { FIELD_SIZE, fieldSize } from '../field';
 import { ggFloat } from './shared';
 
-/** Texels a side. */
+/** Texels a side on a world with no island. */
 export const HEIGHT_RES = 256;
 
-/** World units the bake spans, centred on the origin — the painted map's own
- * extent, so one uv mapping reads this texture and every layer alike. */
-export const HEIGHT_SIZE = PAINTED_SIZE;
+/** World units the bake spans on a world with no island, centred on the
+ * origin — the displaced ground field's own extent. */
+export const HEIGHT_SIZE = FIELD_SIZE;
+
+/**
+ * …and the two the bake actually uses: the ground field's side through
+ * `mapScale`, and the resolution through the same factor, so the TEXEL stays
+ * 1.56 world units whatever the island's size (2026-09-16, `MAP_SCALE` in
+ * src/world/landscape.ts). 512² over 800 units on the doubled island.
+ *
+ * Read at bake time and at material-build time, both of which happen after
+ * the island flag is set (src/world/scene.ts `start`) — which is why the
+ * shader chunk below is a FUNCTION and not a module constant.
+ */
+export function heightSize(): number {
+  return fieldSize();
+}
+
+export function heightRes(): number {
+  return Math.round(HEIGHT_RES * (fieldSize() / FIELD_SIZE));
+}
 
 /**
  * Bake the ground into a fresh `DataTexture`.
@@ -44,7 +67,7 @@ export const HEIGHT_SIZE = PAINTED_SIZE;
  */
 export function bakeHeightTexture(
   sampleHeight: (x: number, z: number) => number,
-  res: number = HEIGHT_RES,
+  res: number = heightRes(),
 ): DataTexture {
   const texture = new DataTexture(new Float32Array(res * res), res, res, RedFormat, FloatType);
   texture.minFilter = NearestFilter;
@@ -67,8 +90,9 @@ export function rebakeHeight(
 ): void {
   const res = texture.image.width;
   const data = texture.image.data as Float32Array;
-  const step = HEIGHT_SIZE / res;
-  const origin = -HEIGHT_SIZE / 2 + step * 0.5;
+  const size = heightSize();
+  const step = size / res;
+  const origin = -size / 2 + step * 0.5;
   for (let tz = 0; tz < res; tz++) {
     const z = origin + tz * step;
     for (let tx = 0; tx < res; tx++) {
@@ -86,12 +110,13 @@ export function rebakeHeight(
  * a field with no bake installed reads a 1×1 zero texel and stands on flat
  * paper, which is exactly the plain world.
  */
-export const GG_HEIGHT_GLSL = /* glsl */ `
+export function ggHeightGlsl(): string {
+  return /* glsl */ `
 uniform sampler2D uHeight;
 uniform float uHeightRes;
 
 float ggGroundAt(vec2 world) {
-  vec2 uv = world / ${ggFloat(HEIGHT_SIZE)} + 0.5;
+  vec2 uv = world / ${ggFloat(heightSize())} + 0.5;
   vec2 t = uv * uHeightRes - 0.5;
   vec2 f = fract(t);
   vec2 base = (floor(t) + 0.5) / uHeightRes;
@@ -102,6 +127,7 @@ float ggGroundAt(vec2 world) {
   float h11 = texture2D(uHeight, base + vec2(texel, texel)).r;
   return mix(mix(h00, h10, f.x), mix(h01, h11, f.x), f.y);
 }`;
+}
 
 /**
  * [D] The field's shape, in world units from the look-target.

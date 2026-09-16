@@ -113,14 +113,16 @@ import {
 } from 'three';
 import { GHIBLI } from '../../taste/tokens';
 import { PAINTED_SIZE } from '../painted';
+import { mapScale } from '../landscape';
+import { regionSize } from './region';
 import { TOON_LIGHTING_GLSL, TOON_VARYINGS_GLSL, toonUniforms } from '../toon';
 import { WIND_FIELD_GLSL, type WindField } from '../wind';
 import {
   FIELD_CORE,
   FIELD_REACH,
   GG_FIELD_GLSL,
-  GG_HEIGHT_GLSL,
-  HEIGHT_RES,
+  ggHeightGlsl,
+  heightRes,
   RIM_DENSITY,
 } from './height';
 import {
@@ -167,6 +169,53 @@ export const GRASS_BASE_PHONE = 40000;
  * (`uRegion`) is what decides which of those texels grow anything.
  */
 export const GRASS_BASE_SPAN = 360;
+
+/**
+ * …and the span the base field is actually laid over: `GRASS_BASE_SPAN`
+ * through `mapScale` (2026-09-16, the island doubled), so it still covers
+ * every land texel of a coast that reaches ~352 units out. 720.
+ *
+ * THE BUDGET IS UNCHANGED, so the density per unit area is a QUARTER of what
+ * it was and neighbouring blades stand twice as far apart (0.74 units → 1.47).
+ * Two numbers absorb that, and both of them are about what a blade covers
+ * rather than how many there are:
+ */
+export function grassBaseSpan(): number {
+  return GRASS_BASE_SPAN * mapScale();
+}
+
+/**
+ * [D] The base blade's width in world units, and the floor it keeps in
+ * SCREEN PIXELS — `0.22 / 1.5` as authored, and `0.31 / 2.25` on the doubled
+ * island (√2 and 1.5 on the two).
+ *
+ * The base field's job is the MID and FAR distance: inside `FIELD_REACH` of
+ * the look-target the dense near field draws over it, and past the reach the
+ * ghibli ground carries its own blade stipple, so what this field has to do
+ * is bridge the two without reading as a thinning.
+ *
+ * WHY ONE BUMP EACH rather than one big one. At the zoom floor on a phone the
+ * frame is ~1.9 world units a pixel, so a 0.31-unit blade is 0.16 of a pixel
+ * before `minBladePx` clamps it — out there the FLOOR is the whole of what is
+ * on screen, and the world width does nothing. At the default framing it is
+ * the other way round: the near field owns everything inside 70 units of the
+ * look-target and the world width is what reads on the band beyond it. So the
+ * two numbers cover different distances and each takes a share of the factor
+ * of four rather than either taking all of it. [D] Neither is measured off a
+ * render — the numbers a render DID settle are the authored 0.22 / 1.5 — so
+ * they are a starting point to tune, like `MOTION`'s own 1823ms.
+ */
+export function grassBaseBladeWidth(): number {
+  return GRASS_BASE_BLADE_WIDTH * (mapScale() === 1 ? 1 : Math.SQRT2);
+}
+
+export function grassBaseMinBladePx(): number {
+  return GRASS_BASE_MIN_BLADE_PX * (mapScale() === 1 ? 1 : 1.5);
+}
+
+/** The authored pair, at the island's authored size. */
+export const GRASS_BASE_BLADE_WIDTH = 0.22;
+export const GRASS_BASE_MIN_BLADE_PX = 1.5;
 
 /** [D] How far a blade's normal leans to the ground's own up — see the
  * vertex shader, where it is the difference between a meadow and a grey
@@ -238,13 +287,21 @@ export const GRASS_SPAN_PHONE = FIELD_REACH;
 
 
 
-const VERTEX = /* glsl */ `
+/**
+ * The vertex source, built at MATERIAL TIME rather than at module time, and
+ * that is load-bearing: `GG_MAP_SIZE` and the height bake's own span both ride
+ * the island's scale, and the island is decided in `start` after every module
+ * has been evaluated (src/world/scene.ts). A module-level template literal
+ * would have frozen the 400-unit map into the shader.
+ */
+const vertexSource = (): string => /* glsl */ `
 const float GG_SIZE = ${ggFloat(PAINTED_SIZE)};
+const float GG_MAP_SIZE = ${ggFloat(regionSize())};
 const float GG_TAU = 6.2831853;
 ${TOON_VARYINGS_GLSL}
 ${WIND_FIELD_GLSL}
 ${GG_WIND_NOISE_GLSL}
-${GG_HEIGHT_GLSL}
+${ggHeightGlsl()}
 ${GG_FIELD_GLSL}
 
 uniform sampler2D uGrass;
@@ -292,9 +349,12 @@ void main() {
   // all belong to where the blade IS.
   vec2 wpos = aOffset + uCenter;
   vec2 luv = wpos / GG_SIZE + 0.5;
+  // The BAKE's own square (see the header on GG_MAP_SIZE): on the doubled
+  // island the geography spans 800 units where a painted layer spans 400.
+  vec2 ruv = wpos / GG_MAP_SIZE + 0.5;
 
   float paint = texture2D(uGrass, luv).r;
-  vec3 region = texture2D(uRegion, luv).rgb;
+  vec3 region = texture2D(uRegion, ruv).rgb;
   // b is exactly 1.0 in water and under 0.9 on land (region.ts) — one tap
   // answers both "am I wet" and "how close is the sea".
   float wet = step(0.95, region.b);
@@ -582,7 +642,7 @@ export function createGrassField(opts: GrassFieldOptions): GrassField {
     uSpan: { value: span },
     uReach: { value: (opts.layout ?? 'radial') === 'box' ? 0 : 1 },
     uHeight: { value: (opts.height ?? restGrass) as Texture },
-    uHeightRes: { value: HEIGHT_RES },
+    uHeightRes: { value: heightRes() },
     uColorBase: { value: new Color(GHIBLI.grassBase) },
     uColorTip: { value: new Color(GHIBLI.grassTip) },
     uColorDry: { value: new Color(GHIBLI.grassDry) },
@@ -591,7 +651,7 @@ export function createGrassField(opts: GrassFieldOptions): GrassField {
   const material = new ShaderMaterial({
     name: 'ghibli-grass',
     uniforms,
-    vertexShader: VERTEX,
+    vertexShader: vertexSource(),
     fragmentShader: FRAGMENT,
     side: DoubleSide,
   });

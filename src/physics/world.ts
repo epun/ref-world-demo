@@ -36,6 +36,7 @@
  */
 
 import { MOTION } from '../taste/tokens';
+import { mapScale } from '../world/landscape';
 import type { Surface } from '../world/surface';
 
 type Rapier = typeof import('@dimforge/rapier3d-compat');
@@ -60,6 +61,22 @@ export const MAX_SUBSTEPS = 3;
  * Envpaint ran 128 over a much smaller world. **[D]**
  */
 export const HEIGHTFIELD_SEGMENTS = 256;
+
+/**
+ * …and the count the collider is actually built at: the one above through
+ * `mapScale` (2026-09-16, the island doubled), so the CELL stays 1.56 world
+ * units and the reason the number was picked survives a map four times the
+ * area. 512 on the doubled island — 263k samples a rebuild against 66k, which
+ * is why `TERRAIN_REBUILD_MIN_MS` exists.
+ *
+ * Physics only ever runs on the simulating page of a katamari world
+ * (`WorldHandles.enablePhysics`), which is the only world with an island — so
+ * in practice this is the island's number and the constant above is what the
+ * tests and a plain-mode world read.
+ */
+export function heightfieldSegments(): number {
+  return Math.round(HEIGHTFIELD_SEGMENTS * mapScale());
+}
 /**
  * A terrain rebuild costs a collider build over ~66k samples, so an
  * interactive sculpt (the paint brush, a terrain dial being dragged) must
@@ -162,6 +179,9 @@ export async function createPhysicsWorld(
     world.forEachRigidBody((body) => body.wakeUp());
   };
 
+  // Read once: the island's scale cannot change under a live world.
+  const segments = heightfieldSegments();
+
   const rebuildTerrain = (): void => {
     // The ONE height source (PLAN §7.2). u/v run 0..1 across the field,
     // which is centred on the origin — rapier centres a heightfield on its
@@ -170,7 +190,7 @@ export async function createPhysicsWorld(
     const half = fieldSize / 2;
     const heights = buildHeightfieldHeights(
       (u, v) => surface.sampleHeight(u * fieldSize - half, v * fieldSize - half),
-      HEIGHTFIELD_SEGMENTS,
+      segments,
     );
     if (terrainCollider) {
       world.removeCollider(terrainCollider, false);
@@ -180,8 +200,8 @@ export async function createPhysicsWorld(
     // Envpaint's note, and it is not cosmetic: without it a body rolling
     // across a cell boundary gets kicked THROUGH the field.
     const desc = rapier.ColliderDesc.heightfield(
-      HEIGHTFIELD_SEGMENTS,
-      HEIGHTFIELD_SEGMENTS,
+      segments,
+      segments,
       heights,
       { x: fieldSize, y: 1, z: fieldSize },
       rapier.HeightFieldFlags.FIX_INTERNAL_EDGES,

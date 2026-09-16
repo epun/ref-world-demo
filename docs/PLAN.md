@@ -291,7 +291,8 @@ so the marker never jitters or snaps.
   **131.7–176.3** [D], inside the ground field's own ±200. Every authored feature keeps at
   least **12 units of land** between its edge and the sea (measured 12.55 at the range's
   eastern mass); the headlands are placed to buy that clearance, and nothing in the 2026-09-03
-  layout moved.
+  layout moved. **It is TWICE THAT SIZE on the katamari world since 2026-09-16** — coast
+  **263.3–352.5**, land area four times over — see "twice as big" below.
   **The sea is the complement of the coast** — `isWater` answers true outside it, so there is
   no separate ocean outline and nothing else has to know where the edge of the world is. It
   sits at `SEA_LEVEL = -1.2` before the elevation dial [D], under the plain's own tier 0 so
@@ -311,10 +312,59 @@ so the marker never jitters or snaps.
   reaches 0.5. Scatter gives it a table (`BEACH_SEED`): small rocks and plenty of them,
   stumps as driftwood, palms, a rare cactus, sparse ticks, and nothing built or forested. The
   sea plants nothing, as it always did for water. Creatures are stopped at the waterline by a
-  **wall** of hex-pitch collider circles walked along the coast (479 of them) rather than a
-  tiling of the ocean, which would be unbounded.
+  **wall** of hex-pitch collider circles walked along the coast (479 of them, 958 at the
+  doubled size) rather than a tiling of the ocean, which would be unbounded.
   The plain mode is untouched by all of it: no coast, no sea, no beach, flat paper — pinned at
   2,000 points in `test/world/island.test.ts`.
+- **Twice as big — *(2026-09-16, user ask: "make the island twice as big")*.** Read as twice
+  the DIAMETER: one number, `MAP_SCALE = 2` in `src/world/landscape.ts`, read through
+  `mapScale()` and **gated on `islandMode`**, so meridian and the public world are the map
+  they already have to the bit (`test/world/island-scale.test.ts` pins both halves). The
+  scale is UNIFORM and ABOUT THE ORIGIN, and that is what makes it one number rather than a
+  second layout: the wobble phases key off a blob's seed and its polar angle and both survive
+  such a scale, so `coastInland(2x, 2z) = 2·coastInland(x, z)` exactly and every clearance,
+  ring width and bay depth the island's tests measure comes out exactly doubled.
+  **What scales** is anything that says WHERE something is: the coast's lobes; the forest and
+  the range, centre *and* radius (a region has to stay one readable mass — at their authored
+  radii the four mountain masses would have stopped overlapping and the range would have come
+  apart into four hills); the lake, whole, its own island with it (the ring of water round it
+  is a measured pair); the ponds' centres; `TERRAIN.islandRamp`, which is read as a fraction
+  of a lake island's own radius; the far-field gate (`farFieldStart` / `farFieldEnd`, 300 /
+  370) which is where the land settles onto the flat outer disc and so has to stay outside
+  the coast; and every ring's vertex count, so a coastline twice as long keeps its ~4.9-unit
+  chords.
+  **What does not** is anything that says HOW BIG a physical thing is: `BEACH_WIDTH` 14,
+  `TERRAIN.coastRamp` 26, `shoreRamp` 16, `basinRim`, `basinDrop`, `SEA_LEVEL`, every shelf
+  height, the terrace step, the two noise wavelengths, the hatch clearing, a POND's own
+  radius — and the shelf APRONS (`forestShelfFalloff` 24, `mountainShelfFalloff` 70). The
+  aprons were tried scaled first and measured worse: a 140-unit apron on the range reaches
+  from z = −210 to z = −18 and lifted most of the open plain with it, so the forest stopped
+  standing a tier over it (1.12 → 0.49 on `test/world/landscape.test.ts`'s own metric). A
+  bigger island gets more foothills, not wider ones. Verticals are untouched throughout, so
+  every slope on the map is half what it was — the steepest measures **0.4814** against the
+  field's 0.6 bound, and the lake island's bank no longer needs the terrain test's explicit
+  exception.
+  **Every field that has to cover the land rides the same factor**, and what is held fixed
+  across the scale is the RESOLUTION: `FIELD_SIZE` 400 → 800 with `FIELD_SEGMENTS` 320 → 640,
+  so the quad stays **1.25 u** and the field is 819,200 triangles; the three geography bakes
+  keep their texel exactly (region 128² → 256², height 256² → 512², shore 512² → 1024², all
+  over 800 u); `GRASS_BASE_SPAN` 360 → 720 at the same budget, with the base blade widened
+  √2 and its pixel floor 1.5× to absorb the quarter density; `SCATTER_EXTENT` 160 → 320 at the
+  same 6-unit grid step, so the prop count per unit area is unchanged (1,472 → 6,004
+  placements, 38 (kind, variant) pairs either way); `HEIGHTFIELD_SEGMENTS` 256 → 512 at the
+  same 1.56-u cell; `SPAWN_RADIUS` 120 → 240; `WORLD_MAP_EXTENT` 185 → 370; and
+  `GROUND_RADIUS` 1400 → 2800 with the depth range that clears it (`cameraDistance` 1800 →
+  3400, `cameraFar` 3800 → 6800). The sea disc had to grow: at the zoom floor on a portrait
+  phone the WIDTH binds, so the frame looks ~1,400 units up-screen past the island and the
+  far corner of it fell outside a 1400-unit ring.
+  `zoomMinFor` and `panLimitFor` needed no change — they were already derived from the
+  coast's own reach — but the pan CEILING did: 200 units on an island whose coast reaches 352
+  would have put the far shore out of reach at every zoom, so it rides the scale too.
+  **Not scaled: the painted map.** `PAINTED_SIZE` stays 400 because its extent is on the wire
+  (`SCENE_EXTENT`, `src/session/scene.ts`), so the dev brushes paint the middle 400 units of
+  the doubled island and the geography bakes no longer share their uv with the painted layers
+  — the ghibli shaders carry `GG_SIZE` for the painted square and `GG_MAP_SIZE` for the
+  ground field's. Widening the paintable region is a protocol change and a separate job.
 - **Scatter**: repeated small hand-drawn units — trees, rocks, huts, birds, doodads —
   authored as silhouettes and run through the **same inflater** as the characters. Placement
   on the isometric grid with jitter; **grid governs placement, never form** (TASTE §2.5).

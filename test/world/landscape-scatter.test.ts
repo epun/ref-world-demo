@@ -20,6 +20,7 @@ import { WORLD } from '../../src/taste/tokens';
 import {
   isAuthoredWater,
   isWater,
+  mapScale,
   sampleLandscape,
   setIslandMode,
   setLandscapeMode,
@@ -169,19 +170,26 @@ describe('the forest is a forest', () => {
     const placements = shipped();
     const wooded = placements.filter((p) => p.kind === 'tree' || p.kind === 'conifer');
 
+    // The boxes and the annulus ride the map's own scale (2026-09-16,
+    // `MAP_SCALE` in src/world/landscape.ts): the western stand moved out with
+    // the coast, so a window in world units would measure the open plain and
+    // call it a forest.
+    const k = mapScale();
     const inForest = wooded.filter((p) => sampleLandscape(p.x, p.z).forest >= 0.8);
-    const forestArea = areaWhere(-60, 20, -20, 60, (x, z) => sampleLandscape(x, z).forest >= 0.8);
+    const forestArea = areaWhere(-60 * k, 20 * k, -20 * k, 60 * k, (x, z) =>
+      sampleLandscape(x, z).forest >= 0.8,
+    );
 
     // The plain sample: an annulus around the origin, outside the hatch
     // clearing and clear of every feature.
     const openPlain = (x: number, z: number): boolean => {
       const d = Math.hypot(x, z);
-      if (d < 14 || d > 30) return false;
+      if (d < 14 * k || d > 30 * k) return false;
       const l = sampleLandscape(x, z);
       return l.forest === 0 && l.mountain === 0 && !l.island && !l.water;
     };
     const inPlain = wooded.filter((p) => openPlain(p.x, p.z));
-    const plainArea = areaWhere(-30, 30, -30, 30, openPlain);
+    const plainArea = areaWhere(-30 * k, 30 * k, -30 * k, 30 * k, openPlain);
 
     expect(forestArea).toBeGreaterThan(200);
     expect(plainArea).toBeGreaterThan(200);
@@ -397,8 +405,17 @@ describe('the plain is the world that shipped', () => {
   // fixture below - the hatch clearing, spelled out - has not moved a digit,
   // and that is what still says the expression is intact: the island's coast
   // is 131 units from the origin at its nearest.
-  const PLAIN_COUNT = 511;
-  const PLAIN_DIGEST = '948fffcd';
+  //
+  // Re-taken 2026-09-16 (was 511 / 948fffcd): THE ISLAND DOUBLED. The scattered
+  // region's half-extent rides the map (`MAP_SCALE`, src/world/landscape.ts;
+  // `scatterExtent` in src/world/scatter.ts), so the field is four times the
+  // area at the same 6-unit grid step and the deep plain inside it grows with
+  // it — 511 → 3103, a factor of 6.07 rather than 4 because the coast and its
+  // shore clearance eat a smaller share of a bigger island. The expression is
+  // untouched: the readable half below, the hatch clearing, is a fixed place on
+  // the map and has not moved a digit.
+  const PLAIN_COUNT = 3103;
+  const PLAIN_DIGEST = '4881ed0e';
 
   it('places exactly what it placed before the map existed', () => {
     const plain = shipped().filter(deepPlain).map(key);
@@ -409,6 +426,10 @@ describe('the plain is the world that shipped', () => {
   it('is untouched around the hatch clearing, placement for placement', () => {
     // The readable half of the same fixture: the disc the creatures spawn
     // into, spelled out rather than digested.
+    // 14 units, NOT scaled: the hatch clearing is a fixed place on the map
+    // (`TERRAIN.clearRadius`, and scatter's own `ORIGIN_CLEAR_PROPS`), so this
+    // half of the fixture is the same four ticks at any map scale — which is
+    // exactly what makes it the readable check that the expression is intact.
     const disc = shipped()
       .filter((p) => Math.hypot(p.x, p.z) <= 14)
       .map(key);
@@ -437,8 +458,14 @@ describe('the plain is the world that shipped', () => {
    * plain world has one deep-plain bush the mapped world does not, thrown
    * from a cell the beach has since claimed. The map used only to ADD to this
    * ground; an island takes some of it away. */
-  const PLAIN_MODE_COUNT = 503;
-  const PLAIN_MODE_DIGEST = 'f1ff4970';
+  const PLAIN_MODE_COUNT = 3087;
+  const PLAIN_MODE_DIGEST = 'faaa263c';
+
+  /** Deep-plain placements the PLAIN world has and the mapped one does not —
+   * located rather than counted below. Two on the doubled island (2026-09-16),
+   * one before it: a bigger island has more coast, so more cells whose seed the
+   * beach has claimed. */
+  const PLAIN_ONLY = 2;
 
   it('places no mountain and no reed anywhere in the plain mode', () => {
     const plain = inPlain(() => computePlacements());
@@ -451,6 +478,9 @@ describe('the plain is the world that shipped', () => {
     expect(kindsOf(shipped(), 'reed').length).toBeGreaterThan(0);
   });
 
+  // 30s: the fixture is 3,103 placements over a field four times the area
+  // since the island doubled (2026-09-16, `MAP_SCALE`), and this rolls the
+  // whole scatter twice to compare the two modes.
   it('rolls the pre-map expression over the ENTIRE field in the plain mode', () => {
     const plain = inPlain(() => computePlacements());
     // The fixture selects deep-plain GROUND, so the predicate is evaluated
@@ -468,21 +498,24 @@ describe('the plain is the world that shipped', () => {
     // threw clear of it.)
     const mapped = new Set(shipped().filter(deepPlain).map(key));
     const gone = deep.filter((k) => !mapped.has(k));
-    expect(gone).toHaveLength(1);
+    expect(gone).toHaveLength(PLAIN_ONLY);
     for (const p of plain.filter(deepPlain).filter((q) => gone.includes(key(q)))) {
       expect(
         nearestClaimed(p),
         `${p.kind} at ${p.x.toFixed(1)},${p.z.toFixed(1)}`,
       ).toBeLessThanOrEqual(SCATTER_STEP * 2);
     }
-  });
+  }, 30_000);
 
+  // 30s: same reason as the test above — the doubled island's fixture is
+  // 3,103 placements and this rolls the scatter in both modes.
   it('differs from the mapped fixture only where a region spills over its edge', () => {
     const plain = new Set(inPlain(() => computePlacements()).filter(deepPlain).map(key));
     const extra = shipped().filter(deepPlain).filter((p) => !plain.has(key(p)));
-    // Nine, and PLAIN_COUNT - PLAIN_MODE_COUNT is eight: the plain world has
-    // one the mapped world lacks, which the test above locates.
-    expect(extra).toHaveLength(PLAIN_COUNT - PLAIN_MODE_COUNT + 1);
+    // The difference either way: the mapped world's extra deep-plain
+    // placements are the count gap plus the `PLAIN_ONLY` ones the plain world
+    // has and it does not (which the test above locates rather than counts).
+    expect(extra).toHaveLength(PLAIN_COUNT - PLAIN_MODE_COUNT + PLAIN_ONLY);
     // Buildings and water towers are the CAPPED kinds in this set
     // (BUILDING_MAX, WATER_TOWER_MAX), so one can differ between the modes for
     // a reason that has nothing to do with where it stands: the mapped world
@@ -491,8 +524,14 @@ describe('the plain is the world that shipped', () => {
     // the iteration order. That is the cap working, not the map leaking — so
     // they are counted rather than located, and the spill rule below is
     // asserted over everything else.
+    //
+    // Seven on the doubled island against four before it (2026-09-16,
+    // `MAP_SCALE`): there are four times the cells competing for the same
+    // BUILDING_MAX / WATER_TOWER_MAX slots, so the cap bites earlier and the
+    // two modes disagree about more of the boundary. Still a handful out of
+    // 3,103, and still the cap rather than the map.
     const capped = extra.filter((p) => p.kind === 'building' || p.kind === 'waterTower');
-    expect(capped.length, 'cap-boundary structures').toBeLessThanOrEqual(4);
+    expect(capped.length, 'cap-boundary structures').toBeLessThanOrEqual(8);
     for (const p of extra.filter((q) => q.kind !== 'building' && q.kind !== 'waterTower')) {
       // Every one of them stands within a couple of scatter steps of ground
       // the map claims — forest weight, mountain weight, or beach — which is
@@ -505,7 +544,7 @@ describe('the plain is the world that shipped', () => {
         `${p.kind} at ${p.x.toFixed(1)},${p.z.toFixed(1)}`,
       ).toBeLessThanOrEqual(SCATTER_STEP * 2);
     }
-  });
+  }, 30_000);
 
   it('is untouched around the hatch clearing in the plain mode too', () => {
     // The readable half of the fixture, in the other mode: the disc the

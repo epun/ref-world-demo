@@ -53,6 +53,7 @@ import {
   hasPaintedFire,
   hasPaintedLean,
   hasPaintedPlanting,
+  mapScale,
   paintedFireAt,
   paintedLeanAt,
   paintedPlantingAt,
@@ -200,6 +201,20 @@ export const SCATTER_STEP = 6;
  * environments were spread out and scaled up, and the range now runs along
  * z ≈ -118. */
 export const SCATTER_EXTENT = 160;
+
+/**
+ * …and the half-extent actually walked: `SCATTER_EXTENT` through `mapScale`
+ * (2026-09-16, the island doubled), so the cell GRID keeps its 6-unit step and
+ * the prop count per unit area is exactly what it was — four times the cells,
+ * four times the placements. 320 on the doubled island.
+ *
+ * Scaling the extent rather than the step is the whole point: `SCATTER_STEP`
+ * is the isometric grid a prop is placed on, and stretching that would change
+ * the spacing of everything on the map instead of adding more map.
+ */
+export function scatterExtent(): number {
+  return SCATTER_EXTENT * mapScale();
+}
 /** World seed — one world, one growth. The shipped default. */
 export const SCATTER_SEED = 7;
 
@@ -680,7 +695,7 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
   const density = Math.max(0, opts.density ?? 1);
   const kindDensity = { ...DEFAULT_KIND_DENSITY, ...(opts.kindDensity ?? {}) };
   const out: Placement[] = [];
-  const cells = Math.floor(SCATTER_EXTENT / SCATTER_STEP);
+  const cells = Math.floor(scatterExtent() / SCATTER_STEP);
   const buildings: { x: number; z: number; variant: number }[] = [];
   const towers: { x: number; z: number; variant: number }[] = [];
   /** Placed mountains as footprint circles (radius at instance scale). */

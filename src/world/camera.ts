@@ -17,8 +17,8 @@ import { OrthographicCamera, Vector3 } from 'three';
 import { sampleDrift } from '../motion/ambient';
 import { Spring } from '../motion/spring';
 import { MOTION } from '../taste/tokens';
-import { GROUND_RADIUS } from './ground';
-import { coastRadius, islandMode } from './landscape';
+import { GROUND_RADIUS, groundRadius } from './field';
+import { coastRadius, islandMode, mapScale } from './landscape';
 
 /** True isometric elevation: atan(1/√2). */
 const ELEVATION = Math.atan(1 / Math.SQRT2);
@@ -31,6 +31,17 @@ export const FRUSTUM_HEIGHT = 40;
  * combination of pan, orbit, and zoom reaches the world's edge. The live bound
  * is this or less — it shrinks as the frame widens (see `panLimitFor`). */
 const PAN_LIMIT = 200;
+
+/**
+ * …and the ceiling on the map being read: `PAN_LIMIT` through `mapScale`
+ * (2026-09-16, the island doubled). It has to ride the map — a 200-unit
+ * ceiling on an island whose coast reaches 352 would have put the far shore
+ * out of reach at every zoom, which is the opposite of what the frame-relative
+ * bound below is for. 400 on the doubled island.
+ */
+function panCeiling(): number {
+  return PAN_LIMIT * mapScale();
+}
 /**
  * The zoom floor every world shipped with, and still the floor on every
  * world without an island. The island floor (`zoomMinFor`) and the frame-
@@ -55,6 +66,21 @@ const DEPTH_REACH = GROUND_RADIUS + PAN_LIMIT;
 const DEPTH_MARGIN = 200;
 
 /**
+ * …and the same reach on the map being read. The sea disc rides the island's
+ * scale (src/world/field.ts `groundRadius`), so the depth range that has to
+ * clear it rides with it — 3000 on the doubled island against 1600.
+ *
+ * A function and not a constant, unlike the three exports below: `groundRadius`
+ * asks `islandMode`, which `start` sets before it builds anything
+ * (src/world/scene.ts), and a module constant would have been evaluated first.
+ * The three constants stay exactly the numbers the public world shipped with,
+ * and a world with no island reads the same value out of both.
+ */
+function depthReach(): number {
+  return groundRadius() + panCeiling();
+}
+
+/**
  * Distance from look-target along the iso axis. Free for an ortho camera —
  * moving the eye back along the view direction changes nothing on screen —
  * so it is set by the DEPTH RANGE, not by framing: far enough back that no
@@ -67,12 +93,25 @@ const DEPTH_MARGIN = 200;
  */
 export const CAMERA_DISTANCE = DEPTH_REACH + DEPTH_MARGIN;
 
+/** The eye distance on the map being read — `CAMERA_DISTANCE` on a world with
+ * no island, and the doubled sea disc's own reach on one with (3200). */
+export function cameraDistance(): number {
+  return depthReach() + DEPTH_MARGIN;
+}
+
 /** Ortho depth range. `far` clears the sea disc on the far side too — at the
  * old `CAMERA_DISTANCE * 4` = 480 the horizon was clipped clean through,
  * which is a hard cut (TASTE §2.1). Ortho depth is linear, so a 3600-unit
  * range costs no precision that matters here. */
 export const CAMERA_NEAR = 0.1;
 export const CAMERA_FAR = CAMERA_DISTANCE + DEPTH_REACH + DEPTH_MARGIN;
+
+/** …and the far plane on the map being read: 6400 on the doubled island, which
+ * still clears the sea disc on the far side of the target at any orbit. Ortho
+ * depth is linear, so the wider range costs no precision that matters here. */
+export function cameraFar(): number {
+  return cameraDistance() + depthReach() + DEPTH_MARGIN;
+}
 
 /** Stable seed for the camera's own ambient drift channel. */
 const DRIFT_SEED = 41.7;
@@ -167,13 +206,12 @@ export function zoomMinFor(aspect: number): number {
  * The narrower of the two is the one that decides, for the same reason it
  * decides the zoom floor. [D]
  *
- * ON A WORLD WITH NO ISLAND this is the same statement about a different
- * thing, and it is still the right one: `coastMaxRadius` does not ride
- * `islandMode` (neither does the zoom floor), and the number it gives lands
- * within four units of the displaced ground field's own half-extent
- * (`FIELD_SIZE / 2`, src/world/ground.ts). So the bound holds the drawn world
- * in frame on meridian and the public world exactly as it holds the island
- * here.
+ * ON A WORLD WITH NO ISLAND the early return above hands back `PAN_LIMIT`
+ * unchanged, so meridian and the public world keep the 200-unit bound they
+ * shipped with. The frame-relative bound is the island's, and the ceiling it
+ * is capped at rides the island's own scale (`panCeiling`): 200 units on a
+ * coast that reaches 352 would have put the far shore out of reach at every
+ * zoom, which is the opposite of what this exists for.
  */
 export function panLimitFor(aspect: number, zoom: number, elevation: number = ELEVATION): number {
   if (!islandMode()) return PAN_LIMIT;
@@ -181,7 +219,7 @@ export function panLimitFor(aspect: number, zoom: number, elevation: number = EL
   const acrossFrame = half * Math.max(0.01, aspect);
   const upFrame = half / Math.max(0.25, Math.sin(elevation));
   const r = coastMaxRadius() + ISLAND_VIEW_MARGIN;
-  return Math.min(PAN_LIMIT, Math.max(0, r - Math.min(acrossFrame, upFrame)));
+  return Math.min(panCeiling(), Math.max(0, r - Math.min(acrossFrame, upFrame)));
 }
 
 export class CameraRig {
@@ -209,6 +247,9 @@ export class CameraRig {
   private orbitDriftRate = 0;
   private readonly lookTarget = new Vector3();
   private readonly offset = new Vector3();
+  /** Distance from the look-target along the iso axis — read once, because the
+   * island's scale cannot change after the rig is built. */
+  private readonly eyeDistance: number;
 
   /**
    * Where the rig is looking right now — a COPY, so no caller can move the
@@ -223,7 +264,15 @@ export class CameraRig {
   constructor(aspect: number) {
     const halfH = FRUSTUM_HEIGHT / 2;
     const halfW = halfH * aspect;
-    this.camera = new OrthographicCamera(-halfW, halfW, halfH, -halfH, CAMERA_NEAR, CAMERA_FAR);
+    this.camera = new OrthographicCamera(
+      -halfW,
+      halfW,
+      halfH,
+      -halfH,
+      CAMERA_NEAR,
+      cameraFar(),
+    );
+    this.eyeDistance = cameraDistance();
     this.zoomMin = zoomMinFor(aspect);
     // Reframes slide at t.primary — never snap, never cut (TASTE §2.1).
     this.targetX = new Spring(0, { settleMs: MOTION.primaryMs });
@@ -303,7 +352,7 @@ export class CameraRig {
     const z = this.targetZ.update(dt);
     this.offset
       .set(Math.cos(el) * Math.sin(az), Math.sin(el), Math.cos(el) * Math.cos(az))
-      .multiplyScalar(CAMERA_DISTANCE);
+      .multiplyScalar(this.eyeDistance);
     if (Math.abs(this.camera.zoom - zoom) > 1e-4) {
       this.camera.zoom = zoom;
       this.camera.updateProjectionMatrix();

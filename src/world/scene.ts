@@ -11,7 +11,7 @@ import { GHIBLI, SURFACE, WORLD } from '../taste/tokens';
 import { CameraRig } from './camera';
 import { createEnvironment, type Environment } from './environment';
 import { GrainPass } from './grain';
-import { createGround, FIELD_SIZE } from './ground';
+import { createGround, fieldSize } from './ground';
 import { createPhysicsWorld, type PhysicsWorld } from '../physics/world';
 import { deviceTier, type DeviceTier } from './device';
 import { createPropBodies, type PropBodies } from './rocks';
@@ -27,7 +27,9 @@ import {
   createGrassField,
   GRASS_BASE_PHONE,
   GRASS_BASE_PROJECTION,
-  GRASS_BASE_SPAN,
+  grassBaseBladeWidth,
+  grassBaseMinBladePx,
+  grassBaseSpan,
   GRASS_COUNT_PHONE,
   GRASS_COUNT_PROJECTION,
   GRASS_SPAN_PHONE,
@@ -535,7 +537,7 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
      */
     if (game !== 'katamari') return Promise.resolve();
     if (physicsLoad) return physicsLoad;
-    physicsLoad = createPhysicsWorld(surface, FIELD_SIZE).then((p) => {
+    physicsLoad = createPhysicsWorld(surface, fieldSize()).then((p) => {
       physics = p;
       bodies = createPropBodies({
         physics: p,
@@ -746,15 +748,18 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
     baseGrass ??= createGrassField({
       count: phone ? GRASS_BASE_PHONE : GRASS_BASE_PROJECTION,
       layout: 'box',
-      span: GRASS_BASE_SPAN,
+      // The island's own bounding box, through `mapScale` — 720 on the doubled
+      // island (src/world/ghibli/grass.ts).
+      span: grassBaseSpan(),
       height: ground.heightTexture(),
       region: ground.region(),
       baseDensity: 1,
-      // Ten units between neighbours at this budget, so a base blade is wider
-      // than a near one and keeps a floor in PIXELS as the camera pulls back
-      // (src/world/ghibli/grass.ts).
-      bladeWidth: 0.22,
-      minBladePx: 1.5,
+      // A base blade stands much farther from its neighbour than a near one,
+      // so it is wider and keeps a floor in PIXELS as the camera pulls back —
+      // and both numbers go up again on the doubled island, where the same
+      // budget covers four times the area (src/world/ghibli/grass.ts).
+      bladeWidth: grassBaseBladeWidth(),
+      minBladePx: grassBaseMinBladePx(),
       layers: { grass: paintedLayers.grass, comb: paintedLayers.comb },
     });
     // The base field FIRST, so the dense near field draws over it.

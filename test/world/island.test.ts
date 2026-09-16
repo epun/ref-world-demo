@@ -45,8 +45,10 @@ import {
   coastOutline,
   coastRadius,
   coastShoreSamples,
+  farFieldStart,
   isAuthoredWater,
   isWater,
+  mapScale,
   sampleLandscape,
   seaLevel,
   setIslandMode,
@@ -57,8 +59,8 @@ import {
   wobbledRadius,
   type Blob,
 } from '../../src/world/landscape';
-import { FIELD_SIZE } from '../../src/world/ground';
-import { WORLD_MAP_EXTENT } from '../../src/ui/minimap';
+import { fieldSize } from '../../src/world/ground';
+import { worldMapExtent } from '../../src/ui/minimap';
 import { ROLLING_SURFACE } from '../../src/world/surface';
 
 const TAU = Math.PI * 2;
@@ -68,9 +70,19 @@ const TAU = Math.PI * 2;
  * a comment: the features were placed (2026-09-03) for a field that had no
  * coast in it at all, and the island's lobes are positioned to clear them. */
 const FEATURE_TO_SEA = 12;
+/* …and it does NOT ride `mapScale`: twelve units of dry land is a physical
+ * clearance, like the beach. Scaling the layout about the origin only ever
+ * widens it — measured 12.55 at the authored size and 27.31 on the doubled
+ * island — so the rule holds with room to spare at either size. */
 
-/** Every authored feature as a plain blob (water bodies use their outer r). */
-const FEATURES: Blob[] = [
+/**
+ * Every authored feature as a plain blob (water bodies use their outer r).
+ *
+ * A FUNCTION, never a captured const: `setIslandMode` re-points the exported
+ * layout at the map's own scale (src/world/landscape.ts `MAP_SCALE`), and this
+ * module is evaluated before `beforeAll` turns the island on.
+ */
+const features = (): Blob[] => [
   ...FOREST_BLOBS,
   ...MOUNTAIN_BLOBS,
   ...WATER_BODIES.map((b) => ({ x: b.x, z: b.z, r: b.r, seed: b.seed })),
@@ -186,14 +198,16 @@ describe('the island — the coast', () => {
       mn = Math.min(mn, r);
       mx = Math.max(mx, r);
     }
-    // Measured 131.67 .. 176.30.
-    expect(mn).toBeGreaterThan(120);
-    expect(mx).toBeLessThan(184);
-    expect(mx + TERRAIN.shoreRamp).toBeLessThan(FIELD_SIZE / 2);
+    // Measured 131.67 .. 176.30 at the authored size, and 263.34 .. 352.52 on
+    // the doubled island (2026-09-16, `MAP_SCALE`) — exactly twice, because
+    // the scale is uniform and about the origin. Every bound here rides it.
+    expect(mn).toBeGreaterThan(120 * mapScale());
+    expect(mx).toBeLessThan(184 * mapScale());
+    expect(mx + TERRAIN.shoreRamp).toBeLessThan(fieldSize() / 2);
     // …and the map's own extent contains it, so the minimap draws the whole
     // island rather than clipping its south-east headland (src/ui/minimap.ts
     // WORLD_MAP_EXTENT, widened from 175 to 185 for exactly this).
-    expect(mx).toBeLessThan(WORLD_MAP_EXTENT);
+    expect(mx).toBeLessThan(worldMapExtent());
   });
 
   it('walks counter-clockwise, unrepeated, at the requested budget', () => {
@@ -227,7 +241,7 @@ describe('the island — the coast', () => {
     // and the island has eaten it.
     let worst = Infinity;
     let worstAt = '';
-    for (const b of FEATURES) {
+    for (const b of features()) {
       for (const [x, z] of edgePoints(b, 240)) {
         const d = walkToSea(x, z);
         if (d < worst) {
@@ -336,7 +350,8 @@ describe('the island — the beach', () => {
     }
     // …and the middle of the island is not one either.
     expect(sampleLandscape(0, 0).beach).toBe(0);
-    for (const b of FEATURES) expect(sampleLandscape(b.x, b.z).beach, `blob ${b.seed}`).toBe(0);
+    for (const b of features())
+      expect(sampleLandscape(b.x, b.z).beach, `blob ${b.seed}`).toBe(0);
   });
 
   it('labels the half of it nearest the water as a region of its own', () => {
@@ -459,16 +474,29 @@ describe('the island — the height', () => {
     const cos = Math.cos(th);
     const sin = Math.sin(th);
     const r = coastRadius(th);
+    // THE WHOLE TRAVERSE, waterline to hatch clearing, rather than a fixed 60
+    // units (2026-09-16, `MAP_SCALE`). The window has to be a share of the
+    // island and not a count of units: on the doubled island 60 units is a
+    // sixth of the way in and lands entirely on the range's own shoulder,
+    // which is ONE tread — the walk found a 4.8 plateau and nothing else.
+    // Waterline to clearing is the same journey at either size.
     const line: number[] = [];
-    for (let inland = 0; inland <= 60; inland += 0.5) {
+    const reach = r - TERRAIN.clearEdge;
+    for (let inland = 0; inland <= reach; inland += 0.5) {
       line.push(terrainHeight(cos * (r - inland), sin * (r - inland)));
     }
-    // It really does climb.
-    expect(line[line.length - 1]! - line[0]!).toBeGreaterThan(2);
+    // It really does climb — measured 7.07 from the waterline to the crest of
+    // the shoulder (the walk ENDS on the flat clearing, so this is the climb
+    // and not the end-to-end difference).
+    expect(Math.max(...line) - line[0]!).toBeGreaterThan(2);
     // …and it arrives on the world's own tiers rather than on heights of its
-    // own: at least two of them, past the ramp.
+    // own: at least two of them, past the coast ramp AND past the far fade,
+    // which covers the outer stretch of the coast at any map scale (the land
+    // there is multiplied by the gate, so no sample on it is on a tier).
+    // Measured 4 on the doubled island: 0, 1.6, 3.2 and 4.8.
+    const clear = Math.max(TERRAIN.coastRamp, r - farFieldStart());
     const tiers = new Set<number>();
-    for (const h of line.slice(Math.floor(TERRAIN.coastRamp * 2))) {
+    for (const h of line.slice(Math.floor(clear * 2))) {
       const k = h / TERRAIN_DEFAULTS.tierStep;
       if (Math.abs(k - Math.round(k)) < 1e-9) tiers.add(Math.round(k));
     }
@@ -498,9 +526,12 @@ describe('the island — the physics', () => {
     const cols = waterColliders();
     const sea = cols.filter((c) => coastInland(c.x, c.z) < 0);
     // A WALL along the coast, not a tiling of the ocean: the count has to stay
-    // the size of a coastline. Measured 476 for a ~940-unit coast.
-    expect(sea.length).toBeGreaterThan(200);
-    expect(sea.length, `sea colliders: ${sea.length}`).toBeLessThan(600);
+    // the size of a coastline. Measured 476 for a ~940-unit coast, and 958 for
+    // the doubled island's ~1880-unit one — the wall is an arc LENGTH, so it
+    // rides `mapScale` once and not twice (a tiling of the ocean would have
+    // gone up fourfold, which is the whole reason this is a wall).
+    expect(sea.length).toBeGreaterThan(200 * mapScale());
+    expect(sea.length, `sea colliders: ${sea.length}`).toBeLessThan(600 * mapScale());
     for (const c of sea) {
       expect(c.hard).toBe(true);
       expect(c.r).toBe(WATER_COLLIDER_R);
@@ -529,12 +560,17 @@ describe('the island — the physics', () => {
     // what this measures — test/world/landscape.test.ts covers those.)
     for (const c of waterColliders()) {
       if (coastInland(c.x, c.z) >= 0) continue;
-      // A tenth of a unit of slack: the circles are placed off the coast
-      // POLYGON (which the renderer also draws) and measured here against the
-      // inland FIELD, and the two agree to a fraction of a unit rather than
-      // exactly — see the beach profile test. Measured worst 0.734 against a
-      // 0.6 bite, so a fifth of a unit of slack.
-      expect(coastInland(c.x, c.z) + WATER_COLLIDER_R).toBeLessThan(WATER_COLLIDER_BITE + 0.2);
+      // Slack, because the circles are placed off the coast POLYGON (which the
+      // renderer also draws) and measured here against the inland FIELD, and
+      // the two agree to a fraction of a unit rather than exactly — see the
+      // beach profile test. Measured worst 0.734 against a 0.6 bite at the
+      // authored size; 0.930 on the doubled island (2026-09-16, `MAP_SCALE`),
+      // because the union's signed field is measured from each lobe's OWN
+      // centre and the lobes now stand twice as far off the origin, so a push
+      // along the polygon's normal lands a little less far out than it asks
+      // for. Still under a unit of a 14-unit beach, and the beach is a beach
+      // at either size (`BEACH_WIDTH` does not scale).
+      expect(coastInland(c.x, c.z) + WATER_COLLIDER_R).toBeLessThan(WATER_COLLIDER_BITE + 0.4);
     }
   });
 

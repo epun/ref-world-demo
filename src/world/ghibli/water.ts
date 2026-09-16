@@ -38,7 +38,7 @@ import { GHIBLI } from '../../taste/tokens';
 import { PAINTED_SIZE } from '../painted';
 import { TOON_LIGHTING_GLSL, TOON_VARYINGS_GLSL, toonUniforms } from '../toon';
 import { WIND_FIELD_GLSL } from '../wind';
-import { GG_SHORE_GLSL } from './shore';
+import { ggShoreGlsl } from './shore';
 import { createWindUniforms, emptyLayerTexture, ggFloat } from './shared';
 
 /**
@@ -119,11 +119,16 @@ void main() {
   gl_Position = projectionMatrix * viewMatrix * world;
 }`;
 
-const FRAGMENT = /* glsl */ `
+/**
+ * Built at MATERIAL TIME, not at module time: the shore bake's span rides the
+ * island's scale, which is decided in `start` after every module has been
+ * evaluated (src/world/scene.ts).
+ */
+const fragmentSource = (): string => /* glsl */ `
 const float GG_SIZE = ${ggFloat(PAINTED_SIZE)};
 ${TOON_LIGHTING_GLSL}
 ${WIND_FIELD_GLSL}
-${GG_SHORE_GLSL}
+${ggShoreGlsl()}
 
 uniform sampler2D uRippleTex;
 uniform float uRippleVis;
@@ -313,7 +318,7 @@ function build(name: string, palette: Palette, opts: WaterSurfaceOptions): Shade
       uDrift: { value: opts.drift ?? 0.12 },
     },
     vertexShader: VERTEX,
-    fragmentShader: FRAGMENT,
+    fragmentShader: fragmentSource(),
     side: DoubleSide,
     // A fill is coplanar with the basin floor it sits on, and the camera's far
     // plane is 3600 units out — the same bias the shipped fill and the shadow

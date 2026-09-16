@@ -42,7 +42,8 @@ import { GHIBLI } from '../../taste/tokens';
 import { PAINTED_SIZE } from '../painted';
 import { TOON_LIGHTING_GLSL, TOON_VARYINGS_GLSL, toonUniforms } from '../toon';
 import { WIND_FIELD_GLSL, type WindField } from '../wind';
-import { FIELD_REACH, GG_FIELD_GLSL, GG_HEIGHT_GLSL, HEIGHT_RES } from './height';
+import { FIELD_REACH, GG_FIELD_GLSL, ggHeightGlsl, heightRes } from './height';
+import { regionSize } from './region';
 import {
   GG_WIND_NOISE_GLSL,
   createWindUniforms,
@@ -109,13 +110,21 @@ const DEFAULTS = {
   zoom: 14,
 };
 
-const VERTEX = /* glsl */ `
+/**
+ * Built at MATERIAL TIME, not at module time — see the same note on the blade
+ * field's `vertexSource`: `GG_MAP_SIZE` and the height bake's span ride the
+ * island's scale, which is decided after every module has been evaluated.
+ */
+const vertexSource = (): string => /* glsl */ `
 const float GG_SIZE = ${ggFloat(PAINTED_SIZE)};
+/** The ground field's square, which the geography bakes span — 800 units on
+ * the doubled island where a painted layer is still 400 (see region.ts). */
+const float GG_MAP_SIZE = ${ggFloat(regionSize())};
 const float GG_TAU = 6.2831853;
 ${TOON_VARYINGS_GLSL}
 ${WIND_FIELD_GLSL}
 ${GG_WIND_NOISE_GLSL}
-${GG_HEIGHT_GLSL}
+${ggHeightGlsl()}
 ${GG_FIELD_GLSL}
 
 uniform sampler2D uFlowers;
@@ -160,10 +169,12 @@ void main() {
   // header explains why): everything below reads where the bloom IS.
   vec2 wpos = aOffset + uCenter;
   vec2 luv = wpos / GG_SIZE + 0.5;
+  // The BAKE's own square (see GG_MAP_SIZE above).
+  vec2 ruv = wpos / GG_MAP_SIZE + 0.5;
 
   float paint = texture2D(uFlowers, luv).r;
   float grassV = texture2D(uGrass, luv).r;
-  vec3 region = texture2D(uRegion, luv).rgb;
+  vec3 region = texture2D(uRegion, ruv).rgb;
   float wet = step(0.95, region.b);
 
   // The map's blooms come in DRIFTS, not evenly (2026-09-15): a low-frequency
@@ -397,7 +408,7 @@ export function createFlowerField(opts: FlowerFieldOptions): FlowerField {
     uCenter: { value: new Vector2(0, 0) },
     uSpan: { value: span },
     uHeight: { value: (opts.height ?? restLayer) as Texture },
-    uHeightRes: { value: HEIGHT_RES },
+    uHeightRes: { value: heightRes() },
     uMix: { value: DEFAULTS.mix.clone() },
     uWhite: { value: new Color(GHIBLI.flowerWhite) },
     uYellow: { value: new Color(GHIBLI.flowerYellow) },
@@ -410,7 +421,7 @@ export function createFlowerField(opts: FlowerFieldOptions): FlowerField {
   const material = new ShaderMaterial({
     name: 'ghibli-flowers',
     uniforms,
-    vertexShader: VERTEX,
+    vertexShader: vertexSource(),
     fragmentShader: FRAGMENT,
     side: DoubleSide,
   });

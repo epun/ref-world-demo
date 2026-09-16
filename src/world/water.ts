@@ -88,10 +88,10 @@ import {
 } from 'three';
 import { GHIBLI, MOTION, SURFACE, WORLD } from '../taste/tokens';
 import {
-  COAST_OUTLINE_POINTS,
+  coastOutlinePoints,
   ISLAND,
-  ISLAND_OUTLINE_POINTS,
-  OUTLINE_POINTS,
+  islandOutlinePoints,
+  outlinePoints,
   RIPPLE_MARGIN,
   WATER_BODIES,
   coastOutline,
@@ -107,7 +107,7 @@ import {
   type RippleSpot,
   type WaterBody,
 } from './landscape';
-import { GROUND_RADIUS } from './ground';
+import { groundRadius } from './ground';
 import { setWindOnMaterial } from './ghibli/shared';
 import {
   createSeaSurfaceMaterial,
@@ -659,11 +659,11 @@ export function createWater(): Water {
   // sit a chord's sagitta apart on every wobble, which shows as a hair of bare
   // paper between the grey and the ink.
   const outlines = WATER_BODIES.map((body) =>
-    densify(waterOutline(body, OUTLINE_POINTS * SHORE_SUBDIVISION)),
+    densify(waterOutline(body, outlinePoints() * SHORE_SUBDIVISION)),
   );
   // …and the island's, for the lake: the hole in its fill and a second shore.
   const islands = WATER_BODIES.map((body) => {
-    const poly = islandOutline(body, ISLAND_OUTLINE_POINTS * SHORE_SUBDIVISION);
+    const poly = islandOutline(body, islandOutlinePoints() * SHORE_SUBDIVISION);
     return poly ? densify(poly) : null;
   });
 
@@ -860,14 +860,20 @@ export function createWater(): Water {
   // ONE level for the whole ocean (`seaLevel`), so they are kept in their own
   // little list rather than the per-body one `refreshLevels` walks.
   const seaSheets: { mesh: Mesh; lift: number }[] = [];
-  const coastRing = densify(coastOutline(COAST_OUTLINE_POINTS * SHORE_SUBDIVISION));
+  // `coastOutlinePoints`, never the raw constant: a coast twice as long is
+  // walked at twice the vertex count so its chords stay ~4.9 units
+  // (src/world/landscape.ts).
+  const coastRing = densify(coastOutline(coastOutlinePoints() * SHORE_SUBDIVISION));
   {
     // The flat value: the whole far disc, with the island cut out of it as a
     // hole. Counter-clockwise like every ring the geography hands over.
     const disc: Point[] = [];
+    // The far ring's own radius, which rides the island's scale — one horizon
+    // for the ground and the ocean alike (src/world/field.ts).
+    const horizon = groundRadius();
     for (let i = 0; i < SEA_DISC_POINTS; i++) {
       const theta = (i / SEA_DISC_POINTS) * Math.PI * 2;
-      disc.push([Math.cos(theta) * GROUND_RADIUS, Math.sin(theta) * GROUND_RADIUS]);
+      disc.push([Math.cos(theta) * horizon, Math.sin(theta) * horizon]);
     }
     const shape = trace(new Shape(), disc);
     shape.holes.push(trace(new Path(), coastRing));

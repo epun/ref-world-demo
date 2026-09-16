@@ -59,9 +59,19 @@ export const PAINTED_RES = 512;
 
 /**
  * [D] World units the map spans, centred on the origin: the displaced ground
- * field is exactly this wide (`FIELD_SIZE` in src/world/ground.ts), so the
+ * field is exactly this wide (`FIELD_SIZE` in src/world/field.ts), so the
  * paintable region is precisely the region that has vertices to move. Past
  * it the far ring is flat by construction and nothing could show a stamp.
+ *
+ * …on a world with no island. Since the island doubled (2026-09-16,
+ * `MAP_SCALE`) the ground field there is 800 units wide and this is still 400,
+ * so the brushes paint the middle quarter of that map. It does NOT ride the
+ * scale, because this extent is on the wire — `SCENE_EXTENT` in
+ * src/session/scene.ts is this number, and a session log or a stored map is
+ * written in it. Widening the paintable region is a protocol change and its
+ * own job; what it costs today is that the geography bakes no longer share
+ * their uv with the painted layers (the ghibli shaders carry `GG_SIZE` for
+ * this square and `GG_MAP_SIZE` for the ground field's).
  */
 export const PAINTED_SIZE = 400;
 

@@ -34,6 +34,7 @@ import { Color, ShaderMaterial, Vector2, type Texture } from 'three';
 import { GHIBLI, MOTION } from '../../taste/tokens';
 import { TERRAIN, terrainParams } from '../landscape';
 import { PAINTED_SIZE } from '../painted';
+import { regionSize } from './region';
 import { TOON_LIGHTING_GLSL, TOON_VARYINGS_GLSL, toonUniforms } from '../toon';
 import { GG_FIELD_GLSL } from './height';
 import { emptyLayerTexture, ggFloat } from './shared';
@@ -133,8 +134,16 @@ void main() {
   gl_Position = projectionMatrix * viewMatrix * world;
 }`;
 
-const FRAGMENT = /* glsl */ `
+/**
+ * Built at MATERIAL TIME, not at module time: `GG_MAP_SIZE` rides the island's
+ * scale, which is decided in `start` after every module has been evaluated
+ * (src/world/scene.ts). Same note as the blade field's `vertexSource`.
+ */
+const fragmentSource = (): string => /* glsl */ `
 const float GG_SIZE = ${ggFloat(PAINTED_SIZE)};
+/** The ground field's square, which the region bake spans — 800 units on the
+ * doubled island where a painted layer is still 400 (see region.ts). */
+const float GG_MAP_SIZE = ${ggFloat(regionSize())};
 ${TOON_LIGHTING_GLSL}
 ${GG_FIELD_GLSL}
 
@@ -188,9 +197,12 @@ float ggGroundNoise(vec2 p) {
 
 void main() {
   vec2 uv = vToonWorldPos.xz / GG_SIZE + 0.5;
+  // The BAKE's own square (see GG_MAP_SIZE above). uv stays the painted
+  // layers' — the grass weight, the dirt path and the scorch.
+  vec2 ruv = vToonWorldPos.xz / GG_MAP_SIZE + 0.5;
   vec3 n = normalize(vToonNormal);
 
-  vec3 region = texture2D(uRegion, uv).rgb;
+  vec3 region = texture2D(uRegion, ruv).rgb;
   // TWO grass terms, and the difference matters.
   //
   // painted is somebody's brushstroke, and it is what turns the meadow LUSH
@@ -433,7 +445,7 @@ export function createGroundMaterial(opts: GhibliGroundOptions = {}): GhibliGrou
     name: 'ghibli-ground',
     uniforms,
     vertexShader: VERTEX,
-    fragmentShader: FRAGMENT,
+    fragmentShader: fragmentSource(),
   });
 
   return {
