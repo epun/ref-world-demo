@@ -57,8 +57,8 @@ import {
 const SEG = 2;
 
 /** Tier counts [D] — envpaint's own default, and a quarter of it on a phone. */
-export const FLOWER_COUNT_PROJECTION = 40000;
-export const FLOWER_COUNT_PHONE = 10000;
+export const FLOWER_COUNT_PROJECTION = 16000;
+export const FLOWER_COUNT_PHONE = 4000;
 
 /** The layout seed — envpaint's constant, so the port lays out its flowers
  * exactly where the reference does relative to its grid. */

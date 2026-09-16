@@ -144,16 +144,21 @@ const SEG = 4;
  * same seed, fewer blades — the layout is a prefix of the same grid, so the
  * two devices disagree about density and never about position.
  */
-export const GRASS_COUNT_PROJECTION = 150000;
-export const GRASS_COUNT_PHONE = 40000;
+export const GRASS_COUNT_PROJECTION = 60000;
+export const GRASS_COUNT_PHONE = 12000;
 
 /**
- * The BASE field's budget, by tier (2026-09-16, user direction). 600 000 is
- * envpaint's own maximum; 120 000 on a handset, which is the same four-to-one
- * the pixel cap and the debris ceiling are built on.
+ * The BASE field's budget, by tier (2026-09-16, user direction). 600 000 was
+ * envpaint's own maximum and where this started; cut to 240 000 the same day
+ * ("reduce the grass physics and density to help optimize" — the game was
+ * glitchy at 200 creatures) with the near field cut to 60 000 alongside, so
+ * the two fields are 2.4M triangles a pass instead of 6M. A handset draws
+ * 40 000, keeping the six-to-one the pixel cap and the debris ceiling are
+ * built on. The blade-width floor in pixels (`minBladePx`) is what keeps the
+ * thinner field reading as a continuous meadow from the island view.
  */
-export const GRASS_BASE_PROJECTION = 600000;
-export const GRASS_BASE_PHONE = 120000;
+export const GRASS_BASE_PROJECTION = 240000;
+export const GRASS_BASE_PHONE = 40000;
 
 /**
  * [D] World units the base field spans: the island's own bounding box. The
