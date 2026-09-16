@@ -13,7 +13,13 @@ import { createEnvironment, type Environment } from './environment';
 import { GrainPass } from './grain';
 import { createGround, fieldSize } from './ground';
 import { createPhysicsWorld, type PhysicsWorld } from '../physics/world';
-import { deviceTier, setRenderTier, type DeviceTier } from './device';
+import {
+  deviceTier,
+  physicsExpectedFor,
+  renderTier,
+  setRenderTier,
+  type DeviceTier,
+} from './device';
 import { createPropBodies, type PropBodies } from './rocks';
 import { INK_DEFAULTS, InkPass } from './ink';
 import {
@@ -275,6 +281,21 @@ export interface WorldHandles {
    * meridian never asked for.
    */
   enablePhysics(): Promise<void>;
+  /**
+   * Whether rapier could EVER arrive on this page.
+   *
+   * False on a world with no game, and false on a HANDSET (2026-09-16, the
+   * slow-network work) — see `enablePhysics`. The creature layer needs the
+   * difference between "the bodies are not here yet" and "the bodies are
+   * never coming": it used `physics() !== null` as its proxy for *"this page
+   * is the one deciding"*, and on a phone host that proxy is now permanently
+   * false while the page is very much deciding
+   * (`src/creatures/manager.ts` `simulating`).
+   *
+   * A page where this is false runs the sticky rules off the pure resolve and
+   * the scatter's own colliders, and nothing else changes.
+   */
+  physicsExpected(): boolean;
   /** Fires once when the physics world exists — immediately if it already
    * does, and NEVER on a page that never enables it. What a later layer
    * (creature bodies, katamari pickups) hangs its own setup on. */
@@ -330,6 +351,54 @@ export interface WorldOptions {
    * always run: no rapier, no sticky rules, no destruction, no island.
    */
   game?: WorldGame;
+  /**
+   * WHEN MAY THE OBJECT LIBRARY START DOWNLOADING — on a katamari world, and
+   * only once this answers true (2026-09-16, the slow-network work).
+   *
+   * The library is the one thing on the page nobody is waiting for, and on a
+   * slow link it competes with everything somebody IS waiting for. The world
+   * already holds it until the first frame has composed; this is the caller's
+   * chance to hold it a little longer — `src/main.ts` passes *"until the
+   * creature belonging to this handset is standing"*, which is the thing the
+   * person holding the phone is actually waiting for.
+   *
+   * Polled once a composed frame, with a hard backstop
+   * (`LIBRARY_HOLD_FRAMES`) so a gate that never opens cannot cost the world
+   * its props. Absent — every caller before this, and every test — means "as
+   * soon as the first frame is on screen".
+   */
+  libraryAfter?: () => boolean;
+}
+
+/**
+ * How many composed frames the library will wait for this page's own
+ * creature before starting anyway — see `startLibrary`. **[D]**
+ *
+ * 90 frames: three seconds at a phone's 30, a second and a half at a
+ * projection's 60. Long enough that a creature built from a drawing already
+ * in hand always wins the race, short enough that a room whose broker is
+ * down still gets its props.
+ */
+const LIBRARY_HOLD_FRAMES = 90;
+
+/**
+ * Names already on the performance timeline, so a mark that means "the FIRST
+ * time this happened" is written once and never again.
+ *
+ * Module state rather than a closure because the marks below are read per
+ * page and a page has one `start`. `performance.mark` is feature-detected and
+ * its throw swallowed: a browser without the timeline draws exactly the same
+ * frame, it just cannot be measured.
+ */
+const marked = new Set<string>();
+function markOnce(name: string, detail?: unknown): void {
+  if (marked.has(name)) return;
+  marked.add(name);
+  try {
+    performance.mark?.(name, detail === undefined ? undefined : { detail });
+  } catch {
+    /* a timeline that will not take a mark is not a reason to drop a frame */
+  }
 }
 
 export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): WorldHandles {
@@ -502,14 +571,76 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
     // rather than one at a time inside the first frame that draws them.
     void warmPrograms();
   };
-  void startKatamariWorld(game, {
-    // Tier by tier: the junk lands first and the buildings last, each on its
-    // own rebuild (docs/katamari-props.md §e).
-    onTier: (partial) => takeKatamari({ ...partial, chunks: partial.chunks as Map<string, Chunk[][]> }),
-  }).then((ready) => {
-    if (!ready) return;
-    takeKatamari({ ...ready, chunks: ready.chunks as Map<string, Chunk[][]> });
-  });
+  /**
+   * …AND IT STARTS AFTER THE FIRST FRAME (2026-09-16, the slow-network work).
+   *
+   * > User ask: *"we need to be able to run this on a slow network on
+   * > people's devices."*
+   *
+   * The library never BLOCKED the first frame — but on a 1.5 Mbit link it
+   * competes for it. 2.4 mb of glb requested during construction saturates
+   * the connection while the page's own remaining chunks, its fonts and the
+   * mqtt client are still queued behind it, and measured on the phone
+   * profile the first frame and the player's own creature both arrive later
+   * for it. The library is the one thing on the page nobody is waiting for,
+   * so it goes last: one frame of ground, water and marks is drawn, and
+   * THEN the download starts.
+   *
+   * A frame, not a timer: `requestIdleCallback` is not on every browser and
+   * a delay measured in milliseconds is a guess about a machine. The frame
+   * that has already composed is a fact.
+   */
+  let libraryStarted = false;
+  /** Composed frames since the first one, for the backstop below. */
+  let framesSinceFirst = 0;
+  const startLibrary = (): void => {
+    if (libraryStarted) return;
+    /*
+     * …AND AFTER THE PLAYER'S OWN CREATURE, where this page has one
+     * (2026-09-16 user ruling: *"load everything, just in the deferred order
+     * after the first frame and the player's creature"*).
+     *
+     * `opts.libraryAfter` is `src/main.ts` asking the world to wait until
+     * the creature belonging to THIS handset is standing. It is a predicate
+     * polled once a frame rather than a callback, because the thing it is
+     * waiting for arrives through the feed and cannot be relied on to
+     * announce itself.
+     *
+     * WITH A BACKSTOP, and the backstop is the point. A creature that comes
+     * in over mqtt may never come in at all — the broker is down, the room
+     * is empty, the drawing was made on another device — and a world with no
+     * props because a packet was lost is a worse world than one whose props
+     * arrived a second early. `LIBRARY_HOLD_FRAMES` composed frames is the
+     * page's OWN clock rather than a guess about a machine: on a phone
+     * managing 30 fps it is three seconds, on a projection at 60 it is one
+     * and a half, and either way it is measured in frames this page actually
+     * drew.
+     */
+    if (opts.libraryAfter && !opts.libraryAfter() && framesSinceFirst < LIBRARY_HOLD_FRAMES) {
+      framesSinceFirst++;
+      return;
+    }
+    libraryStarted = true;
+    void startKatamariWorld(game, {
+      // Tier by tier: the junk lands first and the buildings last, each on its
+      // own rebuild (docs/katamari-props.md §e).
+      onTier: (partial, tier) => {
+        // WHEN each tier landed, on the timeline — the other half of
+        // `refworld:first-frame`, and the number a slow link is judged by:
+        // the field fills in with cups before the skyline arrives, and that
+        // staircase is only visible from outside if the page says so.
+        markOnce(`refworld:katamari-tier:${tier}`);
+        takeKatamari({
+          ...partial,
+          chunks: partial.chunks as Map<string, Chunk[][]>,
+        });
+      },
+    }).then((ready) => {
+      if (!ready) return;
+      markOnce('refworld:katamari-library');
+      takeKatamari({ ...ready, chunks: ready.chunks as Map<string, Chunk[][]> });
+    });
+  };
   const lighting = createLighting();
 
   /**
@@ -534,6 +665,38 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
   const physicsReady: ((p: PhysicsWorld, b: PropBodies) => void)[] = [];
   /** The one in-flight load, so N calls are one download. */
   let physicsLoad: Promise<void> | null = null;
+  /**
+   * COULD RAPIER EVER ARRIVE HERE — the gate, decided once at construction.
+   *
+   * Two `no`s, and the second one is new (2026-09-16, the slow-network work).
+   *
+   *   no game — rigid bodies exist in this project to serve one world's
+   *     pickups and destruction (2026-09-15 user ruling, src/world/game.ts).
+   *
+   *   A HANDSET. `@dimforge/rapier3d-compat` is 2.06 mb of javascript with
+   *     its wasm inlined as base64 — 760 kb compressed, and 4.1 seconds of a
+   *     1.5 Mbit link that the phone is spending on the world it is trying
+   *     to draw. And it is paid by EVERY phone testing alone in a room,
+   *     because a phone alone on the link wins its own election and becomes
+   *     the host (`HostRole` in src/main.ts).
+   *
+   *     > User ask, 2026-09-16: *"we need to be able to run this on a slow
+   *     > network on people's devices."*
+   *
+   *     So a phone-tier page never imports it, host or not, and runs the
+   *     game off the PURE resolve and the scatter's own colliders instead:
+   *     rocks and unrooted props stand where they were placed, the resolve
+   *     still blocks on anything too big to carry, and the sticky pass still
+   *     picks things up and says so as scene events (docs/PLAN.md §7.6 — the
+   *     decisions were always the events, never the bodies). What a phone
+   *     host does not have is rolling stones and tumbling debris: a knocked
+   *     prop lies down where it stood rather than rolling away.
+   *
+   *     `renderTier()` and not `deviceTier()` directly, so it is the same
+   *     answer the pixel cap and the terrain budgets were sized with —
+   *     `setRenderTier(tier)` ran at the top of this function.
+   */
+  const physicsExpected = (): boolean => physicsExpectedFor(game, renderTier());
   const enablePhysics = (): Promise<void> => {
     /*
      * A WORLD WITHOUT THE GAME NEVER LOADS RAPIER — the gate, at the one API
@@ -543,7 +706,7 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
      * world with no game answering "there, done" is the truth — there is
      * nothing for it to simulate.
      */
-    if (game !== 'katamari') return Promise.resolve();
+    if (!physicsExpected()) return Promise.resolve();
     if (physicsLoad) return physicsLoad;
     physicsLoad = createPhysicsWorld(surface, fieldSize()).then((p) => {
       physics = p;
@@ -593,7 +756,9 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
   (window as Window & { __refworldEnv?: Environment }).__refworldEnv = environment;
   // Same deal for the physics smoke: live prop colliders (hard/soft circles).
   (
-    window as Window & { __refworldColliders?: () => ReturnType<Scatter['colliders']> }
+    window as Window & {
+      __refworldColliders?: () => ReturnType<Scatter['colliders']>;
+    }
   ).__refworldColliders = () => scatter.colliders();
   // And the scatter handle itself, for density/variation smokes.
   (window as Window & { __refworldScatter?: Scatter }).__refworldScatter = scatter;
@@ -717,7 +882,11 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
   let flowers: ReturnType<typeof createFlowerField> | null = null;
   /** The painted planting layers handed over so far (`setPaintedLayers`) —
    * remembered, so a field built after the brush mounted still gets them. */
-  const paintedLayers: { grass: Texture | null; flowers: Texture | null; comb: Texture | null } = {
+  const paintedLayers: {
+    grass: Texture | null;
+    flowers: Texture | null;
+    comb: Texture | null;
+  } = {
     grass: null,
     flowers: null,
     comb: null,
@@ -879,9 +1048,18 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
       ensureFields();
       rebuildFields();
       followFields();
-      grass?.setLayers({ grass: paintedLayers.grass, comb: paintedLayers.comb });
-      baseGrass?.setLayers({ grass: paintedLayers.grass, comb: paintedLayers.comb });
-      flowers?.setLayers({ flowers: paintedLayers.flowers, grass: paintedLayers.grass });
+      grass?.setLayers({
+        grass: paintedLayers.grass,
+        comb: paintedLayers.comb,
+      });
+      baseGrass?.setLayers({
+        grass: paintedLayers.grass,
+        comb: paintedLayers.comb,
+      });
+      flowers?.setLayers({
+        flowers: paintedLayers.flowers,
+        grass: paintedLayers.grass,
+      });
       ground.setPaintedGrass(paintedLayers.grass);
     }
     if (grass) grass.mesh.visible = ghibli;
@@ -1003,6 +1181,27 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
     }
     const composed = ink.render(renderer, scene, cameraRig.camera, nowMs);
     grain.compose(renderer, composed, nowMs);
+    /*
+     * THE FIRST FRAME, ON THE PERFORMANCE TIMELINE (2026-09-16).
+     *
+     * > User ask: *"we need to be able to run this on a slow network on
+     * > people's devices."*
+     *
+     * Everything about a slow link is measured against "when did anybody see
+     * anything", and that instant is not observable from outside the page: a
+     * canvas is a canvas before and after it has a world in it. So the frame
+     * that finished composing says so, once, through the platform's own
+     * timeline rather than a global of ours — `performance.mark` is three
+     * bytes of behaviour, it is readable from a harness
+     * (`scratch/slow-network.mjs`) and from a real phone's devtools alike,
+     * and it costs one call for the life of the page.
+     */
+    markOnce('refworld:first-frame');
+    // The library's download starts HERE, on the far side of the first
+    // composed frame, and then on every frame until its own gate opens —
+    // see `startLibrary`. Idempotent, so this is one boolean a frame for the
+    // life of the page.
+    startLibrary();
   };
   const reported = new Set<string>();
   const loop = (nowMs: number): void => {
@@ -1088,9 +1287,18 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
       if ('grass' in layers) paintedLayers.grass = layers.grass ?? null;
       if ('flowers' in layers) paintedLayers.flowers = layers.flowers ?? null;
       if ('comb' in layers) paintedLayers.comb = layers.comb ?? null;
-      grass?.setLayers({ grass: paintedLayers.grass, comb: paintedLayers.comb });
-      baseGrass?.setLayers({ grass: paintedLayers.grass, comb: paintedLayers.comb });
-      flowers?.setLayers({ flowers: paintedLayers.flowers, grass: paintedLayers.grass });
+      grass?.setLayers({
+        grass: paintedLayers.grass,
+        comb: paintedLayers.comb,
+      });
+      baseGrass?.setLayers({
+        grass: paintedLayers.grass,
+        comb: paintedLayers.comb,
+      });
+      flowers?.setLayers({
+        flowers: paintedLayers.flowers,
+        grass: paintedLayers.grass,
+      });
       ground.setPaintedGrass(paintedLayers.grass);
     },
     landscape: (): boolean => landscapeMode() === 'landscape',
@@ -1101,6 +1309,7 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
     physics: (): PhysicsWorld | null => physics,
     bodies: (): PropBodies | null => bodies,
     enablePhysics,
+    physicsExpected,
     onPhysicsReady: (callback: (p: PhysicsWorld, b: PropBodies) => void): void => {
       if (physics && bodies) callback(physics, bodies);
       else physicsReady.push(callback);
