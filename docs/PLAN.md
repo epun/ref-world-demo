@@ -618,6 +618,102 @@ zoom; everyone else is muted `#8e908d` and clusters into a single softer mark be
 distance threshold. The map stays legible because it never tries to distinguish other
 players from each other.
 
+#### the slow network — *(2026-09-16)*
+
+> User ask: *"we need to be able to run this on a slow network on people's devices."*
+
+Measured first, and the harness is `scratch/slow-network.mjs`: the built `valiocon` world
+off `vite preview`, in a real chromium whose link is shaped by CDP
+(`Network.emulateNetworkConditions`) at **1.5 Mbit/s down / 750 Kbit/s up / 150 ms** and
+again at 5 Mbit/s, on the phone's world view (390x844, `isMobile`, a drawing already in the
+handset's store) and on the projection. It records bytes transferred by type, the first
+composed frame (`performance.mark('refworld:first-frame')`), the moment the player's own
+creature is standing, and when each library tier attached. Under swiftshader the FRAME
+times are a software rasteriser's and only compare against each other; the BYTES are exact.
+
+**The baseline, phone world view at 1.5 Mbit/s: 5.55 MB over the wire and the library fully
+attached at 50.4 s.** Four things paid for, in order of size:
+
+| | baseline | after | why |
+| --- | --- | --- | --- |
+| object library | 4.06 MB | 2.97 MB | every glb `dedup`/`prune`/`weld`/`reorder`ed and `EXT_meshopt_compression`ed at curate time, **geometry bit-exact after decode** (docs/katamari-props.md), loaded with three's `MeshoptDecoder` (~30 kb, behind the katamari gate) |
+| rapier | 0.76 MB | **0** on a handset | `physicsExpectedFor` (`src/world/device.ts`) — see below |
+| app js | 0.60 MB | same bytes, cacheable | `manualChunks` in `vite.config.ts` |
+| mqtt | 0.096 MB | same bytes, cacheable | the vendored file's name carries its content hash |
+
+**And re-measured, same harness, same machine** (ms from navigation; swiftshader, so the
+frame times are a software rasteriser's and only compare against each other):
+
+| | first frame | creature standing | small | medium | large | library | total |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| phone, 1.5 Mbit **before** | 7837 | 9316 | — | — | — | 50392 | 5.55 MB |
+| phone, 1.5 Mbit **after** | 7713 | 9183 | 16505 | 28327 | 35517 | 40760 | **3.68 MB** |
+| phone, 5 Mbit after | 5647 | 7775 | 9573 | 17734 | 22508 | 26781 | 3.68 MB |
+| projection, 1.5 Mbit before | 12383 | 13205 | — | — | — | 51404 | 5.50 MB |
+| projection, 1.5 Mbit after | 12318 | 13109 | 19577 | 35597 | 52542 | 59729 | 4.37 MB |
+
+Read that last row honestly. The projection's library COMPLETES later than it did, and the
+deferral is why: the download used to start during construction and now starts on the far
+side of the first composed frame, which under a software rasteriser is 12 seconds. The
+number that is not an artifact is the download itself — 33 s for the library on the phone
+against the baseline's ~49 s, which is the byte cut — and on a machine with a GPU the frame
+it waits for is a fraction of a second. The trade is deliberate either way: the props are
+the one thing on the page nobody is waiting for.
+
+The per-tier columns are the staircase that was always there and could not be seen: the
+field fills with cups at 16 s, benches at 28 s, cars at 35 s and the skyline last. ⚠️ The
+first version of the harness read those marks BEFORE waiting for the library and reported
+every one of them as null — a measurement bug that made a working staircase look broken.
+Read the library's mark first.
+
+**No quality was traded for any of it** (user ruling, 2026-09-16: *"I don't want to
+compromise on quality"*). Nothing is simplified, nothing is dropped, no texture is resized,
+and no page anywhere loads fewer models than any other: the levers are ORDER and CACHING.
+Quantisation was measured (it would have been another 0.58 MB, at a worst position
+deviation of 0.011 of a screen pixel) and **not taken** — `scratch/props-compare.mjs` has
+the table and the two models whose normals and uvs it could not account for. The same
+harness found a real bug on the way: `conformKatamariGeometry` read attribute arrays
+directly, so any `KHR_mesh_quantization` model's uvs came through as raw unsigned shorts
+and would have drawn the wrong texel. It de-normalises through the accessor now.
+
+**Rapier never reaches a handset.** `@dimforge/rapier3d-compat` is 2.06 MB of javascript
+with its wasm inlined, 760 kB compressed, ~4.1 s of a 1.5 Mbit link — and it was paid by
+every phone testing alone in a room, because a phone alone on the link wins its own election
+and becomes the host (`HostRole`, `src/main.ts`). `WorldHandles.enablePhysics()` now resolves
+immediately on `renderTier() === 'phone'`, so the import is never reached, and the phone host
+runs the game off the **pure resolve and the scatter's own colliders**: rocks and unrooted
+props stand where they were placed, the resolve still blocks on anything over the carry
+limit, and the sticky pass still decides and still says so as scene events (§7.6 — the
+decision was always the event, never the body). The gate the creature manager read was
+`bodies() !== null`, a sound proxy for *"this page is the host"* only while those two facts
+arrived together; they no longer do, so it is two questions now (`deciding` / `rapierOwns`,
+`src/creatures/manager.ts`) and every projection reads exactly the condition it did before.
+What a phone host does NOT have is rolling stones and tumbling debris: a knocked prop lies
+down where it stood. Pinned in `test/creatures/phone-host.test.ts`.
+
+**Caching.** `vercel.json` serves `/assets/*`, `/katamari/models/*` and `/vendor/*`
+`public, max-age=31536000, immutable`, and the html and `catalog.json` `must-revalidate` —
+the rule being that a path gets the year if and only if something in it MOVES when its bytes
+do. Three things had to be made true for that: three.js used to ship inside whichever async
+chunk first reached it (it came out as `assets/minimap-<hash>.js`, a library unchanged since
+0.180.0 wearing the hash of a file that changes every deploy), so `manualChunks` names
+`three` and `rapier` by package; every model row carries a content hash
+(`KatamariEntry.hash`) which the loader appends as `?v=`, so a re-curation can never serve a
+stale model out of a year-long cache; and the vendored mqtt client is
+`mqtt.min.<hash>.js`. `test/worlds/caching.test.ts` pins all three, including that the
+vendored name still describes its own bytes.
+
+**Load order, and nothing about content.** The library never blocked the first frame, but on
+a 1.5 Mbit link it competes for it — 3 MB requested during construction saturates the
+connection while the page's own remaining chunks are queued behind it. It now starts on the
+far side of the first composed frame AND of the player's own creature standing
+(`startLibrary` + `WorldOptions.libraryAfter`, `src/world/scene.ts`; `src/main.ts` passes
+the gate). Frames and not timers, because a frame that has composed is a fact and a delay
+in milliseconds is a guess about a machine — with one backstop, `LIBRARY_HOLD_FRAMES`
+(90 composed frames), because this page's creature arrives over mqtt and a gate that never
+opens must not cost the world its props. Tier order is unchanged and every tier still
+loads: small → medium → large → building.
+
 ### 7.2 Flat map first, sphere behind a seam — *(decided)*
 
 Build the flat isometric map, but write locomotion against a surface abstraction from day one:

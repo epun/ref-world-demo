@@ -26,7 +26,7 @@ the decisions that were open at the time now closed.
 | `src/world/katamari/rules.ts` | the CURATION RULES (2026-09-16): what is excluded, how a name picks a kind, how metres become units, the height bands, how many variants of each kind ship. Hand-written and documented — this is the file to review |
 | `src/world/katamari/catalog.data.ts` | the ROWS, **generated** from the library's `manifest.json` and those rules by `--all`. 326 of them: the active set |
 | `src/world/katamari/catalog.ts` | the seam that joins the two, plus the lookups (`katamariVariantsOf`, `katamariKinds`). Until 2026-09-16 this was 82 rows written out by hand |
-| `scripts/katamari-curate.mjs` | node, no deps. reads the library's `manifest.json` + the table, copies the chosen glbs into `public/katamari/models/`, writes `public/katamari/catalog.json`, prints the table and the budgets |
+| `scripts/katamari-curate.mjs` | node, plus `@gltf-transform` for the compression pass (lazily, so `--verify` needs nothing). reads the library's `manifest.json` + the table, copies the chosen glbs into `public/katamari/models/`, writes `public/katamari/catalog.json`, prints the table and the budgets |
 | `src/world/katamari/models.ts` | `loadKatamariModels(baseUrl)` → a `KatamariLibrary`: per model, one normalised geometry, its radius, its texture, its alpha mode and a list of breakable `parts` |
 | `src/world/katamari/material.ts` | `createKatamariMaterial` / `createKatamariMaterialSet` — the posterised cel look |
 | `public/katamari/` | the curated glbs, the catalog, and the provenance note |
@@ -38,10 +38,86 @@ measurable box) → **326 active variants**, 43,766 triangles, 6.13 mb copied
 (budgets: 300k triangles, 7 mb). Re-derive with
 
 ```
-node scripts/katamari-curate.mjs --all --source <unpacked-library-dir>   # measure, classify, publish
+node scripts/katamari-curate.mjs --all --source <unpacked-library-dir>   # measure, classify, compress, publish
 node scripts/katamari-curate.mjs --catalog     # rewrite catalog.json from the table, no library
 node scripts/katamari-curate.mjs --verify      # no library needed; what the tests run
 ```
+
+**Compression (2026-09-16, the slow-network work — docs/PLAN.md §7.1 "slow network").**
+`--all` now COMPRESSES every glb on the way into `public/katamari/models/`, because the
+library was 4.06 mb over the wire and 25 s of a 1.5 Mbit link. Four passes, through
+`@gltf-transform` (four dev dependencies, imported lazily so `--verify` and `--catalog`
+still run with nothing installed) — and **all four are lossless**:
+
+| | what it is for |
+| --- | --- |
+| `dedup` | the extraction writes a mesh's accessors per primitive, so a multipart prop repeats its material and sampler rows |
+| `prune` | nodes, accessors and samplers nothing references — loudest for the TANGENT and second uv left on models whose material reads neither |
+| `weld` | the geometry arrives as a flat triangle soup; welding merges BITWISE IDENTICAL vertices back under an index, and it is most of the saving before anything is compressed |
+| `reorder` + `EXT_meshopt_compression` | meshopt's vertex-cache order (a shuffle, nothing else) and then an entropy coder over the buffer views, decoded at load by three's `MeshoptDecoder` (~30 kb, imported statically in `models.ts` and therefore only on a katamari world) |
+
+Measured over the 182-model active set: **3.82 mb → 2.93 mb (−23.4%)**, and **10 of the 182
+were published UNCOMPRESSED** because the meshopt per-view header costs more than it saves
+on a 7 kb spatula — the script publishes whichever is fewer bytes and says how many went
+each way, and the loader reads either (the decoder is set unconditionally and an
+uncompressed glb never asks for it). Still deterministic and still idempotent: a second
+`--all` copies nothing and `--verify` exits 0.
+
+**Proved lossless, not asserted.** `scratch/props-compare.mjs` loads every model in the
+active set twice through the real `GLTFLoader` and the app's own `buildKatamariModel` —
+once from the library as extracted, once as published — and compares them by a one-sided
+Hausdorff distance, so the reordering does not count as a difference:
+
+```
+npx tsx scratch/props-compare.mjs --source <library-dir> --geometry-only
+  → 182 models compared
+    worst position deviation  0 u = 0 screen px
+    worst normal deviation    0.0000°
+    worst uv deviation        0 = 0 texels of a 32-px map
+    triangle-count mismatches 0
+```
+
+**Quantisation was measured and NOT taken** (user ruling, 2026-09-16: *"I don't want to
+compromise on quality"*). `@gltf-transform`'s `meshopt()` wrapper quantises by default and
+its own defaults are not good enough to promise anything (normals at 10 bits); at 16 bits
+of position, 12 of normal and 16 of uv the library came to 2.35 mb — another 0.58 mb — at a
+worst position deviation of 5.3e-4 u, which is 0.011 of a screen pixel at the camera's
+scale. Nobody could see that. What decided against it was the rest of the measurement: the
+quantised set showed normal and uv outliers on two models (a fish statue, a palm tree) that
+the lossless set does not, and an unexplained outlier is not a thing to ship under that
+ruling. The bits to use, if somebody wants that 0.58 mb and can account for those two, are
+in the note above `compressGlb`.
+
+⚠️ **The harness found a real bug, which is why it is committed.**
+`conformKatamariGeometry` read attribute arrays directly (`Float32Array.from(attr.array)`),
+which is wrong for any attribute that is not already float: a quantised model stores uv as
+normalised unsigned shorts, so 1.0 arrives as 65535 and every one of those models would
+have drawn the wrong texel. Position survived it by accident — the factor is uniform and
+the prop is rescaled to its catalog height anyway. It de-normalises through the accessor
+now (`floatsOf`), so the door is open either way.
+
+**The textures are the bulk now and are left exactly as extracted** — not re-encoded, not
+resized. 1.29 mb of the 2.93 — 44%. They are 32-px PS2 textures sampled at `NearestFilter`
+and then posterised by the cel material (`material.ts`), so webp or basisu would move bytes
+the shader quantises anyway, at the cost of a decoder the page does not otherwise carry.
+The script reports the number every run; the decision is a person's.
+
+**Every published row carries a content hash** (`KatamariEntry.hash`, eight hex of sha256
+over the published bytes), which the loader appends as `?v=<hash>` (`modelUrl`). That is
+what makes the one-year `immutable` cache in `vercel.json` safe: the filename stays the
+library's own, because it is the provenance trail, and the CACHE KEY moves when the bytes
+do. `--verify` checks the hash against the file on disk, so a table and a directory that
+have drifted apart cannot be published. Consequence: **`--source` without `--all` is gone**
+— it copied the files a hand-written table named and cannot write the hash back into
+`catalog.data.ts`, so it could only ever publish a library `--verify` would reject.
+
+**Nothing is loaded conditionally.** Every page loads every model (2026-09-16 user ruling:
+*"load everything, just in the deferred order"*). The slow-link levers are WHEN — the
+library starts after the first composed frame and after this page's own creature is
+standing (`WorldOptions.libraryAfter`) — and caching. A per-connection content cut was
+built and then reverted: a placement with no variant draws nothing AND carries no collider,
+so a page that had skipped a tier would let a creature walk through a building another page
+can see. See PLAN §7.1.
 
 The first pass was 82 rows written out by hand with an eyeballed height on
 each. `--all` measures instead: it reads every glb's own json chunk for the
@@ -237,8 +313,11 @@ new kinds once the rows exist.
 
 ## e. loading order
 
-The library is ~1.4 mb of glb over the network, which is not something the first
-frame waits for. The pattern already in the world is physics: it arrives late
+The library is ~2.9 mb of glb over the network, which is not something the first
+frame waits for — and since 2026-09-16 it does not even START until the first frame has
+composed and this page's own creature is standing (`startLibrary` and
+`WorldOptions.libraryAfter` in `src/world/scene.ts`): it never blocked the frame, but on a
+1.5 Mbit link it competed for it. The pattern already in the world is physics: it arrives late
 and the frame is correct before and after.
 
 1. the world builds its **authored** props as it does today and draws them;

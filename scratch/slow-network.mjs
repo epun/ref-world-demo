@@ -390,13 +390,22 @@ async function measure(profileName, pageName) {
   }
   console.log(`  standing ${standing ?? '—'} ms (spawn asked at ${spawnAt} ms)`);
 
-  // The library, tier by tier. `building` is the last tier and is marked by
-  // the whole-library mark rather than by `onTier` (src/world/katamari/source.ts
-  // skips the final call), so both names are read.
+  /*
+   * THE WHOLE LIBRARY FIRST, AND THEN THE TIERS — the order matters and
+   * getting it wrong is silent. Each tier's mark is written as that tier
+   * lands, so reading them before the library has resolved reports every one
+   * of them as null: the first version of this file did exactly that, and
+   * made a staircase that was working look like it was not happening at all.
+   *
+   * `building` is the LAST tier and `onTier` skips its call
+   * (src/world/katamari/source.ts), so the whole-library mark is its time.
+   */
+  const library = await waitMark('refworld:katamari-library');
   const tiers = {};
   for (const tier of ['small', 'medium', 'large', 'building']) {
     tiers[tier] = await markAt(`refworld:katamari-tier:${tier}`);
   }
+  tiers.building ??= library;
   // Every mark the page actually wrote, so a null above is a fact about the
   // page and not about this file's guess at a name.
   const marks = await tab.evaluate(() =>
@@ -405,8 +414,6 @@ async function measure(profileName, pageName) {
       .filter((m) => m.name.startsWith('refworld:'))
       .map((m) => `${m.name}@${Math.round(m.startTime)}`),
   );
-  const library = await waitMark('refworld:katamari-library');
-  tiers.building ??= library;
   console.log(`  tiers ${JSON.stringify(tiers)} library ${library ?? '—'} ms`);
 
   // One more settle, so anything the last rebuild pulled is on the wire.
