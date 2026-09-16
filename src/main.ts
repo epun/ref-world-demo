@@ -24,6 +24,7 @@ import {
   type CreatureBlueprint,
 } from './character/blueprint';
 import { createBlueprintPool, MAX_WORKERS } from './character/blueprintPool';
+import { createIngestQueue } from './moderation/ingestQueue';
 import { identitySeedOf } from './character/interpret';
 import { createLooseMeshes } from './world/loose';
 import { buildChunkGeometries, type Chunk, type ChunkKind } from './world/chunks';
@@ -1784,36 +1785,33 @@ function main(): void {
       resident = false,
     ): Promise<string[]> => {
       const ids: string[] = [];
-      const pending = log.events.filter(
-        (event) => event.k === 'drawing' && !creatures.has(event.id),
-      ) as Extract<SessionLog['events'][number], { k: 'drawing' }>[];
-      if (pending.length === 0) return ids;
-      const dials = currentDials(1, undefined);
-      /** The blueprint for pending[i], asked for ahead of being needed. */
-      const ahead = new Map<number, Promise<CreatureBlueprint | null>>();
-      const ask = (i: number): void => {
-        if (i >= pending.length || ahead.has(i)) return;
-        const event = pending[i]!;
-        ahead.set(
-          i,
-          blueprints.build(event.strokes, {
-            ...dials,
-            identitySeed: identitySeedOf(event.id),
-          }),
-        );
-      };
-      for (let i = 0; i < Math.min(BLUEPRINTS_AHEAD, pending.length); i++) ask(i);
-
-      let sliceStart = performance.now();
-      for (let i = 0; i < pending.length; i++) {
-        const event = pending[i]!;
-        const blueprint = await ahead.get(i);
-        ahead.delete(i);
-        ask(i + BLUEPRINTS_AHEAD);
-        // Already standing by the time its blueprint came back (the poll ran
-        // again, a phone re-published): nothing to do, and no double spawn.
+      /*
+       * THE SAME QUEUE the feed's own arrivals go through
+       * (src/moderation/ingestQueue.ts) — one implementation of "order
+       * exact, pipelines parallel, frame handed back on a budget", not two.
+       * A queue of its own rather than the shared one because this call has
+       * to answer with the ids it admitted, and the caller waits for it.
+       */
+      const queue = createIngestQueue<WorldDrawing, CreatureBlueprint>({
+        prepare: (drawing) =>
+          blueprints.build(drawing.strokes, currentDials(1, identitySeedOf(drawing.id))),
+        offer: (drawing, blueprint) => {
+          const entry = gate.offer({
+            ...drawing,
+            ...(blueprint ? { blueprint } : {}),
+          });
+          if (entry.disposition === 'admitted') ids.push(drawing.id);
+        },
+        has: (id) => creatures.has(id),
+        yieldFrame: () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())),
+        now: () => performance.now(),
+        budgetMs: SPAWN_BUDGET_MS,
+        ahead: BLUEPRINTS_AHEAD,
+      });
+      for (const event of log.events) {
+        if (event.k !== 'drawing') continue;
         if (creatures.has(event.id)) continue;
-        const entry = gate.offer({
+        queue.push({
           id: event.id,
           name: event.name,
           personality: null,
@@ -1822,14 +1820,9 @@ function main(): void {
           source: 'phone',
           ...(grown ? { grown: true } : {}),
           ...(resident ? { resident: true } : {}),
-          ...(blueprint ? { blueprint } : {}),
         });
-        if (entry.disposition === 'admitted') ids.push(event.id);
-        if (performance.now() - sliceStart >= SPAWN_BUDGET_MS) {
-          await new Promise((resolve) => requestAnimationFrame(resolve));
-          sliceStart = performance.now();
-        }
       }
+      await queue.idle();
       return ids;
     };
 
@@ -2508,6 +2501,43 @@ function main(): void {
     return true;
   };
 
+  /** [D] ms of ingest per frame before the frame goes back — the same budget
+   * the restore path uses, and for the same reason. */
+  const INGEST_BUDGET_MS = 8;
+  /** [D] How many pipelines run ahead of the queue's head: the pool's own
+   * size plus one, so a worker always has the next job and two hundred 512²
+   * masks are never all alive at once. */
+  const INGEST_AHEAD = MAX_WORKERS + 1;
+  /*
+   * ONE SERIAL INGEST QUEUE for drawings arriving off the feed
+   * (src/moderation/ingestQueue.ts). Order exact, pipelines parallel, the
+   * frame handed back on a budget.
+   */
+  const ingestQueue = createIngestQueue<WorldDrawing, CreatureBlueprint>({
+    prepare: (drawing) =>
+      blueprints.build(drawing.strokes, currentDials(1, identitySeedOf(drawing.id))),
+    offer: (drawing, blueprint) => {
+      const entry = gate.offer({
+        ...drawing,
+        ...(blueprint ? { blueprint } : {}),
+      });
+      // (the autosave runs on the gate's own observer — every ingest path is
+      // covered by it, so there is nothing to do here)
+      // Tell the drawer, on their own handset, when their drawing will never
+      // appear (user ask). Still nothing on the projection: the refusal is
+      // private to the person who made it.
+      if (entry.disposition !== 'admitted') tellPhone(drawing.id, entry);
+    },
+    has: (id) => creatures.has(id),
+    yieldFrame: () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())),
+    now: () => performance.now(),
+    budgetMs: INGEST_BUDGET_MS,
+    ahead: INGEST_AHEAD,
+  });
+  const ingest = (drawing: WorldDrawing): void => {
+    ingestQueue.push(drawing);
+  };
+
   const tellPhone = (to: string, entry: { disposition: string; reason: string | null }): void => {
     if (!isHostNow()) return;
     feed?.publishToPhones({
@@ -2549,13 +2579,25 @@ function main(): void {
       if (state === 'on' && isHostNow()) announceEpochRetained(feed, wireEpoch(), phoneHatchMs);
     },
     onDrawing: (d) => {
-      const entry = gate.offer({ ...d, hatchMs: HATCH_TIMER_MS, source: 'phone' });
-      // (the autosave runs on the gate's own observer, above — every ingest
-      // path is covered by it, so there is nothing to do here)
-      // Tell the drawer, on their own handset, when their drawing will
-      // never appear (user ask). Still nothing on the projection: the
-      // refusal is private to the person who made it.
-      if (entry.disposition !== 'admitted') tellPhone(d.id, entry);
+      /*
+       * THROUGH THE QUEUE, not straight to the gate — because the moment
+       * this matters most is a projection that has just refreshed.
+       *
+       * The world heals itself by every handset in the room re-publishing
+       * its own drawing (docs/RUNBOOK.md), so a refresh with two hundred
+       * people in it is two hundred of these callbacks inside a few seconds,
+       * and each one used to run the whole pure pipeline inline: ~290ms of
+       * frozen main thread apiece, which is the user report *"if the web page
+       * refreshes, the mobile view doesn't actually work and it gets
+       * frozen"*. The queue hands the pipeline to the workers, keeps arrival
+       * ORDER exactly (it offers strictly in order, so the session log and
+       * the operator list read as they always did), and yields on a budget so
+       * the world keeps drawing while its cast comes back.
+       *
+       * A single drawing on a quiet world takes the same path and lands a few
+       * milliseconds later than it did, which nobody can see.
+       */
+      ingest({ ...d, hatchMs: HATCH_TIMER_MS, source: 'phone' });
     },
     // A phone tapped its emote wheel. The drawer id it sends is the id the
     // world spawned it under, so the emote lands on THAT creature — and on
