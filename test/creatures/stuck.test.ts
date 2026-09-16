@@ -608,6 +608,58 @@ describe('the stuck detector — the island, eight ways, from six places', () =>
     if (leaned.length > 0) console.log(`leaned on something ${leaned.length}×`);
   }, 120_000);
 
+  it('slides along a flat wall instead of standing against it', () => {
+    /*
+     * `WALL_SLIDE`, from the third report (*"my character keeps on getting
+     * stuck on objects"*).
+     *
+     * `resolveHard` keeps the tangential component of a contact and drops the
+     * inward one, which slides along anything met at an angle and does
+     * nothing at all for a hit dead on: there the whole velocity is inward,
+     * the tangent is zero, and the creature stands against the wall until
+     * somebody turns the stick. A single collider, hit square, is that case
+     * in one assertion.
+     */
+    const harness = island();
+    const { manager, colliders } = harness;
+    colliders.length = 0;
+    harness.bump();
+    manager.spawn('slider', snowman, { hatchMs: 60_000, grown: true });
+    const root = harness.root();
+    root.position.set(0, root.position.y, 0);
+    // One mountain-sized circle, far over the block ratio, dead ahead.
+    colliders.push({ x: 8, z: 0, r: 2.4, hard: true, kind: 'mountain', key: 'mountain:0:wall' });
+    harness.bump();
+
+    let now = 1000;
+    manager.drive('slider', { x: 1, z: 0, mag: 1 });
+    const xs: number[] = [];
+    const zs: number[] = [];
+    let closest = Infinity;
+    let sidestep = 0;
+    for (let f = 0; f < 150; f++) {
+      now += FRAME_MS;
+      manager.update(FRAME_MS, now);
+      const at = manager.positionOf('slider')!;
+      xs.push(at.x);
+      zs.push(at.z);
+      closest = Math.min(closest, Math.hypot(at.x - 8, at.z));
+      sidestep = Math.max(sidestep, Math.abs(at.z));
+    }
+    manager.clearAll();
+
+    // It never stalls: every window of the run covers real ground, which is
+    // the thing a dead-on wall used to take away.
+    for (let f = WINDOW_FRAMES; f < xs.length; f++) {
+      const i0 = f - WINDOW_FRAMES;
+      expect(Math.hypot(xs[f]! - xs[i0]!, zs[f]! - zs[i0]!)).toBeGreaterThan(MIN_TRAVEL * 10);
+    }
+    // It went AROUND rather than through: a real sidestep, and never inside
+    // the circle.
+    expect(sidestep).toBeGreaterThan(1);
+    expect(closest).toBeGreaterThan(2.4);
+  });
+
   /**
    * THE CORNER — the case the invariant's escape clause exists for.
    *
@@ -908,6 +960,134 @@ describe('the stuck detector — with rapier under it', () => {
     // And the ball kept rolling — a creature that ate a stone is not parked.
     manager.clearAll();
   });
+
+  /**
+   * THE THIRD REPORT, which is the sharpest of the three.
+   *
+   * > *"My character keeps on getting stuck on objects, and once it sticks to
+   * > an object, it can't move."*
+   *
+   * So the freeze is AT THE MOMENT OF A STICK. The invariant, stated as
+   * plainly as the report: a creature under a steady push covers the same
+   * ground in the second after a pickup as in the second before it. Sticking
+   * something to yourself is not a brake.
+   *
+   * Run against the real solver, because everything the pickup touches is in
+   * there: the body that gets removed, the fixed cylinder that goes with it,
+   * the ball that gets added for the item, the heightfield under all of it.
+   */
+  /**
+   * A thing on the map this creature can carry, with a clear run-up to it.
+   *
+   * Found rather than staged: a real placement (or a real loose body) off the
+   * real island, with the approach line checked clear of everything else, so
+   * the second before the pickup is a second of open ground and the
+   * comparison either side of the stick is a comparison of the same push.
+   */
+  function targetWithRunUp(
+    bodyR: number,
+    run: number,
+  ): { x: number; z: number; from: { x: number; z: number } } | null {
+    const limit = carryLimit(bodyR) * 0.9;
+    const hard = physicsScatter.colliders();
+    const targets: { x: number; z: number }[] = [
+      ...bodies!.items().map((item) => {
+        const t = item.body.translation();
+        return { x: t.x, z: t.z, r: item.r };
+      }),
+      ...hard
+        .filter((c) => c.key !== undefined)
+        .map((c) => ({ x: c.x, z: c.z, r: c.r })),
+    ]
+      .filter((c) => c.r <= limit)
+      .map((c) => ({ x: c.x, z: c.z }));
+
+    for (const target of targets) {
+      const from = { x: target.x - run, z: target.z };
+      let clear = !isWater(from.x, from.z, 1) && coastInland(from.x, from.z) > 6;
+      for (let d = 0; clear && d < run - 1; d += 0.5) {
+        const px = from.x + d;
+        const pz = from.z;
+        if (isWater(px, pz, 1)) {
+          clear = false;
+          break;
+        }
+        for (const c of hard) {
+          if (Math.hypot(c.x - target.x, c.z - target.z) < 1e-9) continue;
+          if (Math.hypot(px - c.x, pz - c.z) < bodyR + c.r + 0.4) {
+            clear = false;
+            break;
+          }
+        }
+      }
+      if (clear) return { ...target, from };
+    }
+    return null;
+  }
+
+  it('keeps rolling through a pickup — a stick is not a brake', () => {
+    /*
+     * THE THIRD REPORT, which is the sharpest of the three.
+     *
+     * > *"My character keeps on getting stuck on objects, and once it sticks
+     * > to an object, it can't move."*
+     *
+     * So the freeze is AT THE MOMENT OF A STICK. The invariant, as plainly as
+     * the report puts it: under a steady push, the ground covered in the
+     * second AFTER a pickup is the ground covered in the second before it.
+     * Sticking something to yourself is not a brake.
+     *
+     * Against the real solver, because everything a pickup touches lives
+     * there: the body that is removed, the fixed cylinder that goes with it,
+     * the ball that is added for the item, the heightfield under all of it.
+     */
+    const stickAt: number[] = [];
+    let frameNow = 0;
+    const { manager, root, frame } = hosted('eater', () => stickAt.push(frameNow));
+    const bodyR = manager.positions().find((q) => q.kind === 'character')!.r;
+    const run = 14;
+    const target = targetWithRunUp(bodyR, run);
+    expect(target).not.toBeNull();
+
+    root().position.set(target!.from.x, root().position.y, target!.from.z);
+    manager.drive('eater', { x: 1, z: 0, mag: 1 });
+    const xs: number[] = [];
+    const zs: number[] = [];
+    let now = 1000;
+    const span = Math.round(1000 / FRAME_MS);
+    const frames = Math.round(6000 / FRAME_MS);
+    for (let f = 0; f < frames; f++) {
+      frameNow = f;
+      now += FRAME_MS;
+      frame(now);
+      const p = manager.positionOf('eater')!;
+      xs.push(p.x);
+      zs.push(p.z);
+    }
+    manager.clearAll();
+
+    expect(stickAt.length).toBeGreaterThan(0);
+    const travel = (a: number, b: number): number =>
+      Math.hypot(xs[b]! - xs[a]!, zs[b]! - zs[a]!);
+    const braked: string[] = [];
+    let measured = 0;
+    let best = 0;
+    for (const at of stickAt) {
+      if (at < span || at + span >= xs.length) continue;
+      measured++;
+      const before = travel(at - span, at);
+      const after = travel(at, at + span);
+      best = Math.max(best, before);
+      // Within 20% of the second before it: the report, as a number.
+      if (after < before * 0.8) {
+        braked.push(`frame ${at}: ${before.toFixed(2)}u before, ${after.toFixed(2)}u after`);
+      }
+    }
+    // Real windows on real speed, so this cannot pass vacuously.
+    expect(measured).toBeGreaterThan(0);
+    expect(best).toBeGreaterThan(1);
+    expect(braked).toEqual([]);
+  }, 60_000);
 
   it('is never held while driven — the coast, the ponds and the forest', () => {
     /*

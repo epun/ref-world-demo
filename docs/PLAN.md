@@ -923,6 +923,49 @@ which case a 90° heading change has to free it inside 1.5 s.
   a solver ball smaller than the circle the resolve was using. `syncStandIns` now runs after
   `growPass` — one radius everywhere, every frame.
 
+**Relaxed, because being stuck is a physics feel and not only a bug** *(2026-09-16, third
+report: "My character keeps on getting stuck on objects, and once it sticks to an object, it
+can't move. I think we can relax the actual physics a little bit so that it's a bit easier to
+pick up momentum and pick things up to your character")*. All four are **[D]** and all four are
+katamari-only; every other world keeps the physics it shipped with.
+
+- **Blocking is the exception.** `BLOCK_RATIO = 1.6`: a rooted prop only `block`s when its
+  radius is over `1.6 × carryLimit`. Between the carry limit and that line it is `shove` — the
+  ball pushes past, slowed by `SOFT_SPEED_FACTOR` (a bush's own price) and taking the impact it
+  always took, but never held. One centimetre of prop radius used to be the difference between
+  rolling something up and being stopped dead by it. The break ladder is untouched on both
+  sides of the line, and a building still blocks and still wears down through its stages.
+  `passLimit` is the one function that says it, and the resolve's `skipIf`, the roll-over
+  gather and the rapier contact filter all read it so nothing can disagree about which props
+  are walls.
+- **A wall deflects the push instead of absorbing it.** `WALL_SLIDE = 0.8`. `resolveHard` keeps
+  the tangential component of a contact and drops the inward one, which slides beautifully
+  along anything met at an angle and does nothing for a hit dead on — where the tangent is zero
+  and the creature simply stands there. That is the inside of a corner, a building's flat face
+  and any trunk approached square, and to the hand it is being stuck. The blocked component is
+  now turned along the surface (the side the push is already leaning, with a fixed fallback
+  dead on, so the host and a replay agree). It cannot create penetration: what it adds is
+  tangential and the resolve still runs after it.
+- **Sticking is easy.** `CONTACT_PAD` 0.05 → **0.25**: the old pad was the solver's own slop, so
+  a pickup needed the circles all but exactly tangent on the one frame the pass looked — and at
+  7.2 u/s a frame is 0.24 u of travel. A quarter unit is a hand's width at world scale. There
+  is no speed threshold on a pickup and never was (size first, since the priority ruling), and
+  the tests now pin that at a twentieth of a push and through a mid-contact turn.
+- **A stuck item is part of the carrier's body.** Its ball exists so the pile can sweep through
+  what is LOOSE — stones, fallen props, debris, other creatures. `filterContactPair` now gives
+  it no pair at all against static geometry: the ground, the fixed cylinders, anything planted.
+  The carrier's body is kinematic so those contacts could never move it, but they DO fire the
+  impact seam, which charged damage and drops to a creature for a ball scraping the terrain.
+  The cost is named: a stuck bench no longer knocks a ROOTED sign loose (§7.6's own example) —
+  the carrier's own ball still hits everything rooted, which is where `hitRooted`, the recoil
+  and the staged damage live.
+- **Momentum needed nothing.** The drive is a velocity substitution (`driveVx = driven.x ×
+  ceiling`), not a spring, so a creature is at its ceiling on the first frame — inside the
+  ~400 ms the ask allowed, with no token to derive. A heading change costs no speed either: the
+  velocity is the STICK's direction and the facing eases behind it. Both are pinned, because the
+  obvious "fix" for a stick that feels jerky is to put a spring here and that spring would be
+  the lag the report was about.
+
 What the sweep did **not** find, stated because it was the suspicion: nothing on the map
 holds a driven creature. The resolve keeps the tangential component, so pressing into the sea
 wall or a trunk slides along it; a right-angled corner of two mountain-sized colliders does

@@ -39,7 +39,7 @@ import {
 import { BehaviorAgent, MAX_SPEED } from '../../src/behavior/agent';
 import { generatedName } from '../../src/creatures/naming';
 import { MOTION } from '../../src/taste/tokens';
-import { carryLimit, STICKY } from '../../src/creatures/sticky';
+import { carryLimit, passLimit, STICKY } from '../../src/creatures/sticky';
 import { EGG_RADIUS } from '../../src/egg/egg';
 import type { Collider } from '../../src/physics/colliders';
 import {
@@ -2182,6 +2182,52 @@ describe('the creature rolls — katamari locomotion', () => {
     manager.clearAll();
   });
 
+  it('picks up momentum at once — no ramp between the thumb and the ceiling', () => {
+    /*
+     * User ask, 2026-09-16: *"relax the actual physics a little bit so that
+     * it's a bit easier to pick up momentum."* The manager substitutes the
+     * stick's velocity directly (`driveVx = driven.x × ceiling`) rather than
+     * easing a speed toward it, so the acceleration is one frame — well
+     * inside the ~400 ms the ask allows. Pinned because the obvious "fix" for
+     * a stick that feels jerky is to put a spring here, and that spring would
+     * be the lag the report was about.
+     */
+    const { manager } = rolling('katamari');
+    const ceiling = MAX_SPEED * KATAMARI_SPEED_MUL;
+    manager.drive('roller', { x: 0, z: 1, mag: 1 });
+    let now = 5000;
+    let last = manager.positionOf('roller')!.clone();
+    let covered = 0;
+    // 400ms of frames, measured from the very first one.
+    for (let i = 0; i < 12; i++) {
+      now += 33;
+      manager.update(33, now);
+      const at = manager.positionOf('roller')!;
+      covered += Math.hypot(at.x - last.x, at.z - last.z);
+      last = at.clone();
+    }
+    expect((covered / (12 * 33)) * 1000).toBeGreaterThan(ceiling * 0.9);
+
+    /*
+     * AND A TURN DOES NOT COST IT. The velocity is the STICK's direction, not
+     * the creature's facing — the facing eases behind it (`turnTauMs`) — so
+     * swinging the thumb changes where the creature is going without ever
+     * taking its speed away.
+     */
+    manager.drive('roller', { x: 1, z: 0, mag: 1 });
+    last = manager.positionOf('roller')!.clone();
+    covered = 0;
+    for (let i = 0; i < 9; i++) {
+      now += 33;
+      manager.update(33, now);
+      const at = manager.positionOf('roller')!;
+      covered += Math.hypot(at.x - last.x, at.z - last.z);
+      last = at.clone();
+    }
+    expect((covered / (9 * 33)) * 1000).toBeGreaterThan(ceiling * 0.9);
+    manager.clearAll();
+  });
+
   it('turns tighter at the katamari speed, and still cannot overshoot', () => {
     /*
      * At 7.2 u/s a 200ms heading lag is a metre and a half of sliding, so the
@@ -2306,7 +2352,9 @@ describe('the character has priority — what it can carry cannot stop it', () =
    * the thing into, and `instanceRefs` so the placement has a measurable
    * scale and radius.
    */
-  function rollOver(c: Omit<Collider, 'x' | 'z'> & { gap: number }): {
+  function rollOver(
+    c: Omit<Collider, 'x' | 'z'> & { gap: number; mag?: number; turn?: boolean },
+  ): {
     stuck: string[];
     loosed: string[];
     bumped: string[];
@@ -2408,8 +2456,15 @@ describe('the character has priority — what it can carry cannot stop it', () =
     colliders.push({ ...c, x: at.x + bodyR + c.r - c.gap, z: at.z });
     version++;
 
-    manager.drive('walker', { x: 1, z: 0, mag: 1 });
+    const mag = c.mag ?? 1;
+    manager.drive('walker', { x: mag, z: 0, mag });
     manager.update(16, 1000);
+    if (c.turn === true) {
+      // Mid-contact, the thumb swings a quarter turn: the pickup must not
+      // depend on which way the creature happens to be facing.
+      manager.drive('walker', { x: 0, z: mag, mag });
+      manager.update(16, 1016);
+    }
     const after = manager.positionOf('walker')!;
     const travelled = after.x - at.x;
     manager.clearAll();
@@ -2457,21 +2512,75 @@ describe('the character has priority — what it can carry cannot stop it', () =
     expect(loosed).toEqual([]);
   });
 
-  it('is still stopped by a tree it is too small to carry', () => {
+  it('is still stopped by a tree far bigger than it can carry', () => {
     const { stuck, loosed, bumped, travelled } = rollOver({
-      r: 1.6,
+      // Over `passLimit` — a ~0.91u snowman pushes past anything up to 1.46u
+      // since the 2026-09-16 relaxation, so a wall has to be bigger than it
+      // used to be to still be a wall.
+      r: 2.4,
       hard: true,
       kind: 'tree',
       key: 'tree:0:4.00:4.00',
       gap: 0.2,
     });
-    // Over the limit: blocked at contact — it started 0.2u inside the circle,
-    // so the correction pushes it BACK, and it ends the frame behind where it
-    // began rather than a frame's travel ahead.
+    // Over the block line: blocked at contact — it started 0.2u inside the
+    // circle, so the correction pushes it BACK, and it ends the frame behind
+    // where it began rather than a frame's travel ahead.
     expect(travelled).toBeLessThan(0);
     expect(stuck).toEqual([]);
     // Nothing came up, and the trunk flinched — the old ladder, untouched.
     expect(loosed).toEqual([]);
     expect(bumped).toEqual(['tree:0:4.00:4.00']);
+  });
+
+  /*
+   * RELAXED, per the third stuck report (2026-09-16: *"I think we can relax
+   * the actual physics a little bit so that it's a bit easier to pick up
+   * momentum and pick things up to your character"*).
+   */
+  it('pushes PAST a tree between its carry limit and the block ratio', () => {
+    const { stuck, loosed, bumped, travelled, bodyR } = rollOver({
+      r: 1.2,
+      hard: true,
+      kind: 'tree',
+      key: 'tree:0:6.00:6.00',
+      gap: 0.2,
+    });
+    // In the band: too big to wear, not big enough to stop it.
+    expect(1.2).toBeGreaterThan(carryLimit(bodyR));
+    expect(1.2).toBeLessThan(passLimit(bodyR));
+    expect(stuck).toEqual([]);
+    // It kept going — slowed to the soft-body factor, never held.
+    expect(travelled).toBeGreaterThan(0);
+    expect(travelled).toBeCloseTo((MAX_SPEED * SOFT_SPEED_FACTOR * 16) / 1000, 4);
+    // And the tree still took the hit it always took.
+    expect(bumped).toEqual(['tree:0:6.00:6.00']);
+    expect(loosed).toEqual([]);
+  });
+
+  it('sticks at a crawl — there is no speed threshold on a pickup', () => {
+    const { stuck, travelled } = rollOver({
+      r: 0.5,
+      hard: true,
+      kind: 'tree',
+      key: 'tree:0:7.00:7.00',
+      gap: 0.2,
+      // A twentieth of the stick: as slow as a hand can ask for.
+      mag: 0.05,
+    });
+    expect(stuck).toEqual(['tree:0:7.00:7.00']);
+    expect(travelled).toBeGreaterThan(0);
+  });
+
+  it('sticks while the thumb is turning, not only while it is pointing at it', () => {
+    const { stuck } = rollOver({
+      r: 0.5,
+      hard: false,
+      kind: 'bush',
+      key: 'bush:0:8.00:8.00',
+      gap: 0.2,
+      turn: true,
+    });
+    expect(stuck).toEqual(['bush:0:8.00:8.00']);
   });
 });

@@ -54,6 +54,7 @@ import { resolveName } from './naming';
 import { createClump, type Clump, type StuckItem } from './clump';
 import {
   carryLimit,
+  passLimit,
   clumpLocalOffset,
   clumpLocalRotation,
   creatureCarryLimit,
@@ -134,6 +135,24 @@ export const KATAMARI_SPEED_MUL = 6;
  * the person watching it, and nobody asked for faster ai.
  */
 export const KATAMARI_WALK_MUL = 2.5;
+
+/**
+ * [D] How much of a blocked push is turned along the wall instead.
+ *
+ * > User report, 2026-09-16: *"my character keeps on getting stuck on
+ * > objects."*
+ *
+ * `resolveHard` keeps the tangential component of a contact and drops the
+ * inward one, which slides along anything met at an angle and does nothing
+ * for a hit dead on — where the tangent is zero and the creature simply
+ * stands there. 0.8 turns most of the blocked speed into travel along the
+ * surface, so a flat wall, a building's face and the inside of a corner all
+ * deflect instead of holding. Not 1.0: something has to be lost to running
+ * into a wall, or a wall reads as a rail.
+ *
+ * KATAMARI ONLY (see the use site).
+ */
+export const WALL_SLIDE = 0.8;
 
 /**
  * Turn responsiveness under the stick, as an exponential time constant.
@@ -2106,6 +2125,28 @@ export function createCreatureManager(
         const item = bodies.itemByCollider(other);
         if (item) return item.r <= carryLimit(slot.bodyR) ? null : flags;
         /*
+         * A STUCK ITEM IS PART OF THE CARRIER'S BODY (user ruling,
+         * 2026-09-16, with the third stuck report).
+         *
+         * Its ball only exists so the pile can sweep through what is LOOSE —
+         * stones, fallen props, debris, other creatures. Against static world
+         * geometry it has nothing to say: a bench hanging off a ball cannot
+         * push a fixed cylinder or the heightfield (the carrier's body is
+         * kinematic, so no contact there can move anything), and what those
+         * contacts CAN do is fire the impact seam from a ball that is
+         * scraping the ground — damage and drops charged to a creature for
+         * standing still. The loose case is handled a few lines up, where
+         * `itemByCollider` found something; reaching here with a stuck
+         * item's collider means the other side is the ground or a planted
+         * prop, so there is no pair.
+         *
+         * The carrier's own ball keeps every one of those contacts: that is
+         * `hitRooted`, the recoil, the break ladder and the staged damage,
+         * and it is the same rule it always was.
+         */
+        const isStuckItem = own !== slot.kinematic?.ball?.handle;
+        if (isStuckItem) return null;
+        /*
          * A STANDING PROP THE BALL IS BIG ENOUGH TO ROLL UP — no contact
          * either (2026-09-16 ruling: *"it shouldn't impede the character from
          * moving unless the mass isn't big enough to overtake the object"*).
@@ -2117,14 +2158,16 @@ export function createCreatureManager(
          * pass is about to take whole. Filtering the pair out is what keeps
          * uprooting free.
          *
-         * ONLY THE CREATURE'S OWN BALL is exempt. A stuck bench's collider is
-         * in `colliderSlot` too, and it must go on hitting everything — that
-         * is where the brief's instability comes from.
+         * A stuck item's collider is in `colliderSlot` too, and it has
+         * already been answered above: it meets what is loose and nothing
+         * else.
          */
-        if (own !== slot.kinematic?.ball?.handle) return flags;
         const side = bodies.sideByCollider(other);
         if (!side?.rooted) return flags;
-        return side.r <= carryLimit(slot.bodyR) ? null : flags;
+        // `passLimit`, matching the resolve's own `skipIf`: a prop the ball
+        // pushes past is reported by the pure resolve's gather instead, so a
+        // contact here would be the same impact counted twice.
+        return side.r <= passLimit(slot.bodyR) ? null : flags;
       },
     });
   }
@@ -3553,13 +3596,25 @@ export function createCreatureManager(
              * collider produces no correction, so `resolveHard`'s own
              * `onContact` never fires for one.
              *
+             * AND WHAT IT PUSHES PAST (`BLOCK_RATIO`, 2026-09-16: *"my
+             * character keeps on getting stuck on objects … relax the actual
+             * physics a little bit"*). Between the carry limit and
+             * `passLimit` a planted prop is not a wall either: the resolve
+             * skips it too, the ball pushes through at the soft-body speed,
+             * and the prop takes the impact it always took. So both bands
+             * report here, and `decideContact` decides which of them this
+             * particular prop is in.
+             *
              * KATAMARI ONLY, and gated on a `key` because a prop with no
              * placement key is not something the pile can address.
              */
             const limit = carryLimit(bodyR);
+            const pass = passLimit(bodyR);
+            /** Pushing past something too big to wear — slowed, not stopped. */
+            let pushingPast = false;
             if (katamari && bodiesOf() !== null) {
               for (const c of near) {
-                if (!c.hard || c.key === undefined || !(c.r <= limit)) continue;
+                if (!c.hard || c.key === undefined || !(c.r <= pass)) continue;
                 const dx = root.position.x - c.x;
                 const dz = root.position.z - c.z;
                 const d = Math.hypot(dx, dz);
@@ -3567,7 +3622,20 @@ export function createCreatureManager(
                 const nx = d > 1e-9 ? dx / d : 1;
                 const nz = d > 1e-9 ? dz / d : 0;
                 contacts.push({ slot, collider: c, nx, nz, speed: Math.hypot(vx, vz) });
+                if (c.r > limit) pushingPast = true;
               }
+            }
+            /*
+             * THE PRICE OF PUSHING PAST: the bush's own slowdown, on a prop
+             * that is over the carry limit and under the block one. It is not
+             * free (that would be a creature walking through the world rather
+             * than into it) and it is not a stop. Applied once however many
+             * such props are in reach — being wedged between two saplings is
+             * still a creature moving.
+             */
+            if (pushingPast) {
+              vx *= SOFT_SPEED_FACTOR;
+              vz *= SOFT_SPEED_FACTOR;
             }
 
             const soft = deepestSoftOverlap(root.position.x, root.position.z, bodyR, near);
@@ -3632,6 +3700,57 @@ export function createCreatureManager(
                   root.position.z,
                   Math.min(1, speed / (MAX_SPEED * SOFT_SPEED_FACTOR)),
                 );
+              }
+            }
+
+            /*
+             * A WALL DEFLECTS THE PUSH; IT DOES NOT ABSORB IT (`WALL_SLIDE`,
+             * 2026-09-16: *"my character keeps on getting stuck on
+             * objects"*).
+             *
+             * `resolveHard` drops the inward component of the velocity and
+             * keeps the tangent, which slides beautifully along anything hit
+             * at an angle and does nothing at all for a hit dead on: there
+             * the whole velocity is inward, the tangent is zero, and the
+             * creature stands against the wall until the person turns. That
+             * is the inside of a corner, the flat face of a building and any
+             * trunk approached square — and to the hand it is being stuck.
+             *
+             * So the inward part is turned along the surface instead of being
+             * thrown away. The side is whichever way the push is already
+             * leaning, with a fixed fallback dead on, so it is deterministic
+             * (the host decides, and a replay of the same drive decides the
+             * same). It cannot create penetration — the component it adds is
+             * tangential, and the resolve still runs afterwards.
+             *
+             * KATAMARI ONLY. Every other world keeps the wall it shipped
+             * with.
+             */
+            if (katamari && (vx !== 0 || vz !== 0)) {
+              const physicsNow = bodiesOf() !== null;
+              for (const c of near) {
+                if (!c.hard) continue;
+                // A prop this creature rolls up or pushes past is not a wall.
+                if (c.key !== undefined && c.r <= pass) continue;
+                // A stone rapier owns is not in the resolve's set either.
+                if (physicsNow && c.kind === 'rock') continue;
+                const dx = root.position.x - c.x;
+                const dz = root.position.z - c.z;
+                const d = Math.hypot(dx, dz);
+                if (d > bodyR + c.r * (1 + HARD_PAD_FRAC) + CONTACT_PAD) continue;
+                const nx = d > 1e-9 ? dx / d : 1;
+                const nz = d > 1e-9 ? dz / d : 0;
+                const vn = vx * nx + vz * nz;
+                // Not pushing into it: nothing to deflect.
+                if (vn >= 0) continue;
+                let tx = -nz;
+                let tz = nx;
+                if (vx * tx + vz * tz < 0) {
+                  tx = -tx;
+                  tz = -tz;
+                }
+                vx += tx * -vn * WALL_SLIDE;
+                vz += tz * -vn * WALL_SLIDE;
               }
             }
 
@@ -3798,7 +3917,13 @@ export function createCreatureManager(
                 skipIf: (collider: Collider, index: number): boolean => {
                   if (collider.key === undefined) return false;
                   const entry = aliveScratch[index];
-                  return entry !== undefined && collider.r <= carryLimit(entry.slot.bodyR);
+                  // `passLimit`, not `carryLimit`: what it can carry AND what
+                  // it can push past (`BLOCK_RATIO`, 2026-09-16 — one
+                  // centimetre of prop radius used to be the difference
+                  // between rolling something up and being stopped dead by
+                  // it). The slowdown for the push-past band is applied where
+                  // the contacts are gathered, above.
+                  return entry !== undefined && collider.r <= passLimit(entry.slot.bodyR);
                 },
               }
             : {}),

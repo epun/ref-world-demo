@@ -352,10 +352,49 @@ export const STUCK_COLLIDERS_MAX = 24;
  * (src/physics/resolve.ts), and rapier keeps its own bodies a hair apart too.
  * So by the time anything asks whether two things are touching, they provably
  * are not — quite — and a strict `d <= rA + rB` test could never fire a
- * single pickup. 5cm is under the skin's own order of magnitude at world
- * scale and far below anything a person could see.
+ * single pickup.
+ *
+ * 0.05 → **0.25** *(2026-09-16)*, user ask: *"relax the actual physics a
+ * little bit so that it's a bit easier to … pick things up to your character
+ * and have them stick to your character."* 5 cm was the solver's own slop and
+ * nothing more, so a pickup needed the two circles to be all but exactly
+ * tangent on the one frame the pass looked — and at 7.2 u/s a frame is 0.24 u
+ * of travel, which is wider than the window the old pad left open. A
+ * quarter-unit reach is a hand's width at world scale: invisible on a 0.9 u
+ * creature, and it means a thing the ball rolls NEAR is a thing the ball
+ * gets.
  */
-export const CONTACT_PAD = 0.05;
+export const CONTACT_PAD = 0.25;
+
+/**
+ * [D] How far ABOVE the carry limit a rooted prop has to be before it stops
+ * the creature dead.
+ *
+ * > User ask, 2026-09-16: *"My character keeps on getting stuck on objects …
+ * > I think we can relax the actual physics a little bit."*
+ *
+ * The priority ruling gave the creature everything inside its carry limit and
+ * a wall at 1.0 of it: one unlucky centimetre of prop radius was the
+ * difference between rolling something up and being stopped by it. Between
+ * the limit and 1.6× it, a planted prop is now `shove` — the ball pushes
+ * past, slowed like a bush and doing the prop the same damage it always did,
+ * but never held. Only past 1.6× does a rooted thing block, which is where
+ * "that is bigger than me" is something a person can see rather than a
+ * rounding error in a measured radius.
+ *
+ * 1.6 rather than 2: two would mean a hatchling ploughing through trunks
+ * nearly twice its size, and the escalation the brief asks for — first ten
+ * seconds cute, last twenty out of control — needs *something* to say no.
+ * The break ladder is untouched underneath: the same impact that used to
+ * knock a prop loose still does, whichever side of this line it is on.
+ */
+export const BLOCK_RATIO = 1.6;
+
+/** The biggest ROOTED prop this carrier can push past instead of being
+ * stopped by — `BLOCK_RATIO` of what it can actually carry. */
+export function passLimit(carrierR: number): number {
+  return BLOCK_RATIO * carryLimit(carrierR);
+}
 
 /** From the tokens, never a literal: the shortest gap between two drops off
  * the same carrier. A pile that shed on every contact would unravel in one
@@ -452,13 +491,17 @@ export function debrisLifetimeMs(props: StickyProps): number {
  * round trip on the way. Uprooting something smaller than you costs nothing;
  * that is what having priority means.
  *
- * Only what is too big to carry can stop you, and only if it is ROOTED:
+ * Only what is too big to carry can stop you, it has to be ROOTED, and since
+ * 2026-09-16 it has to be a good deal bigger than the limit as well
+ * (`BLOCK_RATIO` — *"relax the actual physics a little bit"*):
  *
- *  - rooted and too big → `block`, and the old impact ladder decides whether
- *    the block also breaks it (`shatterStrength` → `break`, `breakStrength`
- *    → `loose`, a building's `stages` accumulating behind both). That ladder
- *    is unchanged; it simply lives in this branch now, which is the only
- *    branch where a prop is still standing in its hole after the contact.
+ *  - rooted and over `BLOCK_RATIO` of the limit → `block`, and the old impact
+ *    ladder decides whether the block also breaks it (`shatterStrength` →
+ *    `break`, `breakStrength` → `loose`, a building's `stages` accumulating
+ *    behind both). That ladder is unchanged.
+ *  - rooted and merely over the CARRY limit → `shove`: too big to wear, not
+ *    big enough to stop you. The ball pushes past it, slowed like a bush, and
+ *    the prop takes the damage it always took.
  *  - unrooted and too big → `shove`. Never a block: a stone you cannot carry
  *    rolls away, which the rapier layer does for free, and the ruling says a
  *    creature is not impeded by what it can move.
@@ -490,11 +533,25 @@ export function decideContact(a: {
    */
   const shatter = a.props.shatterStrength;
   if (shatter !== undefined && Number.isFinite(shatter) && a.impact >= shatter) return 'break';
+  /*
+   * IT HELD — but holding is not the same as STOPPING (`BLOCK_RATIO`,
+   * 2026-09-16: *"my character keeps on getting stuck on objects … relax the
+   * actual physics a little bit"*).
+   *
+   * Between the carry limit and `BLOCK_RATIO` of it a planted prop is
+   * `shove`d: the ball pushes past, slowed down and doing the prop the same
+   * damage it always did, and the staged ladder above still runs on it —
+   * `shove` and `block` are one verdict to everything except the resolve, and
+   * the resolve is exactly the thing this changes. Only a rooted prop over
+   * that line is a wall.
+   */
+  const stops = a.itemR > passLimit(a.carrierR);
   // `Infinity` means NEVER, and it has to mean that even when it is asked
   // about an infinite impact — `Infinity >= Infinity` is true, which would
   // have handed a building to anyone who managed to overflow a speed.
-  if (!Number.isFinite(a.props.breakStrength)) return 'block';
-  return a.impact >= a.props.breakStrength ? 'loose' : 'block';
+  if (!Number.isFinite(a.props.breakStrength)) return stops ? 'block' : 'shove';
+  if (a.impact >= a.props.breakStrength) return 'loose';
+  return stops ? 'block' : 'shove';
 }
 
 /**

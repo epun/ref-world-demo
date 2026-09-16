@@ -53,11 +53,12 @@ describe('the two new thresholds', () => {
   it('shatters a large prop instead of lifting it whole, and only above breakStrength', () => {
     const props = STICKY.monolith;
     expect(props.shatterStrength).toBeGreaterThan(props.breakStrength);
-    // A monolith BIGGER than the carrier: `decideContact` asks about size
-    // first (2026-09-16 ruling), and a prop inside the carry limit is simply
-    // stuck whatever its thresholds say. This is the ladder above it.
+    // A monolith far bigger than the carrier: `decideContact` asks about
+    // size first (2026-09-16 ruling) — a prop inside the carry limit is
+    // simply stuck, and one inside `passLimit` is pushed past — so the
+    // radius here is over BOTH lines. This is the ladder above them.
     const ask = (impact: number): string =>
-      decideContact({ itemR: 2, rooted: true, props, impact, carrierR: 1.5 });
+      decideContact({ itemR: 4, rooted: true, props, impact, carrierR: 1.5 });
     expect(ask(props.breakStrength - 0.01)).toBe('block');
     expect(ask(props.breakStrength)).toBe('loose');
     expect(ask(props.shatterStrength! - 0.01)).toBe('loose');
