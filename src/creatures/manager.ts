@@ -27,6 +27,7 @@ import {
 import { personalityFromChoice, type PersonalityChoice } from '../behavior/personality';
 import { projectOutOfHard } from '../behavior/steering';
 import { createCharacter, type Character } from '../character/character';
+import type { CreatureBlueprint } from '../character/blueprint';
 import {
   buildColliderGrid,
   type Collider,
@@ -739,6 +740,18 @@ export interface SpawnOptions {
    * of the page's load cost.
    */
   grown?: boolean;
+  /**
+   * The pure pipeline's output for these strokes, already built — the load
+   * path's way of keeping `createCharacter` off the interpret-and-inflate
+   * work (src/character/blueprintPool.ts).
+   *
+   * Absent, `createCharacter` builds it here, which is what every other
+   * spawn path does and what this one does on a page with no workers. It
+   * does not change what the creature IS: same strokes, same dials, same
+   * function, and the blueprint is pinned against the inline build in
+   * `test/character/blueprint.test.ts`.
+   */
+  blueprint?: CreatureBlueprint;
   /**
    * A RESIDENT: never retired to make room for somebody else.
    *
@@ -3317,7 +3330,11 @@ export function createCreatureManager(
       // The slot id is the creature's identity: it salts the within-band
       // synthesis so the same drawing submitted twice hatches two visibly
       // distinct individuals, and it matches the phone portrait (same id).
-      const next = createCharacter(strokes, 1, { identity: id, markingSize: WORLD_MARKING_SIZE });
+      const next = createCharacter(strokes, 1, {
+        identity: id,
+        markingSize: WORLD_MARKING_SIZE,
+        ...(opts.blueprint ? { blueprint: opts.blueprint } : {}),
+      });
       if (!next) return false;
 
       const existing = slots.get(id);

@@ -532,6 +532,13 @@ export class InkPass {
   /** Cracked props in WORLD space; projected to the screen each frame by
    * `render`, which is the one place with a camera. */
   private cracks: CrackMark[] = [];
+  /**
+   * Extra subtrees hidden for the NORMAL pass alone, beside the ones that
+   * carry `userData.ghibliNormalPassSkip` — see `setNormalPassSkip`.
+   */
+  private normalSkip: readonly Object3D[] = [];
+  /** Reused by `render`: the frame's hide list. */
+  private readonly skipScratch: Object3D[] = [];
   private readonly crackWorld = new Vector3();
   private readonly crackEdge = new Vector3();
   private readonly crackRight = new Vector3();
@@ -686,6 +693,28 @@ export class InkPass {
   }
 
   /**
+   * Subtrees this pass hides while it renders the NORMAL target — a caller's
+   * list, on top of the `ghibliNormalPassSkip` flag the ghibli fields set on
+   * themselves.
+   *
+   * What it is for [D]: a PHONE looking at the katamari world draws the
+   * object library's ~226 InstancedMeshes twice a frame, once for the beauty
+   * render and once for this one, and 450 draw calls is a mobile driver's
+   * whole frame budget in submission overhead alone. The props' own
+   * contribution to the normal target is their hatching and their interior
+   * creases — at a phone's scale, on a 134-triangle PS2 prop, neither is
+   * legible — while the contour that actually reads comes off the DEPTH
+   * target, which is the beauty render's and is untouched. The ground behind
+   * a skipped prop fills the normal target where it stood, so nothing reads
+   * as a hole: no constant hatch band, no stray edge.
+   *
+   * The projection sets nothing here and draws exactly as it always did.
+   */
+  setNormalPassSkip(objects: readonly Object3D[]): void {
+    this.normalSkip = objects;
+  }
+
+  /**
    * Project the cracked props into the screen-space discs the shader wants.
    *
    * A disc and not a projected mesh: the marks are drawn in the composite,
@@ -775,10 +804,26 @@ export class InkPass {
     // stands it up (src/world/ghibli/grass.ts). Those hide for this one pass
     // and come back immediately after: a tuft of contour at the origin is not
     // a line the pen ever drew (docs/ghibli-port.md §1).
-    const skipped: Object3D[] = [];
+    /*
+     * ONE WALK, TWO ANSWERS: what to hide for this pass, and whether the
+     * overlay pass below has anything at all to draw. The walk was already
+     * happening for the first; the second is what lets the frame drop a
+     * whole full-screen render on the frames nobody is emoting on, which is
+     * almost all of them (the bubble detaches itself when it hides).
+     */
+    const skipped = this.skipScratch;
+    skipped.length = 0;
+    let overlayLive = false;
+    const overlayMask = 1 << OVERLAY_LAYER;
     scene.traverse((object) => {
       if (object.userData.ghibliNormalPassSkip === true && object.visible) skipped.push(object);
+      if (!overlayLive && object.visible && (object.layers.mask & overlayMask) !== 0) {
+        overlayLive = true;
+      }
     });
+    for (const extra of this.normalSkip) {
+      if (extra.visible) skipped.push(extra);
+    }
     for (const object of skipped) object.visible = false;
     renderer.setRenderTarget(this.normalTarget);
     renderer.render(scene, camera);
@@ -796,16 +841,23 @@ export class InkPass {
     // them. Draw them once here, straight onto the composed frame: true
     // color at any time of day or weather. The grain pass still composes
     // over this, so the full-frame paper layer stays uniform (TASTE §2.7).
-    const prevMask = camera.layers.mask;
-    const prevAutoClear = renderer.autoClear;
-    const bg = scene.background;
-    camera.layers.set(OVERLAY_LAYER);
-    renderer.autoClear = false;
-    scene.background = null;
-    renderer.render(scene, camera);
-    scene.background = bg;
-    renderer.autoClear = prevAutoClear;
-    camera.layers.mask = prevMask;
+    //
+    // …and only when something IS on it. With `autoClear` off and no
+    // background, a pass with nothing in it writes nothing — it is a
+    // full-screen render's worth of traversal, state and submission for a
+    // no-op, every frame of the 99% of the room that is not emoting.
+    if (overlayLive) {
+      const prevMask = camera.layers.mask;
+      const prevAutoClear = renderer.autoClear;
+      const bg = scene.background;
+      camera.layers.set(OVERLAY_LAYER);
+      renderer.autoClear = false;
+      scene.background = null;
+      renderer.render(scene, camera);
+      scene.background = bg;
+      renderer.autoClear = prevAutoClear;
+      camera.layers.mask = prevMask;
+    }
 
     renderer.setRenderTarget(null);
     return this.outTarget.texture;

@@ -18,6 +18,13 @@
 import { Vector3, type Texture } from 'three';
 import { installHoverNames } from './creatures/hover';
 import { createCreatureManager } from './creatures/manager';
+import {
+  currentDials,
+  type BlueprintDials,
+  type CreatureBlueprint,
+} from './character/blueprint';
+import { createBlueprintPool, MAX_WORKERS } from './character/blueprintPool';
+import { identitySeedOf } from './character/interpret';
 import { createLooseMeshes } from './world/loose';
 import { buildChunkGeometries, type Chunk, type ChunkKind } from './world/chunks';
 import { createDebris } from './world/debris';
@@ -149,6 +156,13 @@ type WorldDrawing = IncomingDrawing & {
    * world itself.
    */
   resident?: boolean;
+  /**
+   * The pure pipeline's output, built off this thread before the offer —
+   * `SpawnOptions.blueprint` (src/character/blueprintPool.ts). Only the
+   * restore path sets it; a live drawing arrives one at a time and pays the
+   * pipeline where it always did.
+   */
+  blueprint?: CreatureBlueprint;
 };
 
 // ── draw overlay chrome ──────────────────────────────────────────────────────
@@ -707,6 +721,37 @@ function main(): void {
           chunks,
           tier: world.tier,
         });
+  /**
+   * The pure pipeline's worker pool — the one place this page builds
+   * creatures off the main thread (src/character/blueprintPool.ts).
+   *
+   * Built here rather than inside the load path so the workers are warm by
+   * the time the store's log arrives, and so there is exactly one pool for
+   * the life of the page. On a browser without workers it is the main-thread
+   * fallback and nothing about the page changes.
+   */
+  const blueprints = createBlueprintPool();
+  /*
+   * Tiny always-on probe, the same family as `__refworldCreatures` and
+   * `__refworldSession`: how many workers this page actually got, and a way
+   * for the load harness to ask for a blueprint with the dials this thread is
+   * running. The pool is an optimisation whose whole claim is a number, so
+   * the number has to be readable from outside the page.
+   */
+  (
+    window as Window & {
+      __refworldBlueprints?: {
+        workers(): number;
+        build(strokes: StrokeList, dials: BlueprintDials): Promise<CreatureBlueprint | null>;
+        dials(identity?: string): BlueprintDials;
+      };
+    }
+  ).__refworldBlueprints = {
+    workers: () => blueprints.workers(),
+    build: (strokes, dials) => blueprints.build(strokes, dials),
+    dials: (identity) =>
+      currentDials(1, identity === undefined ? undefined : identitySeedOf(identity)),
+  };
   const creatures = createCreatureManager(world, {
     autoHatch: isPublic && hatchMode === 'timer',
     // The game, so the manager's own katamari half — the sticky simulation,
@@ -771,6 +816,7 @@ function main(): void {
         hatchMs: d.hatchMs,
         ...(d.grown === true ? { grown: true } : {}),
         ...(d.resident === true ? { resident: true } : {}),
+        ...(d.blueprint ? { blueprint: d.blueprint } : {}),
       }),
     clear: (id) => creatures.clear(id),
     live: (id) => creatures.has(id),
@@ -1695,33 +1741,77 @@ function main(): void {
     const endpoint = `/api/drawings?world=${encodeURIComponent(worldName)}`;
 
     /**
-     * Spawn a log's drawings, A FEW PER FRAME.
+     * Spawn a log's drawings — the PURE PIPELINE OFF THIS THREAD, and what is
+     * left of it paced by a time budget rather than a count.
      *
      * Building a creature is the whole pure pipeline — rasterise, distance
      * transform, marching squares, simplify, smooth, medial axis, inflate —
-     * and it runs on the main thread because it has to be deterministic and
-     * shared with the phone. One creature is nothing. Sixty-eight in a loop
-     * measured as an 8.5 SECOND FROZEN TAB: not a slow page, a broken one,
-     * with no first paint, no scroll, no cursor.
+     * and it used to run here, on the main thread, because it has to be
+     * deterministic and shared with the phone. One creature is nothing.
+     * Sixty-eight in a loop measured as an 8.5 SECOND FROZEN TAB: not a slow
+     * page, a broken one, with no first paint, no scroll, no cursor. Two
+     * hundred — which is what a refresh in a full room rebuilds — measured at
+     * **57 seconds** of main-thread time, and every phone watching the
+     * projection was frozen for all of it.
      *
-     * Yielding between slices costs a little total time and buys the only
-     * thing that matters here — the world is on screen and interactive
-     * while its population arrives. It reads as the field filling up, which
-     * is a better landing than a blank page that suddenly has everything.
+     * Deterministic does not mean "on this thread": it means the same
+     * function on the same input. So the pipeline goes to a small pool of
+     * workers (src/character/blueprintPool.ts), every one of them running the
+     * same pure module, and what stays here is the Three.js half — geometry
+     * upload, the marking canvas, the stalk. `BLUEPRINTS_AHEAD` keeps a few
+     * in flight so a worker is never idle waiting for this thread, and no
+     * more, so two hundred 512² masks are not all alive at once.
+     *
+     * The pacing is a BUDGET, not a count. Three per frame was a guess made
+     * when a creature cost ~30ms; a budget says the thing that actually
+     * matters — hand the frame back before it is late — and holds however
+     * long one creature takes on the machine it is running on.
      *
      * Skips anything already standing, so it stays additive and the poll
      * can call it every twenty seconds without disturbing the world.
      */
-    const SPAWN_PER_FRAME = 3;
+    /** [D] ms of creature-building per frame before handing the frame back.
+     * Half a 60fps frame: the world still has a frame's worth of its own
+     * work to do, and a creature that overruns simply takes the next slice. */
+    const SPAWN_BUDGET_MS = 8;
+    /** [D] How many blueprints to keep in flight — the pool's own size plus
+     * one, so a worker always has the next job waiting and the queue never
+     * holds the whole room's masks. */
+    const BLUEPRINTS_AHEAD = MAX_WORKERS + 1;
     const absorb = async (
       log: SessionLog,
       grown: boolean,
       resident = false,
     ): Promise<string[]> => {
       const ids: string[] = [];
-      let sinceYield = 0;
-      for (const event of log.events) {
-        if (event.k !== 'drawing') continue;
+      const pending = log.events.filter(
+        (event) => event.k === 'drawing' && !creatures.has(event.id),
+      ) as Extract<SessionLog['events'][number], { k: 'drawing' }>[];
+      if (pending.length === 0) return ids;
+      const dials = currentDials(1, undefined);
+      /** The blueprint for pending[i], asked for ahead of being needed. */
+      const ahead = new Map<number, Promise<CreatureBlueprint | null>>();
+      const ask = (i: number): void => {
+        if (i >= pending.length || ahead.has(i)) return;
+        const event = pending[i]!;
+        ahead.set(
+          i,
+          blueprints.build(event.strokes, {
+            ...dials,
+            identitySeed: identitySeedOf(event.id),
+          }),
+        );
+      };
+      for (let i = 0; i < Math.min(BLUEPRINTS_AHEAD, pending.length); i++) ask(i);
+
+      let sliceStart = performance.now();
+      for (let i = 0; i < pending.length; i++) {
+        const event = pending[i]!;
+        const blueprint = await ahead.get(i);
+        ahead.delete(i);
+        ask(i + BLUEPRINTS_AHEAD);
+        // Already standing by the time its blueprint came back (the poll ran
+        // again, a phone re-published): nothing to do, and no double spawn.
         if (creatures.has(event.id)) continue;
         const entry = gate.offer({
           id: event.id,
@@ -1732,11 +1822,12 @@ function main(): void {
           source: 'phone',
           ...(grown ? { grown: true } : {}),
           ...(resident ? { resident: true } : {}),
+          ...(blueprint ? { blueprint } : {}),
         });
         if (entry.disposition === 'admitted') ids.push(event.id);
-        if (++sinceYield >= SPAWN_PER_FRAME) {
-          sinceYield = 0;
+        if (performance.now() - sliceStart >= SPAWN_BUDGET_MS) {
           await new Promise((resolve) => requestAnimationFrame(resolve));
+          sliceStart = performance.now();
         }
       }
       return ids;
