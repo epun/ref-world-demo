@@ -17,12 +17,16 @@
  */
 
 import { Group, Mesh } from 'three';
-import { inflate } from '../inflate/inflate';
 import { sampleDrift } from '../motion/ambient';
 import { Spring } from '../motion/spring';
 import type { EmoteName } from '../net/protocol';
 import type { ShapeAnalysis, StrokeList } from '../shape/types';
 import { MOTION } from '../taste/tokens';
+import {
+  buildBlueprint,
+  currentDials,
+  type CreatureBlueprint,
+} from './blueprint';
 import { createBubble } from './bubble';
 import { applyDeform, NEUTRAL_GAIT, type GaitState } from './deform';
 import { createBlendshellCharacter } from './blendshell/build';
@@ -30,7 +34,7 @@ import { runEmote, type EmoteRun } from './emotes';
 import { createGait } from './gait';
 import { applyEyes } from './eyes';
 import type { Expression, ExpressionName } from './expressions';
-import { identitySeedOf, interpretDrawing, strokeSeed } from './interpret';
+import { identitySeedOf, strokeSeed } from './interpret';
 import { applyMarking } from './marking';
 import { createCharacterMaterial, deformFrameOf, toBufferGeometry } from './mesh';
 import { paletteFor, paletteNamed, type CreaturePalette, type PaletteName } from './palette';
@@ -173,6 +177,22 @@ export interface CharacterOptions {
    */
   construction?: 'inflate' | 'blendshell';
   /**
+   * A BLUEPRINT ALREADY BUILT — the pure pipeline's output, computed
+   * somewhere else (`src/character/blueprint.ts`).
+   *
+   * What it is for: interpreting and inflating a drawing is ~all of the cost
+   * of building a creature (200 of them measured at 57 seconds of main-thread
+   * time on a refresh), and it is pure, so it can be done in a worker while
+   * the world keeps drawing. Hand the result in here and this function does
+   * the Three.js half only.
+   *
+   * It has to be the blueprint for THESE strokes and these dials — the
+   * caller's job, because the caller is the one that asked for it. Absent,
+   * everything below is computed here exactly as it always was, which is what
+   * the phone, the tests and any page without workers do.
+   */
+  blueprint?: CreatureBlueprint;
+  /**
    * Stable identity id (the drawing's publish id / slot id). Salts the
    * within-band synthesis jitter, eye shape/size, marking placement, and the
    * drift/bubble seed so no two submissions look the same — even from the
@@ -208,8 +228,16 @@ export function createCharacter(
   const identitySeed =
     options.identity === undefined ? undefined : identitySeedOf(options.identity);
 
-  const interpreted = interpretDrawing(strokes, options.fidelity ?? 1, {}, identitySeed);
-  if (!interpreted) return null;
+  /*
+   * The pure pipeline, unless the caller has already run it somewhere else
+   * (see `CharacterOptions.blueprint`). Same function either way, so the
+   * mesh is the same mesh — `test/character/blueprint.test.ts` pins that.
+   */
+  const built =
+    options.blueprint ??
+    buildBlueprint(strokes, currentDials(options.fidelity ?? 1, identitySeed));
+  if (!built) return null;
+  const interpreted = built.interpreted;
   // The synthesized body's analysis: eyes, deformation, and gait all read
   // the silhouette that actually exists.
   const analysis = interpreted.analysis;
@@ -219,7 +247,7 @@ export function createCharacter(
   const palette =
     paletteOverride === null ? paletteFor(interpreted.motifs) : paletteNamed(paletteOverride);
 
-  const geometry = toBufferGeometry(inflate(analysis));
+  const geometry = toBufferGeometry(built.mesh);
   const box = geometry.boundingBox;
   if (!box || box.isEmpty()) {
     // Inflation produced no triangles (degenerate contour): treat like a
