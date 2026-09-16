@@ -63,6 +63,7 @@ import {
   shouldDrop,
   stageFor,
   STICKY,
+  stickyFor,
   STUCK_COLLIDERS_MAX,
 } from './sticky';
 import type { LooseMeshes } from '../world/loose';
@@ -2203,7 +2204,9 @@ export function createCreatureManager(
    * *something*: a creature has no `PropKind` and so no row of its own.
    */
   function attachmentOf(stuck: StuckItem): number {
-    return stuck.kind ? STICKY[stuck.kind].attachmentStrength : STICKY.tree.attachmentStrength;
+    return stuck.kind
+      ? stickyFor(stuck.kind, stuck.variant ?? 0).attachmentStrength
+      : STICKY.tree.attachmentStrength;
   }
 
   /**
@@ -2249,7 +2252,12 @@ export function createCreatureManager(
     dirX: number,
     dirZ: number,
   ): void {
-    const props = STICKY[prop.kind];
+    // The VARIANT's rules, not merely the kind's: on a katamari world one
+    // library model of a kind is planted and the next is not
+    // (`stickyFor`, src/creatures/sticky.ts). The variant comes out of the
+    // placement key, which is the only description of this prop that
+    // survives the scatter forgetting about it.
+    const props = stickyFor(prop.kind, parseItemKey(prop.key)?.variant ?? 0);
     if (!props) return;
     // ALWAYS the recoil, whatever the verdict: running into a tree bends it
     // even when it holds, and that flinch is the read that the world is
@@ -2291,7 +2299,7 @@ export function createCreatureManager(
     if (!(impact > 0)) return;
     const parsed = parseItemKey(key);
     if (!parsed) return;
-    const props = STICKY[parsed.kind];
+    const props = stickyFor(parsed.kind, parsed.variant);
     if (!props?.stages) return;
     const total = (damage.get(key) ?? 0) + impact;
     damage.set(key, total);
@@ -2433,7 +2441,7 @@ export function createCreatureManager(
       const key = report.collider.key;
       const kind = report.collider.kind as PropKind | undefined;
       if (!key || !kind || !Object.prototype.hasOwnProperty.call(STICKY, kind)) continue;
-      const props = STICKY[kind];
+      const props = stickyFor(kind, parseItemKey(key)?.variant ?? 0);
       const impact = impactOf(report.speed, report.slot.bodyR);
       // The verdict, the recoil and the staged damage are `hitRooted`'s —
       // one rule, whether the contact came from the pure resolve (here) or
@@ -2477,7 +2485,7 @@ export function createCreatureManager(
       for (let k = 0; k < nearIdx.length; k++) {
         const item = itemList[nearIdx[k]!];
         if (!item) continue;
-        const props = STICKY[item.kind];
+        const props = stickyFor(item.kind, item.variant);
         const point = itemPoints[nearIdx[k]!]!;
         const d = Math.hypot(point.x - root.position.x, point.z - root.position.z);
         // `CONTACT_PAD`, because nothing in this world is ever exactly

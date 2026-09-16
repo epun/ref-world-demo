@@ -33,6 +33,9 @@ import {
 import { applyGhibliPost } from './ghibli/post';
 import { createLighting } from './lighting';
 import { createScatter, type Scatter } from './scatter';
+import { katamariPendingSource, startKatamariWorld } from './katamari/source';
+import type { KatamariLibrary } from './katamari/models';
+import type { Chunk } from './chunks';
 import { FlatShadows } from './shadows';
 import {
   landscapeMode,
@@ -157,6 +160,17 @@ export interface WorldHandles {
    * usable while an audience watches.
    */
   refreshScatter(): void;
+  /**
+   * The chunk set the katamari library's models break into, or null on every
+   * other world and until the library lands (docs/katamari-props.md §c).
+   *
+   * A getter because it arrives late, like the physics world does: the
+   * destruction layer asks on first demand (src/main.ts) and a page that
+   * never breaks anything never asks at all.
+   */
+  katamariChunks(): Map<string, Chunk[][]> | null;
+  /** The loaded object library, or null (see `katamariChunks`). */
+  katamariLibrary(): KatamariLibrary | null;
   /**
    * Hand the ground the `path` brush's live weight texture, or `null` to
    * stop drawing a trail (`Ground.setPaintedPath`). The dev paint skill's
@@ -375,7 +389,42 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
   // The world's terrain. Everything below is seated on THIS and nothing else
   // derives a height of its own (src/world/surface.ts).
   const surface = ROLLING_SURFACE;
-  const scatter = createScatter({ surface });
+  /*
+   * THE PROPS THIS WORLD IS MADE OF (2026-09-16, docs/katamari-props.md).
+   *
+   * A katamari world's props are the game's own models, and they are 1.4 MB
+   * of glb away. So it starts on a source that carries the CATALOG's
+   * placement rules and no geometry — the placement is pure and must not
+   * depend on the download (two handsets on two connections still roll the
+   * identical world) — and the first second draws ground, water and marks
+   * and no props at all. Every other world builds its authored props here,
+   * synchronously, exactly as it always has.
+   */
+  const katamariGame = game === 'katamari';
+  const scatter = createScatter({
+    surface,
+    ...(katamariGame ? { source: katamariPendingSource() } : {}),
+  });
+  /** The loaded library, and the chunks its models break into — null until
+   * the glbs land, and forever on every other world. */
+  let katamariLibrary: KatamariLibrary | null = null;
+  let katamariChunks: Map<string, Chunk[][]> | null = null;
+  /*
+   * The load itself, started once and gated on the game inside
+   * `startKatamariLibrary` — so a world with no game never so much as
+   * imports the loader (the import in there is dynamic), and never fetches
+   * a glb. A failure is warned about and dropped: the ground, the water and
+   * the marks are a frame (docs/katamari-props.md §e.4).
+   */
+  void startKatamariWorld(game).then((ready) => {
+    if (!ready) return;
+    katamariLibrary = ready.library;
+    katamariChunks = ready.chunks as Map<string, Chunk[][]>;
+    // A rebuild, not a second draw path: the props slide into place on the
+    // same rebuild a density change causes, and every consumer that keys off
+    // `rebuildVersion()` re-reads without knowing why (TASTE §2.1).
+    scatter.setPropSource(ready.source);
+  });
   const lighting = createLighting();
 
   /**
@@ -891,6 +940,8 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
     refreshScatter: (): void => {
       scatter.refreshLandscape();
     },
+    katamariChunks: (): Map<string, Chunk[][]> | null => katamariChunks,
+    katamariLibrary: (): KatamariLibrary | null => katamariLibrary,
     resetView: (): void => {
       cameraRig.resetView();
     },

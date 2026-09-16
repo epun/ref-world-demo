@@ -27,6 +27,7 @@
 
 import { MOTION } from '../taste/tokens';
 import type { PropKind } from '../world/props';
+import { propVariantMeta } from '../world/props-source';
 
 /**
  * How a prop behaves when a creature runs into it.
@@ -189,6 +190,37 @@ export const STICKY: Record<PropKind, StickyProps> = {
     attachmentStrength: 10,
     stickiness: 1,
   },
+  // ── the library's own tiers (2026-09-15, the katamari object library) ────
+  /*
+   * `small` / `medium` / `large` are the junk a pile actually rolls up — the
+   * mugs and cans, the benches and vending machines, the cars and lamp posts
+   * (docs/katamari-props.md §d). They have no authored geometry in this
+   * world at all, so on every world but a katamari one their variant count
+   * is 0 and these rows are never consulted.
+   *
+   * Each row is its TIER's shape, taking the numbers the tier already
+   * carries: a small thing is loose on the ground like a stone, a medium one
+   * is planted and comes up at 4, a large one comes up at 8 and bursts at
+   * 11. Where a MODEL disagrees with its kind — a bench is not planted, a
+   * mailbox is — the catalog's `rooted` wins through `stickyFor` below,
+   * which is the whole reason that function exists.
+   */
+  small: { tier: 'small', rooted: false, breakStrength: 0, attachmentStrength: 3, stickiness: 1 },
+  medium: {
+    tier: 'medium',
+    rooted: true,
+    breakStrength: 4,
+    attachmentStrength: 6,
+    stickiness: 1,
+  },
+  large: {
+    tier: 'large',
+    rooted: true,
+    breakStrength: 8,
+    shatterStrength: 11,
+    attachmentStrength: 10,
+    stickiness: 1,
+  },
   // ── the sky ──────────────────────────────────────────────────────────────
   cloud: {
     tier: 'small',
@@ -198,6 +230,31 @@ export const STICKY: Record<PropKind, StickyProps> = {
     stickiness: 0,
   },
 };
+
+/**
+ * The rules for one (kind, VARIANT) — `STICKY[kind]`, overridden by the
+ * facts the active prop source knows about that particular variant.
+ *
+ * WHY THE LOOKUP MOVED DOWN A LEVEL. A stock kind's variants all agree
+ * about rootedness and tier: every authored tree is planted, every authored
+ * rock is loose. A library kind's do not — in one catalog row a vending
+ * machine is bolted to the pavement and in the next a folding chair is
+ * leaning against it — and the pickup rules turn on exactly that
+ * (docs/katamari-props.md §d, decision 2 of the wiring). So every read of
+ * `STICKY[kind]` that has a variant in hand comes through here, and the
+ * ones that only know the kind (the `hasOwnProperty` guards that ask whether
+ * a string names a prop at all) still read the table directly.
+ *
+ * Still pure, and still no three: the override comes from
+ * `activePropSource()`, which is a plain table installed once per world.
+ */
+export function stickyFor(kind: PropKind, variant = 0): StickyProps {
+  const base = STICKY[kind];
+  const meta = propVariantMeta(kind, variant);
+  if (!meta) return base;
+  if (meta.rooted === base.rooted && meta.tier === base.tier) return base;
+  return { ...base, rooted: meta.rooted, tier: meta.tier };
+}
 
 /**
  * [D] Biggest item a carrier can pick up, as a fraction of its own radius.

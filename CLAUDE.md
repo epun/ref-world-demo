@@ -91,6 +91,10 @@ The traps, in order of how easily they get violated:
   six `apply*`, and **the island** — `setIslandMode` in `src/world/landscape.ts`, off by
   default, so the coast, the sea and the beach do not exist on any other world. Don't make
   any of it unconditional again. The creature LOOK is not part of this gate.
+  **On a katamari world the props are the vendored object library** — the scatter's variants
+  come from `src/world/katamari/` through a prop source, three junk kinds (`small`/`medium`/
+  `large`) exist only there, and `public/katamari/` is personal-use material that ships to a
+  katamari deployment and no other (docs/katamari-props.md).
 - **The geography is authored in `src/world/landscape.ts`** and is the single source every
   system samples — placement, colliders, water, minimap. Never re-derive a shoreline
   elsewhere, and the map does not ride the scatter seed. The ground has height: sample it

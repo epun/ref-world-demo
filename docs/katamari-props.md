@@ -12,10 +12,12 @@ chairs, toys, lamps), medium (vending machines, benches, doors, signs, bikes),
 large (cars, trees, kiosks, walls) and buildings that collapse in stages, on a
 tropical island (ghibli meets scavengers reign).
 
-This document is what landed, and the plan for hooking it up. **Nothing is
-hooked up yet**: the modules below are new files with documented seams, and the
-edits to `src/world/props.ts`, `scatter.ts`, `chunks.ts` and `sticky.ts` belong
-to the delegates who own those files. §a–§e are that hand-off.
+This document is what landed. The library arrived first (2026-09-15) and was
+**wired into the world on 2026-09-16**: on a katamari world the scatter draws
+these models and nothing else, they break into their own parts, and the pickup
+rules read them per model. §a–§e were the hand-off plan and are kept below as
+the record of the shape; §f is what actually landed against each of them, with
+the decisions that were open at the time now closed.
 
 ## what landed
 
@@ -238,15 +240,30 @@ Because the swap is a rebuild and not a second draw path, nothing needs a
 transition: props slide into place on the existing rebuild, and no entrance
 pops (TASTE §2.1).
 
-## what is not done
+## f. what landed, and the decisions that closed
 
-- **no wiring.** §a–§e are a plan; `props.ts`, `scatter.ts`, `chunks.ts`,
-  `sticky.ts`, `scene.ts` and `main.ts` are untouched.
-- **no new tokens.** The warm shift and the sun dab use `GHIBLI.sun`, which
-  already exists, so `src/taste/tokens.ts` needed no addition.
-- **the beach admission** for `building` / `large` on `BEACH_SEED` is a
-  decision for whoever owns the scatter (§b).
-- **`heightUnits` is eyeballed [D]** against `PROP_VARIANT_DEFS`, one row at a
-  time. The bands are pinned loosely by the catalog test; the numbers are a
-  starting point to tune against a frame, exactly as TASTE §2.1 says of its own
-  1823 ms.
+| plan | landed as |
+| --- | --- |
+| §a the extension seam | a **prop source**. `src/world/props-source.ts` is the pure half — `PropVariantMeta` (the catalog row per variant: id, label, `beach`, `rooted`, `tier`), `PropPlacementSource` (counts + meta) and the one installed global; `PropSource` in `src/world/props.ts` adds the geometry and an optional `PropDraw`. `createScatter({ source })` takes `stockPropSource()` (every other world) or `katamariPropSource(library)`. `variantCount` reads `activePropCounts()`, so the "roll of 3 against a two-entry array" the plan warned about is unrepresentable. |
+| §a.2 the new kinds | `small` / `medium` / `large` are `PropKind`s (`KATAMARI_TIER_KINDS`, re-exported from the catalog so the names have one home). Stock variant list **empty**, `PROP_VARIANT_COUNTS` 0, `DEFAULT_KIND_DENSITY` 0, `KIND_GROUP_LABELS` `small props` / `medium props` / `large props`. `STICKY` grew the three rows the plan drafted. Nothing else in the world can place one. |
+| §b materials | `materialFor(kind, variant)`. A source that owns its look answers first (`PropDraw.materialFor`), and the library's answer depends on the STYLE: the cel material (`createKatamariMaterialSet`) on `ghibli`, a stock `MeshStandardMaterial` wearing the same texture on `ink` — the world is defined by `game`, its look by `style`, and a library model with its texture thrown away is a grey lump. The frame's wind write reaches the cel materials through `PropDraw.windMaterials()`. |
+| §b placement | the junk tiers are in `SEED_PROB` (0.07 / 0.045 / 0.02 **[D]**), `FOREST_SEED` (sparse), `ISLAND_SEED` and `BEACH_SEED` (the sand set, 0.08 / 0.03 / 0.012 **[D]**), appended to `PROP_ROLL_ORDER` so every pre-existing kind keeps its salt. Per-kind density `KATAMARI_KIND_DENSITY` — small 1, medium 0.6, large 0.35 **[D]** — installed with the source. |
+| §b the beach admission (open) | **closed: a per-VARIANT region filter, not a second kind.** The beach admits the catalog's `beach: true` rows and only those; everywhere else admits only the rest. The kind rolls first, exactly as it did, and then the SAME hash indexes the admitted list — so with no library installed the expression collapses to the one that shipped and the world is placement-identical. A kind with nothing admitted in a region places nothing there: the catalog has no beach rock, so a katamari beach has no rocks on it, which is honester than putting a vending machine on the sand. |
+| §c destruction | `buildChunkGeometries(library)` — route 4. The library's `parts` ARE the chunk set, keyed by kind and ordered with the variants; the authored routes are not mixed in. `src/main.ts` re-memoises when the library arrives. |
+| §d the rules | `stickyFor(kind, variant)` — `STICKY[kind]` with the variant's `rooted`/`tier` over the top, and every read that has a variant in hand (the manager's contact pass, `hitRooted`, `accumulate`, the pickup pass, the debris lifetime) goes through it. The kind's row is the common case; a MODEL overrules it. |
+| §d rooted, twice (open) | **closed: `rooted` per model wins.** `src/world/rocks.ts` asks `stickyFor(kind, variant).rooted` instead of `kind === 'rock'`, so any unrooted library variant is a dynamic body from the start and any rooted one is a fixed cylinder — a bench behaves like a stone and the vending machine beside it like a trunk. |
+| §e loading order | **changed on decision:** the scatter does NOT stand on the inflated props while the library loads. A katamari world starts on `katamariPendingSource()` — the catalog's placement rules with no geometry — so the first second is ground, water and marks, and the props slide in on one `setPropSource` → `rebuild()`. Drawing the authored props and then swapping them reads as the world changing its mind; an empty second does not. |
+| the load gate | `startKatamariWorld(game)` — `./models` and `./attach` are both DYNAMIC imports behind the game, so no other world carries the loader, `GLTFLoader` or the cel shader in its first chunk, and `game: 'none'` never calls the loader at all (pinned in `test/world/katamari/wiring.test.ts`). `vite.config.ts` drops `public/katamari/` from a build whose world did not ask for the game, so the personal-use assets ship to the katamari deployment only. |
+| the footprint cap | **new, read off the first render [D]:** scaling to a height alone is right for a tree and wrong for a pizza. `KATAMARI_ASPECT_CAP = 2.2` in `models.ts` — past 2.2 times its own height, a model's WIDTH sets the uniform scale, so `heightUnits` reads as "how big is this" for the flat rows (food, shells, the cassette tape) and as a height for everything else. Before it, a 0.3-unit pizza was six units across and taller than the tree beside it. |
+
+## what is still open
+
+- **`heightUnits` is eyeballed [D]**, one row at a time, and the footprint cap only stops the
+  worst of it. The bands are pinned loosely by the catalog test; the numbers are a starting
+  point to tune against a frame, exactly as TASTE §2.1 says of its own 1823 ms.
+- **The junk tiers' densities are a first pass [D]** — a katamari town could be denser still
+  near the buildings, which would want a `town` region rather than a number.
+- **No cactus, no beach rock.** The library has neither, so on a katamari world the `cactus`
+  kind stands in as a daruma and the beach carries the sand set without shingle.
+- **The ink style shows the models' own textures**, which are coloured — deliberate (§b), and
+  the reason the two palette gates already report `n/a` on this world (TASTE §9).
