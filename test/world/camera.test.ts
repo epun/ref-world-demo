@@ -16,6 +16,15 @@
  * range are pinned here: nothing drawn can fall in front of `near` or behind
  * `far`, at any orbit the rig allows.
  *
+ * 2026-09-16, a phone on the `valiocon` world: *"when I zoom out and scale and
+ * move the map, you see the shader clips out of view, and you don't get to see
+ * the entire island."* The zoom floor above had made the frame as wide as the
+ * island, but the PAN bound was still the literal 200 units it had been when
+ * the frame was always 40 units tall — so one small drag at the floor pushed
+ * most of the island off the screen and left a frame of open sea. The bound is
+ * the frame's now (`panLimitFor`), and the third block below is what pins it:
+ * wide open the pan closes to nothing, so the island cannot leave the frame.
+ *
  * No WebGL: an OrthographicCamera is plain maths.
  */
 
@@ -28,6 +37,7 @@ import {
   CameraRig,
   FRUSTUM_HEIGHT,
   ISLAND_VIEW_MARGIN,
+  panLimitFor,
   zoomMinFor,
 } from '../../src/world/camera';
 import { GROUND_RADIUS } from '../../src/world/ground';
@@ -92,6 +102,125 @@ describe('zoomMinFor', () => {
     // rather than only its consequences.
     expect(zoomMinFor(0.5)).toBeCloseTo((FRUSTUM_HEIGHT * 0.5) / (2 * r), 3);
     expect(zoomMinFor(1.78)).toBeCloseTo(FRUSTUM_HEIGHT / (2 * r * ISO_SIN), 3);
+  });
+});
+
+describe('panLimitFor', () => {
+  /** The phone that filed the report: 390×844 CSS pixels. */
+  const PHONE = 390 / 844;
+
+  it('closes the pan to nothing at the zoom floor, on every aspect', () => {
+    // The floor is exactly "the island fills the narrower axis", so there is
+    // no room left to pan and the bound says so: the island cannot be moved
+    // out of the frame it was zoomed out to fit.
+    for (const aspect of [PHONE, 0.5, 0.75, 1, 1.78, 2.16]) {
+      expect(panLimitFor(aspect, zoomMinFor(aspect))).toBeCloseTo(0, 6);
+    }
+  });
+
+  it('keeps the whole island in frame at the bound, wherever the frame holds it', () => {
+    // The statement: pan as far as the bound allows and the island is still
+    // inside the frame — for every zoom whose frame can hold the island and
+    // half of its margin of sea.
+    for (const aspect of [PHONE, 0.5, 1, 1.78]) {
+      for (let zoom = zoomMinFor(aspect); zoom <= 2.6; zoom *= 1.05) {
+        const half = Math.min(
+          visibleWidth(aspect, zoom) / 2,
+          visibleHeight(zoom) / 2 / ISO_SIN,
+        );
+        if (half < COAST_MAX + ISLAND_VIEW_MARGIN / 2) continue;
+        expect(half - panLimitFor(aspect, zoom)).toBeGreaterThanOrEqual(COAST_MAX);
+      }
+    }
+  });
+
+  it('opens back up as the frame narrows, and never past the shipped ceiling', () => {
+    const aspect = PHONE;
+    const floor = zoomMinFor(aspect);
+    // Monotone in the zoom: every step in is a step more pan. That continuity
+    // is what lets a parked pan drift home instead of stepping (TASTE §2.1).
+    let previous = -1;
+    for (let zoom = floor; zoom <= 2.6; zoom *= 1.1) {
+      const limit = panLimitFor(aspect, zoom);
+      expect(limit).toBeGreaterThan(previous);
+      expect(limit).toBeLessThanOrEqual(200);
+      previous = limit;
+    }
+    // …and at the default framing it is all but the frame's own half-width, so
+    // nothing about panning a world you are standing in has changed.
+    expect(panLimitFor(aspect, 1)).toBeGreaterThan(180);
+  });
+
+  it('reads the frame, not the viewport: a low orbit sees further and pans less', () => {
+    // The ground's own extent up the screen is `/sin(elevation)`, so tilting
+    // toward the horizon widens the frame — and the bound tightens with it.
+    // Read on a landscape phone, where the foreshortened axis is the narrower
+    // one and so the one that decides (as it is for the zoom floor).
+    const flat = panLimitFor(2.16, 0.25, Math.atan(1 / Math.SQRT2));
+    const grazing = panLimitFor(2.16, 0.25, 0.3);
+    expect(flat).toBeGreaterThan(0);
+    expect(grazing).toBeGreaterThan(0);
+    expect(grazing).toBeLessThan(flat);
+  });
+});
+
+describe('CameraRig pan bound', () => {
+  /** Settle the rig: enough frames for a t.primary spring to arrive. */
+  const settle = (rig: CameraRig, from = 0): void => {
+    for (let i = 0; i < 400; i++) rig.update(16, from + i * 16);
+  };
+  /** The ambient drift rides on the look-target forever, so nothing here can
+   * assert an exact zero — this is its amplitude with room to spare. */
+  const DRIFT = 0.5;
+
+  it('will not drag the island out of a frame zoomed out to hold it', () => {
+    const rig = new CameraRig(390 / 844);
+    rig.zoomDirect(0.0001);
+    settle(rig);
+    // A full-screen drag, both axes, at the floor — where one pixel is about
+    // one world unit and the old bound was reached by a flick.
+    rig.panBy(2000, 2000, 844);
+    settle(rig, 6400);
+    const look = rig.lookAtPoint();
+    expect(Math.abs(look.x)).toBeLessThan(DRIFT);
+    expect(Math.abs(look.z)).toBeLessThan(DRIFT);
+  });
+
+  it('draws a pan made up close back home as the view opens, by drifting', () => {
+    const rig = new CameraRig(390 / 844);
+    // Panned to the bound at the default framing: legal, and off to one side.
+    rig.panBy(-4000, 0, 844);
+    settle(rig);
+    const panned = rig.lookAtPoint();
+    expect(Math.hypot(panned.x, panned.z)).toBeGreaterThan(150);
+
+    // Now pinch all the way out. The bound closes, so the frame has to come
+    // back — and it SLIDES: one frame in it has moved and has not arrived.
+    rig.zoomDirect(0.0001);
+    rig.update(16, 6400);
+    const first = rig.lookAtPoint();
+    expect(Math.hypot(first.x, first.z)).toBeLessThan(Math.hypot(panned.x, panned.z));
+    expect(Math.hypot(first.x, first.z)).toBeGreaterThan(50);
+
+    settle(rig, 6416);
+    const home = rig.lookAtPoint();
+    expect(Math.abs(home.x)).toBeLessThan(DRIFT);
+    expect(Math.abs(home.z)).toBeLessThan(DRIFT);
+  });
+
+  it('clamps a reframe onto a far subject to the same bound', () => {
+    const rig = new CameraRig(390 / 844);
+    rig.zoomDirect(0.0001);
+    settle(rig);
+    // The follow driver retargets onto the tracked creature every frame; at
+    // the floor the whole island is on screen, so the frame stays put.
+    for (let i = 0; i < 400; i++) {
+      rig.frameAt(new Vector3(170, 0, -170));
+      rig.update(16, 6400 + i * 16);
+    }
+    const look = rig.lookAtPoint();
+    expect(Math.abs(look.x)).toBeLessThan(DRIFT);
+    expect(Math.abs(look.z)).toBeLessThan(DRIFT);
   });
 });
 

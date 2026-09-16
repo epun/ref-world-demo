@@ -27,8 +27,9 @@ const AZIMUTH = Math.PI / 4;
 /** World units visible top-to-bottom. Width follows the viewport aspect. */
 export const FRUSTUM_HEIGHT = 40;
 
-/** Pan bounds: the look-target stays inside the populated region, so no
- * combination of pan, orbit, and zoom reaches the world's edge. */
+/** Pan CEILING: the look-target stays inside the populated region, so no
+ * combination of pan, orbit, and zoom reaches the world's edge. The live bound
+ * is this or less — it shrinks as the frame widens (see `panLimitFor`). */
 const PAN_LIMIT = 200;
 
 /**
@@ -124,6 +125,53 @@ export function zoomMinFor(aspect: number): number {
   return Math.min(ZOOM_MAX, byWidth, byHeight);
 }
 
+/**
+ * How far the look-target may leave the origin AT A GIVEN FRAMING, world
+ * units — the other half of `zoomMinFor`, and the answer to the second half
+ * of the same user report.
+ *
+ * `PAN_LIMIT` on its own was written when the frame was always about
+ * `FRUSTUM_HEIGHT` units tall. Since the zoom floor became the island's own
+ * width (`zoomMinFor`, 2026-09-15) the frame's size in world units varies by
+ * a factor of fifty, and a bound in world units cannot serve both ends of
+ * that: wide open on a portrait phone the frame is ~390 units across — the
+ * island and nothing more — so a 200-unit pan pushes most of the island off
+ * the screen and leaves a frame of bare sea. That is a user report
+ * (2026-09-16: *"when I zoom out and scale and move the map, you see the
+ * shader clips out of view, and you don't get to see the entire island"*),
+ * and at the floor one pixel of finger travel is one world unit, so the old
+ * bound was reached by the smallest drag a phone can deliver.
+ *
+ * So the bound is expressed AGAINST THE FRAME rather than against the world:
+ * the look-target may stand off the origin by whatever the island's reach has
+ * over the frame's own narrower ground half-extent, capped at `PAN_LIMIT`.
+ * Zoomed in that is the shipped ceiling all but a few units; at the floor,
+ * where the frame IS the island, it closes to nothing and the island cannot
+ * leave the frame. Continuous in the zoom — so a view parked at the old bound
+ * is drawn home as the frame widens instead of stepping (TASTE §2.1).
+ *
+ * The frame's two ground half-extents: `aspect·FRUSTUM_HEIGHT/2zoom` across
+ * the screen, and `FRUSTUM_HEIGHT/2zoom` up it — which the iso elevation
+ * foreshortens, so the GROUND reaches `/sin(elevation)` further that way.
+ * The narrower of the two is the one that decides, for the same reason it
+ * decides the zoom floor. [D]
+ *
+ * ON A WORLD WITH NO ISLAND this is the same statement about a different
+ * thing, and it is still the right one: `coastMaxRadius` does not ride
+ * `islandMode` (neither does the zoom floor), and the number it gives lands
+ * within four units of the displaced ground field's own half-extent
+ * (`FIELD_SIZE / 2`, src/world/ground.ts). So the bound holds the drawn world
+ * in frame on meridian and the public world exactly as it holds the island
+ * here.
+ */
+export function panLimitFor(aspect: number, zoom: number, elevation: number = ELEVATION): number {
+  const half = FRUSTUM_HEIGHT / 2 / Math.max(1e-3, zoom);
+  const acrossFrame = half * Math.max(0.01, aspect);
+  const upFrame = half / Math.max(0.25, Math.sin(elevation));
+  const r = coastMaxRadius() + ISLAND_VIEW_MARGIN;
+  return Math.min(PAN_LIMIT, Math.max(0, r - Math.min(acrossFrame, upFrame)));
+}
+
 export class CameraRig {
   readonly camera: OrthographicCamera;
 
@@ -182,17 +230,47 @@ export class CameraRig {
   }
 
   /**
+   * The live pan bound: `panLimitFor` at this frame's aspect, zoom and
+   * elevation. The frustum carries the aspect already — `top` is always half
+   * of `FRUSTUM_HEIGHT` — so there is nothing extra to remember.
+   */
+  private panLimit(
+    zoom: number = this.camera.zoom,
+    elevation: number = this.elevationValue,
+  ): number {
+    return panLimitFor(this.camera.right / this.camera.top, zoom, elevation);
+  }
+
+  /**
+   * Draw the pan back inside the bound this framing allows.
+   *
+   * The bound shrinks as the frame widens (`panLimitFor`), so a view panned
+   * to the edge at one zoom can find itself outside it after a pinch, a
+   * rotate or a device rotation — exactly the case where the island slid off
+   * the screen. It RETARGETS: the frame drifts home on the same ζ≥1 spring
+   * every other reframe uses, never a cut (TASTE §2.1).
+   */
+  private holdPanInFrame(zoom: number, elevation: number): void {
+    const limit = this.panLimit(zoom, elevation);
+    if (Math.abs(this.targetX.value) > limit) {
+      this.targetX.retarget(Math.sign(this.targetX.value) * limit);
+    }
+    if (Math.abs(this.targetZ.value) > limit) {
+      this.targetZ.retarget(Math.sign(this.targetZ.value) * limit);
+    }
+  }
+
+  /**
    * Slide the framing toward a world point. Springs carry position and
    * velocity over, so mid-flight retargets stay continuous.
    */
   frameAt(point: Vector3): void {
-    this.targetX.retarget(Math.min(PAN_LIMIT, Math.max(-PAN_LIMIT, point.x)));
-    this.targetZ.retarget(Math.min(PAN_LIMIT, Math.max(-PAN_LIMIT, point.z)));
+    const limit = this.panLimit();
+    this.targetX.retarget(Math.min(limit, Math.max(-limit, point.x)));
+    this.targetZ.retarget(Math.min(limit, Math.max(-limit, point.z)));
   }
 
   update(dt: number, nowMs: number): void {
-    const x = this.targetX.update(dt);
-    const z = this.targetZ.update(dt);
     // Tour azimuth drift: advance the target, let the damped follow carry
     // the value — starts and stops glide, never step.
     this.azimuthTarget += this.orbitDriftRate * (dt / 1000);
@@ -205,6 +283,12 @@ export class CameraRig {
     const az = this.azimuthValue;
     const el = this.elevationValue;
     const zoom = this.zoomSpring.update(dt);
+    // The frame's own size decides how far the pan may go, so this comes
+    // after the zoom and the orbit have moved and before the pan springs are
+    // advanced — one frame's slide, not next frame's.
+    this.holdPanInFrame(zoom, el);
+    const x = this.targetX.update(dt);
+    const z = this.targetZ.update(dt);
     this.offset
       .set(Math.cos(el) * Math.sin(az), Math.sin(el), Math.cos(el) * Math.cos(az))
       .multiplyScalar(CAMERA_DISTANCE);
@@ -285,8 +369,11 @@ export class CameraRig {
     const dy = (dyPx * unitsPerPx) / Math.max(0.25, Math.sin(this.elevationValue));
     const wx = rightX * dx + fwdX * dy;
     const wz = rightZ * dx + fwdZ * dy;
-    this.targetX.reset(Math.min(PAN_LIMIT, Math.max(-PAN_LIMIT, this.targetX.value + wx)));
-    this.targetZ.reset(Math.min(PAN_LIMIT, Math.max(-PAN_LIMIT, this.targetZ.value + wz)));
+    // The bound is the FRAME's, not the world's (`panLimitFor`): wide open it
+    // closes to nothing, so no drag can push the island off the screen.
+    const limit = this.panLimit();
+    this.targetX.reset(Math.min(limit, Math.max(-limit, this.targetX.value + wx)));
+    this.targetZ.reset(Math.min(limit, Math.max(-limit, this.targetZ.value + wz)));
   }
 
   /**
