@@ -140,6 +140,12 @@ function stubScatter(): {
       version++;
       build();
     },
+    // The incremental filter: the drawn set changes, `rebuildVersion` does
+    // not — src/world/scatter.ts `hideTaken`.
+    hideTaken: (keys: ReadonlySet<string>) => {
+      taken = keys;
+      build();
+    },
     windField: () => field,
   } as unknown as Scatter;
 
@@ -640,6 +646,7 @@ describe('unrooted library variants', () => {
       geometryFor: () => geometry,
       rebuildVersion: () => 1,
       setTaken: () => {},
+      hideTaken: () => {},
       windField: () => field,
     } as unknown as Scatter;
     bodies = createPropBodies({ physics, scatter, surface: flat, wind: field });

@@ -264,18 +264,26 @@ export function deepestSoftOverlap(
  * Returns true when any pair needed correcting. Sweeps continue past
  * `passes` (up to SEPARATION_PASSES_MAX) while overlap remains, mirroring
  * resolveHard — deep chains converge geometrically.
+ *
+ * `moved`, when given, is written 1 at the index of every body this call
+ * displaced (never cleared — the caller owns that). It is what lets
+ * `stepCreatures` re-seat only the bodies a pair push actually moved: a body
+ * nothing touched is still exactly where its own resolve left it, which is
+ * penetration-free by construction, so the backstop had nothing to do for it.
+ * Purely an out-parameter: the arithmetic above does not read it.
  */
 export function separateCreatures(
   bodies: readonly CreatureBody[],
   passes: number = SEPARATION_PASSES,
+  moved?: Uint8Array,
 ): boolean {
   let touched = false;
   const maxPasses = Math.max(passes, SEPARATION_PASSES_MAX);
   for (let pass = 0; pass < maxPasses; pass++) {
     let corrected = false;
     for (let i = 0; i < bodies.length; i++) {
+      const a = bodies[i]!;
       for (let j = i + 1; j < bodies.length; j++) {
-        const a = bodies[i]!;
         const b = bodies[j]!;
         const dx = a.x - b.x;
         const dz = a.z - b.z;
@@ -315,6 +323,10 @@ export function separateCreatures(
         a.z += nz * half + tz;
         b.x -= nx * half + tx;
         b.z -= nz * half + tz;
+        if (moved !== undefined) {
+          moved[i] = 1;
+          moved[j] = 1;
+        }
         corrected = true;
         touched = true;
       }
@@ -364,6 +376,32 @@ export interface StepOptions {
 }
 
 const backstopScratch: KinematicBody = { x: 0, z: 0, vx: 0, vz: 0 };
+/**
+ * Which bodies a separation pass displaced, so the backstop re-seats those and
+ * nothing else — see `separateCreatures`'s `moved`. Grown by doubling and
+ * reused: `stepCreatures` runs every frame and must not allocate per frame.
+ */
+let movedScratch = new Uint8Array(0);
+/**
+ * Which bodies MIGHT still be sitting inside a hard prop, so the backstop has
+ * to sweep them whether or not a pair push moved them.
+ *
+ * A sweep that CORRECTED a body is not proof the body ended up clear: the
+ * nearby set was queried at the position the body had going IN, and a push-out
+ * can carry it past the edge of that query and into something the sweep never
+ * saw. A sweep that corrected NOTHING is proof, because then the point the set
+ * was queried at is the point the body still holds, and that set held no
+ * penetration. So: dirty when a sweep corrected, clean when one did not.
+ */
+let dirtyScratch = new Uint8Array(0);
+
+function growFlags(n: number): void {
+  if (movedScratch.length >= n) return;
+  let size = Math.max(16, movedScratch.length);
+  while (size < n) size *= 2;
+  movedScratch = new Uint8Array(size);
+  dirtyScratch = new Uint8Array(size);
+}
 
 /**
  * Advance a set of creature bodies by `dt` (ms): substepped position
@@ -428,13 +466,16 @@ export function stepCreatures(
   const steps = Math.min(maxSub, Math.max(1, Math.ceil(travel / maxTravel)));
   const subDt = dt / steps;
 
+  growFlags(bodies.length);
   for (let s = 0; s < steps; s++) {
     for (let i = 0; i < bodies.length; i++) {
       const b = bodies[i]!;
       b.x += (b.vx * subDt) / 1000;
       b.z += (b.vz * subDt) / 1000;
       reportIndex = i;
-      resolveHard(b, b.r, near(b.x, b.z, b.r), RESOLVE_PASSES, pad, hardOpts);
+      dirtyScratch[i] = resolveHard(b, b.r, near(b.x, b.z, b.r), RESOLVE_PASSES, pad, hardOpts)
+        ? 1
+        : 0;
     }
     // Pair separation ↔ hard backstop, interleaved to a fixed depth: each
     // round separates every overlapping pair, then re-seats anyone a pair
@@ -442,8 +483,17 @@ export function stepCreatures(
     // not eat the walking velocity). Converges in 1 round in the open;
     // the extra rounds handle prop-adjacent squeezes.
     for (let k = 0; k < passes; k++) {
-      if (!separateCreatures(bodies, 1)) break;
+      movedScratch.fill(0, 0, bodies.length);
+      if (!separateCreatures(bodies, 1, movedScratch)) break;
       for (let i = 0; i < bodies.length; i++) {
+        /*
+         * NOT MOVED BY THIS PASS AND KNOWN CLEAR — nothing to re-seat, and
+         * the sweep is what the round costs (one spatial query and a sweep
+         * per body per round, three rounds a substep, at 200 creatures).
+         * See `dirtyScratch` for why "known clear" is exactly "the last
+         * sweep over this body corrected nothing".
+         */
+        if (movedScratch[i] === 0 && dirtyScratch[i] === 0) continue;
         const b = bodies[i]!;
         reportIndex = i;
         backstopScratch.x = b.x;
@@ -462,6 +512,9 @@ export function stepCreatures(
         ) {
           b.x = backstopScratch.x;
           b.z = backstopScratch.z;
+          dirtyScratch[i] = 1;
+        } else {
+          dirtyScratch[i] = 0;
         }
       }
     }

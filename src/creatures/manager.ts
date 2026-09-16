@@ -21,6 +21,8 @@ import {
   type AgentHold,
   type AgentPeer,
   type AgentProp,
+  type AgentPropField,
+  type AgentProps,
 } from '../behavior/agent';
 import { personalityFromChoice, type PersonalityChoice } from '../behavior/personality';
 import { projectOutOfHard } from '../behavior/steering';
@@ -415,7 +417,7 @@ function behaviorSeed(id: string): number {
  * `positions()` method or an `items`/`placements` array of {x, z, kind?} —
  * and return null when absent, which the agents treat as "no props known".
  */
-function readProps(world: WorldHandles): AgentProp[] | null {
+function readProps(world: WorldHandles, into?: AgentProp[]): AgentProp[] | null {
   const scatter = (world as WorldHandles & { scatter?: unknown }).scatter;
   if (typeof scatter !== 'object' || scatter === null) return null;
   const rec = scatter as unknown as Record<string, unknown>;
@@ -430,7 +432,8 @@ function readProps(world: WorldHandles): AgentProp[] | null {
     source = rec['items'] ?? rec['placements'];
   }
   if (!Array.isArray(source)) return null;
-  const out: AgentProp[] = [];
+  const out: AgentProp[] = into ?? [];
+  out.length = 0;
   for (const item of source as unknown[]) {
     if (typeof item !== 'object' || item === null) continue;
     const p = item as Record<string, unknown>;
@@ -468,6 +471,24 @@ function readScatterPhysics(world: WorldHandles): ScatterPhysics | null {
 /** How far past the body circle to gather colliders each frame: covers one
  * frame of travel at peak speed plus the deepest push-out a prop can cause. */
 const COLLIDER_QUERY_PAD = 1.5;
+
+/**
+ * [D] Cell edge of the PROP index, world units.
+ *
+ * The scatter lays props on a 6-unit iso grid with jitter, so a cell of 8
+ * holds a handful and the first ring of a nearest search almost always
+ * contains the answer. Bigger wastes the ring; smaller walks more cells to
+ * find anything at all.
+ */
+const PROP_GRID_CELL = 8;
+
+/**
+ * [D] How far a nearest-prop search will expand before it gives up on the
+ * index and scans. 1024 is past the diagonal of any map this project draws
+ * (the ground field's own extent is ±200), so the scan is a guard against a
+ * stray placement rather than a path anything takes.
+ */
+const PROP_SEARCH_MAX = 1024;
 
 /** Fractional inflation of hard prop colliders during creature resolve: the
  * scatter's per-instance shape variation widens a prop's visual silhouette
@@ -1227,6 +1248,82 @@ export function createCreatureManager(
   const peerSlots: Slot[] = [];
   const peerPoints: { x: number; z: number }[] = [];
   const peersScratch: AgentPeer[] = [];
+  /*
+   * THE PROP FIELD — read once per CHANGE, not once per frame, and asked for
+   * its nearest through a spatial index rather than a full scan.
+   *
+   * `readProps` walked `scatter.positions()` and rebuilt an array of fresh
+   * objects every frame (1,083 of them on the katamari island; the scatter's
+   * own `positions()` is a filter and a map over every placement). Then every
+   * agent scanned all of it, twice, for the one fact it wanted: which prop is
+   * nearest. Measured at 200 creatures on the island: 0.6 ms for the read and
+   * 6.1 ms for the scans, a frame, for a set that changes only when a prop is
+   * taken or the density moves.
+   *
+   * So: the array is rebuilt in place when `collidersVersion()` moves — the
+   * same signal the collider grid already keys on, and the one `hideTaken`
+   * bumps — and the nearest query walks the hash. Both answers are the ones
+   * the full scan gave, tie for tie (see `AgentPropField`).
+   */
+  const propsScratch: AgentProp[] = [];
+  let propsField: AgentProp[] | null = null;
+  let propsVersion = -1;
+  const propGrid = new SpatialHash(PROP_GRID_CELL);
+  const propField: AgentPropField = {
+    get items(): readonly AgentProp[] {
+      return propsField ?? propsScratch;
+    },
+    nearest(x: number, z: number): AgentProp | null {
+      const items = propsField;
+      if (!items || items.length === 0) return null;
+      // Expanding rings: the first radius that contains anything contains the
+      // winner, because everything outside it is farther away than the winner
+      // is. Candidates arrive in insertion order, so `<=` keeps the same one
+      // of a tie the linear scan kept.
+      for (let radius = propGrid.cellSize; radius <= PROP_SEARCH_MAX; radius *= 2) {
+        const found = propGrid.near(x, z, radius);
+        if (found.length === 0) continue;
+        let best: AgentProp | null = null;
+        let bestD = Infinity;
+        for (let k = 0; k < found.length; k++) {
+          const it = items[found[k]!]!;
+          const d = Math.hypot(it.x - x, it.z - z);
+          if (d <= bestD) {
+            bestD = d;
+            best = it;
+          }
+        }
+        return best;
+      }
+      // Farther than the search ever reaches (a prop off the edge of the
+      // world): answer exactly as the scan would have.
+      let best: AgentProp | null = null;
+      let bestD = Infinity;
+      for (const it of items) {
+        const d = Math.hypot(it.x - x, it.z - z);
+        if (d <= bestD) {
+          bestD = d;
+          best = it;
+        }
+      }
+      return best;
+    },
+  };
+
+  /**
+   * The frame's props. Re-read only when the scatter says its set moved; with
+   * no version to key on (a stub scatter in a test) it is re-read every frame,
+   * exactly as it always was.
+   */
+  function currentProps(version: number): AgentProp[] | null {
+    if (version >= 0 && version === propsVersion) return propsField;
+    const next = readProps(world, propsScratch);
+    propsField = next;
+    propsVersion = version;
+    propGrid.rebuild(next ?? propsScratch);
+    return next;
+  }
+
   // Frustum test for the off-screen stride. Scratch only.
   const frustum = new Frustum();
   const frustumMatrix = new Matrix4();
@@ -1597,11 +1694,21 @@ export function createCreatureManager(
       bodies.take(key);
       return;
     }
-    const scatter = (world as { scatter?: { setTaken?(keys: ReadonlySet<string>): void } })
-      .scatter;
-    if (!scatter?.setTaken) return;
+    const scatter = (
+      world as {
+        scatter?: {
+          hideTaken?(keys: ReadonlySet<string>): void;
+          setTaken?(keys: ReadonlySet<string>): void;
+        };
+      }
+    ).scatter;
+    const hide = scatter?.hideTaken ?? scatter?.setTaken;
+    if (!hide || !scatter) return;
     viewerTaken.add(key);
-    scatter.setTaken(new Set(viewerTaken));
+    // The incremental filter where the scatter offers it: a viewer applying a
+    // room's worth of `stick` events would otherwise re-lay every
+    // InstancedMesh in the world once per event (docs/PLAN.md §7.6).
+    hide.call(scatter, new Set(viewerTaken));
   }
 
   /**
@@ -2337,22 +2444,38 @@ export function createCreatureManager(
    * not need eighty colliders — the outermost are the ones that hit things,
    * and `outermost` order is exactly what a distance sort gives.
    */
+  /** Reused by `syncStuckColliders` — one carrier is seated at a time. */
+  const stuckWanted: StuckItem[] = [];
+  const stuckKeep = new Set<string>();
+
   function syncStuckColliders(slot: Slot): void {
     const handle = slot.kinematic;
     const clump = slot.clump;
+    if (!handle || !clump) return;
+    /*
+     * CARRYING NOTHING, AND HAVING CARRIED NOTHING — the common case, and it
+     * used to cost four allocations a creature a frame to find out: a spread
+     * of the item map, a sort, a slice and a Set. At 200 creatures that is
+     * eight hundred garbage objects a frame to seat no colliders at all.
+     */
+    if (clump.items.size === 0 && handle.stuck.size === 0) return;
     const physics = world.physics?.() ?? null;
-    if (!handle || !clump || !physics) return;
+    if (!physics) return;
     const rapier = physics.rapier;
-    const wanted = [...clump.items.values()]
-      .sort((a, b) => {
-        const da = a.offset.x ** 2 + a.offset.y ** 2 + a.offset.z ** 2;
-        const db = b.offset.x ** 2 + b.offset.y ** 2 + b.offset.z ** 2;
-        // Deterministic: distance, then key, so two frames agree and the set
-        // does not flicker under a tie.
-        return db - da || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
-      })
-      .slice(0, STUCK_COLLIDERS_MAX);
-    const keep = new Set(wanted.map((item) => item.key));
+    const wanted = stuckWanted;
+    wanted.length = 0;
+    for (const item of clump.items.values()) wanted.push(item);
+    wanted.sort((a, b) => {
+      const da = a.offset.x ** 2 + a.offset.y ** 2 + a.offset.z ** 2;
+      const db = b.offset.x ** 2 + b.offset.y ** 2 + b.offset.z ** 2;
+      // Deterministic: distance, then key, so two frames agree and the set
+      // does not flicker under a tie.
+      return db - da || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
+    });
+    if (wanted.length > STUCK_COLLIDERS_MAX) wanted.length = STUCK_COLLIDERS_MAX;
+    const keep = stuckKeep;
+    keep.clear();
+    for (const item of wanted) keep.add(item.key);
     const bodies = bodiesOf();
     for (const [key, collider] of handle.stuck) {
       if (keep.has(key)) continue;
@@ -3378,8 +3501,6 @@ export function createCreatureManager(
 
     update(dt, nowMs): void {
       lastNowMs = nowMs;
-      // Environmental affordances, sampled once per frame for every agent.
-      const props = readProps(world);
 
       // World-units-per-screen-pixel for the bubbles' legibility floor (QA
       // audit D4): ortho frustum height / viewport height / zoom. Feature-
@@ -3401,6 +3522,14 @@ export function createCreatureManager(
       // Prop colliders: re-index only when the scatter's version moves.
       const scatterPhysics = readScatterPhysics(world);
       ensureColliderGrid();
+      // Environmental affordances, re-read on the same signal (see
+      // `currentProps`) and handed to the agents as an indexed field. `null`
+      // when there are none, which is the agents' own "no props known" case
+      // and exactly what they were handed before.
+      const propsArray = currentProps(
+        scatterPhysics === null ? -1 : scatterPhysics.collidersVersion(),
+      );
+      const props: AgentProps = propsArray === null ? null : propField;
 
       // Eggs are static hard colliders — creatures walk around them. Pool
       // objects are reused frame to frame (no churn).

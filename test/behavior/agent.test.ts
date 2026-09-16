@@ -13,6 +13,7 @@ import {
   BehaviorAgent,
   MAX_SPEED,
   type AgentHold,
+  type AgentPropField,
   type AgentTick,
 } from '../../src/behavior/agent';
 import type { Personality } from '../../src/behavior/personality';
@@ -23,6 +24,7 @@ import {
   type Collider,
   type ColliderGrid,
 } from '../../src/physics/colliders';
+import { SpatialHash } from '../../src/physics/spatial';
 import { MOTION } from '../../src/taste/tokens';
 
 const NEUTRAL: Personality = {
@@ -347,5 +349,117 @@ describe('BehaviorAgent — held while somebody is steering', () => {
     }
     expect(moved).toBeGreaterThan(0);
     agent.dispose();
+  });
+});
+
+/**
+ * The INDEXED prop field (`AgentPropField`) has to answer exactly what the
+ * linear scan answered — the state machine gates `observe` on it and
+ * `observe` steers by it, so a different answer is a different world.
+ *
+ * Two halves: the field's own contract (a hash-backed nearest matching a
+ * scan, ties included), and the agent reaching the same decisions through
+ * either form.
+ */
+describe('the indexed prop field', () => {
+  const scanNearest = (
+    x: number,
+    z: number,
+    items: readonly { x: number; z: number; kind: string }[],
+  ): { x: number; z: number; kind: string } | null => {
+    let best: { x: number; z: number; kind: string } | null = null;
+    let bestD = Infinity;
+    for (const it of items) {
+      const d = Math.hypot(it.x - x, it.z - z);
+      if (d <= bestD) {
+        bestD = d;
+        best = it;
+      }
+    }
+    return best;
+  };
+
+  /** The manager's field, rebuilt here off the same SpatialHash it uses. */
+  const fieldOf = (items: readonly { x: number; z: number; kind: string }[]): AgentPropField => {
+    const grid = new SpatialHash(8);
+    grid.rebuild(items);
+    return {
+      items,
+      nearest(x: number, z: number) {
+        if (items.length === 0) return null;
+        for (let radius = grid.cellSize; radius <= 1024; radius *= 2) {
+          const found = grid.near(x, z, radius);
+          if (found.length === 0) continue;
+          let best: { x: number; z: number; kind: string } | null = null;
+          let bestD = Infinity;
+          for (let k = 0; k < found.length; k++) {
+            const it = items[found[k]!]!;
+            const d = Math.hypot(it.x - x, it.z - z);
+            if (d <= bestD) {
+              bestD = d;
+              best = it;
+            }
+          }
+          return best;
+        }
+        return scanNearest(x, z, items);
+      },
+    };
+  };
+
+  it('answers the same prop as a full scan, ties included', () => {
+    const rand = makeRand(0x51ee7);
+    const items: { x: number; z: number; kind: string }[] = [];
+    for (let i = 0; i < 400; i++) {
+      items.push({
+        x: Math.round((rand() * 2 - 1) * 160 * 4) / 4,
+        z: Math.round((rand() * 2 - 1) * 160 * 4) / 4,
+        kind: 'tree',
+      });
+    }
+    // Deliberate exact ties, and a duplicated point: the scan keeps the LAST
+    // of an equal pair, so the index must keep the same one.
+    items.push({ x: 12, z: 0, kind: 'rock' });
+    items.push({ x: -12, z: 0, kind: 'rock' });
+    items.push({ x: 40, z: 40, kind: 'hut' });
+    items.push({ x: 40, z: 40, kind: 'hut' });
+    const field = fieldOf(items);
+    for (let i = 0; i < 2000; i++) {
+      const x = Math.round((rand() * 2 - 1) * 200 * 4) / 4;
+      const z = Math.round((rand() * 2 - 1) * 200 * 4) / 4;
+      expect(field.nearest(x, z)).toBe(scanNearest(x, z, items));
+    }
+    expect(field.nearest(0, 0)).toBe(scanNearest(0, 0, items));
+    expect(field.nearest(40, 40)).toBe(scanNearest(40, 40, items));
+  });
+
+  it('answers null for an empty field, like a scan over nothing', () => {
+    expect(fieldOf([]).nearest(0, 0)).toBe(null);
+  });
+
+  it('drives the agent to the identical tick as the plain array', () => {
+    const rand = makeRand(0xb0a7);
+    const items: { x: number; z: number; kind: string }[] = [];
+    for (let i = 0; i < 120; i++) {
+      items.push({ x: (rand() * 2 - 1) * 60, z: (rand() * 2 - 1) * 60, kind: 'tree' });
+    }
+    const field = fieldOf(items);
+    const a = new BehaviorAgent(99, NEUTRAL);
+    const b = new BehaviorAgent(99, NEUTRAL);
+    let pa = { x: 0, z: 0 };
+    let pb = { x: 0, z: 0 };
+    for (let i = 0; i < 900; i++) {
+      const ta = a.update(DT, i * DT, pa, [], items);
+      const tb = b.update(DT, i * DT, pb, [], field);
+      expect(tb.vx).toBe(ta.vx);
+      expect(tb.vz).toBe(ta.vz);
+      expect(tb.heading).toBe(ta.heading);
+      expect(tb.pose).toBe(ta.pose);
+      pa = { x: pa.x + (ta.vx * DT) / 1000, z: pa.z + (ta.vz * DT) / 1000 };
+      pb = { x: pb.x + (tb.vx * DT) / 1000, z: pb.z + (tb.vz * DT) / 1000 };
+    }
+    expect(a.currentState).toBe(b.currentState);
+    a.dispose();
+    b.dispose();
   });
 });
