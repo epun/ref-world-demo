@@ -18,7 +18,11 @@
 import { Vector3, type Texture } from 'three';
 import { installHoverNames } from './creatures/hover';
 import { createCreatureManager } from './creatures/manager';
-import { currentDials, type CreatureBlueprint } from './character/blueprint';
+import {
+  currentDials,
+  type BlueprintDials,
+  type CreatureBlueprint,
+} from './character/blueprint';
 import { createBlueprintPool, MAX_WORKERS } from './character/blueprintPool';
 import { identitySeedOf } from './character/interpret';
 import { createLooseMeshes } from './world/loose';
@@ -727,6 +731,27 @@ function main(): void {
    * fallback and nothing about the page changes.
    */
   const blueprints = createBlueprintPool();
+  /*
+   * Tiny always-on probe, the same family as `__refworldCreatures` and
+   * `__refworldSession`: how many workers this page actually got, and a way
+   * for the load harness to ask for a blueprint with the dials this thread is
+   * running. The pool is an optimisation whose whole claim is a number, so
+   * the number has to be readable from outside the page.
+   */
+  (
+    window as Window & {
+      __refworldBlueprints?: {
+        workers(): number;
+        build(strokes: StrokeList, dials: BlueprintDials): Promise<CreatureBlueprint | null>;
+        dials(identity?: string): BlueprintDials;
+      };
+    }
+  ).__refworldBlueprints = {
+    workers: () => blueprints.workers(),
+    build: (strokes, dials) => blueprints.build(strokes, dials),
+    dials: (identity) =>
+      currentDials(1, identity === undefined ? undefined : identitySeedOf(identity)),
+  };
   const creatures = createCreatureManager(world, {
     autoHatch: isPublic && hatchMode === 'timer',
     // The game, so the manager's own katamari half — the sticky simulation,
