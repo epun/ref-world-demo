@@ -68,6 +68,14 @@ const SCORCH_INK = 0.82;
  * on a map whose terraces top out near 8 — so the tallest tier catches it. */
 const SNOW_HEIGHT = 7;
 
+/** [D] How far the meadow is pulled toward the blade field's own colour where
+ * the map grows a full one. HALF, landed on screen: at 0.8 the ground went all
+ * the way to the blade tips' pale yellow-green and the window read as a cooler
+ * patch on a paler lawn — the same lozenge the other way round. A blade field
+ * is bare ground between blades and darker at the roots, so half way is where
+ * the two stop being distinguishable. */
+const BLADE_GROUND_MIX = 0.5;
+
 /** [D] Where the wet-sand band sits inside the region texture's water-proximity
  * ramp. `region.ts` encodes land as `0.9 · (1 − d / WATER_NEAR)`, so 0.62
  * is roughly the last two world units before the waterline. */
@@ -98,6 +106,7 @@ uniform sampler2D uRegion;
 
 uniform vec3 uMeadow;
 uniform vec3 uLush;
+uniform vec3 uBladeField;
 uniform vec3 uDirt;
 uniform vec3 uDirtEdge;
 uniform vec3 uWetSand;
@@ -150,6 +159,15 @@ void main() {
 
   // Meadow -> lush green under dense grass.
   vec3 albedo = mix(uMeadow, uLush, pow(grass, 0.7));
+  // …and then toward the BLADE FIELD's own colour, because where the map
+  // grows a full meadow that is what is standing on this ground: the blade
+  // field only covers a window around the camera (src/world/ghibli/grass.ts),
+  // and the two have to be the same green or the window reads as a pale
+  // lozenge on the lawn — which is exactly what the first render showed
+  // (2026-09-15). uBladeField is the colour a blade collapses to when it is
+  // too far away to draw, so this is the same field at two distances rather
+  // than two different greens.
+  albedo = mix(albedo, uBladeField, pow(grass, 0.7) * ${ggFloat(BLADE_GROUND_MIX)});
 
   // Large-scale colour break-up so flat ground isn't a solid slab.
   float cn = ggGroundNoise(uv * 6.0);
@@ -300,6 +318,11 @@ export function createGroundMaterial(opts: GhibliGroundOptions = {}): GhibliGrou
     uRegion: { value: (opts.region ?? empty) as Texture },
     uMeadow: { value: new Color(GHIBLI.meadow) },
     uLush: { value: new Color(GHIBLI.lush) },
+    // The blade field's far-zoom collapse colour, verbatim from its fragment
+    // shader (src/world/ghibli/grass.ts `mix(uColorBase, uColorTip, 0.55)`).
+    uBladeField: {
+      value: new Color(GHIBLI.grassBase).lerp(new Color(GHIBLI.grassTip), 0.55),
+    },
     uDirt: { value: new Color(GHIBLI.dirt) },
     uDirtEdge: { value: new Color(GHIBLI.dirtEdge) },
     uWetSand: { value: new Color(GHIBLI.wetSand) },
