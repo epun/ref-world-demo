@@ -88,9 +88,11 @@ The traps, in order of how easily they get violated:
   `createLooseMeshes`/`createDebris` and the debris frame block, the replay driver's
   `stick`/`drop`/`loose`/`settle`/`crack`/`shatter` (not installed, so those scene events are
   ignored), the creature manager's `simulating()`, clumps, kinematic bodies, growth and all
-  six `apply*`, and **the island** — `setIslandMode` in `src/world/landscape.ts`, off by
-  default, so the coast, the sea and the beach do not exist on any other world. Don't make
-  any of it unconditional again. The creature LOOK is not part of this gate.
+  six `apply*`, the ball-diameter readout on the phone's world view (`src/ui/size.ts`,
+  `CreatureManager.ballDiameter`), and **the island** — `setIslandMode` in
+  `src/world/landscape.ts`, off by default, so the coast, the sea and the beach do not exist
+  on any other world. Don't make any of it unconditional again. The creature LOOK is not
+  part of this gate.
   **On a katamari world the props are the vendored object library** — the scatter's variants
   come from `src/world/katamari/` through a prop source, three junk kinds (`small`/`medium`/
   `large`) exist only there, and `public/katamari/` is personal-use material that ships to a
