@@ -2481,6 +2481,66 @@ describe('the creature rolls — katamari locomotion', () => {
   });
 
   /*
+   * HOW BIG THE BALL IS — the number its phone shows (user ask, 2026-09-16:
+   * *"for the mobile ui on the world view i want to show ball diameter in
+   * the top left hand side"*).
+   *
+   * `ballDiameter` is a READOUT of the radius the rest of the manager
+   * already runs on (`bodyR = baseR × clump.growth()`, written by
+   * `growPass`), not a second measurement of the same ball — so these pin
+   * the wiring, the passenger rule and the gate rather than a curve.
+   * src/ui/size.ts is what turns it into a length, and test/ui/size.test.ts
+   * pins that half.
+   */
+  describe('how big the ball is — the readout its phone shows', () => {
+    it('is twice the measured footprint before anything is picked up', () => {
+      const { manager } = rolling('katamari');
+      const baseR = measureBodyRadius(manager.latestCharacter()!);
+      manager.update(33, 1000);
+      // Growth is 1 on an empty pile, so the ball is the creature.
+      expect(manager.ballDiameter('roller')).toBeCloseTo(2 * baseR, 10);
+      manager.clearAll();
+    });
+
+    it('grows with the pile, and stays twice the radius everything else uses', () => {
+      const { manager } = rolling('katamari');
+      const baseR = measureBodyRadius(manager.latestCharacter()!);
+      const before = manager.ballDiameter('roller');
+      feed(manager, 'roller', 3, 8000);
+      const after = manager.ballDiameter('roller');
+      expect(after).toBeGreaterThan(before);
+      expect(after).toBeGreaterThan(2 * baseR);
+      // The SAME radius the resolve pass, the pickup reach and the scatter's
+      // exclusion radius read — `positions()` reports `bodyR` directly.
+      const r = manager.positions().find((at) => at.kind === 'character')!.r;
+      expect(after).toBeCloseTo(2 * r, 10);
+      manager.clearAll();
+    });
+
+    it('answers with the CARRIER\u2019s ball for a passenger riding one', () => {
+      const { manager } = rolling('katamari');
+      feed(manager, 'roller', 1, 500);
+      // `feed` seats `snack-roller-0` on the roller's pile through the event
+      // path — so that creature's own phone is looking at a ball it is
+      // inside, not at the snowman it drew.
+      const carrier = manager.ballDiameter('roller');
+      expect(carrier).toBeGreaterThan(0);
+      expect(manager.ballDiameter('snack-roller-0')).toBe(carrier);
+      manager.clearAll();
+    });
+
+    it('is zero for a shell, and for an id nobody holds', () => {
+      const { manager } = rolling('katamari');
+      // No footprint until hatch, so no ball to put a size on — which is
+      // what keeps the corner empty until the creature is out.
+      manager.spawn('shell', snowman, { hatchMs: 60_000 });
+      expect(manager.ballDiameter('shell')).toBe(0);
+      expect(manager.ballDiameter('nobody')).toBe(0);
+      manager.clearAll();
+    });
+  });
+
+  /*
    * THE OTHER WORLDS WALK, at the speeds they always did. Same stubs, same
    * frames, same stick — only the game differs, so this measures the gate.
    */
@@ -2494,6 +2554,24 @@ describe('the creature rolls — katamari locomotion', () => {
       // character group, and the mesh is one level down inside it.
       const mesh = firstMesh(root)!;
       expect(mesh.parent!.parent).toBe(root);
+      manager.clearAll();
+    });
+
+    it('has no ball at all, so the size readout is never reached', () => {
+      /*
+       * THE GATE (2026-09-15 user ruling, src/world/game.ts). `bodyR` is a
+       * real measured footprint in every world — it is what the resolve pass
+       * runs on — so the readout has to answer 0 on the GAME rather than on
+       * the radius, or the corner would show a creature's own width as a
+       * ball diameter on meridian and on the public world.
+       */
+      const { manager } = rolling('none');
+      manager.update(33, 1000);
+      expect(manager.positions().find((at) => at.kind === 'character')!.r).toBeGreaterThan(0);
+      expect(manager.ballDiameter('roller')).toBe(0);
+      // …and the katamari twin, so this measures the gate rather than a
+      // creature that happens to have no size.
+      expect(rolling('katamari').manager.ballDiameter('roller')).toBeGreaterThan(0);
       manager.clearAll();
     });
 

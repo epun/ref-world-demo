@@ -622,7 +622,15 @@ async function curateAll(table, args) {
     if (budget <= 0) continue;
     // Shuffled by (seed, kind) so adding a kind never re-picks another's.
     const salt = [...kind].reduce((n, c) => n + c.charCodeAt(0), 0);
-    const picked = seededShuffle(list, table.ACTIVE_SEED + salt).slice(0, budget);
+    // The beach's rows first, up to BEACH_RESERVE of the budget, so a small
+    // budget cannot shuffle every shell and boat off the sand (2026-09-16,
+    // when small went 120 → 32); the rest of the budget is the plain shuffle.
+    const shuffled = seededShuffle(list, table.ACTIVE_SEED + salt);
+    const reserve = Math.ceil(budget * (table.BEACH_RESERVE ?? 0));
+    const beachFirst = shuffled.filter((r) => r.beach === true).slice(0, reserve);
+    const taken = new Set(beachFirst);
+    const rest = shuffled.filter((r) => !taken.has(r)).slice(0, budget - beachFirst.length);
+    const picked = [...beachFirst, ...rest];
     // Back into catalog (id) order, so the file reads like the library.
     picked.sort((a, b) => a.id.localeCompare(b.id));
     perKind.push({ kind, admitted: list.length, active: picked.length });
