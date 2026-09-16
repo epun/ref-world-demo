@@ -352,6 +352,34 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
   setIslandMode(game === 'katamari');
   const renderer = new WebGLRenderer({ canvas, antialias: true });
   /*
+   * THE LINK CHECK IS OFF IN A SHIPPED BUILD [D].
+   *
+   * three's `checkShaderErrors` calls `gl.getProgramInfoLog` the first time
+   * each program is used, and that call BLOCKS until the driver has finished
+   * linking — which also throws away the parallel compile every modern driver
+   * does for you. Measured on the katamari world (host page, library loaded,
+   * profiled from the frame the props first drew): **52% of the whole JS
+   * thread in `getProgramInfoLog`**, ~600ms a program under swiftshader across
+   * the eighteen programs this frame needs, all of it landing in the seconds
+   * right after the object library arrives. That is the user report *"my
+   * character can't move now"*: the page is not slow, it is stopped, linking.
+   *
+   * It costs nothing visible: three still compiles and links, it simply does
+   * not stand there reading the log. What it costs is the console message when
+   * a shader fails to compile — which is a DEV concern, and dev builds keep
+   * it. Every shader in this project is authored here and gated by
+   * `test/world/*`, so a production page has nothing to learn from the log it
+   * cannot learn from a black frame.
+   *
+   * `import.meta.env.DEV` and NOT `__IS_DEV__`: that flag gates the ghost
+   * panel, and `worlds.json` turns it on for whole DEPLOYMENTS (meridian and
+   * valiocon both carry `dev: true` so a presenter can reach the panel on the
+   * deployed link). A demo in front of a room is exactly where the stall is
+   * least affordable. This is the vite dev SERVER, so the log is there while
+   * somebody is editing shaders and gone in every build.
+   */
+  renderer.debug.checkShaderErrors = import.meta.env.DEV === true;
+  /*
    * Pixel ratio cap. The frame is four full-resolution passes (colour,
    * normals, ink composite, grain — docs/QA-AUDIT.md D1), so every pixel
    * costs four, and a handset's world view was rendering the whole cast at
@@ -390,6 +418,36 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
   const shadows = new FlatShadows();
   const ink = new InkPass();
   const grain = new GrainPass();
+
+  /**
+   * LINK THE PROGRAMS OFF THE CRITICAL PATH [D].
+   *
+   * three links a program the first time something using it is DRAWN, inside
+   * the frame that draws it. The katamari library arrives as three tiers of
+   * models, each with its own material, so the frames right after a tier
+   * lands were where every one of those links happened — measured as 52% of
+   * the whole JS thread sitting in `gl.getProgramInfoLog`, and on a phone GPU
+   * a run of sequential first-draw links is a multi-second hitch a person
+   * reads as *"my character can't move"*.
+   *
+   * `compileAsync` asks the driver to link them all at once and, where
+   * `KHR_parallel_shader_compile` exists, to do it in parallel and off this
+   * thread. Called after every rebuild that can introduce a material — the
+   * library tiers, and the one style switch — never per frame.
+   *
+   * Feature-detected, and its rejection swallowed: a page whose programs did
+   * not pre-link draws exactly as it did before, one link at a time.
+   */
+  const warmPrograms = (): Promise<void> => {
+    const r = renderer as WebGLRenderer & {
+      compileAsync?: (scene: Scene, camera: unknown) => Promise<unknown>;
+    };
+    if (typeof r.compileAsync !== 'function') return Promise.resolve();
+    return r
+      .compileAsync(scene, cameraRig.camera)
+      .then(() => undefined)
+      .catch(() => undefined);
+  };
   // The world's terrain. Everything below is seated on THIS and nothing else
   // derives a height of its own (src/world/surface.ts).
   const surface = ROLLING_SURFACE;
@@ -428,6 +486,9 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
     // same rebuild a density change causes, and every consumer that keys off
     // `rebuildVersion()` re-reads without knowing why (TASTE §2.1).
     scatter.setPropSource(ready.source);
+    // …and the programs those new materials need are linked NOW, in parallel,
+    // rather than one at a time inside the first frame that draws them.
+    void warmPrograms();
   };
   void startKatamariWorld(game, {
     // Tier by tier: the junk lands first and the buildings last, each on its
@@ -756,6 +817,15 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
     // colour). `ink` puts the shipped line back from the one copy of it.
     if (ghibli) applyGhibliPost(ink);
     else ink.setParams({ ...INK_DEFAULTS });
+    /*
+     * A PHONE DRAWS THE PROPS ONCE, NOT TWICE [D] — see
+     * `InkPass.setNormalPassSkip`. On the katamari world the scatter is the
+     * object library's ~226 InstancedMeshes, and submitting them for the
+     * normal target as well is most of a mobile driver's frame. The contour
+     * that reads at that size comes off the depth target, which is the beauty
+     * render's. A projection keeps both passes exactly as they were.
+     */
+    ink.setNormalPassSkip(ghibli && tier === 'phone' ? [scatter.group] : []);
     scatter.setStyle(style);
     // The ground wears envpaint's terrain shader on this style, and bakes the
     // geography texture the fields below read — so it goes FIRST.
@@ -785,6 +855,9 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
     water.setStyle(style);
   };
   applyStyle(sanitizeStyle(opts.style));
+  // The ghibli fields, the ground, the water and the marks all have their
+  // programs by now; link them before the first frame rather than inside it.
+  void warmPrograms();
 
   const frameCallbacks: FrameCallback[] = [];
   let last = performance.now();
@@ -992,6 +1065,9 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
     },
     setStyle: (style: WorldStyle): void => {
       applyStyle(sanitizeStyle(style));
+      // A style switch builds the ghibli fields the first time it runs, so it
+      // is the other place new programs appear (see `warmPrograms`).
+      void warmPrograms();
     },
     style: (): WorldStyle => currentStyle,
     game: (): WorldGame => game,
