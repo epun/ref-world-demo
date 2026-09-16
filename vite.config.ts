@@ -91,6 +91,34 @@ export default defineConfig({
       output: {
         entryFileNames: (chunk) =>
           chunk.name === 'screen' ? 'screen.js' : 'assets/[name]-[hash].js',
+        /**
+         * THE BIG VENDORS GET THEIR OWN CONTENT-HASHED CHUNKS (2026-09-16).
+         *
+         * > User ask: *"we need to be able to run this on a slow network on
+         * > people's devices."*
+         *
+         * Rollup's automatic split put three.js inside whichever async chunk
+         * first reached it — it shipped as `assets/minimap-<hash>.js`, three
+         * hundred kilobytes of a library that has not changed since
+         * 0.180.0 wearing the hash of a file that changes every deploy. So
+         * every deploy re-downloaded three on every device, on top of the
+         * app code that genuinely did change.
+         *
+         * Naming them here fixes the hash to the dependency: `three-<hash>`
+         * and `rapier-<hash>` only move when the package does, and the
+         * `immutable` year in `vercel.json` then means something. It is also
+         * why the split is by PACKAGE and not by size — a chunk whose
+         * contents are "whatever was big" is a chunk whose hash is a lottery.
+         *
+         * `rapier` still only exists in a build that reaches it, and it is
+         * still only FETCHED by a page that calls `enablePhysics`
+         * (src/world/scene.ts) — this names the chunk, it does not load it.
+         */
+        manualChunks: (id) => {
+          if (id.includes('node_modules/three/')) return 'three';
+          if (id.includes('node_modules/@dimforge/rapier3d-compat')) return 'rapier';
+          return null;
+        },
       },
     },
     target: 'es2022',

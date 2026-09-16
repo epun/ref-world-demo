@@ -54,8 +54,12 @@
   </head>
   <body>
     <canvas id="world"></canvas>
-    <!-- vendored MQTT client for the draw-to-3d feed; sets window.mqtt -->
-    <script src="/vendor/mqtt.min.js"></script>
+    <!-- vendored MQTT client for the draw-to-3d feed; sets window.mqtt.
+         THE NAME CARRIES THE FILE'S CONTENT HASH (2026-09-16): it is served
+         `immutable` for a year (vercel.json), which is only safe if the url
+         moves when the bytes do. Replace the vendor and the name changes
+         with it — test/net/vendor.test.ts pins the two together. -->
+    <script src="/vendor/mqtt.min.b088a7f9.js"></script>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
