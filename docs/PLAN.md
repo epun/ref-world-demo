@@ -1135,6 +1135,33 @@ driver. It is the same mesh a pickup then hangs on a creature's pile.
 `deviceTier()`. The pixel-ratio cap in `scene.ts` already asked that question inline and the
 destruction work needs to ask it again, so it is asked once.
 
+**The ball rides on its whole footprint** *(2026-09-16)* **[D]**. User report: *"the ball is
+glitching through the map floor if it's big enough."* §7.2 places a creature on the height
+under its CENTRE, which is right for a 0.9 u hatchling and wrong for a ball several units
+across: the ball's underside IS the root (`clump.group` at `(0, baseR, 0)`, the root's scale
+the growth), so on a slope, a terrace riser or a basin lip the ground under its uphill edge
+is above the ground under its middle and the downhill half of it — with the items seated low
+on the pile — goes under the paper. So `clearanceLift` (pure, `src/creatures/sticky.ts`)
+samples the centre and a ring of `CLEARANCE_POINTS` (8) at `bodyR × CLEARANCE_RING` (0.8) and
+answers `max(0, highest ring − centre) + bodyR × CLEARANCE_PAD` (0.06, for the ground that
+goes on rising outside the ring and for the small items bedded `CLUMP_FIT` into the pile's
+underside). `groundClearance` in the manager eases a ζ ≥ 1 spring onto it over
+`MOTION.primaryMs` and **the frame's one ground pass adds it to the height it already
+sampled** — not a second Y writer, not in the locomotion pass, and x/z and the resolve are
+untouched by it. A creature carrying nothing has `growth() === 1` exactly, takes the early
+return and gets the placement it shipped with to the float, so the ring costs a hatchling
+nothing; every world without the game is 0 everywhere. **It is derived, never sent**: poses
+carry x/z/heading, so a viewer applies its own lift on top of the pose it eases toward from
+the same Surface and the same synced growth — the same rule the walk/roll blend follows. The
+kinematic stand-in is placed at `ground + lift + bodyR` for the same reason, so the collider
+is the sphere on screen rather than one sunk a clearance into the heightfield; the shadow
+stamp is unaffected (it samples the Surface itself and stays on the ground) and so is
+`ballDiameter`, which is `2 × bodyR`. The known limit: the ring LEADS the centre by
+`bodyR × CLEARANCE_RING`, so a ball climbing a riser faster than a spring settles is briefly
+behind its own target — the drawn sphere still clears the paper (at the ring its surface is
+`0.4 × bodyR` above the underside), and arriving instantly would be the step the motion law
+forbids.
+
 #### the host-only rule
 
 **Physics loads on host election and nowhere else.** `WorldHandles.enablePhysics()` is

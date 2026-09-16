@@ -11,6 +11,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   carryLimit,
+  clearanceLift,
+  CLEARANCE_PAD,
+  CLEARANCE_POINTS,
+  CLEARANCE_RING,
   CLUMP_FIT,
   clumpLocalOffset,
   BLOCK_RATIO,
@@ -578,5 +582,76 @@ describe('clumpLocalRotation', () => {
     const local = clumpLocalRotation(item, { x: 0, y: 0, z: 0, w: 1 });
     expect(local.x).toBeCloseTo(item.x, 12);
     expect(local.w).toBeCloseTo(item.w, 12);
+  });
+});
+
+describe('clearanceLift — the ball rides on its whole footprint', () => {
+  /**
+   * > User report, 2026-09-16: *"the ball is glitching through the map floor
+   * > if it's big enough."*
+   *
+   * The pure half: a centre height, a ring of samples at
+   * `bodyR × CLEARANCE_RING`, and the lift that keeps the ball's underside
+   * above the highest of them. The manager eases a ζ ≥ 1 spring onto the
+   * answer and writes it through the one ground pass; nothing in here knows
+   * about a spring, a root or a frame.
+   */
+  const pad = (bodyR: number): number => bodyR * CLEARANCE_PAD;
+
+  it('is the pad alone on flat ground — nothing is lifted for nothing', () => {
+    expect(clearanceLift(0, 0, 3, () => 4.2)).toBeCloseTo(pad(3), 12);
+  });
+
+  it('rides up on the uphill side of a slope, by the ring’s own rise', () => {
+    const slope = 0.5;
+    const bodyR = 3;
+    const lift = clearanceLift(0, 0, bodyR, (x) => x * slope);
+    // The highest ring sample is the one straight uphill, at
+    // `bodyR × CLEARANCE_RING` out.
+    expect(lift).toBeCloseTo(bodyR * CLEARANCE_RING * slope + pad(bodyR), 12);
+  });
+
+  it('clears a step that only the ring can see', () => {
+    const bodyR = 3;
+    const inside = bodyR * CLEARANCE_RING * 0.5;
+    // A 1.6 u riser inside the footprint but well away from the centre: the
+    // centre sample knows nothing about it, which is the whole bug.
+    const lift = clearanceLift(0, 0, bodyR, (x) => (x > inside ? 1.6 : 0));
+    expect(lift).toBeCloseTo(1.6 + pad(bodyR), 12);
+  });
+
+  it('never pushes a creature DOWN into the ground', () => {
+    // A hollow: every ring sample is below the centre. The answer is the pad
+    // and never a negative number — this is a clearance, not a second
+    // opinion about where the ground is.
+    const lift = clearanceLift(0, 0, 3, (x, z) => (Math.hypot(x, z) > 0.001 ? -9 : 0));
+    expect(lift).toBeCloseTo(pad(3), 12);
+    expect(lift).toBeGreaterThan(0);
+  });
+
+  it('is zero for a creature with no size at all', () => {
+    expect(clearanceLift(0, 0, 0, () => 1)).toBe(0);
+    expect(clearanceLift(0, 0, -1, () => 1)).toBe(0);
+  });
+
+  it('samples the centre and the ring, and nothing else', () => {
+    const seen: { x: number; z: number }[] = [];
+    const bodyR = 2;
+    clearanceLift(5, -7, bodyR, (x, z) => {
+      seen.push({ x, z });
+      return 0;
+    });
+    expect(seen.length).toBe(1 + CLEARANCE_POINTS);
+    expect(seen[0]).toEqual({ x: 5, z: -7 });
+    for (const point of seen.slice(1)) {
+      expect(Math.hypot(point.x - 5, point.z + 7)).toBeCloseTo(bodyR * CLEARANCE_RING, 12);
+    }
+  });
+
+  it('is deterministic — the same terrain gives every page the same number', () => {
+    const terrain = (x: number, z: number): number => Math.sin(x * 0.3) + Math.cos(z * 0.2);
+    const first = clearanceLift(3, 4, 2.5, terrain);
+    const second = clearanceLift(3, 4, 2.5, terrain);
+    expect(second).toBe(first);
   });
 });

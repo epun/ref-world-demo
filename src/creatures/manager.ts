@@ -58,6 +58,7 @@ import { resolveName } from './naming';
 import { createClump, type Clump, type StuckItem } from './clump';
 import {
   carryLimit,
+  clearanceLift,
   passLimit,
   rollTarget,
   clumpLocalOffset,
@@ -672,6 +673,28 @@ interface Slot {
    * each one derives the same blend rather than being told it.
    */
   rollSpring: Spring | null;
+  /**
+   * GROUND CLEARANCE — how far this creature's root is held ABOVE the ground
+   * under its centre, world units (user report, 2026-09-16: *"the ball is
+   * glitching through the map floor if it's big enough"*).
+   *
+   * A presentation offset on the one Y write there is (the frame's ground
+   * pass), never a second opinion about where the ground is: the ball's
+   * underside is the root, so a ball whose footprint spans a slope has to
+   * ride up on its uphill side or the downhill half of it is inside the hill
+   * (`clearanceLift`). Always 0 in a world without the game, and 0 for a
+   * creature carrying nothing — a hatchling gets exactly the placement it
+   * shipped with, and the footprint ring is not even sampled for it.
+   *
+   * NEVER ON THE WIRE. It is derived on every page from the Surface and the
+   * synced growth, which is the same rule the walk/roll blend follows: poses
+   * carry x/z/heading and Y is always local (docs/PLAN.md §7.6).
+   */
+  lift: number;
+  /** The ζ ≥ 1 spring `lift` comes off, over `MOTION.primaryMs`, so a terrace
+   * edge is a slide and not a step. Null until alive, and in every world but
+   * the katamari. */
+  liftSpring: Spring | null;
   /** When this carrier last shed something, on the loop's clock. Null until
    * it has. The `DROP_MIN_GAP_MS` gate, so a pile does not unravel in one
    * frame against a tree. */
@@ -1124,6 +1147,20 @@ export interface CreatureManager {
    */
   rollBlend(id: string): number;
   /**
+   * How far this creature's root is riding ABOVE the ground under its centre,
+   * world units (user report, 2026-09-16: *"the ball is glitching through the
+   * map floor if it's big enough"*).
+   *
+   * A readout of the same kind as `rollBlend`: the clearance is derived from
+   * the Surface and the pile on every page and nothing may set it. It exists
+   * so a test can assert that a big ball's underside clears the highest
+   * ground under its footprint without re-deriving the footprint, and so the
+   * ghost panel can show a number that is otherwise invisible until it is
+   * wrong. 0 for an id nobody holds, 0 for a creature carrying nothing, and 0
+   * for the whole of any world without the game.
+   */
+  groundLift(id: string): number;
+  /**
    * Top ground speed this creature would reach under a full push, u/s.
    *
    * A readout of `DRIVE_SPEED × driveMult(blend)`: the walk ceiling for a
@@ -1223,6 +1260,10 @@ export function createCreatureManager(
    */
   const gaitAmp = (slot: Slot): number => (katamari ? 1 - rollOf(slot) : 1);
   const surface = options.surface ?? ROLLING_SURFACE;
+  /** The seam as a plain sampler, for the pure rules that take one
+   * (`clearanceLift`). Bound once: a closure per creature per frame to ask
+   * the same object the same question is garbage for nothing. */
+  const sampleAt = (x: number, z: number): number => surface.sampleHeight(x, z);
   const slots = new Map<string, Slot>();
   let orderCounter = 0;
   let timersPaused = false;
@@ -1494,6 +1535,9 @@ export function createCreatureManager(
     removeKinematic(slot);
     slot.rollSpring?.dispose();
     slot.rollSpring = null;
+    slot.liftSpring?.dispose();
+    slot.liftSpring = null;
+    slot.lift = 0;
     slot.clump?.dispose();
     slot.clump = null;
     slot.agent?.dispose();
@@ -1572,6 +1616,18 @@ export function createCreatureManager(
        * walks again the same way round.
        */
       slot.rollSpring = new Spring(0, { settleMs: MOTION.primaryMs });
+      /*
+       * AND THE BALL'S GROUND CLEARANCE, from rest (user report, 2026-09-16:
+       * *"the ball is glitching through the map floor if it's big enough"*).
+       *
+       * From 0, which is the shipped placement: a newborn is standing on the
+       * ground under its centre exactly as it always did, and the clearance
+       * only grows as the pile does. ζ ≥ 1 like every spring here, over
+       * `MOTION.primaryMs`, so rolling onto a terrace lifts the ball by
+       * sliding it — a step in Y is the hard cut the motion law forbids at
+       * confidence 1.00 whether the ground made it or we did.
+       */
+      slot.liftSpring = new Spring(0, { settleMs: MOTION.primaryMs });
       slot.clump = createClump(slot.baseR);
       root.add(slot.clump.group);
       /*
@@ -2439,7 +2495,23 @@ export function createCreatureManager(
     const physics = world.physics?.() ?? null;
     if (!physics) return;
     const rapier = physics.rapier;
-    const y = surface.sampleHeight(root.position.x, root.position.z) + slot.bodyR;
+    /*
+     * THE BALL STANDS IN WHERE THE BALL IS DRAWN — ground, plus this frame's
+     * clearance, plus the radius (2026-09-16, with the ground-clearance
+     * report). The stand-in's centre is the drawn ball's centre, which is
+     * `root.y + bodyR`; leaving the lift out of it put the collider up to a
+     * whole clearance below the sphere on screen, so a ball riding over a
+     * terrace edge would have been picking things up with a body partly
+     * inside the heightfield while the visible one cleared it. The stuck
+     * items' colliders hang off this body at offsets from its translation, so
+     * they come along with it.
+     *
+     * Not read off `root.position.y`, deliberately: a HATCHING root is being
+     * animated up out of the ground and `slot.hatch` holds that Y (the ground
+     * pass stands off while it runs), and the stand-in wants the ground it is
+     * rising to rather than a body sinking under the field for a second.
+     */
+    const y = surface.sampleHeight(root.position.x, root.position.z) + slot.lift + slot.bodyR;
     if (!slot.kinematic) {
       const body = physics.addRigidBody(
         rapier.RigidBodyDesc.kinematicPositionBased().setTranslation(
@@ -3305,6 +3377,55 @@ export function createCreatureManager(
    * twenty seconds calmer than the first ten, which is the opposite of what
    * the brief asks for.
    */
+  /**
+   * THE BALL'S GROUND CLEARANCE — how far above the ground under its centre
+   * this creature's root is held this frame.
+   *
+   * > User report, 2026-09-16: *"the ball is glitching through the map floor
+   * > if it's big enough."*
+   *
+   * A creature is placed on the height under its CENTRE, which is the whole
+   * of the Surface seam (PLAN §7.2) and is exactly right for a 0.9 u
+   * hatchling. A grown ball is a different shape of problem: its underside is
+   * the root (`clump.group` sits at `(0, baseR, 0)` and the root's scale is
+   * the growth, so the ball's bottom is exactly `root.y`), and it spans
+   * `bodyR` in every direction — so on a slope, a terrace riser or a basin
+   * lip the ground under its uphill edge is above the ground under its middle
+   * and the downhill half of the ball, with the items seated low on the pile,
+   * goes under the paper.
+   *
+   * So the footprint is sampled — the centre and a ring of `CLEARANCE_POINTS`
+   * (`src/creatures/sticky.ts`) — and the root rides up on the highest ground
+   * under it. THE SAMPLE IS THE ONLY NEW COST AND ONLY A PILE PAYS IT: an
+   * empty clump's `growth()` is exactly 1, so a creature carrying nothing
+   * takes the early return and gets the placement it shipped with, to the
+   * float.
+   *
+   * WHERE IT IS APPLIED: the frame's one ground pass, on top of the height it
+   * already sampled. Not a second Y writer and not in the locomotion pass —
+   * x/z and the resolve are untouched by it, and a viewer easing toward a
+   * host pose gets the same lift on top of the same sampled ground, because
+   * both pages derive it here rather than either being told.
+   *
+   * `bodyR` is last frame's (growth is written in `growPass`, which runs
+   * after this): a frame of lag on a number that is easing in over
+   * `MOTION.primaryMs` anyway, and taking the growth here instead would mean
+   * two passes writing the size.
+   */
+  function groundClearance(slot: Slot, dt: number): number {
+    const spring = slot.liftSpring;
+    const root = slot.characterRoot;
+    if (!spring || !root) return 0;
+    const g = slot.clump?.growth() ?? 1;
+    const target =
+      g > 1 ? clearanceLift(root.position.x, root.position.z, slot.bodyR, sampleAt) : 0;
+    spring.retarget(target);
+    // Clamped at 0 on the way out: a clearance can lift a creature and must
+    // never be able to push one INTO the ground, whatever a solver does.
+    slot.lift = Math.max(0, spring.update(dt));
+    return slot.lift;
+  }
+
   function growPass(dt: number): void {
     for (const slot of slots.values()) {
       const clump = slot.clump;
@@ -3423,6 +3544,8 @@ export function createCreatureManager(
         carriedBy: null,
         roll: 0,
         rollSpring: null,
+        lift: 0,
+        liftSpring: null,
         passengers: new Set<string>(),
         lastDropMs: null,
         kinematic: null,
@@ -4133,9 +4256,13 @@ export function createCreatureManager(
           if (root) {
             const ease = 1 - Math.pow(1 - t, 3); // drift-out, no rebound
             // Under the ground it is standing on, not under y=0 — on a
-            // raised tier the old constant sank it into the air.
+            // raised tier the old constant sank it into the air. Measured
+            // from the same place the ground pass left it, clearance and all
+            // (`groundClearance`), so a big ball starts sinking from where it
+            // was rather than dropping its own clearance on the first frame
+            // of the slide. 0 for an egg and in every world without the game.
             root.position.y =
-              surface.sampleHeight(root.position.x, root.position.z) - 2.6 * ease;
+              surface.sampleHeight(root.position.x, root.position.z) + slot.lift - 2.6 * ease;
           }
           if (t >= 1) disposeSlot(slot);
         }
@@ -4320,7 +4447,16 @@ export function createCreatureManager(
         // a world one. Sampling the terrain into it would drag it out of the
         // pile by whatever the ground happens to be under the origin.
         if (slot.carriedBy) continue;
-        root.position.y = surface.sampleHeight(root.position.x, root.position.z);
+        /*
+         * …plus the BALL'S CLEARANCE, and that is the only thing added to
+         * this write (`groundClearance`, 2026-09-16 — "the ball is glitching
+         * through the map floor if it's big enough"). It is 0 in every world
+         * without the game and 0 for a creature carrying nothing, so a
+         * hatchling and every creature in the public world stand on exactly
+         * the height they always did.
+         */
+        root.position.y =
+          surface.sampleHeight(root.position.x, root.position.z) + groundClearance(slot, dt);
       }
 
       /*
@@ -4537,6 +4673,11 @@ export function createCreatureManager(
       return slot ? rollOf(slot) : 0;
     },
 
+    groundLift(id): number {
+      const slot = slots.get(id);
+      return slot ? slot.lift : 0;
+    },
+
     driveCeiling(id): number {
       const slot = slots.get(id);
       return slot ? DRIVE_SPEED * driveMult(rollOf(slot)) : 0;
@@ -4670,8 +4811,10 @@ export function createCreatureManager(
         slot.manualHold = false;
         // Re-ground: locomotion never uses world-space Y (Surface seam), so
         // any vertical the gizmo introduced is dropped on release and the
-        // creature is set back down on the terrain under it.
-        root.position.y = surface.sampleHeight(root.position.x, root.position.z);
+        // creature is set back down on the terrain under it — on its ball's
+        // clearance where it has one, which is where the next frame's ground
+        // pass is going to hold it anyway.
+        root.position.y = surface.sampleHeight(root.position.x, root.position.z) + slot.lift;
         slot.spot = { x: root.position.x, z: root.position.z };
       }
     },
