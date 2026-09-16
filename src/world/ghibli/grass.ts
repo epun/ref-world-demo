@@ -100,6 +100,22 @@ const SEG = 4;
 export const GRASS_COUNT_PROJECTION = 150000;
 export const GRASS_COUNT_PHONE = 40000;
 
+/** [D] How far a blade's normal leans to the ground's own up — see the
+ * vertex shader, where it is the difference between a meadow and a grey
+ * patch. 0.6 closed half the gap the cel shadow band opened (44 units of blue
+ * down to 21, measured); 0.85 closes most of the rest, and the terminator is
+ * still broken up by the painted noise inside `toonLight` rather than by the
+ * blades' own facets.
+ *
+ * 0.94 and not 0.85 because of where the last of the blue was coming from: a
+ * blade in the cel SHADOW band takes `shadowTint` (cool) plus a sixteenth of
+ * the sky colour, so every blade still shaded put blue into the field's mean.
+ * The flatter the field, the more of it shares the ground's own band. */
+const NORMAL_UPRIGHT = 0.94;
+
+/** [D] How far a dry patch goes toward the bleached colour — see the fragment. */
+const DRY_MIX = 0.35;
+
 /** [D] Strength of the hard cel dab on a sunlit tip — see the fragment. */
 const TIP_DAB = 0.08;
 
@@ -308,7 +324,16 @@ void main() {
   // neighbours — but zoomed out a blade is a pixel wide and the nudge reads
   // as speckle, so it fades with distance.
   float far = smoothstep(9.0, 22.0, uZoom);
-  nrm = normalize(nrm + uSunDir * (aRand.w - 0.5) * 0.35 * (1.0 - 0.85 * far));
+  nrm = normalize(nrm + uSunDir * (aRand.w - 0.5) * 0.18 * (1.0 - 0.85 * far));
+  // …and then mostly UPRIGHT [D]. A blade's own facet normal points every
+  // which way, so about half the field landed in the cel SHADOW band, which
+  // is hue-shifted cool (GHIBLI.shadowTint) — measured on screen, that put the
+  // field 44 units of blue above the meadow it stands in and made the window
+  // read as a grey patch even with every colour matched. A cel meadow is lit
+  // as a field, not blade by blade: the normal leans toward the ground's own
+  // up so the field takes the ground's band, keeping enough of its own tilt to
+  // break the terminator up.
+  nrm = normalize(mix(nrm, vec3(0.0, 1.0, 0.0), ${ggFloat(NORMAL_UPRIGHT)}));
 
   vT = t;
   vRand = aRand;
@@ -335,7 +360,11 @@ void main() {
   vec3 n = normalize(vToonNormal) * (gl_FrontFacing ? 1.0 : -1.0);
 
   vec3 col = mix(uColorBase, uColorTip, pow(vT, 0.7));
-  col = mix(col, uColorDry, smoothstep(0.55, 0.9, vNoise) * 0.55);
+  // The dry patches, at ${ggFloat(DRY_MIX)} rather than envpaint's 0.55 [D]:
+  // sun-bleached yellow is the other thing that was lifting the field's blue
+  // above the meadow's (measured, 2026-09-15), and a meadow with a third of it
+  // bleached still reads as one that has had a dry week.
+  col = mix(col, uColorDry, smoothstep(0.55, 0.9, vNoise) * ${ggFloat(DRY_MIX)});
   col *= mix(0.95, 1.05, vRand.w);
   col *= mix(0.72, 1.0, smoothstep(0.0, 0.5, vT));
 
