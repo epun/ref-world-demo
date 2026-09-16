@@ -17,7 +17,7 @@
 
 import { Vector3, type Texture } from 'three';
 import { installHoverNames } from './creatures/hover';
-import { createCreatureManager } from './creatures/manager';
+import { createCreatureManager, type CreatureManager } from './creatures/manager';
 import {
   currentDials,
   type BlueprintDials,
@@ -279,7 +279,28 @@ function main(): void {
     document.querySelector<HTMLMetaElement>('meta[name="refworld:game"]')?.content ?? null,
   );
 
-  const world = start(canvas, { style: worldStyle, game: worldGame });
+  /**
+   * THIS HANDSET'S OWN CREATURE, IF ANY — read by the world as the gate on
+   * the object library's download (2026-09-16, the slow-network work;
+   * `WorldOptions.libraryAfter`).
+   *
+   * > User ruling: *"load everything, just in the deferred order after the
+   * > first frame and the player's creature."*
+   *
+   * A pair of holes rather than a value, because the world is built before
+   * either the submission or the creature manager exists and the gate is
+   * polled once a frame from inside it. Both stay null on a projection,
+   * which is a page with no creature of its own and therefore nothing to
+   * wait for — the gate opens on the first frame there, as it does on any
+   * page whose person has not drawn.
+   */
+  let myCreature: { id: string; manager: CreatureManager } | null = null;
+  const world = start(canvas, {
+    style: worldStyle,
+    game: worldGame,
+    libraryAfter: () =>
+      myCreature === null || myCreature.manager.positionOf(myCreature.id) !== null,
+  });
   /** True in the one world that runs the katamari — the flag every seam below
    * gates on, asked of the world rather than re-read off the address. */
   const katamari = world.game() === 'katamari';
@@ -2048,6 +2069,14 @@ function main(): void {
   const mySubmission = handheld && room.length > 0 ? readSubmission(room) : null;
   /** Which creature on this screen is this handset's, if any. */
   const myDrawerId = mySubmission?.id ?? '';
+  /*
+   * …and told to the world, which is holding the object library's download
+   * until this creature is standing (`WorldOptions.libraryAfter`, above).
+   * Set here because this is where both halves first exist; a page with no
+   * drawing of its own leaves it null and the library starts on the first
+   * frame.
+   */
+  if (myDrawerId.length > 0) myCreature = { id: myDrawerId, manager: creatures };
   /**
    * Their drawing, as the shape pipeline wants it. Stored in the kit's WIRE
    * form, which is what the world and the companion both parse it from —
