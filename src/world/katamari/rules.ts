@@ -104,6 +104,26 @@ export interface KatamariEntry {
   /** Lowercase display name (TASTE §5) — the only string here this world
    * would ever show. */
   label?: string;
+  /**
+   * THE PUBLISHED FILE'S CONTENT HASH — eight hex of sha256, written by
+   * `scripts/katamari-curate.mjs` (2026-09-16, the slow-network work).
+   *
+   * > User ask: *"we need to be able to run this on a slow network on
+   * > people's devices."*
+   *
+   * The models are served with a one-year `immutable` cache
+   * (`vercel.json`), which is the only way a person on a slow link stops
+   * paying for the library on their second visit — and an immutable URL
+   * that can change its bytes is a stale model somebody keeps forever. The
+   * filename stays the library's own, because it is the provenance trail
+   * (`name` / `internalName` / `file` all trace a row back to the game); the
+   * CACHE KEY is this hash, appended by the loader as `?v=<hash>`. Re-curate
+   * and the url moves; re-curate to the same bytes and it does not.
+   *
+   * Optional on the type because a hand-written row predates it and because
+   * `--verify` is what proves every published row carries one.
+   */
+  hash?: string;
 }
 
 // ── exclusions ───────────────────────────────────────────────────────────────

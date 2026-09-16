@@ -54,6 +54,17 @@ import {
 } from 'three';
 import type { Mesh, Object3D, Texture } from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+/**
+ * THE MESHOPT DECODER — ~30 kb, and only on a katamari world.
+ *
+ * Every published glb is `EXT_meshopt_compression`d by
+ * `scripts/katamari-curate.mjs` (3.82 mb → 2.35 mb over the wire), so the
+ * loader cannot read one without this. A STATIC import is correct here for
+ * exactly the reason the header gives about this whole file: `./models` is
+ * only ever reached through the dynamic import in `./source.ts`, behind
+ * `game === 'katamari'`, so no other world's first chunk carries it.
+ */
+import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 import { hash, shash, variantTransform, type PartStage } from '../props';
 import {
   KATAMARI_BASE_URL,
@@ -133,24 +144,54 @@ export interface KatamariLibrary {
  * below reads fixed strides — so the shape is made uniform here rather than
  * guarded at four call sites.
  */
+/**
+ * One attribute as plain floats, THROUGH the accessor rather than off its
+ * array.
+ *
+ * ⚠️ `Float32Array.from(attribute.array)` is what this used to do, and it is
+ * wrong for any attribute that is not already float (2026-09-16, found by
+ * `scratch/props-compare.mjs` while measuring the compression): a
+ * `KHR_mesh_quantization` model stores position as normalised shorts and uv
+ * as normalised unsigned shorts, so the raw array holds 32767 where the
+ * value is 1.0. Position survived it by accident — the factor is uniform and
+ * `normalizeKatamariGeometry` scales the whole prop to its catalog height
+ * anyway — but the UVs came out in the tens of thousands and every one of
+ * those models would have drawn the wrong texel. `getX`/`getY`/`getZ`
+ * de-normalise, and they also read an INTERLEAVED buffer correctly, which is
+ * the other thing a compressed glb can hand back.
+ */
+function floatsOf(
+  attribute: { count: number; getX(i: number): number; getY(i: number): number; getZ(i: number): number },
+  items: 2 | 3,
+): Float32Array {
+  const out = new Float32Array(attribute.count * items);
+  for (let i = 0; i < attribute.count; i++) {
+    const at = i * items;
+    out[at] = attribute.getX(i);
+    out[at + 1] = attribute.getY(i);
+    if (items === 3) out[at + 2] = attribute.getZ(i);
+  }
+  return out;
+}
+
 export function conformKatamariGeometry(geometry: BufferGeometry): BufferGeometry {
   const flat = geometry.index ? geometry.toNonIndexed() : geometry;
   const position = flat.getAttribute('position');
   const count = position.count;
   const out = new BufferGeometry();
-  out.setAttribute('position', new BufferAttribute(Float32Array.from(position.array), 3));
+  out.setAttribute('position', new BufferAttribute(floatsOf(position, 3), 3));
   const normal = flat.getAttribute('normal');
   out.setAttribute(
     'normal',
     normal
-      ? new BufferAttribute(Float32Array.from(normal.array), 3)
+      ? new BufferAttribute(floatsOf(normal, 3), 3)
       : new BufferAttribute(new Float32Array(count * 3), 3),
   );
   const uv = flat.getAttribute('uv');
   out.setAttribute(
     'uv',
     uv
-      ? new BufferAttribute(Float32Array.from(uv.array), 2)
+      ? new BufferAttribute(floatsOf(uv, 2), 2)
       : new BufferAttribute(new Float32Array(count * 2), 2),
   );
   if (!normal) out.computeVertexNormals();
@@ -479,7 +520,12 @@ function firstMaterial(mesh: Mesh): {
   doubleSide: boolean;
 } {
   const material = (Array.isArray(mesh.material) ? mesh.material[0] : mesh.material) as
-    | { map?: Texture | null; transparent?: boolean; alphaTest?: number; side?: number }
+    | {
+        map?: Texture | null;
+        transparent?: boolean;
+        alphaTest?: number;
+        side?: number;
+      }
     | undefined;
   const texture = material?.map ?? null;
   const alphaMode: KatamariAlphaMode =
@@ -548,6 +594,24 @@ export function buildKatamariModel(root: Object3D, entry: KatamariEntry): Katama
   };
 }
 
+/**
+ * One model's url — the published path, plus its CONTENT HASH as the cache
+ * key (`KatamariEntry.hash`, 2026-09-16).
+ *
+ * The models are served `public, max-age=31536000, immutable` (`vercel.json`)
+ * so a person on a slow link pays for the library once and never again. That
+ * is only safe if the url moves when the bytes do, and the filename may not:
+ * it is the provenance trail back to the game's own object id. So the hash
+ * rides in the query, which is part of the cache key in every browser and in
+ * Vercel's edge cache alike. A row with no hash (a hand-written one, or a
+ * catalog published before this landed) asks for the bare path and is simply
+ * cached less aggressively than it could be.
+ */
+export function modelUrl(root: string, entry: KatamariEntry): string {
+  const path = `${root}/${KATAMARI_MODELS_DIR}/${entry.file}`;
+  return entry.hash === undefined ? path : `${path}?v=${entry.hash}`;
+}
+
 /** The published catalog, as written by `scripts/katamari-curate.mjs`. */
 export interface KatamariCatalogFile {
   baseUrl: string;
@@ -607,9 +671,13 @@ export async function loadKatamariModels(
   }
   const catalog = (await response.json()) as KatamariCatalogFile;
   const loader = new GLTFLoader();
+  // The models are meshopt-compressed (see the import). One decoder for the
+  // whole library — it is a wasm module and instantiating it per file would
+  // cost more than the compression saves.
+  loader.setMeshoptDecoder(MeshoptDecoder);
   const one = async (entry: KatamariEntry): Promise<KatamariModel | null> => {
     try {
-      const gltf = await loader.loadAsync(`${root}/${KATAMARI_MODELS_DIR}/${entry.file}`);
+      const gltf = await loader.loadAsync(modelUrl(root, entry));
       return buildKatamariModel(gltf.scene, entry);
     } catch (error) {
       console.warn(`katamari model ${entry.id} (${entry.file}) did not load`, error);

@@ -10,7 +10,8 @@
       "tier": "small",
       "heightUnits": 0.1,
       "rooted": false,
-      "label": "canned mackerel"
+      "label": "canned mackerel",
+      "hash": "7b6b95a1"
     },
     {
       "id": "0012",
@@ -21,7 +22,8 @@
       "tier": "small",
       "heightUnits": 0.11,
       "rooted": false,
-      "label": "fork"
+      "label": "fork",
+      "hash": "04c71e79"
     },
     {
       "id": "0018",
@@ -32,7 +34,8 @@
       "tier": "small",
       "heightUnits": 0.1,
       "rooted": false,
-      "label": "telephone book"
+      "label": "telephone book",
+      "hash": "c9a8f726"
     },
     {
       "id": "001a",
@@ -43,7 +46,8 @@
       "tier": "small",
       "heightUnits": 0.1,
       "rooted": false,
-      "label": "new year's cards"
+      "label": "new year's cards",
+      "hash": "dfa6e487"
     },
     {
       "id": "003c",
@@ -54,7 +58,8 @@
       "tier": "small",
       "heightUnits": 0.1,
       "rooted": false,
-      "label": "burglar mask"
+      "label": "burglar mask",
+      "hash": "891d1f1b"
     },
     {
       "id": "0050",
@@ -66,7 +71,8 @@
       "heightUnits": 0.1,
       "rooted": false,
       "beach": true,
-      "label": "shrimp sushi"
+      "label": "shrimp sushi",
+      "hash": "3321a03c"
     },
     {
       "id": "0058",
@@ -77,7 +83,8 @@
       "tier": "small",
       "heightUnits": 0.1,
       "rooted": false,
-      "label": "chicken egg"
+      "label": "chicken egg",
+      "hash": "6d0b2b74"
     },
     {
       "id": "006b",
@@ -88,7 +95,8 @@
       "tier": "medium",
       "heightUnits": 0.75,
       "rooted": false,
-      "label": "barrel"
+      "label": "barrel",
+      "hash": "a3e6db0a"
     },
     {
       "id": "006d",
@@ -98,7 +106,8 @@
       "kind": "conifer",
       "tier": "medium",
       "heightUnits": 4,
-      "rooted": true
+      "rooted": true,
+      "hash": "cb5ba163"
     },
     {
       "id": "0073",
@@ -109,7 +118,8 @@
       "tier": "small",
       "heightUnits": 0.1,
       "rooted": false,
-      "label": "blue ornament"
+      "label": "blue ornament",
+      "hash": "f0b8af28"
     },
     {
       "id": "0085",
@@ -119,7 +129,8 @@
       "kind": "waterTower",
       "tier": "large",
       "heightUnits": 5,
-      "rooted": true
+      "rooted": true,
+      "hash": "38361163"
     },
     {
       "id": "00a3",
@@ -129,7 +140,8 @@
       "kind": "waterTower",
       "tier": "large",
       "heightUnits": 5.51,
-      "rooted": true
+      "rooted": true,
+      "hash": "92e9a42d"
     },
     {
       "id": "00a6",
@@ -139,7 +151,8 @@
       "kind": "building",
       "tier": "building",
       "heightUnits": 12,
-      "rooted": true
+      "rooted": true,
+      "hash": "8d5008ed"
     },
     {
       "id": "00aa",
@@ -151,7 +164,8 @@
       "heightUnits": 0.47,
       "rooted": false,
       "beach": true,
-      "label": "boat"
+      "label": "boat",
+      "hash": "e0bca4fa"
     },
     {
       "id": "00ab",
@@ -161,7 +175,8 @@
       "kind": "waterTower",
       "tier": "large",
       "heightUnits": 5,
-      "rooted": true
+      "rooted": true,
+      "hash": "57b907b7"
     },
     {
       "id": "00ae",
@@ -172,7 +187,8 @@
       "tier": "medium",
       "heightUnits": 1.41,
       "rooted": false,
-      "label": "binoculars"
+      "label": "binoculars",
+      "hash": "349a7509"
     },
     {
       "id": "00b0",
@@ -184,7 +200,8 @@
       "heightUnits": 1.98,
       "rooted": false,
       "beach": true,
-      "label": "swan boat"
+      "label": "swan boat",
+      "hash": "52c78456"
     },
     {
       "id": "00b8",
@@ -195,7 +212,8 @@
       "tier": "medium",
       "heightUnits": 0.6,
       "rooted": false,
-      "label": "bucket"
+      "label": "bucket",
+      "hash": "411e2dd1"
     },
     {
       "id": "00bb",
@@ -207,7 +225,8 @@
       "heightUnits": 3.13,
       "rooted": false,
       "beach": true,
-      "label": "pier"
+      "label": "pier",
+      "hash": "16768ebc"
     },
     {
       "id": "00c0",
@@ -219,7 +238,8 @@
       "heightUnits": 1.16,
       "rooted": false,
       "beach": true,
-      "label": "parasol"
+      "label": "parasol",
+      "hash": "f26ddd51"
     },
     {
       "id": "00c4",
@@ -229,7 +249,8 @@
       "kind": "waterTower",
       "tier": "large",
       "heightUnits": 5,
-      "rooted": true
+      "rooted": true,
+      "hash": "bcd3b933"
     },
     {
       "id": "00cd",
@@ -240,7 +261,8 @@
       "tier": "large",
       "heightUnits": 3.54,
       "rooted": false,
-      "label": "plastic greenhouse"
+      "label": "plastic greenhouse",
+      "hash": "48b5aa9f"
     },
     {
       "id": "00d0",
@@ -250,7 +272,8 @@
       "kind": "picnicTable",
       "tier": "medium",
       "heightUnits": 1,
-      "rooted": true
+      "rooted": true,
+      "hash": "8775bc81"
     },
     {
       "id": "00d2",
@@ -260,7 +283,8 @@
       "kind": "picnicTable",
       "tier": "medium",
       "heightUnits": 2.91,
-      "rooted": true
+      "rooted": true,
+      "hash": "cc30b386"
     },
     {
       "id": "00d4",
@@ -270,7 +294,8 @@
       "kind": "building",
       "tier": "building",
       "heightUnits": 4.23,
-      "rooted": true
+      "rooted": true,
+      "hash": "3bd67135"
     },
     {
       "id": "00e0",
@@ -281,7 +306,8 @@
       "tier": "large",
       "heightUnits": 2.44,
       "rooted": true,
-      "label": "fence"
+      "label": "fence",
+      "hash": "b39402f3"
     },
     {
       "id": "00e9",
@@ -291,7 +317,8 @@
       "kind": "bush",
       "tier": "small",
       "heightUnits": 1.15,
-      "rooted": true
+      "rooted": true,
+      "hash": "0a1b3b0f"
     },
     {
       "id": "00f1",
@@ -302,7 +329,8 @@
       "tier": "large",
       "heightUnits": 3.76,
       "rooted": true,
-      "label": "lamp post"
+      "label": "lamp post",
+      "hash": "b732abd5"
     },
     {
       "id": "00f9",
@@ -313,7 +341,8 @@
       "tier": "large",
       "heightUnits": 2.38,
       "rooted": true,
-      "label": "phone booth"
+      "label": "phone booth",
+      "hash": "3cec3ff5"
     },
     {
       "id": "00fa",
@@ -323,7 +352,8 @@
       "kind": "building",
       "tier": "building",
       "heightUnits": 4.68,
-      "rooted": true
+      "rooted": true,
+      "hash": "67926ee9"
     },
     {
       "id": "00fb",
@@ -333,7 +363,8 @@
       "kind": "tree",
       "tier": "medium",
       "heightUnits": 4.18,
-      "rooted": true
+      "rooted": true,
+      "hash": "d3f86bc8"
     },
     {
       "id": "0105",
@@ -344,7 +375,8 @@
       "tier": "medium",
       "heightUnits": 5.04,
       "rooted": true,
-      "beach": true
+      "beach": true,
+      "hash": "2a19352a"
     },
     {
       "id": "0106",
@@ -355,7 +387,8 @@
       "tier": "large",
       "heightUnits": 4.09,
       "rooted": false,
-      "label": "farmhouse"
+      "label": "farmhouse",
+      "hash": "b3d09abe"
     },
     {
       "id": "010f",
@@ -366,7 +399,8 @@
       "tier": "small",
       "heightUnits": 0.1,
       "rooted": false,
-      "label": "roach motel"
+      "label": "roach motel",
+      "hash": "1fe3873d"
     },
     {
       "id": "0111",
@@ -378,7 +412,8 @@
       "heightUnits": 1.72,
       "rooted": false,
       "beach": true,
-      "inland": true
+      "inland": true,
+      "hash": "9828a197"
     },
     {
       "id": "0113",
@@ -388,7 +423,8 @@
       "kind": "conifer",
       "tier": "medium",
       "heightUnits": 4,
-      "rooted": true
+      "rooted": true,
+      "hash": "4e4baf96"
     },
     {
       "id": "0114",
@@ -398,7 +434,8 @@
       "kind": "tree",
       "tier": "medium",
       "heightUnits": 5.6,
-      "rooted": true
+      "rooted": true,
+      "hash": "d875f6dc"
     },
     {
       "id": "0115",
@@ -408,7 +445,8 @@
       "kind": "tree",
       "tier": "medium",
       "heightUnits": 6.39,
-      "rooted": true
+      "rooted": true,
+      "hash": "f7b0eafe"
     },
     {
       "id": "0120",
@@ -421,7 +459,8 @@
       "rooted": false,
       "beach": true,
       "inland": true,
-      "label": "striped fish"
+      "label": "striped fish",
+      "hash": "631c1732"
     },
     {
       "id": "0125",
@@ -431,7 +470,8 @@
       "kind": "picnicTable",
       "tier": "medium",
       "heightUnits": 2.35,
-      "rooted": true
+      "rooted": true,
+      "hash": "0c1882ff"
     },
     {
       "id": "0134",
@@ -442,7 +482,8 @@
       "tier": "large",
       "heightUnits": 2.82,
       "rooted": true,
-      "label": "construction fence"
+      "label": "construction fence",
+      "hash": "d4ea8b2c"
     },
     {
       "id": "0136",
@@ -453,7 +494,8 @@
       "tier": "large",
       "heightUnits": 3.06,
       "rooted": false,
-      "label": "bus"
+      "label": "bus",
+      "hash": "cc7eea42"
     },
     {
       "id": "0137",
@@ -463,7 +505,8 @@
       "kind": "building",
       "tier": "building",
       "heightUnits": 12,
-      "rooted": true
+      "rooted": true,
+      "hash": "4fa7cb2a"
     },
     {
       "id": "013c",
@@ -474,7 +517,8 @@
       "tier": "large",
       "heightUnits": 3.24,
       "rooted": false,
-      "label": "spirit of joy"
+      "label": "spirit of joy",
+      "hash": "76f7cd32"
     },
     {
       "id": "0141",
@@ -485,7 +529,8 @@
       "tier": "large",
       "heightUnits": 2.79,
       "rooted": false,
-      "label": "slide"
+      "label": "slide",
+      "hash": "7cdd81ac"
     },
     {
       "id": "0147",
@@ -496,7 +541,8 @@
       "tier": "medium",
       "heightUnits": 1.14,
       "rooted": false,
-      "label": "tricycle"
+      "label": "tricycle",
+      "hash": "9a7efa6b"
     },
     {
       "id": "014b",
@@ -506,7 +552,8 @@
       "kind": "monolith",
       "tier": "large",
       "heightUnits": 3,
-      "rooted": true
+      "rooted": true,
+      "hash": "d3937965"
     },
     {
       "id": "014d",
@@ -517,7 +564,8 @@
       "tier": "medium",
       "heightUnits": 0.96,
       "rooted": false,
-      "label": "water tap"
+      "label": "water tap",
+      "hash": "fbde3541"
     },
     {
       "id": "014e",
@@ -527,7 +575,8 @@
       "kind": "cactus",
       "tier": "small",
       "heightUnits": 1.5,
-      "rooted": true
+      "rooted": true,
+      "hash": "1f4a3ab3"
     },
     {
       "id": "015b",
@@ -537,7 +586,8 @@
       "kind": "picnicTable",
       "tier": "medium",
       "heightUnits": 1,
-      "rooted": true
+      "rooted": true,
+      "hash": "f9d199c6"
     },
     {
       "id": "015f",
@@ -547,7 +597,8 @@
       "kind": "monolith",
       "tier": "large",
       "heightUnits": 3,
-      "rooted": true
+      "rooted": true,
+      "hash": "ab957ed1"
     },
     {
       "id": "016f",
@@ -557,7 +608,8 @@
       "kind": "bush",
       "tier": "small",
       "heightUnits": 0.6,
-      "rooted": true
+      "rooted": true,
+      "hash": "4aafd15b"
     },
     {
       "id": "0170",
@@ -567,7 +619,8 @@
       "kind": "monolith",
       "tier": "large",
       "heightUnits": 3,
-      "rooted": true
+      "rooted": true,
+      "hash": "f154d27b"
     },
     {
       "id": "017b",
@@ -577,7 +630,8 @@
       "kind": "waterTower",
       "tier": "large",
       "heightUnits": 8,
-      "rooted": true
+      "rooted": true,
+      "hash": "f58c9d21"
     },
     {
       "id": "0191",
@@ -587,7 +641,8 @@
       "kind": "building",
       "tier": "building",
       "heightUnits": 12,
-      "rooted": true
+      "rooted": true,
+      "hash": "8b2281d5"
     },
     {
       "id": "01a4",
@@ -598,7 +653,8 @@
       "tier": "small",
       "heightUnits": 0.1,
       "rooted": false,
-      "label": "long screw"
+      "label": "long screw",
+      "hash": "24e3dbe1"
     },
     {
       "id": "01a8",
@@ -609,7 +665,8 @@
       "tier": "large",
       "heightUnits": 3.15,
       "rooted": false,
-      "label": "bulldozer"
+      "label": "bulldozer",
+      "hash": "63f7c603"
     },
     {
       "id": "01b0",
@@ -620,7 +677,8 @@
       "tier": "large",
       "heightUnits": 3.27,
       "rooted": false,
-      "label": "driller"
+      "label": "driller",
+      "hash": "6334c325"
     },
     {
       "id": "01b4",
@@ -630,7 +688,8 @@
       "kind": "picnicTable",
       "tier": "medium",
       "heightUnits": 1,
-      "rooted": true
+      "rooted": true,
+      "hash": "91e0c6b2"
     },
     {
       "id": "01bf",
@@ -641,7 +700,8 @@
       "tier": "small",
       "heightUnits": 0.3,
       "rooted": false,
-      "label": "boy's backpack"
+      "label": "boy's backpack",
+      "hash": "03555f97"
     },
     {
       "id": "01ce",
@@ -652,7 +712,8 @@
       "tier": "large",
       "heightUnits": 3.42,
       "rooted": false,
-      "label": "cowshed"
+      "label": "cowshed",
+      "hash": "3b3b4e64"
     },
     {
       "id": "01cf",
@@ -662,7 +723,8 @@
       "kind": "stump",
       "tier": "small",
       "heightUnits": 1.83,
-      "rooted": true
+      "rooted": true,
+      "hash": "bf28511e"
     },
     {
       "id": "01d8",
@@ -673,7 +735,8 @@
       "tier": "large",
       "heightUnits": 2.18,
       "rooted": false,
-      "label": "kintaro-bear"
+      "label": "kintaro-bear",
+      "hash": "e09fd931"
     },
     {
       "id": "01e4",
@@ -685,7 +748,8 @@
       "heightUnits": 0.28,
       "rooted": false,
       "beach": true,
-      "label": "spider crab"
+      "label": "spider crab",
+      "hash": "fc9f8b4a"
     },
     {
       "id": "01e5",
@@ -697,7 +761,8 @@
       "heightUnits": 0.13,
       "rooted": false,
       "beach": true,
-      "label": "blue crab"
+      "label": "blue crab",
+      "hash": "6bf3946f"
     },
     {
       "id": "01e6",
@@ -708,7 +773,8 @@
       "tier": "small",
       "heightUnits": 0.54,
       "rooted": false,
-      "label": "calf"
+      "label": "calf",
+      "hash": "4e336821"
     },
     {
       "id": "0216",
@@ -719,7 +785,8 @@
       "tier": "large",
       "heightUnits": 2.29,
       "rooted": false,
-      "label": "tall schoolboy"
+      "label": "tall schoolboy",
+      "hash": "bbdb438e"
     },
     {
       "id": "0242",
@@ -730,7 +797,8 @@
       "tier": "medium",
       "heightUnits": 1.51,
       "rooted": false,
-      "label": "double punk"
+      "label": "double punk",
+      "hash": "41f603fe"
     },
     {
       "id": "024a",
@@ -741,7 +809,8 @@
       "tier": "large",
       "heightUnits": 2.24,
       "rooted": false,
-      "label": "busker"
+      "label": "busker",
+      "hash": "3ecc3741"
     },
     {
       "id": "0252",
@@ -752,7 +821,8 @@
       "tier": "medium",
       "heightUnits": 1.49,
       "rooted": false,
-      "label": "fortune-teller"
+      "label": "fortune-teller",
+      "hash": "2e6670c1"
     },
     {
       "id": "025a",
@@ -762,7 +832,8 @@
       "kind": "tree",
       "tier": "medium",
       "heightUnits": 8,
-      "rooted": true
+      "rooted": true,
+      "hash": "7fe3586d"
     },
     {
       "id": "025b",
@@ -772,7 +843,8 @@
       "kind": "tree",
       "tier": "medium",
       "heightUnits": 8,
-      "rooted": true
+      "rooted": true,
+      "hash": "90168b16"
     },
     {
       "id": "0264",
@@ -783,7 +855,8 @@
       "tier": "large",
       "heightUnits": 5.26,
       "rooted": false,
-      "label": "supermarket"
+      "label": "supermarket",
+      "hash": "9475ead9"
     },
     {
       "id": "0266",
@@ -793,7 +866,8 @@
       "kind": "building",
       "tier": "building",
       "heightUnits": 10.29,
-      "rooted": true
+      "rooted": true,
+      "hash": "89084754"
     },
     {
       "id": "0278",
@@ -803,7 +877,8 @@
       "kind": "building",
       "tier": "building",
       "heightUnits": 10.42,
-      "rooted": true
+      "rooted": true,
+      "hash": "89e301a5"
     },
     {
       "id": "0282",
@@ -813,7 +888,8 @@
       "kind": "tree",
       "tier": "medium",
       "heightUnits": 4.39,
-      "rooted": true
+      "rooted": true,
+      "hash": "6f1c3a8e"
     },
     {
       "id": "0288",
@@ -825,7 +901,8 @@
       "heightUnits": 3.67,
       "rooted": false,
       "beach": true,
-      "label": "small fishing boat"
+      "label": "small fishing boat",
+      "hash": "7e53e978"
     },
     {
       "id": "0289",
@@ -837,7 +914,8 @@
       "heightUnits": 4.03,
       "rooted": false,
       "beach": true,
-      "label": "fishing boat"
+      "label": "fishing boat",
+      "hash": "797fc1e5"
     },
     {
       "id": "02a4",
@@ -848,7 +926,8 @@
       "tier": "large",
       "heightUnits": 2.91,
       "rooted": false,
-      "label": "horizontal bar"
+      "label": "horizontal bar",
+      "hash": "a07ab1ef"
     },
     {
       "id": "02a7",
@@ -858,7 +937,8 @@
       "kind": "monolith",
       "tier": "large",
       "heightUnits": 3,
-      "rooted": true
+      "rooted": true,
+      "hash": "a3fc65bf"
     },
     {
       "id": "02af",
@@ -869,7 +949,8 @@
       "tier": "small",
       "heightUnits": 0.24,
       "rooted": false,
-      "label": "lollipop"
+      "label": "lollipop",
+      "hash": "543dd52d"
     },
     {
       "id": "02b1",
@@ -881,7 +962,8 @@
       "heightUnits": 1.75,
       "rooted": true,
       "beach": true,
-      "label": "boat rental sign"
+      "label": "boat rental sign",
+      "hash": "a6524469"
     },
     {
       "id": "02b7",
@@ -891,7 +973,8 @@
       "kind": "tree",
       "tier": "medium",
       "heightUnits": 6,
-      "rooted": true
+      "rooted": true,
+      "hash": "1788ba2d"
     },
     {
       "id": "02ba",
@@ -902,7 +985,8 @@
       "tier": "small",
       "heightUnits": 0.1,
       "rooted": false,
-      "label": "butterfly specimens"
+      "label": "butterfly specimens",
+      "hash": "112d2faf"
     },
     {
       "id": "02c0",
@@ -912,7 +996,8 @@
       "kind": "building",
       "tier": "building",
       "heightUnits": 12,
-      "rooted": true
+      "rooted": true,
+      "hash": "b104447c"
     },
     {
       "id": "02c3",
@@ -923,7 +1008,8 @@
       "tier": "medium",
       "heightUnits": 1.64,
       "rooted": false,
-      "label": "kimono"
+      "label": "kimono",
+      "hash": "9f586a69"
     },
     {
       "id": "02da",
@@ -934,7 +1020,8 @@
       "tier": "large",
       "heightUnits": 2.19,
       "rooted": false,
-      "label": "bear-man"
+      "label": "bear-man",
+      "hash": "38f6aacd"
     },
     {
       "id": "02e5",
@@ -944,7 +1031,8 @@
       "kind": "tree",
       "tier": "medium",
       "heightUnits": 3,
-      "rooted": true
+      "rooted": true,
+      "hash": "c535ac89"
     },
     {
       "id": "02f8",
@@ -956,7 +1044,8 @@
       "heightUnits": 0.6,
       "rooted": false,
       "beach": true,
-      "inland": true
+      "inland": true,
+      "hash": "23ce9699"
     },
     {
       "id": "02fb",
@@ -966,7 +1055,8 @@
       "kind": "stump",
       "tier": "small",
       "heightUnits": 0.6,
-      "rooted": true
+      "rooted": true,
+      "hash": "892f2084"
     },
     {
       "id": "02fc",
@@ -976,7 +1066,8 @@
       "kind": "tree",
       "tier": "medium",
       "heightUnits": 3.82,
-      "rooted": true
+      "rooted": true,
+      "hash": "733553c0"
     },
     {
       "id": "02fd",
@@ -986,7 +1077,8 @@
       "kind": "bush",
       "tier": "small",
       "heightUnits": 0.6,
-      "rooted": true
+      "rooted": true,
+      "hash": "7acfd385"
     },
     {
       "id": "02fe",
@@ -996,7 +1088,8 @@
       "kind": "bush",
       "tier": "small",
       "heightUnits": 0.6,
-      "rooted": true
+      "rooted": true,
+      "hash": "b552eb80"
     },
     {
       "id": "0303",
@@ -1007,7 +1100,8 @@
       "tier": "building",
       "heightUnits": 2.4,
       "rooted": true,
-      "beach": true
+      "beach": true,
+      "hash": "12a8f0be"
     },
     {
       "id": "0317",
@@ -1017,7 +1111,8 @@
       "kind": "waterTower",
       "tier": "large",
       "heightUnits": 5,
-      "rooted": true
+      "rooted": true,
+      "hash": "0c4d2f55"
     },
     {
       "id": "0318",
@@ -1028,7 +1123,8 @@
       "tier": "medium",
       "heightUnits": 1.34,
       "rooted": false,
-      "label": "no parking!"
+      "label": "no parking!",
+      "hash": "11dfe26c"
     },
     {
       "id": "031c",
@@ -1039,7 +1135,8 @@
       "tier": "medium",
       "heightUnits": 1.37,
       "rooted": false,
-      "label": "swing"
+      "label": "swing",
+      "hash": "6c0049da"
     },
     {
       "id": "0330",
@@ -1050,7 +1147,8 @@
       "tier": "small",
       "heightUnits": 0.1,
       "rooted": false,
-      "label": "lime crayon"
+      "label": "lime crayon",
+      "hash": "44d92ee2"
     },
     {
       "id": "034c",
@@ -1061,7 +1159,8 @@
       "tier": "small",
       "heightUnits": 0.1,
       "rooted": false,
-      "label": "sausage"
+      "label": "sausage",
+      "hash": "2938438f"
     },
     {
       "id": "034d",
@@ -1072,7 +1171,8 @@
       "tier": "small",
       "heightUnits": 0.18,
       "rooted": false,
-      "label": "rc controller"
+      "label": "rc controller",
+      "hash": "a7249ecd"
     },
     {
       "id": "035b",
@@ -1082,7 +1182,8 @@
       "kind": "picnicTable",
       "tier": "medium",
       "heightUnits": 1,
-      "rooted": true
+      "rooted": true,
+      "hash": "e9f23f12"
     },
     {
       "id": "0369",
@@ -1092,7 +1193,8 @@
       "kind": "tree",
       "tier": "medium",
       "heightUnits": 3,
-      "rooted": true
+      "rooted": true,
+      "hash": "911090b1"
     },
     {
       "id": "036a",
@@ -1102,7 +1204,8 @@
       "kind": "bush",
       "tier": "small",
       "heightUnits": 0.61,
-      "rooted": true
+      "rooted": true,
+      "hash": "4a90f355"
     },
     {
       "id": "0382",
@@ -1113,7 +1216,8 @@
       "tier": "large",
       "heightUnits": 2.67,
       "rooted": false,
-      "label": "helicopter"
+      "label": "helicopter",
+      "hash": "35af851c"
     },
     {
       "id": "0392",
@@ -1123,7 +1227,8 @@
       "kind": "building",
       "tier": "building",
       "heightUnits": 6.29,
-      "rooted": true
+      "rooted": true,
+      "hash": "a0f80016"
     },
     {
       "id": "039d",
@@ -1134,7 +1239,8 @@
       "tier": "building",
       "heightUnits": 12,
       "rooted": true,
-      "beach": true
+      "beach": true,
+      "hash": "81599ae4"
     },
     {
       "id": "03a2",
@@ -1145,7 +1251,8 @@
       "tier": "large",
       "heightUnits": 3.38,
       "rooted": true,
-      "label": "pedestrian signal"
+      "label": "pedestrian signal",
+      "hash": "7cebbe0d"
     },
     {
       "id": "03a9",
@@ -1157,7 +1264,8 @@
       "heightUnits": 0.6,
       "rooted": false,
       "beach": true,
-      "inland": true
+      "inland": true,
+      "hash": "8e9a2e84"
     },
     {
       "id": "03aa",
@@ -1169,7 +1277,8 @@
       "heightUnits": 0.6,
       "rooted": false,
       "beach": true,
-      "inland": true
+      "inland": true,
+      "hash": "fe835aac"
     },
     {
       "id": "03ab",
@@ -1181,7 +1290,8 @@
       "heightUnits": 0.6,
       "rooted": false,
       "beach": true,
-      "inland": true
+      "inland": true,
+      "hash": "5985bbb6"
     },
     {
       "id": "03cc",
@@ -1191,7 +1301,8 @@
       "kind": "building",
       "tier": "building",
       "heightUnits": 2.4,
-      "rooted": true
+      "rooted": true,
+      "hash": "24aa0903"
     },
     {
       "id": "03d0",
@@ -1201,7 +1312,8 @@
       "kind": "bush",
       "tier": "small",
       "heightUnits": 0.6,
-      "rooted": true
+      "rooted": true,
+      "hash": "5ef15a1f"
     },
     {
       "id": "03db",
@@ -1212,7 +1324,8 @@
       "tier": "small",
       "heightUnits": 0.1,
       "rooted": false,
-      "label": "onigiri (rice ball)"
+      "label": "onigiri (rice ball)",
+      "hash": "4df68051"
     },
     {
       "id": "03e7",
@@ -1222,7 +1335,8 @@
       "kind": "monolith",
       "tier": "large",
       "heightUnits": 3,
-      "rooted": true
+      "rooted": true,
+      "hash": "db61d64b"
     },
     {
       "id": "03e8",
@@ -1232,7 +1346,8 @@
       "kind": "monolith",
       "tier": "large",
       "heightUnits": 3.25,
-      "rooted": true
+      "rooted": true,
+      "hash": "f3cda287"
     },
     {
       "id": "03e9",
@@ -1244,7 +1359,8 @@
       "heightUnits": 3,
       "rooted": true,
       "beach": true,
-      "inland": true
+      "inland": true,
+      "hash": "d90968a1"
     },
     {
       "id": "03ea",
@@ -1254,7 +1370,8 @@
       "kind": "monolith",
       "tier": "large",
       "heightUnits": 3,
-      "rooted": true
+      "rooted": true,
+      "hash": "d2178278"
     },
     {
       "id": "03ef",
@@ -1266,7 +1383,8 @@
       "heightUnits": 0.35,
       "rooted": false,
       "beach": true,
-      "label": "baby turtle"
+      "label": "baby turtle",
+      "hash": "1f276e80"
     },
     {
       "id": "03f6",
@@ -1278,7 +1396,8 @@
       "heightUnits": 1.16,
       "rooted": false,
       "beach": true,
-      "label": "parasol"
+      "label": "parasol",
+      "hash": "631f7134"
     },
     {
       "id": "03fe",
@@ -1290,7 +1409,8 @@
       "heightUnits": 4.08,
       "rooted": false,
       "beach": true,
-      "label": "sperm whale"
+      "label": "sperm whale",
+      "hash": "58bc7648"
     },
     {
       "id": "03ff",
@@ -1301,7 +1421,8 @@
       "tier": "building",
       "heightUnits": 12,
       "rooted": true,
-      "beach": true
+      "beach": true,
+      "hash": "58aced10"
     },
     {
       "id": "040c",
@@ -1311,7 +1432,8 @@
       "kind": "building",
       "tier": "building",
       "heightUnits": 12,
-      "rooted": true
+      "rooted": true,
+      "hash": "da3aeb17"
     },
     {
       "id": "0429",
@@ -1323,7 +1445,8 @@
       "heightUnits": 2.91,
       "rooted": false,
       "beach": true,
-      "label": "beach umbrella"
+      "label": "beach umbrella",
+      "hash": "38df7a3f"
     },
     {
       "id": "042e",
@@ -1335,7 +1458,8 @@
       "heightUnits": 2.91,
       "rooted": false,
       "beach": true,
-      "label": "beach umbrella"
+      "label": "beach umbrella",
+      "hash": "fea862ca"
     },
     {
       "id": "0434",
@@ -1346,7 +1470,8 @@
       "tier": "large",
       "heightUnits": 3.24,
       "rooted": false,
-      "label": "spirit of anger"
+      "label": "spirit of anger",
+      "hash": "56ce57cd"
     },
     {
       "id": "0439",
@@ -1357,7 +1482,8 @@
       "tier": "large",
       "heightUnits": 2.35,
       "rooted": false,
-      "label": "car wash"
+      "label": "car wash",
+      "hash": "d5127a1a"
     },
     {
       "id": "043b",
@@ -1368,7 +1494,8 @@
       "tier": "large",
       "heightUnits": 2.39,
       "rooted": false,
-      "label": "scoreboard"
+      "label": "scoreboard",
+      "hash": "77bf1dab"
     },
     {
       "id": "0448",
@@ -1380,7 +1507,8 @@
       "heightUnits": 1.52,
       "rooted": true,
       "beach": true,
-      "label": "flag buoy"
+      "label": "flag buoy",
+      "hash": "d28eef0b"
     },
     {
       "id": "0452",
@@ -1391,7 +1519,8 @@
       "tier": "large",
       "heightUnits": 2.82,
       "rooted": true,
-      "label": "stop sign"
+      "label": "stop sign",
+      "hash": "f497cbb0"
     },
     {
       "id": "0457",
@@ -1401,7 +1530,8 @@
       "kind": "stump",
       "tier": "small",
       "heightUnits": 0.6,
-      "rooted": true
+      "rooted": true,
+      "hash": "eb7e7c7c"
     },
     {
       "id": "0458",
@@ -1411,7 +1541,8 @@
       "kind": "stump",
       "tier": "small",
       "heightUnits": 2,
-      "rooted": true
+      "rooted": true,
+      "hash": "f4798d1c"
     },
     {
       "id": "0464",
@@ -1421,7 +1552,8 @@
       "kind": "bush",
       "tier": "small",
       "heightUnits": 0.6,
-      "rooted": true
+      "rooted": true,
+      "hash": "fd92c41c"
     },
     {
       "id": "0465",
@@ -1431,7 +1563,8 @@
       "kind": "bush",
       "tier": "small",
       "heightUnits": 0.6,
-      "rooted": true
+      "rooted": true,
+      "hash": "270e6781"
     },
     {
       "id": "0466",
@@ -1441,7 +1574,8 @@
       "kind": "bush",
       "tier": "small",
       "heightUnits": 0.6,
-      "rooted": true
+      "rooted": true,
+      "hash": "e47d553e"
     },
     {
       "id": "0467",
@@ -1451,7 +1585,8 @@
       "kind": "bush",
       "tier": "small",
       "heightUnits": 0.6,
-      "rooted": true
+      "rooted": true,
+      "hash": "efde3559"
     },
     {
       "id": "0468",
@@ -1462,7 +1597,8 @@
       "tier": "building",
       "heightUnits": 9.18,
       "rooted": true,
-      "beach": true
+      "beach": true,
+      "hash": "717ca008"
     },
     {
       "id": "046a",
@@ -1472,7 +1608,8 @@
       "kind": "building",
       "tier": "building",
       "heightUnits": 5.99,
-      "rooted": true
+      "rooted": true,
+      "hash": "955fd1cd"
     },
     {
       "id": "046e",
@@ -1482,7 +1619,8 @@
       "kind": "waterTower",
       "tier": "large",
       "heightUnits": 8,
-      "rooted": true
+      "rooted": true,
+      "hash": "e7aac05d"
     },
     {
       "id": "0478",
@@ -1492,7 +1630,8 @@
       "kind": "bush",
       "tier": "small",
       "heightUnits": 0.6,
-      "rooted": true
+      "rooted": true,
+      "hash": "23b80840"
     },
     {
       "id": "047e",
@@ -1502,7 +1641,8 @@
       "kind": "monolith",
       "tier": "large",
       "heightUnits": 3,
-      "rooted": true
+      "rooted": true,
+      "hash": "26655a08"
     },
     {
       "id": "0494",
@@ -1514,7 +1654,8 @@
       "heightUnits": 0.38,
       "rooted": false,
       "beach": true,
-      "label": "electric jellyfish"
+      "label": "electric jellyfish",
+      "hash": "5cb24db5"
     },
     {
       "id": "0497",
@@ -1526,7 +1667,8 @@
       "heightUnits": 2,
       "rooted": false,
       "beach": true,
-      "label": "lifeguard's chair"
+      "label": "lifeguard's chair",
+      "hash": "630be3b1"
     },
     {
       "id": "0498",
@@ -1538,7 +1680,8 @@
       "heightUnits": 3.13,
       "rooted": false,
       "beach": true,
-      "label": "buoy"
+      "label": "buoy",
+      "hash": "7d03fa35"
     },
     {
       "id": "049c",
@@ -1549,7 +1692,8 @@
       "tier": "large",
       "heightUnits": 2.44,
       "rooted": false,
-      "label": "cargo container"
+      "label": "cargo container",
+      "hash": "4278e4a6"
     },
     {
       "id": "04a4",
@@ -1559,7 +1703,8 @@
       "kind": "building",
       "tier": "building",
       "heightUnits": 9.01,
-      "rooted": true
+      "rooted": true,
+      "hash": "7cda4e15"
     },
     {
       "id": "04a9",
@@ -1570,7 +1715,8 @@
       "tier": "medium",
       "heightUnits": 1.1,
       "rooted": false,
-      "label": "washing machine"
+      "label": "washing machine",
+      "hash": "51d31de6"
     },
     {
       "id": "04ba",
@@ -1581,7 +1727,8 @@
       "tier": "small",
       "heightUnits": 0.1,
       "rooted": false,
-      "label": "magazine"
+      "label": "magazine",
+      "hash": "88b8e514"
     },
     {
       "id": "04c6",
@@ -1592,7 +1739,8 @@
       "tier": "small",
       "heightUnits": 0.36,
       "rooted": false,
-      "label": "yellow tulip"
+      "label": "yellow tulip",
+      "hash": "7a9c2beb"
     },
     {
       "id": "04d8",
@@ -1603,7 +1751,8 @@
       "tier": "medium",
       "heightUnits": 1.69,
       "rooted": false,
-      "label": "torn shoji"
+      "label": "torn shoji",
+      "hash": "d1b93b28"
     },
     {
       "id": "04f0",
@@ -1614,7 +1763,8 @@
       "tier": "building",
       "heightUnits": 12,
       "rooted": true,
-      "beach": true
+      "beach": true,
+      "hash": "df29a817"
     },
     {
       "id": "04f4",
@@ -1625,7 +1775,8 @@
       "tier": "large",
       "heightUnits": 3.29,
       "rooted": false,
-      "label": "boiler room"
+      "label": "boiler room",
+      "hash": "d47426f2"
     },
     {
       "id": "0502",
@@ -1635,7 +1786,8 @@
       "kind": "picnicTable",
       "tier": "medium",
       "heightUnits": 1.04,
-      "rooted": true
+      "rooted": true,
+      "hash": "d3c69343"
     },
     {
       "id": "0507",
@@ -1645,7 +1797,8 @@
       "kind": "cactus",
       "tier": "small",
       "heightUnits": 4,
-      "rooted": true
+      "rooted": true,
+      "hash": "c7e78ff0"
     },
     {
       "id": "0510",
@@ -1655,7 +1808,8 @@
       "kind": "waterTower",
       "tier": "large",
       "heightUnits": 6.65,
-      "rooted": true
+      "rooted": true,
+      "hash": "6fedae10"
     },
     {
       "id": "0515",
@@ -1666,7 +1820,8 @@
       "tier": "small",
       "heightUnits": 0.23,
       "rooted": false,
-      "label": "windchime"
+      "label": "windchime",
+      "hash": "d8c7cb3c"
     },
     {
       "id": "0526",
@@ -1678,7 +1833,8 @@
       "heightUnits": 2,
       "rooted": false,
       "beach": true,
-      "inland": true
+      "inland": true,
+      "hash": "2c5c8832"
     },
     {
       "id": "0530",
@@ -1691,7 +1847,8 @@
       "rooted": false,
       "beach": true,
       "inland": true,
-      "label": "grilled fish"
+      "label": "grilled fish",
+      "hash": "5f76a3b8"
     },
     {
       "id": "0543",
@@ -1701,7 +1858,8 @@
       "kind": "building",
       "tier": "building",
       "heightUnits": 2.4,
-      "rooted": true
+      "rooted": true,
+      "hash": "11af08c2"
     },
     {
       "id": "0561",
@@ -1711,7 +1869,8 @@
       "kind": "building",
       "tier": "building",
       "heightUnits": 4.57,
-      "rooted": true
+      "rooted": true,
+      "hash": "ec332397"
     },
     {
       "id": "0564",
@@ -1721,7 +1880,8 @@
       "kind": "building",
       "tier": "building",
       "heightUnits": 2.4,
-      "rooted": true
+      "rooted": true,
+      "hash": "962fa28c"
     },
     {
       "id": "0571",
@@ -1732,7 +1892,8 @@
       "tier": "large",
       "heightUnits": 3.97,
       "rooted": true,
-      "label": "suspension bridge"
+      "label": "suspension bridge",
+      "hash": "389c2c1f"
     },
     {
       "id": "0574",
@@ -1742,7 +1903,8 @@
       "kind": "building",
       "tier": "building",
       "heightUnits": 7.55,
-      "rooted": true
+      "rooted": true,
+      "hash": "fd4f14f5"
     },
     {
       "id": "0584",
@@ -1752,7 +1914,8 @@
       "kind": "bush",
       "tier": "small",
       "heightUnits": 1.57,
-      "rooted": true
+      "rooted": true,
+      "hash": "76d35f0c"
     },
     {
       "id": "0591",
@@ -1763,7 +1926,8 @@
       "tier": "medium",
       "heightUnits": 1.41,
       "rooted": false,
-      "label": "golfer guy"
+      "label": "golfer guy",
+      "hash": "ec55b6e2"
     },
     {
       "id": "0596",
@@ -1775,7 +1939,8 @@
       "heightUnits": 2.77,
       "rooted": false,
       "beach": true,
-      "label": "giant squid"
+      "label": "giant squid",
+      "hash": "88ad7ad3"
     },
     {
       "id": "0597",
@@ -1786,7 +1951,8 @@
       "tier": "building",
       "heightUnits": 12,
       "rooted": true,
-      "beach": true
+      "beach": true,
+      "hash": "9a48d530"
     },
     {
       "id": "05af",
@@ -1797,7 +1963,8 @@
       "tier": "medium",
       "heightUnits": 1.14,
       "rooted": false,
-      "label": "green balloon"
+      "label": "green balloon",
+      "hash": "a90bdc24"
     },
     {
       "id": "05ba",
@@ -1807,7 +1974,8 @@
       "kind": "conifer",
       "tier": "medium",
       "heightUnits": 4,
-      "rooted": true
+      "rooted": true,
+      "hash": "1575544a"
     },
     {
       "id": "05bf",
@@ -1818,7 +1986,8 @@
       "tier": "medium",
       "heightUnits": 0.6,
       "rooted": false,
-      "label": "royal present"
+      "label": "royal present",
+      "hash": "1d3a30b8"
     },
     {
       "id": "05c0",
@@ -1828,7 +1997,8 @@
       "kind": "building",
       "tier": "building",
       "heightUnits": 5.73,
-      "rooted": true
+      "rooted": true,
+      "hash": "016cf4a4"
     },
     {
       "id": "05df",
@@ -1839,7 +2009,8 @@
       "tier": "large",
       "heightUnits": 3.07,
       "rooted": false,
-      "label": "canada"
+      "label": "canada",
+      "hash": "852dc8d9"
     },
     {
       "id": "05ed",
@@ -1850,7 +2021,8 @@
       "tier": "small",
       "heightUnits": 0.29,
       "rooted": false,
-      "label": "panama"
+      "label": "panama",
+      "hash": "e4b7cd81"
     },
     {
       "id": "05f2",
@@ -1861,7 +2033,8 @@
       "tier": "medium",
       "heightUnits": 1.61,
       "rooted": false,
-      "label": "mexico"
+      "label": "mexico",
+      "hash": "33a99920"
     },
     {
       "id": "05fb",
@@ -1872,7 +2045,8 @@
       "tier": "large",
       "heightUnits": 2.16,
       "rooted": false,
-      "label": "brazil"
+      "label": "brazil",
+      "hash": "4494c1d7"
     },
     {
       "id": "0614",
@@ -1883,7 +2057,8 @@
       "tier": "large",
       "heightUnits": 2.53,
       "rooted": false,
-      "label": "indonesia"
+      "label": "indonesia",
+      "hash": "4cb04a2c"
     },
     {
       "id": "0630",
@@ -1894,7 +2069,8 @@
       "tier": "large",
       "heightUnits": 2.46,
       "rooted": false,
-      "label": "china"
+      "label": "china",
+      "hash": "be8d0674"
     },
     {
       "id": "064f",
@@ -1905,7 +2081,8 @@
       "tier": "small",
       "heightUnits": 0.32,
       "rooted": false,
-      "label": "senegal"
+      "label": "senegal",
+      "hash": "f8670712"
     },
     {
       "id": "066c",
@@ -1916,7 +2093,8 @@
       "tier": "small",
       "heightUnits": 0.19,
       "rooted": false,
-      "label": "andorra"
+      "label": "andorra",
+      "hash": "098607d9"
     },
     {
       "id": "066d",
@@ -1927,7 +2105,8 @@
       "tier": "medium",
       "heightUnits": 0.63,
       "rooted": false,
-      "label": "england"
+      "label": "england",
+      "hash": "5e944db9"
     },
     {
       "id": "0680",
@@ -1938,7 +2117,8 @@
       "tier": "medium",
       "heightUnits": 0.81,
       "rooted": false,
-      "label": "finland"
+      "label": "finland",
+      "hash": "ac3ebad0"
     },
     {
       "id": "069a",
@@ -1949,7 +2129,8 @@
       "tier": "small",
       "heightUnits": 0.19,
       "rooted": false,
-      "label": "moldova"
+      "label": "moldova",
+      "hash": "008c5ba9"
     },
     {
       "id": "069d",
@@ -1960,7 +2141,8 @@
       "tier": "large",
       "heightUnits": 2.53,
       "rooted": false,
-      "label": "antarctica"
+      "label": "antarctica",
+      "hash": "cb069108"
     }
   ]
 }

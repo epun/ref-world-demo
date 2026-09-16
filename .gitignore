@@ -19,3 +19,8 @@ scratch/*.png
 
 # agent worktrees the harness checks out under the repo; never a repo artefact.
 .claude/worktrees/
+
+# the props-compare harness backs the published models up beside itself while
+# it renders the library originals; the restore is in a `finally`, and this is
+# the belt for the brace.
+scratch/props-compare-published/

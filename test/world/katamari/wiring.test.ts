@@ -86,8 +86,12 @@ beforeAll(async () => {
     close() {},
   });
   const { GLTFLoader } = await import('three/examples/jsm/loaders/GLTFLoader.js');
+  // The published models are meshopt-compressed (2026-09-16), so the loader
+  // needs the decoder here exactly as `loadKatamariModels` gives it one.
+  const { MeshoptDecoder } = await import('three/examples/jsm/libs/meshopt_decoder.module.js');
   const parse = async (entry: KatamariEntry): Promise<KatamariLibrary['models'][number]> => {
-    const gltf = await new GLTFLoader().parseAsync(arrayBufferOf(entry.file), '');
+    const loader = new GLTFLoader().setMeshoptDecoder(MeshoptDecoder);
+    const gltf = await loader.parseAsync(arrayBufferOf(entry.file), '');
     return buildKatamariModel(gltf.scene, entry);
   };
   library = assembleLibrary([await parse(ROCK), await parse(CAR)]);

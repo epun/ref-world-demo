@@ -45,6 +45,7 @@ function arrayBufferOf(file: string): ArrayBuffer {
 }
 
 let GLTFLoaderCtor: typeof import('three/examples/jsm/loaders/GLTFLoader.js').GLTFLoader;
+let Meshopt: typeof import('three/examples/jsm/libs/meshopt_decoder.module.js').MeshoptDecoder;
 
 beforeAll(async () => {
   const scope = globalThis as unknown as Record<string, unknown>;
@@ -55,10 +56,17 @@ beforeAll(async () => {
     close(): void {},
   });
   ({ GLTFLoader: GLTFLoaderCtor } = await import('three/examples/jsm/loaders/GLTFLoader.js'));
+  // …and the meshopt decoder, because the published files are compressed
+  // (2026-09-16, the slow-network work — scripts/katamari-curate.mjs). It is
+  // a wasm module and instantiates once, the same way the loader does it.
+  ({ MeshoptDecoder: Meshopt } = await import(
+    'three/examples/jsm/libs/meshopt_decoder.module.js'
+  ));
 });
 
 async function parse(file: string): Promise<import('three').Object3D> {
-  const gltf = await new GLTFLoaderCtor().parseAsync(arrayBufferOf(file), '');
+  const loader = new GLTFLoaderCtor().setMeshoptDecoder(Meshopt);
+  const gltf = await loader.parseAsync(arrayBufferOf(file), '');
   return gltf.scene;
 }
 
