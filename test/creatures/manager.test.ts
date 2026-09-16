@@ -39,7 +39,15 @@ import {
 import { BehaviorAgent, MAX_SPEED } from '../../src/behavior/agent';
 import { generatedName } from '../../src/creatures/naming';
 import { MOTION } from '../../src/taste/tokens';
-import { carryLimit, passLimit, STICKY } from '../../src/creatures/sticky';
+import {
+  carryLimit,
+  clearanceLift,
+  CLEARANCE_DIRS,
+  CLEARANCE_PAD,
+  CLEARANCE_RING,
+  passLimit,
+  STICKY,
+} from '../../src/creatures/sticky';
 import { EGG_RADIUS } from '../../src/egg/egg';
 import type { Collider } from '../../src/physics/colliders';
 import {
@@ -1008,6 +1016,485 @@ describe('standing on the ground — heights come from the Surface seam', () => 
     manager.endManualMove(root);
     expect(root.position.y).toBe(ramp.sampleHeight(24, -11));
     manager.clearAll();
+  });
+});
+
+describe('ground clearance — a big ball rides on its whole footprint', () => {
+  /**
+   * > User report, 2026-09-16: *"the ball is glitching through the map floor
+   * > if it's big enough."*
+   *
+   * A creature stands on the ground under its CENTRE, which is the Surface
+   * seam doing exactly what §7.2 asks of it and is exactly right for a 0.9 u
+   * hatchling. A ball several units across is a different shape of problem:
+   * its underside IS the root, and it spans `bodyR` in every direction, so on
+   * a slope or a terrace riser the ground under its uphill edge is above the
+   * ground under its middle and the downhill half of it is inside the hill.
+   *
+   * KATAMARI ONLY, and the twin at the bottom of this block is the proof: the
+   * same slope, the same fixture, the game off, and a creature standing on
+   * precisely the height it always stood on.
+   */
+  const SLOPE30 = Math.tan(Math.PI / 6);
+  const slope: Surface = {
+    sampleHeight: (x) => x * SLOPE30,
+    normalAt: () => {
+      const len = Math.hypot(SLOPE30, 1);
+      return { x: -SLOPE30 / len, y: 1 / len, z: 0 };
+    },
+  };
+
+  /**
+   * A 1.6 u terrace riser at x = 0 — the map's own `terraceStep`
+   * (src/world/landscape.ts), as a cliff. Deliberately a cut here: it is the
+   * hardest thing the footprint ring can be asked about, and a creature
+   * STANDING next to it is where the report's bug lived.
+   */
+  const RISER = 1.6;
+  const terrace: Surface = {
+    sampleHeight: (x) => (x > 0 ? RISER : 0),
+    normalAt: () => ({ x: 0, y: 1, z: 0 }),
+  };
+
+  /**
+   * The same 1.6 u rise as the real map draws it: a smoothstep over a band,
+   * never a cut (`terrace()` in src/world/landscape.ts — "the riser is a
+   * smoothstep, never a cut: no hard-edged geometry anywhere"). This is the
+   * one to WALK over; the cliff above is the one to stand beside.
+   */
+  const RISER_BAND = 2;
+  const ramped: Surface = {
+    sampleHeight: (x) => {
+      const t = Math.min(1, Math.max(0, (x + RISER_BAND / 2) / RISER_BAND));
+      return RISER * t * t * (3 - 2 * t);
+    },
+    normalAt: () => ({ x: 0, y: 1, z: 0 }),
+  };
+
+  /** Where a prop the manager has never drawn goes when it is stuck on: the
+   * loose layer, which a headless caller has to stub. */
+  function stubLoose(): LooseMeshes {
+    const meshes = new Map<string, Object3D>();
+    return {
+      show: (item: string): Object3D => {
+        let mesh = meshes.get(item);
+        if (!mesh) {
+          mesh = new Group();
+          meshes.set(item, mesh);
+        }
+        return mesh;
+      },
+      move: () => {},
+      remove: (item: string) => {
+        meshes.delete(item);
+      },
+      get: (item: string) => meshes.get(item),
+      dispose: () => {},
+    };
+  }
+
+  function makeManager(
+    surface: Surface,
+    game: WorldGame,
+    opts: { physics?: boolean } = {},
+  ): ReturnType<typeof createCreatureManager> {
+    const manager = createCreatureManager(stubWorld([], opts), {
+      autoHatch: false,
+      surface,
+      game,
+      loose: stubLoose(),
+    });
+    manager.spawn('ball', snowman, { name: 'ball', hatchMs: 60_000, grown: true });
+    return manager;
+  }
+
+  function rootOf(manager: ReturnType<typeof createCreatureManager>): Group {
+    const target = manager.hoverTargets().find((t) => t.name === 'ball');
+    expect(target).toBeDefined();
+    return target!.object;
+  }
+
+  /**
+   * Give the creature a pile, through the EVENT path — which is the only
+   * path: `applyStick` is what a viewer applies and what the host's own
+   * decision goes through.
+   *
+   * Props rather than the passenger snacks the roll tests use, because this
+   * block needs a BIG ball and a prop's radius is whatever the record says:
+   * three items of `r` 3 put a snowman past `bodyR` 3, where feeding it
+   * body-sized creatures would take a hundred spawns to get there.
+   */
+  function feedProps(
+    manager: ReturnType<typeof createCreatureManager>,
+    count: number,
+    r: number,
+  ): void {
+    for (let i = 0; i < count; i++) {
+      manager.applyStick({
+        id: 'ball',
+        item: `rock:0:${i}.00:0.00`,
+        kind: 'rock',
+        variant: 0,
+        scale: r,
+        ox: 0,
+        oy: 0,
+        oz: 0,
+        qx: 0,
+        qy: 0,
+        qz: 0,
+        qw: 1,
+      });
+    }
+  }
+
+  /**
+   * Hold a creature at exactly (x, z) for `frames` frames.
+   *
+   * Through the POSE path, which is a viewer's own (`followPoses` applies
+   * while the local ai is stood down, and its first frame is a placement
+   * rather than a journey) — an agent is free to wander and these tests are
+   * about a named spot on a named slope. The HOST path, agent and resolve and
+   * all, is what the autonomous test below runs.
+   */
+  function holdAt(
+    manager: ReturnType<typeof createCreatureManager>,
+    x: number,
+    z: number,
+    frames: number,
+    onFrame?: () => void,
+  ): void {
+    manager.pauseAi(true);
+    let now = 100_000;
+    for (let f = 0; f < frames; f++) {
+      manager.followPoses([{ id: 'ball', x, z, heading: 0 }]);
+      now += 33;
+      manager.update(33, now);
+      onFrame?.();
+    }
+  }
+
+  /** The highest ground under the sampled footprint — the ring the clearance
+   * rule measures, computed here from the surface rather than read out of the
+   * code under test. */
+  function highestUnderFootprint(surface: Surface, x: number, z: number, bodyR: number): number {
+    let highest = surface.sampleHeight(x, z);
+    const ringR = bodyR * CLEARANCE_RING;
+    for (const dir of CLEARANCE_DIRS) {
+      highest = Math.max(highest, surface.sampleHeight(x + dir.x * ringR, z + dir.z * ringR));
+    }
+    return highest;
+  }
+
+  /**
+   * Is the drawn SPHERE clear of the ground everywhere under it?
+   *
+   * The report's own test, and stricter than the rule: the ball's centre is
+   * `root.y + bodyR` and its surface at horizontal distance `d` is
+   * `centre − sqrt(bodyR² − d²)`, so this walks the whole footprint disc —
+   * not only the sampled ring — and asks whether the paper is under the
+   * sphere at every one of them.
+   */
+  function sphereClears(
+    surface: Surface,
+    rootY: number,
+    x: number,
+    z: number,
+    bodyR: number,
+  ): boolean {
+    const centre = rootY + bodyR;
+    for (let ring = 0; ring <= 6; ring++) {
+      const d = (ring / 6) * bodyR;
+      const surfaceY = centre - Math.sqrt(Math.max(0, bodyR * bodyR - d * d));
+      for (let a = 0; a < 16; a++) {
+        const th = (a / 16) * Math.PI * 2;
+        const ground = surface.sampleHeight(x + Math.cos(th) * d, z + Math.sin(th) * d);
+        if (surfaceY < ground - 1e-9) return false;
+      }
+    }
+    return true;
+  }
+
+  it('a bodyR 3 ball on a 30° slope keeps its underside above the ground', () => {
+    const manager = makeManager(slope, 'katamari');
+    const root = rootOf(manager);
+    feedProps(manager, 3, 3);
+    holdAt(manager, 6, -4, 400);
+
+    const bodyR = manager.ballDiameter('ball') / 2;
+    // A real ball, not a hatchling with a rounding error on it.
+    expect(bodyR).toBeGreaterThan(2.5);
+
+    const highest = highestUnderFootprint(slope, root.position.x, root.position.z, bodyR);
+    const pad = bodyR * CLEARANCE_PAD;
+    // The underside of the ball IS the root (`clump.group` at (0, baseR, 0),
+    // the root's scale the growth), so this is the ball clearing the highest
+    // ground under its footprint — with the pad still to spare.
+    expect(root.position.y).toBeGreaterThanOrEqual(highest);
+    expect(root.position.y + pad).toBeGreaterThanOrEqual(highest);
+    // …and the drawn sphere is clear of the paper across the whole disc,
+    // which is what the person reported.
+    expect(sphereClears(slope, root.position.y, root.position.x, root.position.z, bodyR)).toBe(
+      true,
+    );
+    // It is a CLEARANCE and not a float: the shipped placement would have
+    // been the centre height, and that is where the downhill half went under.
+    const centre = slope.sampleHeight(root.position.x, root.position.z);
+    expect(root.position.y - centre).toBeGreaterThan(1);
+    expect(manager.groundLift('ball')).toBeCloseTo(root.position.y - centre, 9);
+    manager.clearAll();
+  });
+
+  it('and across a 1.6 u terrace riser, standing just below the step', () => {
+    const manager = makeManager(terrace, 'katamari');
+    const root = rootOf(manager);
+    feedProps(manager, 3, 3);
+    // Just downhill of the riser, so the ring reaches over the step and the
+    // centre does not: the exact case a ball's middle knows nothing about.
+    holdAt(manager, -0.1, 0, 400);
+
+    const bodyR = manager.ballDiameter('ball') / 2;
+    expect(terrace.sampleHeight(root.position.x, root.position.z)).toBe(0);
+    const highest = highestUnderFootprint(terrace, root.position.x, root.position.z, bodyR);
+    expect(highest).toBe(RISER);
+    expect(root.position.y).toBeGreaterThanOrEqual(RISER);
+    expect(
+      sphereClears(terrace, root.position.y, root.position.x, root.position.z, bodyR),
+    ).toBe(true);
+    manager.clearAll();
+  });
+
+  it('the lift arrives by sliding — monotone, and never past the target', () => {
+    const manager = makeManager(slope, 'katamari');
+    const root = rootOf(manager);
+    feedProps(manager, 3, 3);
+    // One frame to write the pose and the growth, so the target the spring is
+    // chasing is the one this asserts against.
+    holdAt(manager, 6, -4, 1);
+    const bodyR = manager.ballDiameter('ball') / 2;
+    const target = clearanceLift(root.position.x, root.position.z, bodyR, (x, z) =>
+      slope.sampleHeight(x, z),
+    );
+    expect(target).toBeGreaterThan(1);
+
+    let previous = manager.groundLift('ball');
+    let frames = 0;
+    holdAt(manager, 6, -4, 300, () => {
+      const lift = manager.groundLift('ball');
+      // Monotone: it only ever rises toward the clearance…
+      expect(lift).toBeGreaterThanOrEqual(previous - 1e-12);
+      // …and never past it, which is ζ ≥ 1 doing its job (TASTE §2.1).
+      expect(lift).toBeLessThanOrEqual(target + 1e-9);
+      previous = lift;
+      frames++;
+    });
+    expect(frames).toBe(300);
+    // It got there, over about `MOTION.primaryMs` — 300 frames is deep into
+    // the tail.
+    expect(previous).toBeCloseTo(target, 4);
+    manager.clearAll();
+  });
+
+  it('a hatchling gets the shipped placement — no lift, and no ring sampled', () => {
+    // A counting surface: the ring is eight extra samples a frame, and the
+    // ask is that a creature carrying nothing pays for none of them.
+    let calls = 0;
+    const counted: Surface = {
+      sampleHeight: (x, z) => {
+        calls++;
+        return slope.sampleHeight(x, z);
+      },
+      normalAt: (x, z) => slope.normalAt(x, z),
+    };
+    const manager = makeManager(counted, 'katamari');
+    const root = rootOf(manager);
+    holdAt(manager, 6, -4, 60);
+    const hatchlingCalls = calls;
+
+    // Standing on the terrain under its centre, exactly as it shipped.
+    expect(manager.ballDiameter('ball') / 2).toBeLessThan(1.5);
+    expect(manager.groundLift('ball')).toBe(0);
+    expect(root.position.y).toBe(slope.sampleHeight(root.position.x, root.position.z));
+
+    // Then give it a pile: the same sixty frames now cost the ring.
+    calls = 0;
+    feedProps(manager, 3, 3);
+    holdAt(manager, 6, -4, 60);
+    expect(calls).toBeGreaterThan(hatchlingCalls);
+    expect(manager.groundLift('ball')).toBeGreaterThan(0);
+    manager.clearAll();
+  });
+
+  it('every other world stands exactly where it stood — the twin', () => {
+    const plain = makeManager(slope, 'none');
+    const game = makeManager(slope, 'katamari');
+    // The same events reach both. A world without the game has no pile to
+    // put them on, so `applyStick` drops them (`if (!katamari) return`).
+    feedProps(plain, 3, 3);
+    feedProps(game, 3, 3);
+    holdAt(plain, 6, -4, 400);
+    holdAt(game, 6, -4, 400);
+
+    const plainRoot = rootOf(plain);
+    // Not "close to": the same number it wrote before this change existed.
+    expect(plainRoot.position.y).toBe(
+      slope.sampleHeight(plainRoot.position.x, plainRoot.position.z),
+    );
+    expect(plain.groundLift('ball')).toBe(0);
+    expect(plain.ballDiameter('ball')).toBe(0);
+    // …while the katamari twin, same fixture and same slope, is riding up.
+    expect(game.groundLift('ball')).toBeGreaterThan(1);
+    plain.clearAll();
+    game.clearAll();
+  });
+
+  it('an autonomous ball on the slope is clear of it on every frame', () => {
+    // The HOST path — a real agent, the substepped resolve, no poses — and
+    // the page that holds the bodies. The clearance is applied in the one
+    // ground pass every branch ends up in, so a wandering ball has to clear
+    // the hill wherever it wanders to.
+    const manager = makeManager(slope, 'katamari', { physics: true });
+    expect(manager.simulating()).toBe(true);
+    const root = rootOf(manager);
+    feedProps(manager, 3, 3);
+
+    let now = 100_000;
+    // Long enough for the lift spring to settle (`MOTION.primaryMs`) before
+    // anything is asserted: arriving is a slide, and a slide starts low.
+    for (let f = 0; f < 120; f++) {
+      now += 33;
+      manager.update(33, now);
+    }
+    // Read after the first frames: `bodyR` is written in `growPass`, so a
+    // pile seated a moment ago is not on the readout until the loop has run.
+    const bodyR0 = manager.ballDiameter('ball') / 2;
+    let travelled = 0;
+    let previousX = root.position.x;
+    for (let f = 0; f < 400; f++) {
+      // Under a thumb, straight UPHILL: an agent is free to stand still and
+      // this test wants the ball actually crossing the slope. The drive goes
+      // through the same resolve and the same ground pass a wander does.
+      manager.drive('ball', { x: 1, z: 0, mag: 1 });
+      now += 33;
+      manager.update(33, now);
+      const bodyR = manager.ballDiameter('ball') / 2;
+      const highest = highestUnderFootprint(slope, root.position.x, root.position.z, bodyR);
+      expect(root.position.y).toBeGreaterThanOrEqual(highest - 1e-9);
+      expect(
+        sphereClears(slope, root.position.y, root.position.x, root.position.z, bodyR),
+      ).toBe(true);
+      travelled += Math.abs(root.position.x - previousX);
+      previousX = root.position.x;
+    }
+    // It really travelled, and it really is a ball.
+    expect(travelled).toBeGreaterThan(10);
+    expect(bodyR0).toBeGreaterThan(2.5);
+    manager.clearAll();
+  });
+
+  it('a terrace edge is a slide, not a step', () => {
+    const manager = makeManager(ramped, 'katamari');
+    const root = rootOf(manager);
+    feedProps(manager, 3, 3);
+    // Settled well below the riser, where the ring reaches nothing.
+    holdAt(manager, -20, 0, 200);
+    const bodyR = manager.ballDiameter('ball') / 2;
+    expect(manager.groundLift('ball')).toBeCloseTo(bodyR * CLEARANCE_PAD, 3);
+
+    // Then walk it up and over, through the pose path at a walking pace.
+    const heights: number[] = [];
+    let now = 200_000;
+    for (let f = 0; f < 600; f++) {
+      manager.followPoses([{ id: 'ball', x: -20 + f * 0.05, z: 0, heading: 0 }]);
+      now += 33;
+      manager.update(33, now);
+      heights.push(root.position.y);
+      /*
+       * THE DRAWN SPHERE IS CLEAR OF THE PAPER on every frame of the climb —
+       * which is the report, and it is the right assertion while the ball is
+       * MOVING. The ring rule itself (root at or above the highest ring
+       * sample) is a resting rule: the lift eases over `MOTION.primaryMs`, so
+       * a ball climbing a riser is always a little behind its own target, and
+       * a spring that arrived instantly would be the step the motion law
+       * forbids. The sphere has the slack for it — at the ring the surface is
+       * `0.4 × bodyR` above the underside — and the rest of this block pins
+       * the resting case exactly.
+       */
+      expect(
+        sphereClears(ramped, root.position.y, root.position.x, root.position.z, bodyR),
+      ).toBe(true);
+    }
+
+    /*
+     * NO FRAME IS A STEP, in either direction.
+     *
+     * Not strict monotone, and deliberately: the ball rises as the ring
+     * reaches the riser and then SETTLES back onto the tread as the rest of
+     * its footprint comes level, which is a ball cresting a hill rather than
+     * a rebound — the lift's own monotone-toward-a-target is pinned in the
+     * test above, where the target is not moving under it.
+     */
+    let biggest = 0;
+    for (let i = 1; i < heights.length; i++) {
+      biggest = Math.max(biggest, Math.abs(heights[i]! - heights[i - 1]!));
+    }
+    // On the upper tread, clear of it, with the pad and nothing else.
+    expect(root.position.y).toBeGreaterThanOrEqual(RISER);
+    expect(manager.groundLift('ball')).toBeCloseTo(bodyR * CLEARANCE_PAD, 3);
+    // And the whole climb was a slide: no single frame moved it a twentieth
+    // of the riser it climbed (TASTE §2.1 — no hard cuts, confidence 1.00).
+    expect(biggest).toBeLessThan(RISER / 20);
+    manager.clearAll();
+  });
+
+  it('host and viewer put the same ball at the same height', () => {
+    // The lift is DERIVED, never sent (docs/PLAN.md §7.6: poses carry
+    // x/z/heading and Y is always local). So the page that simulates and a
+    // page that holds no bodies at all must reach the same height from the
+    // same pose and the same pile.
+    const host = makeManager(slope, 'katamari', { physics: true });
+    const viewer = makeManager(slope, 'katamari');
+    expect(host.simulating()).toBe(true);
+    expect(viewer.simulating()).toBe(false);
+    feedProps(host, 3, 3);
+    feedProps(viewer, 3, 3);
+
+    // The host's own ball, placed by its agent and its resolve, then stood
+    // still so there is one pose to compare against.
+    let now = 100_000;
+    for (let f = 0; f < 200; f++) {
+      now += 33;
+      host.update(33, now);
+    }
+    host.pauseAi(true);
+    for (let f = 0; f < 200; f++) {
+      now += 33;
+      host.update(33, now);
+    }
+
+    // What actually goes on the wire. Three numbers, and no height among
+    // them: that is the whole reason the viewer has to derive its own.
+    const pose = host.poses().find((p) => p.id === 'ball')!;
+    expect(Object.keys(pose).sort()).toEqual(['heading', 'id', 'x', 'z']);
+
+    viewer.pauseAi(true);
+    for (let f = 0; f < 200; f++) {
+      viewer.followPoses([pose]);
+      now += 33;
+      viewer.update(33, now);
+    }
+
+    const hostRoot = rootOf(host);
+    const viewerRoot = rootOf(viewer);
+    expect(viewerRoot.position.x).toBeCloseTo(hostRoot.position.x, 9);
+    expect(viewerRoot.position.z).toBeCloseTo(hostRoot.position.z, 9);
+    // The two springs have different histories — the host's ran while it was
+    // wandering — so they meet on the target rather than at the same instant.
+    // Six decimals of a world unit is a micron.
+    expect(viewer.groundLift('ball')).toBeCloseTo(host.groundLift('ball'), 6);
+    expect(viewerRoot.position.y).toBeCloseTo(hostRoot.position.y, 6);
+    expect(host.groundLift('ball')).toBeGreaterThan(1);
+    host.clearAll();
+    viewer.clearAll();
   });
 });
 

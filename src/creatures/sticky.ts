@@ -445,6 +445,109 @@ export function rollTarget(items: number, growth: number): 0 | 1 {
   return items >= ROLL_MASS_ITEMS || growth >= ROLL_GROWTH ? 1 : 0;
 }
 
+/**
+ * [D] Where the ball's FOOTPRINT is sampled, as a fraction of `bodyR`.
+ *
+ * > User report, 2026-09-16: *"the ball is glitching through the map floor if
+ * > it's big enough."*
+ *
+ * A creature is placed on the ground under its CENTRE (the Surface seam, PLAN
+ * §7.2), which is exactly right for a 0.9 u hatchling and wrong for a ball
+ * several units across: the contact patch of a big ball is a disc, and on any
+ * slope, terrace riser or basin lip the ground under the uphill edge of that
+ * disc is *above* the ground under the middle. The ball's underside sits at
+ * the root (`clump.group` is at `(0, baseR, 0)` and the root's scale is the
+ * growth, so the ball's centre is `root.y + bodyR` and its bottom is exactly
+ * `root.y`) — so whatever the highest ground under the footprint is, the root
+ * has to be at least that high or the downhill half of the ball, and the
+ * items seated low on the pile, are inside the hill.
+ *
+ * 0.8 rather than 1.0: a sphere's silhouette touches the ground at one point
+ * and the terrain has to rise a long way to meet it at the very rim, so
+ * sampling the outermost ring would lift the ball off gentle ground for
+ * nothing. Four fifths of the way out is where a ball resting in a dip is
+ * actually in contact, and `CLEARANCE_PAD` covers the rest.
+ */
+export const CLEARANCE_RING = 0.8;
+
+/**
+ * [D] How many points on that ring.
+ *
+ * Eight — the four cardinals and the four diagonals, so a riser approached
+ * square and a riser approached at 45° are sampled the same. Sixteen would
+ * halve the worst-case miss between two spokes and double a per-frame cost
+ * paid by every grown creature on the island; the pad below is the cheaper
+ * half of the same job.
+ */
+export const CLEARANCE_POINTS = 8;
+
+/**
+ * [D] A little more, as a fraction of `bodyR`.
+ *
+ * Two jobs. The ring samples at `CLEARANCE_RING` and the ground goes on
+ * rising outside it; and an item is seated `CLUMP_FIT` into the pile's
+ * surface, so the small stones on the underside of a ball hang below the
+ * ball's own silhouette. 6% of the radius is under two centimetres on a
+ * hatchling and 18 on a 3 u ball — invisible as a float, enough that the
+ * pebbles on the bottom of the pile do not scrape through the paper.
+ *
+ * It is NOT a fix for a boulder seated at the very bottom of a pile: an item
+ * of radius `itemR` reaches `1.7 × itemR` past the ball's surface
+ * (`CLUMP_FIT`), and no constant fraction of `bodyR` covers the carry limit's
+ * worst case. What the pad covers is the common pile.
+ */
+export const CLEARANCE_PAD = 0.06;
+
+/**
+ * The ring's directions — a unit circle, `CLEARANCE_POINTS` of them,
+ * precomputed so no frame pays for a `cos`/`sin` and so every page walks the
+ * same points in the same order (the lift is derived on every page, never
+ * sent, so two pages that sampled different points would disagree about the
+ * height of the same creature).
+ */
+export const CLEARANCE_DIRS: readonly { x: number; z: number }[] = Array.from(
+  { length: CLEARANCE_POINTS },
+  (_unused, i) => {
+    const a = (i / CLEARANCE_POINTS) * Math.PI * 2;
+    return { x: Math.cos(a), z: Math.sin(a) };
+  },
+);
+
+/**
+ * How far to lift the ball's root so its underside clears the ground.
+ *
+ * `max(0, highest ring height − centre height) + pad`: a ball on a slope
+ * rides up on its uphill side, a ball on the flat gets the pad alone, and
+ * nothing is ever pushed DOWN into the ground — the Surface's own height
+ * under the centre stays the floor of the answer, so this can only ever be a
+ * clearance and never a second opinion about where the ground is.
+ *
+ * Pure, and pure in the way this file means it: the sampler is handed in, so
+ * the same three numbers come out for the same terrain on every page and the
+ * lift never has to travel on the wire (docs/PLAN.md §7.6 — poses carry
+ * x/z/heading, and Y is always local).
+ *
+ * A TARGET, not a placement: the manager eases the root onto it with a ζ ≥ 1
+ * spring over `MOTION.primaryMs`, so a terrace edge is a slide and not a step
+ * (TASTE §2.1, confidence 1.00).
+ */
+export function clearanceLift(
+  x: number,
+  z: number,
+  bodyR: number,
+  sampleHeight: (x: number, z: number) => number,
+): number {
+  if (!(bodyR > 0)) return 0;
+  const centre = sampleHeight(x, z);
+  const ringR = bodyR * CLEARANCE_RING;
+  let highest = centre;
+  for (const dir of CLEARANCE_DIRS) {
+    const h = sampleHeight(x + dir.x * ringR, z + dir.z * ringR);
+    if (h > highest) highest = h;
+  }
+  return Math.max(0, highest - centre) + bodyR * CLEARANCE_PAD;
+}
+
 /** The biggest item radius this carrier can take on. */
 export function carryLimit(carrierR: number): number {
   return PICKUP_RATIO * carrierR;
