@@ -13,7 +13,7 @@ import { createEnvironment, type Environment } from './environment';
 import { GrainPass } from './grain';
 import { createGround, fieldSize } from './ground';
 import { createPhysicsWorld, type PhysicsWorld } from '../physics/world';
-import { deviceTier, type DeviceTier } from './device';
+import { deviceTier, setRenderTier, type DeviceTier } from './device';
 import { createPropBodies, type PropBodies } from './rocks';
 import { INK_DEFAULTS, InkPass } from './ink';
 import {
@@ -403,6 +403,14 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
       ? (query) => window.matchMedia(query).matches
       : () => false,
   );
+  /*
+   * …and published, BEFORE the ground, the water or any bake is built: the
+   * terrain's own budgets are sized by tier too (the field's cut, the shore
+   * and region bakes, the physics heightfield), and those are module
+   * functions with no instance to thread a tier through
+   * (src/world/device.ts `setRenderTier`).
+   */
+  setRenderTier(tier);
   const pixelRatio = Math.min(window.devicePixelRatio, tier === 'phone' ? 1.5 : 2);
   renderer.setPixelRatio(pixelRatio);
 

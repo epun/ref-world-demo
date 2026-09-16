@@ -31,6 +31,7 @@
  */
 
 import { DataTexture, LinearFilter, RGBAFormat, UnsignedByteType } from 'three';
+import { isPhoneTier } from '../device';
 import { FIELD_SIZE, fieldSize } from '../field';
 import { sampleLandscape } from '../landscape';
 
@@ -58,6 +59,12 @@ export function regionSize(): number {
 }
 
 export function regionRes(): number {
+  // A HANDSET KEEPS 128 (2026-09-16), for the same reason the shore bake does
+  // and with less at stake: both consumers smooth this further (the grass
+  // compares it against a per-blade random, the ground ramps it), so 6.25
+  // world units a texel instead of 3.1 costs a softer edge on a shoreline
+  // ramp nobody reads at full size on a phone. 155ms → 106ms a rebuild.
+  if (isPhoneTier()) return REGION_RES;
   return Math.round(REGION_RES * (fieldSize() / FIELD_SIZE));
 }
 

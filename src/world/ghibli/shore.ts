@@ -31,6 +31,7 @@
  */
 
 import { DataTexture, FloatType, LinearFilter, RedFormat } from 'three';
+import { isPhoneTier } from '../device';
 import { FIELD_SIZE, fieldSize } from '../field';
 import { distanceTransform } from '../painted-water';
 import { ggFloat } from './shared';
@@ -55,6 +56,14 @@ export function shoreSize(): number {
 }
 
 export function shoreRes(): number {
+  // A HANDSET KEEPS 512 (2026-09-16). The bake is one `isWater` call and one
+  // distance transform per texel: 1024² measured 1007ms on one node core
+  // against 512²'s 203ms, and it re-runs on every landscape switch, terrain
+  // dial and painted pond. At 512 over 800 units the texel is 1.56 rather
+  // than 0.78, so the foam rim of 1.5–3 units is one or two texels instead of
+  // two to four — a softer surf line on the screen that shows it least, which
+  // is the trade the load time is worth. The projection keeps the texel.
+  if (isPhoneTier()) return SHORE_RES;
   return Math.round(SHORE_RES * (fieldSize() / FIELD_SIZE));
 }
 

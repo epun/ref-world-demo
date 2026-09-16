@@ -365,6 +365,34 @@ so the marker never jitters or snaps.
   the doubled island and the geography bakes no longer share their uv with the painted layers
   — the ghibli shaders carry `GG_SIZE` for the painted square and `GG_MAP_SIZE` for the
   ground field's. Widening the paintable region is a protocol change and a separate job.
+- **The handset's terrain budget — *(2026-09-16)*.** Four times the land at the same
+  resolution is four times the CPU, and it is a **rebuild** cost, not a frame cost: every
+  vertex and every texel goes through the geography once per build and again on every
+  `setTerrain`, `setLandscape` and painted pond. Measured on one node core, the terrain walk
+  (region + height + shore bakes, the field's displacement, the physics heightfield and the
+  water colliders) went **906 ms → 3625 ms**; on a handset that is seconds of blocked main
+  thread at load and again on every drag, which is the user's standing *"very slow to load"*.
+  So **extent is the same on every device and resolution is per tier**. `renderTier()` in
+  `src/world/device.ts` is the one switch — module state, published by `start` beside the
+  pixel cap, before the ground, the water or any bake is built, defaulting to `projection` so
+  a test and a node script read the same world. A phone takes: the ground field at
+  `FIELD_SEGMENTS_PHONE_ISLAND` **480** (a 1.67 u quad — still inside the **1.99 u** riser run
+  `RISER_RUN` states, measured height error **0.112 u** against 640's 0.066 u over 250,000
+  land samples), the **shore** bake at 512² (1.56 u a texel, so the 1.5–3 u foam rim is one to
+  two texels rather than two to four), the **region** bake at 128² (6.25 u a texel, and both
+  its consumers smooth it further), and the physics **heightfield** at 256 (a 3.12 u cell,
+  coarser than a riser, on a page that is usually a viewer — physics runs only on the
+  simulating one). Measured after: **1944 ms**, 2.14× the public world rather than 4.00×.
+  The **height** bake is deliberately NOT traded, and the reason is a kind and not a size:
+  `ggGroundAt` is read per blade to seat it on the ground, so its error shows as geometry — a
+  blade floating over a tread or buried in a riser — rather than as a soft edge. At 671 ms it
+  is the biggest single item left, and it is the next lever if one is needed.
+  **Nothing in the bakes runs per frame**, which is what makes the rest of this a load cost
+  and not a budget: `bake*Texture` runs once in `ensureGhibli` (memoised on the first switch
+  to the ghibli style), `rebake*` only inside `Ground.rebuild`, which only `setTerrain` and
+  `setLandscape` call; the physics heightfield is rebuilt behind `TERRAIN_REBUILD_MIN_MS`; and
+  `waterColliders` rides the scatter's collider cache keyed on `collidersVersion`. The frame
+  loop's `ground.update` writes two uniforms.
 - **Scatter**: repeated small hand-drawn units — trees, rocks, huts, birds, doodads —
   authored as silhouettes and run through the **same inflater** as the characters. Placement
   on the isometric grid with jitter; **grid governs placement, never form** (TASTE §2.5).

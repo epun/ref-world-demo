@@ -111,10 +111,18 @@ The traps, in order of how easily they get violated:
   `MAP_SCALE` in `src/world/landscape.ts`, read through `mapScale()` and gated on
   `islandMode` like the coast itself. Every extent that has to cover the land rides it (the
   ground field and its three bakes, the base blade span, the scatter extent, the physics
-  heightfield, the spawn disc, the minimap, the sea disc and the camera's depth range), and
-  the RESOLUTION is what is held fixed across it — the ground quad stays 1.25 u, every texel
-  its own size. A number scales when it says WHERE something is and not when it says HOW BIG
-  a physical thing is: a beach, a pond, a shore ramp and the terrain noise are all unchanged.
+  heightfield, the spawn disc, the minimap, the sea disc and the camera's depth range). A
+  number scales when it says WHERE something is and not when it says HOW BIG a physical thing
+  is: a beach, a pond, a shore ramp and the terrain noise are all unchanged.
+  **EXTENT is the same on every device; RESOLUTION is per tier.** The projection holds every
+  texel and the 1.25 u ground quad it had. A HANDSET (`renderTier()` in
+  `src/world/device.ts`, published once by `start`) trades four of them back, because four
+  times the land at the same resolution is four times the CPU and it is a REBUILD cost every
+  terrain dial and painted pond pays again — measured 906 ms → 3625 ms on one core, and
+  1944 ms with the trade: ground field 480 segments (1.67 u quad, still inside the 1.99 u
+  riser run, height error 0.112 u), shore bake 512², region bake 128², physics heightfield
+  256. The HEIGHT bake is deliberately NOT traded — it is where every blade stands, so its
+  error is geometry and not a soft edge.
   Don't capture the exported layout (`ISLAND`, `ISLAND_LOBES`, `WATER_BODIES`, `FOREST_BLOBS`,
   `MOUNTAIN_BLOBS`) into a module-scope const — they are live bindings `setIslandMode`
   re-points, so read them after the flag is set. PLAN §7 has the full list.

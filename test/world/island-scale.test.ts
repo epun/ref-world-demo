@@ -25,6 +25,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { spawnRadius, spawnSpot, SPAWN_RADIUS } from '../../src/creatures/manager';
 import { heightfieldSegments, HEIGHTFIELD_SEGMENTS } from '../../src/physics/world';
+import { setRenderTier } from '../../src/world/device';
 import { worldMapExtent, WORLD_MAP_EXTENT } from '../../src/ui/minimap';
 import {
   cameraDistance,
@@ -41,8 +42,10 @@ import {
   fieldSize,
   groundRadius,
   FIELD_SEGMENTS,
+  FIELD_SEGMENTS_PHONE_ISLAND,
   FIELD_SIZE,
   GROUND_RADIUS,
+  RISER_RUN,
 } from '../../src/world/field';
 import { grassBaseSpan, GRASS_BASE_SPAN } from '../../src/world/ghibli/grass';
 import { heightRes, heightSize, HEIGHT_RES } from '../../src/world/ghibli/height';
@@ -214,6 +217,8 @@ describe('the doubled island — every field covers it', () => {
   });
 
   it('keeps the QUAD, not the count — the terrace risers still read', () => {
+    // The PROJECTION's field: the side rides the scale and so does the count,
+    // so the quad is the one the risers were measured against.
     expect(fieldSegments()).toBe(FIELD_SEGMENTS * MAP_SCALE);
     expect(fieldQuad()).toBe(FIELD_SIZE / FIELD_SEGMENTS);
     expect(fieldQuad()).toBe(1.25);
@@ -222,7 +227,8 @@ describe('the doubled island — every field covers it', () => {
     // step is 0.96 / 0.4814 ≈ 1.99 units of run — and the quad has to be
     // narrower than that or it draws a wash instead of a line. (2.5 would not
     // be; that is the measurement that kept 640 segments rather than 320.)
-    expect(fieldQuad()).toBeLessThan(1.99);
+    expect(RISER_RUN[MAP_SCALE]).toBeCloseTo(1.99, 2);
+    expect(fieldQuad()).toBeLessThan(RISER_RUN[MAP_SCALE]);
   });
 
   it('bakes the geography over the whole field, at the texel it was picked for', () => {
@@ -291,6 +297,100 @@ describe('the doubled island — every field covers it', () => {
   it('draws a minimap that contains the island', () => {
     expect(worldMapExtent()).toBe(WORLD_MAP_EXTENT * MAP_SCALE);
     expect(coastReach().max).toBeLessThan(worldMapExtent());
+  });
+});
+
+/*
+ * THE HANDSET'S OWN BUDGETS (2026-09-16).
+ *
+ * Four times the land at the same resolution is four times the CPU, and it is
+ * a rebuild cost: every terrain dial, landscape switch and painted pond pays
+ * it again. Measured on one node core the doubled island's terrain walk went
+ * 906ms → 3625ms, which on a handset is seconds of blocked main thread — the
+ * user's standing *"very slow to load"*. So the phone tier trades resolution
+ * back where the trade is cheapest to look at, and the projection keeps every
+ * number it had. `src/world/device.ts` `setRenderTier` is the one switch.
+ */
+describe('the doubled island — a handset trades resolution, not extent', () => {
+  beforeAll(() => {
+    setLandscapeMode('landscape');
+    setIslandMode(true);
+    setRenderTier('phone');
+  });
+  afterAll(() => {
+    setRenderTier('projection');
+    setLandscapeMode('plain');
+    setIslandMode(false);
+  });
+
+  it('keeps the EXTENT — the phone reads the same map, not a smaller one', () => {
+    // Nothing here may change what the map IS: the field's side, the bakes'
+    // spans, the spawn disc, the minimap and the sea disc are the map, and a
+    // phone and a projection have to agree about them to the unit or two
+    // pages of the same room would disagree about where the coast is.
+    expect(fieldSize()).toBe(FIELD_SIZE * MAP_SCALE);
+    expect([regionSize(), heightSize(), shoreSize()]).toEqual([
+      fieldSize(),
+      fieldSize(),
+      fieldSize(),
+    ]);
+    expect(spawnRadius()).toBe(SPAWN_RADIUS * MAP_SCALE);
+    expect(worldMapExtent()).toBe(WORLD_MAP_EXTENT * MAP_SCALE);
+    expect(groundRadius()).toBe(GROUND_RADIUS * MAP_SCALE);
+    expect(grassBaseSpan()).toBe(GRASS_BASE_SPAN * MAP_SCALE);
+    expect(scatterExtent()).toBe(SCATTER_EXTENT * MAP_SCALE);
+  });
+
+  it('cuts the field at 480, still inside the riser it has to draw', () => {
+    expect(fieldSegments()).toBe(FIELD_SEGMENTS_PHONE_ISLAND);
+    expect(fieldQuad()).toBeCloseTo(1.667, 3);
+    // The bound that matters, and the whole reason 480 is allowed where 320
+    // is not: a quad wider than the riser's own run draws a wash instead of a
+    // line (PLAN §7.1). Measured height error against the authored field over
+    // 250,000 land samples in the camera's core: 0.112 u at 480 against
+    // 0.066 u at 640 — a fourteenth of a tier step.
+    expect(fieldQuad()).toBeLessThan(RISER_RUN[MAP_SCALE]);
+    // …and it really is a saving: 231k vertices against 411k.
+    expect((fieldSegments() + 1) ** 2).toBeLessThan((FIELD_SEGMENTS * MAP_SCALE + 1) ** 2 * 0.6);
+  });
+
+  it('keeps the shore, region and heightfield at their authored resolutions', () => {
+    // Every one of these is a COLOUR ramp or a collider, not where a blade
+    // stands, so a coarser texel costs a softer edge rather than a thing in
+    // the wrong place.
+    expect(shoreRes()).toBe(SHORE_RES);
+    expect(regionRes()).toBe(REGION_RES);
+    expect(heightfieldSegments()).toBe(HEIGHTFIELD_SEGMENTS);
+    // The texels that follow, stated so a future change has to face them: the
+    // foam rim of 1.5–3 units is one to two texels rather than two to four,
+    // and the heightfield's cell is 3.12 units rather than 1.56.
+    expect(shoreSize() / shoreRes()).toBeCloseTo(1.5625, 4);
+    expect(regionSize() / regionRes()).toBeCloseTo(6.25, 4);
+    expect(fieldSize() / heightfieldSegments()).toBeCloseTo(3.125, 4);
+  });
+
+  it('leaves the HEIGHT bake alone — that one is where a blade stands', () => {
+    // The one bake the phone does not trade down, and the reason is a kind
+    // and not a size: `ggGroundAt` is read per blade to seat it on the ground,
+    // so its error shows up as geometry (a blade floating over a tread or
+    // buried in a riser) rather than as a soft edge. It is the biggest single
+    // item left in the handset's terrain walk — 671ms of 1944ms measured — so
+    // it is the next lever if one is needed, and it is deliberately not
+    // pulled here.
+    expect(heightRes()).toBe(HEIGHT_RES * MAP_SCALE);
+    expect(heightSize() / heightRes()).toBe(FIELD_SIZE / HEIGHT_RES);
+  });
+
+  it('is the field that shipped again with no island', () => {
+    setIslandMode(false);
+    try {
+      expect(fieldSegments()).toBe(FIELD_SEGMENTS);
+      expect(fieldQuad()).toBe(1.25);
+      expect([regionRes(), heightRes(), shoreRes()]).toEqual([128, 256, 512]);
+      expect(heightfieldSegments()).toBe(256);
+    } finally {
+      setIslandMode(true);
+    }
   });
 });
 
