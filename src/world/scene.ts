@@ -724,8 +724,38 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
   };
   const fieldSpan = tier === 'phone' ? GRASS_SPAN_PHONE : GRASS_SPAN_PROJECTION;
   const ensureFields = (): void => {
-    if (grass && flowers) return;
     const phone = tier === 'phone';
+    /*
+     * A HANDSET DRAWS THE BASE FIELD ONLY (2026-09-16, user report: "in the
+     * mobile view it looks like the grass shader is being projected into the
+     * camera view and is constantly around the character"). The dense near
+     * field and the blooms are a WINDOW that follows the look-target, and on
+     * a phone the look-target IS the person's own creature — so the window's
+     * edge travelled with them and read as a patch of lawn stuck to the
+     * camera. The base field is map-fixed and covers the whole island, and
+     * at a handset's blade budget the near field added little a thumb could
+     * see; dropping it is also ~20% of the phone's remaining triangles. The
+     * ground keeps no window either (`setFieldWindow` span 0 is "no window"),
+     * so its stipple is uniform under the base field. The projection is
+     * unchanged: its window is wider than its frame at default zoom.
+     */
+    if (phone) {
+      if (baseGrass) return;
+      baseGrass = createGrassField({
+        count: GRASS_BASE_PHONE,
+        layout: 'box',
+        span: grassBaseSpan(),
+        height: ground.heightTexture(),
+        region: ground.region(),
+        baseDensity: 1,
+        bladeWidth: grassBaseBladeWidth(),
+        minBladePx: grassBaseMinBladePx(),
+        layers: { grass: paintedLayers.grass, comb: paintedLayers.comb },
+      });
+      scene.add(baseGrass.mesh);
+      return;
+    }
+    if (grass && flowers) return;
     grass ??= createGrassField({
       count: phone ? GRASS_COUNT_PHONE : GRASS_COUNT_PROJECTION,
       span: fieldSpan,
