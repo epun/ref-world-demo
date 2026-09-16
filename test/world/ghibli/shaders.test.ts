@@ -75,7 +75,19 @@ function materials(): { name: string; material: ShaderMaterial; uniforms: string
     {
       name: 'water',
       material: createWaterSurfaceMaterial(),
-      uniforms: ['uDeep', 'uMid', 'uShallow', 'uFoam', 'uWet', 'uRippleTex', 'uDepthScale'],
+      uniforms: [
+        'uDeep',
+        'uMid',
+        'uShallow',
+        // The bed the shallows are translucent over, and the pinpoint
+        // sparkle's own colour (2026-09-16, the reference pass).
+        'uBed',
+        'uFoam',
+        'uLace',
+        'uShoreTex',
+        'uRippleTex',
+        'uDepthScale',
+      ],
     },
     {
       name: 'sea',

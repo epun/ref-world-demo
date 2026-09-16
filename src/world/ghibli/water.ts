@@ -64,32 +64,43 @@ const SEA_DRIFT = 0.35;
 // any camera frame appears to spin against the view when the camera turns,
 // which is exactly what a user reported.
 
-/** [D] Where the turquoise shallows give way to the mid blue, and the mid blue
- * to the cobalt deep — world units from the shore. */
-const SHALLOW_OUT = 4;
+/** [D] How far the translucent shallows reach, and where the deep begins —
+ * world units from the shore. The shallows GRADE (the bed shows through and
+ * fades out with depth); the deep's edge is a painted step with the pen's
+ * wobble in it. */
+const SHALLOW_OUT = 6;
 const DEEP_IN = 14;
 
-/** [D] The foam lace at the waterline: the band's width, the second line's
- * offset beyond it, and how broken each is (the noise threshold that cuts the
- * lace — higher is more gaps). */
-const LACE_BAND = 1.6;
-const LACE_SECOND = 1.1;
-const LACE_BREAK = 0.46;
-const LACE_SECOND_BREAK = 0.6;
+/** [D] The foam at the waterline: how wide the rim is, how far out the trailing
+ * streaks reach, and the noise thresholds that ERODE the inner edge — the rim
+ * has to break up irregularly rather than end on a contour. */
+const FOAM_BAND = 2.2;
+const FOAM_ERODE = 0.42;
+const FOAM_STREAK_OUT = 4.5;
+const FOAM_STREAK_KEEP = 0.62;
 
-/** [D] The pale wave lines across the deep: their spacing, their thickness,
- * their length, and how far they travel a second. */
-const LINE_SPACING = 5;
-const LINE_THICK = 0.15;
-const LINE_LENGTH = 9;
+/** [D] The sparkle: pinpoints, not dabs (2026-09-16, user reference — the
+ * reference's glints are single bright pixels scattered over the whole
+ * surface). A cell a bit over a world unit, one in twenty-five cells holding
+ * one, and a dot a twentieth of a unit across — about one screen pixel at the
+ * default view, two at a step in. Each fades in and out over `SPARKLE_BEAT`
+ * seconds on its own phase, so the field twinkles and nothing pops. */
+const SPARKLE_CELL = 1.3;
+const SPARKLE_KEEP = 0.04;
+const SPARKLE_SIZE = 0.055;
+const SPARKLE_BEAT = 1.6;
+
+/** [D] The painterly swell: big soft blotches of value across the deep, their
+ * scale in world units and how far they move the value. */
+const SWELL_SCALE = 15;
+const SWELL_VALUE = 0.08;
+
+/** [D] The pale wave lines: sparse and short, never a stripe field. */
+const LINE_SPACING = 7;
+const LINE_THICK = 0.14;
+const LINE_LENGTH = 5;
 const LINE_DRIFT = 0.35;
-
-/** [D] The glint dabs: the grid they are hashed on (world units), how few of
- * those cells hold one, and how big the dab is in world units — two to four
- * pixels at the default view. */
-const GLINT_CELL = 7;
-const GLINT_KEEP = 0.055;
-const GLINT_SIZE = 0.13;
+const LINE_KEEP = 0.78;
 
 /** [D] The sea's long swell: how far apart the crests are and how fast they
  * travel shoreward. */
@@ -119,10 +130,10 @@ uniform float uRippleVis;
 uniform vec3 uDeep;
 uniform vec3 uMid;
 uniform vec3 uShallow;
+uniform vec3 uBed;
 uniform vec3 uFoam;
 uniform vec3 uLace;
 uniform vec3 uLine;
-uniform vec3 uWet;
 uniform vec3 uHighlight;
 uniform float uDepthScale;
 uniform float uHighlightAmount;
@@ -141,15 +152,14 @@ void main() {
   vec3 n = normalize(vToonNormal);
 
   // Distance to the shoreline, from the BAKE (src/world/ghibli/shore.ts) and
-  // keyed on WORLD xz — never a vertex attribute, which is what put huge white
+  // keyed on WORLD xz — never a vertex attribute, which is what put white
   // wedges across the lake, and never anything in a camera frame, which is
   // what would make the surface spin against the view.
   float shore = max(ggShoreAt(p), 0.0);
 
   // The direction the surface is going: the authored flow, nudged by the
   // world's own wind on a still body and driven by it on the open sea. A WORLD
-  // vector, so the marks below travel over the ground rather than over the
-  // screen.
+  // vector, so every mark below travels over the ground and not the screen.
   vec2 drift = refWindAt(p, uWindTime * 0.18, uWindDir, uWindStrength, uWindGust);
   vec2 flowVec = uFlowDir + drift * uDrift;
   float flowLen = length(flowVec);
@@ -161,69 +171,86 @@ void main() {
   float wob = toonFbm(p * 0.55, 2) * 1.3333 - 0.5;
   float wobF = toonFbm(p * 0.8 - dir * (uWindTime * ${ggFloat(ADVECT)}), 2) * 1.3333 - 0.5;
 
-  // ── three flat tones, hard edges ────────────────────────────────────────
-  // Turquoise in the shallows, mid blue, cobalt in the deep, and the
-  // boundaries between them are STEPS with the pen's wobble in them — a
-  // painted band, never a gradient.
-  float shallowEdge = ${ggFloat(SHALLOW_OUT)} + wob * 1.4;
-  float deepEdge = ${ggFloat(DEEP_IN)} + wob * 3.0;
-  vec3 albedo = uShallow;
-  albedo = mix(albedo, uMid, step(shallowEdge, shore));
-  albedo = mix(albedo, uDeep, step(deepEdge, shore));
+  // ── the body: a translucent shallow over a dark teal deep ────────────────
+  // THE SHALLOWS GRADE and the deep STEPS. Near a shore the bed shows through
+  // — the beach's own sand pulled toward the water's turquoise, so it reads as
+  // sand under water rather than turquoise paint — and it fades into the body
+  // colour across the first several units. Out past DEEP_IN the painted step
+  // into the deep is a hard edge with the pen's wobble in it.
+  vec3 bed = mix(uShallow, uBed, 0.55);
+  float shallowT = smoothstep(0.0, ${ggFloat(SHALLOW_OUT)} + wob * 1.2, shore);
+  vec3 albedo = mix(bed, uMid, shallowT);
+  // The deep's edge is a PAINTED transition, not a cut: a hard step here drew
+  // the lake's deepest lobe as a dark stain with an edge you could trace
+  // (measured on screen, 2026-09-16). Two and a half units of smoothstep keeps
+  // the painted read and loses the stain.
+  albedo = mix(albedo, uDeep, smoothstep(
+    ${ggFloat(DEEP_IN - 2.5)} + wob * 2.0,
+    ${ggFloat(DEEP_IN + 2.5)} + wob * 2.0,
+    shore
+  ));
 
-  // ── the long swell (the sea only) ───────────────────────────────────────
-  // A very faint darker band travelling shoreward. uSwell is 0 on a lake.
+  // ── the painterly swell ──────────────────────────────────────────────────
+  // Big soft blotches of value drifting slowly across the whole surface: the
+  // undulation a painted sea has instead of a normal map. Nothing here is a
+  // step, and nothing arrests (TASTE §2.1).
+  float blotch = toonFbm(p / ${ggFloat(SWELL_SCALE)} - dir * (uWindTime * 0.06), 2) * 1.3333;
+  albedo *= 1.0 + (blotch - 0.5) * ${ggFloat(SWELL_VALUE * 2.0)};
+  // …and, on the open sea only, the long shoreward swell on top of it.
   float swellPhase = (shore + uWindTime * ${ggFloat(SWELL_SPEED)}) / ${ggFloat(SWELL_SPACING)};
-  float swell = smoothstep(0.35, 0.5, fract(swellPhase + wob * 0.05));
-  albedo *= 1.0 - 0.05 * swell * uSwell;
+  albedo *= 1.0 - 0.04 * smoothstep(0.35, 0.5, fract(swellPhase + wob * 0.05)) * uSwell;
 
-  // ── pale wave lines across the deep ─────────────────────────────────────
-  // Long, nearly parallel strokes drifting in the flow: a stripe field ACROSS
-  // the flow, cut into 5-to-12-unit lengths along it, each stroke's centre
-  // wobbled by the pen so no two are the same line and none of it is a grid.
-  float across = dot(p, perp) + toonFbm(p * 0.18, 2) * 6.0;
+  // ── pale wave lines ──────────────────────────────────────────────────────
+  // Short, sparse strokes lying across the flow and drifting with it: a
+  // stripe field cut into lengths, with most of the lanes thrown away so the
+  // result is a few marks rather than a pattern.
+  float across = dot(p, perp) + toonFbm(p * 0.18, 2) * 7.0;
   float along = dot(p, dir) - uWindTime * ${ggFloat(LINE_DRIFT)};
-  float lane = fract(across / ${ggFloat(LINE_SPACING)});
   float laneId = floor(across / ${ggFloat(LINE_SPACING)});
+  float lane = fract(across / ${ggFloat(LINE_SPACING)});
   float lineBody = 1.0 - smoothstep(0.0, ${ggFloat(LINE_THICK / LINE_SPACING)},
     abs(lane - 0.5 - wob * 0.06));
-  // …in dashes along the lane, with the dash pattern hashed per lane so the
-  // strokes never line up end to end.
   float dash = toonFbm(vec2(along / ${ggFloat(LINE_LENGTH)}, laneId * 3.7), 2) * 1.3333;
-  float lines = lineBody * smoothstep(0.52, 0.66, dash);
-  // Only out in the water, and fading in rather than appearing (TASTE §2.1).
+  float lines = lineBody * smoothstep(${ggFloat(LINE_KEEP)}, ${ggFloat(LINE_KEEP + 0.12)}, dash);
   lines *= smoothstep(${ggFloat(SHALLOW_OUT)}, ${ggFloat(SHALLOW_OUT * 2.0)}, shore);
-  albedo = mix(albedo, uLine, lines * 0.85);
+  albedo = mix(albedo, uLine, lines * 0.7);
 
-  // ── glint dabs ──────────────────────────────────────────────────────────
-  // Small bright dabs on a hashed world grid, each breathing on the ambient
-  // beat with its own phase, so one is always arriving and none of them pops.
-  vec2 cell = floor(p / ${ggFloat(GLINT_CELL)});
+  // ── the sparkle ──────────────────────────────────────────────────────────
+  // Pinpoints: one bright pixel in a cell a world unit across, a twenty-fifth
+  // of the cells holding one, each breathing in and out over a second and a
+  // half on its own phase — so the field twinkles, nothing blinks, and nothing
+  // appears at full brightness (TASTE §2.1). The whole lattice DRIFTS with the
+  // flow, so the sparkle travels over the ground with the water.
+  vec2 sp = p - dir * (uWindTime * 0.22);
+  vec2 cell = floor(sp / ${ggFloat(SPARKLE_CELL)});
   float pick = toonHash21(cell);
-  vec2 spot = (cell + vec2(toonHash21(cell + 11.3), toonHash21(cell + 27.1)))
-    * ${ggFloat(GLINT_CELL)};
-  float beat = 0.5 + 0.5 * sin(uWindTime * ${ggFloat(2.0 * 3.14159265 / 6.0)}
+  vec2 spot = (cell + vec2(toonHash21(cell + 4.7), toonHash21(cell + 9.1)))
+    * ${ggFloat(SPARKLE_CELL)};
+  float beat = 0.5 + 0.5 * sin(uWindTime * ${ggFloat(2.0 * 3.14159265 / SPARKLE_BEAT)}
     + pick * 6.2831853);
-  float dab = (1.0 - smoothstep(0.0, ${ggFloat(GLINT_SIZE)}, length(p - spot)))
-    * step(pick, ${ggFloat(GLINT_KEEP)}) * smoothstep(0.55, 1.0, beat);
-  dab *= step(${ggFloat(SHALLOW_OUT)}, shore);
-  albedo = mix(albedo, uHighlight, dab);
+  float fleck = (1.0 - smoothstep(0.0, ${ggFloat(SPARKLE_SIZE)}, length(sp - spot)))
+    * step(pick, ${ggFloat(SPARKLE_KEEP)})
+    * smoothstep(0.45, 1.0, beat);
+  // Denser out on the deep water than in the shallows, which is where the
+  // reference puts them.
+  fleck *= mix(0.25, 1.0, smoothstep(2.0, ${ggFloat(DEEP_IN)}, shore));
+  albedo = mix(albedo, uHighlight, fleck);
 
-  // ── the foam lace ───────────────────────────────────────────────────────
-  // A broken white band at the waterline, and a second thinner line a unit
-  // further out that comes and goes. Both are noise-CUT, so they read as lace
-  // rather than as a stripe, and both crawl with the flow.
-  float lacePen = toonFbm(p * 2.6 - dir * (uWindTime * 0.35), 2) * 1.3333;
-  float band = 1.0 - smoothstep(0.0, ${ggFloat(LACE_BAND)}, shore);
-  float lace = band * step(${ggFloat(LACE_BREAK)}, lacePen + band * 0.35);
-  float secondPen = toonFbm(p * 2.1 + dir * (uWindTime * 0.22) + 19.7, 2) * 1.3333;
-  float second = (1.0 - smoothstep(0.0, 0.55,
-    abs(shore - ${ggFloat(LACE_BAND + LACE_SECOND)})))
-    * step(${ggFloat(LACE_SECOND_BREAK)}, secondPen);
-  albedo = mix(albedo, uLace, clamp(lace + second * 0.8, 0.0, 1.0));
-  // The wet line where the water meets the sand: a darker hair under the lace.
-  float wet = (1.0 - smoothstep(0.0, 0.35, shore)) * (1.0 - lace);
-  albedo = mix(albedo, uWet, wet * 0.5);
+  // ── the foam rim ─────────────────────────────────────────────────────────
+  // A soft white rim hugging every land edge, its INNER edge eroded by noise
+  // so it breaks up irregularly, plus a few thin streaks trailing off it into
+  // the water. Both crawl with the flow; neither is a contour.
+  float foamPen = toonFbm(p * 1.9 - dir * (uWindTime * 0.3), 3) * 1.3333;
+  float rim = 1.0 - smoothstep(0.0, ${ggFloat(FOAM_BAND)}, shore);
+  // The erosion: the further out, the more noise a texel needs to still be
+  // foam, so the rim is solid at the waterline and ragged at its inner edge.
+  float foam = smoothstep(0.0, 0.35, rim - ${ggFloat(FOAM_ERODE)} * (1.0 - foamPen));
+  // The streaks: long thin tongues of the same pen, reaching out past the rim.
+  float streakPen = toonFbm(vec2(dot(p, perp) * 1.6, dot(p, dir) * 0.22
+    - uWindTime * 0.12), 2) * 1.3333;
+  float streak = smoothstep(${ggFloat(FOAM_STREAK_KEEP)}, ${ggFloat(FOAM_STREAK_KEEP + 0.1)},
+    streakPen) * (1.0 - smoothstep(${ggFloat(FOAM_BAND)}, ${ggFloat(FOAM_STREAK_OUT)}, shore));
+  albedo = mix(albedo, uLace, clamp(foam + streak * 0.35, 0.0, 1.0));
 
   // Rain rings and rock impacts. Flat at rest (a 1×1 texel) until the sim
   // lands — see the header.
@@ -276,9 +303,9 @@ function build(name: string, palette: Palette, opts: WaterSurfaceOptions): Shade
       uShallow: { value: new Color(palette.shallow) },
       uFoam: { value: new Color(GHIBLI.foam) },
       uLace: { value: new Color(GHIBLI.waterLace) },
+      uBed: { value: new Color(GHIBLI.sand).lerp(new Color(GHIBLI.waterBed), 0.62) },
       uLine: { value: new Color(GHIBLI.waterLine) },
       uSwell: { value: opts.swell ?? 0 },
-      uWet: { value: new Color(GHIBLI.waterWet) },
       uHighlight: { value: new Color(GHIBLI.waterHighlight) },
       uDepthScale: { value: opts.depthScale ?? DEPTH_SCALE },
       uHighlightAmount: { value: opts.highlightAmount ?? 0.6 },
@@ -323,7 +350,7 @@ export function setShoreTexture(material: ShaderMaterial, shore: Texture | null)
 export function createWaterSurfaceMaterial(opts: WaterSurfaceOptions = {}): ShaderMaterial {
   return build(
     'ghibli-water',
-    { deep: GHIBLI.waterCobalt, mid: GHIBLI.waterMid, shallow: GHIBLI.waterShallow },
+    { deep: GHIBLI.waterTealDeep, mid: GHIBLI.waterTeal, shallow: GHIBLI.waterShallow },
     opts,
   );
 }
@@ -336,7 +363,7 @@ export function createWaterSurfaceMaterial(opts: WaterSurfaceOptions = {}): Shad
 export function createSeaSurfaceMaterial(opts: WaterSurfaceOptions = {}): ShaderMaterial {
   return build(
     'ghibli-sea',
-    { deep: GHIBLI.waterCobalt, mid: GHIBLI.seaDeep, shallow: GHIBLI.seaShallow },
+    { deep: GHIBLI.waterTealDeep, mid: GHIBLI.waterTeal, shallow: GHIBLI.seaShallow },
     // The swell belongs to the ocean and to nothing else: a lake has no fetch.
     { drift: SEA_DRIFT, swell: 1, ...opts },
   );

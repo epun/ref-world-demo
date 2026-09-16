@@ -131,29 +131,36 @@ import type { WorldStyle } from './style';
 // geography authored for the body, and the terrain is built to meet it.
 
 /**
- * WHY THESE STAY SMALL AND THE FILLS LEAVE THE NORMAL PASS (2026-09-16, user
- * report: *"geometry breaking through the map for the puddles"*).
+ * WHY THE FILLS LEAVE THE NORMAL PASS, and why the lifts stay where they are
+ * (2026-09-16, user report: *"geometry breaking through the map for the
+ * puddles"*).
  *
  * A pond's basin floor is cut to EXACTLY its water level — measured: every
- * texel inside pond-1's outline is at 1.15 and the sheet sits 0.008 above it —
- * so the sheet and the ground are coplanar to within a hair. That was fine
- * while the camera's far plane was 480 units away. The island moved the eye
- * out to 1800 and the far plane to 3600 (src/world/camera.ts), and one step of
- * the ink pass's NORMAL target — a plain 16-bit depth attachment — is now
- * 3600/65536 ≈ 0.055 units, seven times the lift. So the ground and the water
- * traded depth wins texel by texel in that pass and the ink composite drew the
- * fight: puddles poking through the map.
+ * texel inside pond-1's outline is at 1.15 and the sheet sits 0.008 above it.
+ * The first diagnosis blamed depth precision: the island moved the camera's
+ * far plane from 480 units to 3600, and a 16-bit depth attachment over that
+ * range steps 0.055 units, which would swallow the lift whole. THAT WAS WRONG,
+ * and the correction is worth keeping because it is the kind of thing that gets
+ * assumed twice: this renderer is WebGL2 and three allocates
+ * `DEPTH_COMPONENT24` for a render target with no stencil (r180
+ * `getInternalDepthFormat`), which a probe confirms — the canvas reports 24
+ * depth bits and a `DEPTH_COMPONENT24` renderbuffer really is 24. One step is
+ * 0.0002 units, so the 0.008 lift is about 37 of them and no flat mark in this
+ * world is anywhere near the precision floor.
  *
- * The lifts do NOT go up, because their ORDER is load-bearing: every flat mark
- * in the world is stacked in these few hundredths (the scatter's ticks at
- * 0.015, its prop stamps at 0.018, the creature shadows at 0.02), and a
- * creature walking the shore has to cast its stamp ACROSS the water. Instead
- * the fills leave the normal pass altogether (`ghibliNormalPassSkip`): a fill
- * is a flat sheet coplanar with the ground, its silhouette is drawn by its own
- * ink ribbon, and a flat sheet contributes nothing to a normal target but the
- * fight. The beauty pass keeps them, where the depth attachment is a 32-bit
- * float and 0.008 resolves fine, and `polygonOffset` biases them there anyway
- * — the same -2/-2 the shadow stamps have carried all along.
+ * What the user saw was the SHORE ATTRIBUTE: a fill's every earcut vertex lies
+ * on its outline, so an interior triangle read zero at all three corners and
+ * painted its whole span as foam — white wedges across the lake. That is fixed
+ * where it belongs, in `src/world/ghibli/shore.ts`.
+ *
+ * The fills still leave the normal pass, on their own merits: a flat sheet
+ * coplanar with the ground has one constant normal, contributes no crease for
+ * the ink pass to find, and has its silhouette drawn by its own ink ribbon —
+ * so it is a draw call and a depth write the pass does not need. And the lifts
+ * still do not move, because their ORDER is load-bearing: every flat mark in
+ * the world is stacked in these few hundredths (the scatter's ticks at 0.015,
+ * its prop stamps at 0.018, the creature shadows at 0.02), and a creature
+ * walking the shore has to cast its stamp ACROSS the water.
  */
 
 /** The flat water value. */
