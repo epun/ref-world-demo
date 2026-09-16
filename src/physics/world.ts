@@ -36,6 +36,7 @@
  */
 
 import { MOTION } from '../taste/tokens';
+import { isPhoneTier } from '../world/device';
 import { mapScale } from '../world/landscape';
 import type { Surface } from '../world/surface';
 
@@ -75,6 +76,15 @@ export const HEIGHTFIELD_SEGMENTS = 256;
  * tests and a plain-mode world read.
  */
 export function heightfieldSegments(): number {
+  // A HANDSET KEEPS 256 (2026-09-16). 513² samples measured 761ms on one node
+  // core against 257²'s 156ms, and the collider is rebuilt on every terrain
+  // dial and painted pond (throttled by `TERRAIN_REBUILD_MIN_MS`, which is
+  // what makes it survivable rather than free). At 256 over 800 units the
+  // cell is 3.12 units, coarser than a riser, so a stone can roll off a
+  // terrace it should have stopped on — a physics nicety on a page that is
+  // usually a VIEWER anyway (physics runs only on the simulating page), and
+  // the projection that actually hosts a room keeps the 1.56-unit cell.
+  if (isPhoneTier()) return HEIGHTFIELD_SEGMENTS;
   return Math.round(HEIGHTFIELD_SEGMENTS * mapScale());
 }
 /**

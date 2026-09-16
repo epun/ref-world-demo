@@ -53,3 +53,41 @@ export function deviceTier(matches: (query: string) => boolean = defaultMatch): 
  * the next task to invent twice.
  */
 export const DEBRIS_CAP: Record<DeviceTier, number> = { projection: 96, phone: 24 };
+
+/**
+ * THE TIER IN FORCE, as module state (2026-09-16).
+ *
+ * `deviceTier` above is the pure read and stays the only place the media
+ * query lives. This is the ANSWER, published once so the pure modules that
+ * size the terrain can see it: the ground field's cut
+ * (`src/world/field.ts`), the shore and region bakes' resolutions
+ * (`src/world/ghibli/`) and the physics heightfield's
+ * (`src/physics/world.ts`). Each of those is built from a module function
+ * with no instance to thread a tier through — the same shape of problem
+ * `activeIslandMode` and scatter's `activeSeed` have, and the same answer.
+ *
+ * `scene.ts`'s `start` sets it beside the pixel cap, BEFORE it builds the
+ * ground, the water or any bake. Determinism is unaffected: this is explicit
+ * state, not a clock or a benchmark, and the default is `projection` — so a
+ * test, a node script and the projection itself all read the same world.
+ *
+ * ⚠️ Read it THROUGH the function, never copied into a module-scope const
+ * evaluated before `start` runs (the same caution `MAP_SCALE` carries).
+ */
+let activeTier: DeviceTier = 'projection';
+
+/** The tier the world is currently sized for. */
+export function renderTier(): DeviceTier {
+  return activeTier;
+}
+
+/** Publish the tier `deviceTier` resolved. Callers set it once, before they
+ * build anything that reads it. */
+export function setRenderTier(tier: DeviceTier): void {
+  activeTier = tier;
+}
+
+/** True on a handset — the one question the terrain budgets below ask. */
+export function isPhoneTier(): boolean {
+  return activeTier === 'phone';
+}

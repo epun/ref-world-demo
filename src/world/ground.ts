@@ -623,8 +623,10 @@ ${groundNoiseGlsl}`,
       // without being handed anything.
       if (regionTexture) rebakeRegion(regionTexture);
       // …and the ground the blades stand on, re-sampled from the same seam the
-      // field above was just re-displaced from. One bake, 65k samples, and
-      // every blade in the world comes with it (src/world/ghibli/height.ts).
+      // field above was just re-displaced from. One bake — 65k samples on a
+      // world with no island, 262k on the doubled one — and every blade in the
+      // world comes with it (src/world/ghibli/height.ts). This is a REBUILD
+      // path and nothing here runs per frame: `update` writes two uniforms.
       if (heightTexture) rebakeHeight(heightTexture, (x, z) => surface.sampleHeight(x, z));
       // …and the shoreline, which a landscape switch or a painted pond moves:
       // one pass here, and every water surface in the world bands off the new
