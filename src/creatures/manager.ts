@@ -1970,6 +1970,11 @@ export function createCreatureManager(
         // Transitive: a passenger goes on collecting, and its carrier has to
         // keep growing as it does.
         nested: () => rider.clump?.volumes() ?? [],
+        // A passenger is drawn at ITS OWN growth, read live — the pile
+        // counters the carrier's root scale for everything stuck to it
+        // (clump.ts `localScaleOf`), and a creature is not a prop with a
+        // fixed `scale`.
+        worldScale: () => rider.clump?.growth() ?? 1,
       });
       return true;
     }

@@ -52,6 +52,12 @@ export interface StuckItem {
    * still knows what it was. */
   variant?: number;
   scale?: number;
+  /**
+   * The WORLD scale the object should keep while it rides — a passenger's
+   * own growth, read live, since it is not a prop and has no `scale`. Absent
+   * for a prop, whose `scale` is the answer.
+   */
+  worldScale?: () => number;
   /** Its seat, in CLUMP-LOCAL space (`clumpLocalOffset`). */
   offset: { x: number; y: number; z: number };
   /** Its attitude there (`clumpLocalRotation`). A fallen tree keeps lying the
@@ -151,6 +157,20 @@ export function createClump(baseR: number): Clump {
 
   const growth = (): number => growthOf(baseR, volumes());
   const R = (): number => baseR * growth();
+  /**
+   * A STUCK THING KEEPS ITS OWN SIZE (user report, 2026-09-16: "some items
+   * get larger after you pick them up in your ball"). The pile hangs on the
+   * creature root and the root's uniform scale IS the growth (manager
+   * `growPass`), so an object seated at its prop scale was drawn `growth`
+   * times too big — a stone picked up by a ball at 1.5 arrived half again
+   * its size, and everything on the pile swelled with every pickup after.
+   * The seat offsets already divide by the growth (`clumpLocalOffset`); the
+   * object's own scale has to as well. The body itself is the ball and
+   * grows with the root; only what is STUCK to it is countered.
+   */
+  const localScaleOf = (it: StuckItem): number =>
+    (it.worldScale?.() ?? it.scale ?? 1) / Math.max(1e-6, growth());
+  const item = (entry: Entry): StuckItem => entry.item;
 
   return {
     group,
@@ -187,6 +207,7 @@ export function createClump(baseR: number): Clump {
         item.rotation.z,
         item.rotation.w,
       );
+      item.object.scale.setScalar(localScaleOf(item));
       group.add(item.object);
     },
 
@@ -252,6 +273,9 @@ export function createClump(baseR: number): Clump {
           entry.y.update(dtMs),
           entry.z.update(dtMs),
         );
+        // Every frame, not only at the seat: the growth is a spring, so the
+        // root's scale is different on each frame of a pickup.
+        entry.item.object.scale.setScalar(localScaleOf(item(entry)));
       }
     },
 
