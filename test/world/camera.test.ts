@@ -28,7 +28,7 @@
  * No WebGL: an OrthographicCamera is plain maths.
  */
 
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Vector3 } from 'three';
 import {
   CAMERA_DISTANCE,
@@ -41,7 +41,26 @@ import {
   zoomMinFor,
 } from '../../src/world/camera';
 import { GROUND_RADIUS } from '../../src/world/ground';
-import { coastRadius } from '../../src/world/landscape';
+import { coastRadius, setIslandMode } from '../../src/world/landscape';
+
+// The island floor and the frame-relative pan bound are the ISLAND's — every
+// test below that reads them is asking about the katamari world's camera.
+beforeAll(() => setIslandMode(true));
+afterAll(() => setIslandMode(false));
+
+describe('with the island off, the camera is the one that shipped', () => {
+  it('keeps the 0.45 zoom floor and the 200-unit pan bound on the plain', () => {
+    setIslandMode(false);
+    try {
+      expect(zoomMinFor(0.5)).toBe(0.45);
+      expect(zoomMinFor(1.78)).toBe(0.45);
+      expect(panLimitFor(390 / 844, 0.05)).toBe(200);
+      expect(panLimitFor(1.78, 1)).toBe(200);
+    } finally {
+      setIslandMode(true);
+    }
+  });
+});
 
 /** The island's widest reach, measured here at twice the rig's own angular
  * resolution — so this is a bound on the rig's number, not a copy of it.

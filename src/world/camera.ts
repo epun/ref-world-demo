@@ -18,7 +18,7 @@ import { sampleDrift } from '../motion/ambient';
 import { Spring } from '../motion/spring';
 import { MOTION } from '../taste/tokens';
 import { GROUND_RADIUS } from './ground';
-import { coastRadius } from './landscape';
+import { coastRadius, islandMode } from './landscape';
 
 /** True isometric elevation: atan(1/√2). */
 const ELEVATION = Math.atan(1 / Math.SQRT2);
@@ -31,6 +31,16 @@ export const FRUSTUM_HEIGHT = 40;
  * combination of pan, orbit, and zoom reaches the world's edge. The live bound
  * is this or less — it shrinks as the frame widens (see `panLimitFor`). */
 const PAN_LIMIT = 200;
+/**
+ * The zoom floor every world shipped with, and still the floor on every
+ * world without an island. The island floor (`zoomMinFor`) and the frame-
+ * relative pan bound (`panLimitFor`) exist for a map that has an edge to
+ * keep in frame; on the plain there is none, and the katamari ruling
+ * (CLAUDE.md: the public world is behaviourally unchanged by anything on
+ * this branch) means the camera there keeps the numbers it had. Gated on
+ * `islandMode`, the same switch the coast itself rides.
+ */
+const ZOOM_MIN_PLAIN = 0.45;
 
 /**
  * Furthest any drawn ground point can sit from the look-target: the sea disc
@@ -119,6 +129,7 @@ function coastMaxRadius(): number {
  * portrait phone is bound by its width, a landscape one by its height.
  */
 export function zoomMinFor(aspect: number): number {
+  if (!islandMode()) return ZOOM_MIN_PLAIN;
   const r = coastMaxRadius() + ISLAND_VIEW_MARGIN;
   const byWidth = (FRUSTUM_HEIGHT * Math.max(0.01, aspect)) / (2 * r);
   const byHeight = FRUSTUM_HEIGHT / (2 * r * Math.sin(ELEVATION));
@@ -165,6 +176,7 @@ export function zoomMinFor(aspect: number): number {
  * here.
  */
 export function panLimitFor(aspect: number, zoom: number, elevation: number = ELEVATION): number {
+  if (!islandMode()) return PAN_LIMIT;
   const half = FRUSTUM_HEIGHT / 2 / Math.max(1e-3, zoom);
   const acrossFrame = half * Math.max(0.01, aspect);
   const upFrame = half / Math.max(0.25, Math.sin(elevation));

@@ -144,7 +144,9 @@ describe('the landscape folder carries the map switch and the terrain dials', ()
     // parameter back, so a reload during a demo keeps what was built up.
     const main = readFileSync(join(process.cwd(), 'src/main.ts'), 'utf8');
     expect(main).toContain("params.get('landscape')");
-    expect(main).toContain("landscapeParam === '1' || landscapeParam === 'on'");
+    // The rule itself lives in src/world/game.ts (`opensOnLandscape`): `1`/`on`
+    // reveals the map on any world, and a katamari world opens on it anyway.
+    expect(main).toContain('opensOnLandscape(worldGame, landscapeParam)');
     expect(main).toContain('if (wantsLandscape) world.setLandscape(true);');
     expect(main).toContain("params.set('landscape', '1')");
     expect(main).toContain("params.delete('landscape')");
