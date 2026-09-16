@@ -869,6 +869,48 @@ go on hitting everything, which is where the brief's instability comes from.
 Both halves are gated on `game: 'katamari'` **and** on physics being loaded: a page that
 cannot pick the prop up must not walk through it.
 
+**"my character got stuck" — three causes** *(2026-09-16, user report from a phone on
+`valiocon`, then a second report off the deployed build)*. All three are fixed and pinned by
+`test/creatures/stuck.test.ts`, which drives a hatchling from six spawn points in eight
+headings over the real island and the real scatter — once through the pure resolve and once
+with a real rapier world under it — and asserts it never covers less than 0.05 u in any 1.5 s
+window while driven, unless something rooted and above its carry limit is holding it, in
+which case a 90° heading change has to free it inside 1.5 s.
+
+- **A creature was being CARRIED, and a passenger's drive was thrown away.** `PICKUP_RATIO`
+  is 1.0 and it decided passengers too, so two hatchlings of equal size were each exactly at
+  the other's limit: the first contact made one of them luggage and its stick went nowhere.
+  **`CREATURE_CARRY_RATIO` = 1.35 [D]** now decides a creature (`creatureCarryLimit` in
+  `src/creatures/sticky.ts`): a carrier needs `bodyR ≥ 1.35 × other.bodyR`. Both directions
+  cannot hold at once, so the mutual-eligibility tie — and the bigger-id tiebreak that broke
+  it — is gone; equal-sized creatures separate as they did before the katamari. A prop is
+  unchanged at 1.0: a prop has no phone, and taking somebody's creature out of their hands
+  needs a visible size gap. **And a carried creature's drive is no longer ignored** — it is
+  summed with its carrier's own and applied to the CARRIER, clamped to one stick's
+  magnitude, so every phone in a pile still steers the ball. The wire is untouched: a
+  recorded `drive` still names the passenger and the manager resolves it to the carrier at
+  apply time, on the host and on replay identically.
+- **The first stone anybody rolled up killed the host's frame loop.** `take` removes the
+  stone's rigid body, and the pickup then read that body's translation — a removed rapier
+  body is a dead handle and the read traps the wasm (`RuntimeError: unreachable`). The throw
+  came out of `update()`, so the projection stopped simulating: no more poses, and every
+  creature in the room froze where it stood. The pose is now snapshotted as seven plain
+  numbers BEFORE the take (`poseOf`, `stickItem`). This is the one that needed rapier to
+  find, which is why that half of the test exists.
+- **The rigid-body stand-ins were a frame behind the growth.** `growPass` writes `bodyR` and
+  the drawn scale; the kinematic ball and the stuck-item balls were sized at the end of
+  `simulateSticky`, a few lines earlier, so a creature that ate something spent a frame with
+  a solver ball smaller than the circle the resolve was using. `syncStandIns` now runs after
+  `growPass` — one radius everywhere, every frame.
+
+What the sweep did **not** find, stated because it was the suspicion: nothing on the map
+holds a driven creature. The resolve keeps the tangential component, so pressing into the sea
+wall or a trunk slides along it; a right-angled corner of two mountain-sized colliders does
+pin a creature, and a 90° turn frees it inside a window (`HEAD_ON_SLIDE` is for creature
+pairs; this is the wall slide). And rapier cannot pin anything either — a creature stands in
+that world as a KINEMATIC POSITION-BASED body written from the resolved position every frame,
+so contacts move what it touches and never it.
+
 **`src/world/loose.ts`** — one `Mesh` per thing that is no longer scenery, on every page. An
 instance row cannot be removed, only overwritten, and a prop that has left the ground is
 filtered out of the scatter entirely, so something has to draw the tree lying in the field.

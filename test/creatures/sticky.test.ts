@@ -14,6 +14,8 @@ import {
   CLUMP_FIT,
   clumpLocalOffset,
   clumpLocalRotation,
+  CREATURE_CARRY_RATIO,
+  creatureCarryLimit,
   decideContact,
   DROP_MIN_GAP_MS,
   growth,
@@ -140,12 +142,29 @@ describe('carryLimit / impactOf', () => {
   });
 
   /**
-   * And the consequence for CREATURES, which share the limit: two of exactly
-   * the same size are each eligible to carry the other. The manager breaks
-   * that tie on the bigger id (see `simulateSticky`) so two pages build the
-   * same pile; here it is only that the tie is real.
+   * A CREATURE IS NOT A PROP (`CREATURE_CARRY_RATIO`, 2026-09-16 — the stuck
+   * report).
+   *
+   * The pickup limit is 1.0 of the carrier's radius, so two creatures of the
+   * same size were each exactly at the other's limit and one of them became
+   * somebody's luggage on contact — with its stick doing nothing, which is
+   * what *"my character got stuck"* was. A creature is somebody's, so it
+   * takes a clear size gap: a third again as big, which no pair can satisfy
+   * in both directions.
    */
-  it('makes two equal creatures mutually eligible — a tie somebody must break', () => {
+  it('needs a size GAP to carry another creature, not a tie', () => {
+    expect(CREATURE_CARRY_RATIO).toBeGreaterThan(1);
+    // Equal size: neither carries the other, whichever way round it is asked.
+    expect(1.4 <= creatureCarryLimit(1.4)).toBe(false);
+    // And the gap is reachable — a creature a third again as wide carries.
+    expect(1.4 <= creatureCarryLimit(1.4 * CREATURE_CARRY_RATIO)).toBe(true);
+    // Mutual eligibility has no solution at all: no id tiebreak can exist.
+    for (const a of [0.4, 0.9, 1.4, 2.7, 6]) {
+      for (const b of [0.4, 0.9, 1.4, 2.7, 6]) {
+        expect(b <= creatureCarryLimit(a) && a <= creatureCarryLimit(b)).toBe(false);
+      }
+    }
+    // A PROP the same size still sticks: the two limits are different rules.
     expect(carryLimit(1.4)).toBeGreaterThanOrEqual(1.4);
   });
 

@@ -273,12 +273,44 @@ export function stickyFor(kind: PropKind, variant = 0): StickyProps {
  * of reach until it has eaten its way up to them — just one whose first rung
  * exists.
  *
- * SAME LIMIT DECIDES A PASSENGER (`carryLimit` in the manager's
- * creature-onto-creature pass), so two creatures of equal size are now each
- * eligible to carry the other. That tie is broken by id, deterministically,
- * because two pages must reach the same pile — see `simulateSticky`.
+ * A PASSENGER IS DECIDED BY `CREATURE_CARRY_RATIO` BELOW, not by this one.
+ * They were the same number until 2026-09-16, and at 1.0 that made two
+ * creatures of equal size each eligible to carry the other — which is the
+ * bug the stuck report turned out to be.
  */
 export const PICKUP_RATIO = 1;
+
+/**
+ * [D] How much BIGGER a creature has to be to carry another creature.
+ *
+ * > User report, 2026-09-16, from a phone on `valiocon`: *"my character got
+ * > stuck."*
+ *
+ * It was riding on somebody else. With the pickup ratio at 1.0 and the same
+ * ratio deciding passengers, two hatchlings of the same size were each
+ * exactly at the other's limit: the first contact made one of them a
+ * passenger (the tie went to the bigger id), and a passenger has no
+ * locomotion of its own — so the phone that was pushing the stick watched
+ * its creature glued to a stranger's ball with nothing it could do about it.
+ *
+ * A PROP has no phone and no claim, so 1.0 is right for props: you roll up
+ * things about your own size. A CREATURE is somebody's, and taking it out of
+ * its own hands is a real thing to do to a person — so it needs a clear size
+ * gap rather than a tie. 1.35 is that gap: a third again as wide is visibly
+ * the bigger creature from across the field, it is past every wobble in a
+ * measured body radius (`measureBodyRadius` reads a real mesh footprint, and
+ * two drawings of the same size land within a few percent), and one pickup
+ * of a body-sized prop takes a carrier most of the way there — `growth` puts
+ * a creature that has eaten its own volume at 1.26×, and three small stones
+ * at ~1.2×, so the ladder still reaches a passenger quickly.
+ *
+ * Being over 1 is the load-bearing part, not the exact value: `a ≥ 1.35 b`
+ * and `b ≥ 1.35 a` cannot both hold, so the mutual-eligibility tie is
+ * arithmetically unreachable and there is no id tiebreak left to get wrong.
+ * Equal-sized creatures do what they did before the katamari: they separate,
+ * hard and mutually (src/physics/resolve.ts), and both keep their sticks.
+ */
+export const CREATURE_CARRY_RATIO = 1.35;
 
 /**
  * [D] How much volume actually becomes size.
@@ -334,6 +366,16 @@ export const DROP_MIN_GAP_MS = MOTION.tertiaryMs;
 /** The biggest item radius this carrier can take on. */
 export function carryLimit(carrierR: number): number {
   return PICKUP_RATIO * carrierR;
+}
+
+/**
+ * The biggest OTHER CREATURE this carrier can take on — its own radius over
+ * `CREATURE_CARRY_RATIO`, which is the same statement as
+ * `carrierR >= CREATURE_CARRY_RATIO * otherR` and is the form the manager's
+ * pass wants (one number per carrier, compared against each neighbour).
+ */
+export function creatureCarryLimit(carrierR: number): number {
+  return carrierR / CREATURE_CARRY_RATIO;
 }
 
 /**

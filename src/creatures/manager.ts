@@ -56,6 +56,7 @@ import {
   carryLimit,
   clumpLocalOffset,
   clumpLocalRotation,
+  creatureCarryLimit,
   decideContact,
   CONTACT_PAD,
   DROP_MIN_GAP_MS,
@@ -1494,6 +1495,62 @@ export function createCreatureManager(
     return slots.get(item.slice('creature:'.length)) ?? null;
   }
 
+  /** Scratch for `effectiveDrive` — one per manager, never per frame. */
+  const driveSum = { x: 0, z: 0 };
+
+  /** Sum one slot's own push and every passenger's, transitively. */
+  function addDrive(slot: Slot, depth: number): void {
+    const push = slot.drive;
+    if (push && push.mag > 0) {
+      driveSum.x += push.x;
+      driveSum.z += push.z;
+    }
+    // A pile can be a pile of piles. The depth guard is belt and braces: a
+    // cycle is already impossible (a creature carrying its own carrier is
+    // refused where the pile is built), and MAX_POPULATION bounds the rest.
+    if (depth >= 8) return;
+    for (const id of slot.passengers) {
+      const rider = slots.get(id);
+      if (rider) addDrive(rider, depth + 1);
+    }
+  }
+
+  /**
+   * WHAT THIS CREATURE IS BEING ASKED TO DO — its own stick plus every
+   * passenger's (2026-09-16, the stuck report).
+   *
+   * > User ruling: the player's character has priority and must always answer
+   * > its own phone.
+   *
+   * A carried creature has no locomotion of its own: its position is a seat
+   * on somebody's pile. Its drive used to be thrown away with it, so the
+   * moment a bigger creature picked you up your stick did nothing — the
+   * report's *"my character got stuck."* Now it is applied to the CARRIER, so
+   * every phone in a pile still steers the ball and a pile that four people
+   * are pushing goes where the four of them agree.
+   *
+   * The vectors add (each already carries its own strength) and the SUM is
+   * clamped to one stick's worth: four thumbs pushing the same way is not
+   * four times the speed, it is a full push, and the ceiling stays the
+   * ceiling. Two pushing opposite ways cancel, which is the honest answer.
+   *
+   * Nothing about this is on the wire. A recorded `drive` still names the
+   * passenger (src/session/recorder.ts) and the resolution happens HERE, on
+   * the frame it is applied — so the host and a replay of the same log reach
+   * the same velocity from the same events.
+   */
+  function effectiveDrive(slot: Slot): { x: number; z: number; mag: number } | null {
+    driveSum.x = 0;
+    driveSum.z = 0;
+    addDrive(slot, 0);
+    const mag = Math.hypot(driveSum.x, driveSum.z);
+    if (!(mag > 0)) return null;
+    // Clamp the MAGNITUDE and keep the direction: scaling each component by
+    // the same factor is what makes this a clamp rather than a squash.
+    const k = mag > 1 ? 1 / mag : 1;
+    return { x: driveSum.x * k, z: driveSum.z * k, mag: Math.min(1, mag) };
+  }
+
   /**
    * Where an item slides IN from, in clump-local space: wherever it actually
    * is at this instant.
@@ -1555,7 +1612,14 @@ export function createCreatureManager(
       rider.carriedBy = carrier.id;
       carrier.passengers.add(rider.id);
       rider.follow = null;
-      rider.drive = null;
+      /*
+       * ITS DRIVE IS KEPT, and that is the 2026-09-16 fix (the stuck
+       * report). Clearing it here was half of *"my character got stuck"*:
+       * the phone went on publishing an intent that the manager dropped on
+       * the floor for as long as the pile held it. The push now reaches the
+       * carrier instead (`effectiveDrive`), so a passenger's thumb steers the
+       * ball it is riding.
+       */
       world.shadows.removeShadow(`char-${rider.id}`);
       rider.characterShadow = null;
       removeKinematic(rider);
@@ -2149,17 +2213,53 @@ export function createCreatureManager(
   const itemPoints: { x: number; z: number }[] = [];
 
   /**
+   * Where a loose body IS, as seven plain numbers.
+   *
+   * Read off rapier and copied, because the body it came from does not
+   * survive the pickup — see `stickItem`.
+   */
+  interface ItemPose {
+    x: number;
+    y: number;
+    z: number;
+    qx: number;
+    qy: number;
+    qz: number;
+    qw: number;
+  }
+
+  /** Snapshot a loose body's live transform. Must be called while the body
+   * is still IN the solver. */
+  function poseOf(item: LooseItem): ItemPose {
+    const t = item.body.translation();
+    const r = item.body.rotation();
+    return { x: t.x, y: t.y, z: t.z, qx: r.x, qy: r.y, qz: r.z, qw: r.w };
+  }
+
+  /**
    * Decide one pickup and tell the room.
    *
    * The offset and rotation come out of the item's LIVE transform — where the
    * stone actually is at the instant of contact, not where its placement was
    * — which is what makes the pile look assembled by running into things.
+   *
+   * THE POSE IS HANDED IN, AND THAT IS NOT A STYLE CHOICE (2026-09-16, the
+   * second stuck report). The caller has to drop the body first — `take`
+   * removes it from the solver and hides the placement, so the mesh the clump
+   * then holds is the only copy of the thing — and a rapier body that has
+   * been removed is a DEAD HANDLE: reading its translation traps the wasm
+   * (`RuntimeError: unreachable`). That throw came out of `update()`, so the
+   * host's whole frame loop died the first time any creature rolled over a
+   * loose stone: no more poses, every phone's creature frozen where it stood,
+   * which is exactly what *"my character got stuck"* looks like from a
+   * handset. The snapshot is taken while the body is alive and nothing here
+   * touches rapier at all.
    */
-  function stickItem(carrier: Slot, item: LooseItem, root: Group): void {
+  function stickItem(carrier: Slot, item: LooseItem, root: Group, pose: ItemPose): void {
     const clump = carrier.clump;
     if (!clump) return;
-    const t = item.body.translation();
-    const r = item.body.rotation();
+    const t = pose;
+    const r = { x: pose.qx, y: pose.qy, z: pose.qz, w: pose.qw };
     clump.group.getWorldPosition(scratchVec);
     const offset = clumpLocalOffset({
       itemX: t.x,
@@ -2733,10 +2833,15 @@ export function createCreatureManager(
           carrierR: slot.bodyR,
         });
         if (outcome !== 'stick') continue;
-        // `take` first: it drops the body and hides the placement, so the
-        // mesh the clump then holds is the only copy of the thing.
+        // THE POSE BEFORE THE TAKE. `take` drops the rigid body, and a
+        // dropped rapier body is a dead handle whose translation traps the
+        // wasm — which took the host's whole frame loop with it the first
+        // time anybody rolled up a stone (see `stickItem`).
+        const pose = poseOf(item);
+        // `take` next: it hides the placement too, so the mesh the clump
+        // then holds is the only copy of the thing.
         if (!bodies.take(item.key)) continue;
-        stickItem(slot, item, root);
+        stickItem(slot, item, root, pose);
       }
     }
 
@@ -2759,34 +2864,47 @@ export function createCreatureManager(
         const dx = a.root.position.x - b.root.position.x;
         const dz = a.root.position.z - b.root.position.z;
         if (Math.hypot(dx, dz) > a.slot.bodyR + b.slot.bodyR + CONTACT_PAD) continue;
-        const aTakesB = b.slot.bodyR <= carryLimit(a.slot.bodyR);
-        const bTakesA = a.slot.bodyR <= carryLimit(b.slot.bodyR);
-        if (aTakesB && bTakesA) {
-          /*
-           * BOTH ELIGIBLE, which since `PICKUP_RATIO` became 1 means their
-           * radii are equal — each is exactly at the other's limit.
-           *
-           * Somebody has to carry, and it cannot be "whichever was visited
-           * first": `aliveScratch` is sorted by id, so the earlier slot would
-           * always win, and a page that had retired one of them would sort
-           * the pair differently and build the other pile. The BIGGER ID
-           * carries. It is arbitrary, and that is the point — it is a
-           * property of the two creatures and of nothing else, so every page
-           * reaches it.
-           */
-          const [carrier, rider] = a.slot.id > b.slot.id ? [a, b] : [b, a];
-          stickCreature(carrier.slot, rider.slot, carrier.root);
-        } else if (aTakesB) stickCreature(a.slot, b.slot, a.root);
+        /*
+         * A CREATURE NEEDS A CLEAR SIZE GAP, not a tie
+         * (`CREATURE_CARRY_RATIO`, 2026-09-16 — the stuck report).
+         *
+         * `carryLimit` decides a PROP and is 1.0 of the carrier's radius; a
+         * creature is somebody's, with a phone in somebody's hand, so it
+         * takes a third again the size before it can be taken out of their
+         * control. Both cannot be true at once — `a ≥ 1.35 b` and
+         * `b ≥ 1.35 a` have no solution — so there is no mutual-eligibility
+         * tie here any more and nothing for two pages to disagree about.
+         * Equal-sized creatures fall through to the pair separation they had
+         * before the katamari, and both keep answering their own sticks.
+         */
+        const aTakesB = b.slot.bodyR <= creatureCarryLimit(a.slot.bodyR);
+        const bTakesA = a.slot.bodyR <= creatureCarryLimit(b.slot.bodyR);
+        if (aTakesB) stickCreature(a.slot, b.slot, a.root);
         else if (bTakesA) stickCreature(b.slot, a.slot, b.root);
       }
     }
 
-    // The carrier's stand-in and its stuck colliders, once everything is
-    // where it is going to be this frame.
-    for (const entry of aliveScratch) {
-      if (entry.slot.carriedBy) continue;
-      syncKinematic(entry.slot, entry.root);
-      syncStuckColliders(entry.slot);
+  }
+
+  /**
+   * THE STAND-INS — every carrier's kinematic body and the balls for what it
+   * is carrying, at the size and place it ends the frame at.
+   *
+   * Called AFTER `growPass` and not at the end of `simulateSticky`, which is
+   * where it used to live (2026-09-16). Growth is written in `growPass`, so a
+   * creature that picked something up this frame had its `bodyR` and its
+   * drawn scale updated a few lines after its rapier ball was sized — and the
+   * solver spent a frame holding a ball smaller than the circle the resolve
+   * was using. One radius, one frame, everywhere: the resolve circle, the
+   * exclusion radius, the drawn scale and the ball are all this `bodyR`, so
+   * there is no gap between two sizes for a creature to wedge in.
+   */
+  function syncStandIns(): void {
+    for (const slot of slots.values()) {
+      const root = slot.characterRoot;
+      if (!root || slot.phase !== 'alive' || slot.carriedBy) continue;
+      syncKinematic(slot, root);
+      syncStuckColliders(slot);
     }
   }
 
@@ -3323,7 +3441,7 @@ export function createCreatureManager(
              * where it is actually standing (src/behavior/agent.ts,
              * `AgentHold`).
              */
-            const driven = slot.drive && slot.drive.mag > 0 ? slot.drive : null;
+            const driven = effectiveDrive(slot);
             // Stamped from the loop's own clock, never `performance.now()`:
             // the window is compared against the same `nowMs` every other
             // timer here uses.
@@ -3716,9 +3834,14 @@ export function createCreatureManager(
        * the frame's contact reports on the floor rather than keeping a list
        * nothing will ever read.
        */
-      if (manager.simulating()) simulateSticky(nowMs);
+      const simulating = manager.simulating();
+      if (simulating) simulateSticky(nowMs);
       else contacts.length = 0;
       growPass(dt);
+      // The rigid-body stand-ins last of all, so they are the size the
+      // creature IS rather than the size it was before it ate (see
+      // `syncStandIns`). Host only: a viewer holds no bodies to stand in.
+      if (simulating) syncStandIns();
     },
 
     has(id): boolean {
@@ -3815,11 +3938,14 @@ export function createCreatureManager(
     drive(id: string, vec: { x: number; z: number; mag: number } | null): boolean {
       const slot = slots.get(id);
       if (!slot || slot.phase !== 'alive') return false;
-      // IGNORED, not refused, while it is stuck to somebody else. The stick
-      // still works and the creature still answers to its phone the moment
-      // it is set down — a `false` here would have the handset's joystick
-      // report the creature gone, which it is not: it is on a pile.
-      if (slot.carriedBy) return true;
+      /*
+       * HELD EVEN WHILE IT IS ON SOMEBODY'S PILE (2026-09-16, the stuck
+       * report). A carried creature has no locomotion of its own, so the push
+       * is applied to its CARRIER on the frame — `effectiveDrive` sums the
+       * passengers' sticks with the carrier's own. It used to be dropped
+       * here, and a phone whose creature had been picked up could do nothing
+       * at all with it.
+       */
       slot.drive = vec && vec.mag > 0 ? { x: vec.x, z: vec.z, mag: vec.mag } : null;
       return true;
     },

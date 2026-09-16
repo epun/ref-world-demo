@@ -1435,16 +1435,31 @@ describe('sticky — one creature carrying another', () => {
     manager.clearAll();
   });
 
-  it('ignores a drive on a carried creature rather than refusing it', () => {
-    // A `false` would have the handset report the creature gone, which it is
-    // not: it is on a pile, and it will answer again the moment it is down.
+  it('a carried creature keeps its stick — and steers its carrier', () => {
+    /*
+     * THE STUCK REPORT, 2026-09-16: *"my character got stuck."*
+     *
+     * A carried creature's drive used to be dropped on the floor, so a phone
+     * whose creature had been picked up could do nothing with it at all. The
+     * ruling is that the player's character always answers its own phone —
+     * and since a passenger has no locomotion of its own (its position is a
+     * seat on a pile), what the push moves is the PILE. The event on the wire
+     * is unchanged: it still names the passenger, and the manager resolves it
+     * to the carrier on the frame it applies it.
+     */
     const { world, manager } = pair({ physics: true });
     const roots = rootsOf(world, manager);
     const big = roots.get('big')!;
     roots.get('small')!.position.set(big.position.x, 0, big.position.z);
     manager.update(16, 1000);
     expect(manager.drive('small', { x: 1, z: 0, mag: 1 })).toBe(true);
-    expect(manager.driven()).toEqual([]);
+    expect(manager.driven()).toEqual(['small']);
+
+    // Nobody is touching the carrier's own stick, and the carrier moves.
+    const from = manager.positionOf('big')!.clone();
+    for (let f = 0; f < 60; f++) manager.update(16, 1016 + f * 16);
+    const to = manager.positionOf('big')!;
+    expect(to.x - from.x).toBeGreaterThan(0.3);
     manager.clearAll();
   });
 
