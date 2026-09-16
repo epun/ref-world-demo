@@ -32,22 +32,30 @@ import {
   createWaterSurfaceMaterial,
 } from '../../../src/world/ghibli/water';
 
-const flat = (): number => 0;
-
 /** One entry per material a ghibli world builds. */
 function materials(): { name: string; material: ShaderMaterial; uniforms: string[] }[] {
-  const grass = createGrassField({ count: 64, heightAt: flat });
-  const flowers = createFlowerField({ count: 64, heightAt: flat });
+  const grass = createGrassField({ count: 64 });
+  const flowers = createFlowerField({ count: 64 });
   return [
     {
       name: 'grass',
       material: grass.material,
-      uniforms: ['uGrass', 'uComb', 'uPress', 'uRegion', 'uWindTime', 'uWindDir', 'uSunDir'],
+      uniforms: [
+        'uGrass',
+        'uComb',
+        'uPress',
+        'uRegion',
+        'uHeight',
+        'uCenter',
+        'uWindTime',
+        'uWindDir',
+        'uSunDir',
+      ],
     },
     {
       name: 'flowers',
       material: flowers.material,
-      uniforms: ['uFlowers', 'uGrass', 'uRegion', 'uMix', 'uStem', 'uWindGust'],
+      uniforms: ['uFlowers', 'uGrass', 'uRegion', 'uHeight', 'uCenter', 'uMix', 'uStem', 'uWindGust'],
     },
     {
       name: 'rock',
@@ -143,6 +151,10 @@ describe('ghibli element shaders', () => {
       'ggGroundHash',
       'ggGroundVNoise',
       'ggGroundNoise',
+      // The shared bakes: the ground under a blade, and the window it stands
+      // in (src/world/ghibli/height.ts).
+      'ggGroundAt',
+      'ggWindow',
     ];
     for (const { material } of materials()) {
       const all = definitions(material.vertexShader).concat(definitions(material.fragmentShader));

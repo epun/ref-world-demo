@@ -42,6 +42,7 @@ import { GHIBLI } from '../../taste/tokens';
 import { PAINTED_SIZE } from '../painted';
 import { TOON_LIGHTING_GLSL, TOON_VARYINGS_GLSL, toonUniforms } from '../toon';
 import { WIND_FIELD_GLSL, type WindField } from '../wind';
+import { GG_HEIGHT_GLSL, GG_WINDOW_GLSL, HEIGHT_RES } from './height';
 import {
   GG_WIND_NOISE_GLSL,
   createWindUniforms,
@@ -75,24 +76,27 @@ const PHASE_JITTER = 2.0;
  * explains why there is one at all).
  */
 /**
- * Twice the blade window, on purpose: a bloom reads from much farther away
- * than a blade does (a coloured head is two or three pixels of yellow on
- * green, where a blade is one pixel of a slightly different green), and the
- * same budget over the blades' own window sowed about twenty a square unit —
- * a carpet of wildflowers rather than a meadow with flowers in it (measured on
- * screen, 2026-09-15). Five a square unit at the map's 0.18 base density is
- * roughly one bloom a square unit, which is the reference read.
+ * The BLADE window, exactly (2026-09-15, user direction: *"cut the flower span
+ * to the blade span"*). Blooms belong in the grass, so they live in the same
+ * window as the grass — and the density below is what keeps them from reading
+ * as confetti, rather than spreading the same budget over more ground.
  */
-export const FLOWER_SPAN_PROJECTION = 88;
-export const FLOWER_SPAN_PHONE = 52;
-
-/** [D] Where the window's fade begins, as a fraction of its half-span. */
-const FADE_IN = 0.72;
+export const FLOWER_SPAN_PROJECTION = 44;
+export const FLOWER_SPAN_PHONE = 26;
 
 const DEFAULTS = {
   density: 1,
-  /** [D] How many flowers the MAP sows unpainted: a meadow is mostly grass. */
-  baseDensity: 0.18,
+  /**
+   * [D] How many flowers the MAP sows unpainted: a meadow is mostly grass.
+   *
+   * 0.03, down from envpaint's 0.18 (2026-09-15, user direction). At 0.18 over
+   * the blade window the render came back with about twenty blooms a square
+   * unit — *"polka dots on a lawn"* — and envpaint's own meadow has flowers
+   * only where a brush put them. A few per ten square units, and the DRIFT
+   * below gathers even those into patches, so the ground between them is
+   * plainly grass. A painted `flowers` layer still blooms at full density.
+   */
+  baseDensity: 0.03,
   noiseScale: 0.3,
   noiseStrength: 0.5,
   stemHeight: 1.4,
@@ -111,6 +115,8 @@ const float GG_TAU = 6.2831853;
 ${TOON_VARYINGS_GLSL}
 ${WIND_FIELD_GLSL}
 ${GG_WIND_NOISE_GLSL}
+${GG_HEIGHT_GLSL}
+${GG_WINDOW_GLSL}
 
 uniform sampler2D uFlowers;
 uniform sampler2D uGrass;
@@ -127,8 +133,6 @@ uniform float uHeadSize;
 uniform float uWindResponse;
 uniform float uNeedGrass;
 uniform float uZoom;
-uniform vec2 uCenter;
-uniform float uSpan;
 uniform vec4 uMix;
 uniform vec3 uWhite;
 uniform vec3 uYellow;
@@ -143,7 +147,6 @@ uniform float uWindGust;
 
 attribute vec2 aOffset;
 attribute vec4 aRand;
-attribute float aGround;
 attribute vec3 aVert;
 
 varying vec4 vInfo;
@@ -153,14 +156,28 @@ varying vec3 vCentreColor;
 const vec2 GG_NOISE_SEED = vec2(31.7, 11.9);
 
 void main() {
-  vec2 luv = aOffset / GG_SIZE + 0.5;
+  // The window's centre lives in the shader (src/world/ghibli/grass.ts's
+  // header explains why): everything below reads where the bloom IS.
+  vec2 wpos = aOffset + uCenter;
+  vec2 luv = wpos / GG_SIZE + 0.5;
 
   float paint = texture2D(uFlowers, luv).r;
   float grassV = texture2D(uGrass, luv).r;
   vec3 region = texture2D(uRegion, luv).rgb;
   float wet = step(0.95, region.b);
 
-  float grow = max(paint, uBaseDensity * region.r);
+  // The map's blooms come in DRIFTS, not evenly (2026-09-15): a low-frequency
+  // patch noise gates them, so a meadow has stretches of plain grass and
+  // stretches with flowers in them. A painted layer is not gated — somebody
+  // put those there.
+  // windFbm sums to at most 0.75 over its octaves, so it is NORMALISED before
+  // the threshold — at 0.52 on the raw value the gate was closed nearly
+  // everywhere and the meadow came back with a dozen blooms in it (measured on
+  // screen, 2026-09-15). Normalised, 0.55–0.72 keeps roughly a third of the
+  // ground in bloom and leaves the rest plainly grass.
+  float driftN = clamp(windFbm(luv * 8.0 + GG_NOISE_SEED, 3) * 1.3333, 0.0, 1.0);
+  float drift = smoothstep(0.55, 0.72, driftN);
+  float grow = max(paint, uBaseDensity * region.r * drift);
   grow *= 1.0 - 0.75 * region.g;
   grow *= 1.0 - wet;
   float base = grow * uDensity;
@@ -188,14 +205,13 @@ void main() {
   float far = smoothstep(9.0, 22.0, uZoom);
 
   float bh = uStemHeight * mix(0.25, 0.6, aRand.z);
-  // The window's fade, the blade field's exactly (src/world/ghibli/grass.ts):
-  // the last quarter shrinks into the ground rather than ending on a line.
-  vec2 fromCenter = abs(aOffset - uCenter) / max(uSpan * 0.5, 1e-3);
-  float windowFade = 1.0 - smoothstep(${ggFloat(FADE_IN)}, 1.0, max(fromCenter.x, fromCenter.y));
+  // The window's fade, the blade field's exactly — the same squircle, the same
+  // 45% (ggWindow, src/world/ghibli/height.ts).
+  float windowFade = ggWindow(wpos);
   bh *= windowFade;
 
-  float phase = ggWindHash(dot(aOffset, vec2(127.1, 311.7))) * ${ggFloat(PHASE_JITTER)};
-  vec2 push = refWindAt(aOffset, uWindTime * ${ggFloat(GUST_HZ)},
+  float phase = ggWindHash(dot(wpos, vec2(127.1, 311.7))) * ${ggFloat(PHASE_JITTER)};
+  vec2 push = refWindAt(wpos, uWindTime * ${ggFloat(GUST_HZ)},
     uWindDir, uWindStrength, uWindGust);
   vec2 windV = push * uWindResponse;
   windV += vec2(-uWindDir.y, uWindDir.x) * (uWindStrength * ${ggFloat(FLUTTER)}
@@ -243,7 +259,7 @@ void main() {
     pos += (right * c.x + upv * c.y) * halfSize;
   }
 
-  vec3 world = vec3(aOffset.x, aGround, aOffset.y) + pos;
+  vec3 world = vec3(wpos.x, ggGroundAt(wpos), wpos.y) + pos;
 
   // Colour by weighted pick, so a meadow is mostly white with yellow, pink
   // and the occasional blue.
@@ -260,7 +276,7 @@ void main() {
   } else if (pick >= w.x) {
     head = uYellow;
   }
-  head *= mix(0.96, 1.04, windHash21(aOffset * 3.7));
+  head *= mix(0.96, 1.04, windHash21(wpos * 3.7));
 
   vInfo = vec4(aVert.xy, t, part);
   vColor = head;
@@ -324,7 +340,8 @@ export interface FlowerLayers {
 
 export interface FlowerFieldOptions {
   count?: number;
-  heightAt: (x: number, z: number) => number;
+  /** The baked ground (src/world/ghibli/height.ts). Absent means flat paper. */
+  height?: Texture | null;
   region?: Texture | null;
   baseDensity?: number;
   /** World units the window spans. Defaults to the whole painted map. */
@@ -338,11 +355,12 @@ export interface FlowerField {
   setLayers(layers: FlowerLayers): void;
   setRegion(region: Texture | null): void;
   setBaseDensity(value: number): void;
-  rebuild(heightAt: (x: number, z: number) => number): void;
-  /** Slide the window and re-lay the field inside it. The caller quantises —
-   * see `GrassField.setCenter`, which this mirrors exactly. */
-  setCenter(x: number, z: number, heightAt: (x: number, z: number) => number): void;
-  /** Where the window is centred, world x/z. */
+  /** Point the field at the baked ground — see `GrassField.setHeight`. */
+  setHeight(height: Texture | null): void;
+  /** Slide the window's centre: one uniform write, quantised to the layout's
+   * own cell — see `GrassField.setCenter`, which this mirrors exactly. */
+  setCenter(x: number, z: number): void;
+  /** Where the window is centred, world x/z — quantised, as applied. */
   center(): { x: number; z: number };
   setCount(count: number): void;
   count(): number;
@@ -376,6 +394,8 @@ export function createFlowerField(opts: FlowerFieldOptions): FlowerField {
     uZoom: { value: DEFAULTS.zoom },
     uCenter: { value: new Vector2(0, 0) },
     uSpan: { value: span },
+    uHeight: { value: (opts.height ?? restLayer) as Texture },
+    uHeightRes: { value: HEIGHT_RES },
     uMix: { value: DEFAULTS.mix.clone() },
     uWhite: { value: new Color(GHIBLI.flowerWhite) },
     uYellow: { value: new Color(GHIBLI.flowerYellow) },
@@ -393,36 +413,30 @@ export function createFlowerField(opts: FlowerFieldOptions): FlowerField {
     side: DoubleSide,
   });
 
-  let heightAt = opts.heightAt;
   let count = Math.max(1, Math.round(opts.count ?? FLOWER_COUNT_PROJECTION));
   let centerX = 0;
   let centerZ = 0;
+  /** The lattice step, and the quantum `setCenter` snaps to — see the blade
+   * field's own. */
+  let cell = span / Math.ceil(Math.sqrt(count));
 
-  /** Sow `n` blooms on the seeded jittered grid inside the window, and bake
-   * each one's ground height through the `Surface` seam. Re-run whole when the
-   * window slides (`setCenter`) — see the blade field's own `lay`. */
-  const lay = (
-    n: number,
-    offsets: Float32Array,
-    rands: Float32Array,
-    ground: Float32Array,
-  ): void => {
+  /** Sow `n` blooms on the seeded jittered grid, WINDOW-LOCAL: the vertex
+   * shader adds `uCenter`, so this runs once per count and never again as the
+   * window slides. */
+  const lay = (n: number, offsets: Float32Array, rands: Float32Array): void => {
     const k = Math.ceil(Math.sqrt(n));
-    const cell = span / k;
+    cell = span / k;
     const half = span / 2;
     const rand = mulberry32(FLOWER_SEED);
     for (let i = 0; i < n; i++) {
       const gx = i % k;
       const gz = (i / k) | 0;
-      const x = centerX - half + (gx + 0.5 + (rand() - 0.5) * 0.95) * cell;
-      const z = centerZ - half + (gz + 0.5 + (rand() - 0.5) * 0.95) * cell;
-      offsets[i * 2] = x;
-      offsets[i * 2 + 1] = z;
+      offsets[i * 2] = -half + (gx + 0.5 + (rand() - 0.5) * 0.95) * cell;
+      offsets[i * 2 + 1] = -half + (gz + 0.5 + (rand() - 0.5) * 0.95) * cell;
       rands[i * 4] = rand();
       rands[i * 4 + 1] = rand();
       rands[i * 4 + 2] = rand();
       rands[i * 4 + 3] = rand();
-      ground[i] = heightAt(x, z);
     }
   };
 
@@ -465,11 +479,9 @@ export function createFlowerField(opts: FlowerFieldOptions): FlowerField {
 
     const offsets = new Float32Array(n * 2);
     const rands = new Float32Array(n * 4);
-    const ground = new Float32Array(n);
-    lay(n, offsets, rands, ground);
+    lay(n, offsets, rands);
     geometry.setAttribute('aOffset', new InstancedBufferAttribute(offsets, 2));
     geometry.setAttribute('aRand', new InstancedBufferAttribute(rands, 4));
-    geometry.setAttribute('aGround', new InstancedBufferAttribute(ground, 1));
     geometry.instanceCount = n;
     return geometry;
   };
@@ -495,32 +507,13 @@ export function createFlowerField(opts: FlowerFieldOptions): FlowerField {
     setBaseDensity(value: number): void {
       uniforms.uBaseDensity.value = Math.min(1, Math.max(0, value));
     },
-    rebuild(next: (x: number, z: number) => number): void {
-      heightAt = next;
-      const offsets = geometry.getAttribute('aOffset');
-      const ground = geometry.getAttribute('aGround');
-      for (let i = 0; i < ground.count; i++) {
-        ground.setX(i, heightAt(offsets.getX(i), offsets.getY(i)));
-      }
-      ground.needsUpdate = true;
+    setHeight(height: Texture | null): void {
+      uniforms.uHeight.value = height ?? restLayer;
     },
-    setCenter(x: number, z: number, next: (x: number, z: number) => number): void {
-      centerX = x;
-      centerZ = z;
-      heightAt = next;
-      uniforms.uCenter.value.set(x, z);
-      const offsets = geometry.getAttribute('aOffset') as InstancedBufferAttribute;
-      const rands = geometry.getAttribute('aRand') as InstancedBufferAttribute;
-      const ground = geometry.getAttribute('aGround') as InstancedBufferAttribute;
-      lay(
-        count,
-        offsets.array as Float32Array,
-        rands.array as Float32Array,
-        ground.array as Float32Array,
-      );
-      offsets.needsUpdate = true;
-      rands.needsUpdate = true;
-      ground.needsUpdate = true;
+    setCenter(x: number, z: number): void {
+      centerX = Math.round(x / cell) * cell;
+      centerZ = Math.round(z / cell) * cell;
+      uniforms.uCenter.value.set(centerX, centerZ);
     },
     center(): { x: number; z: number } {
       return { x: centerX, z: centerZ };

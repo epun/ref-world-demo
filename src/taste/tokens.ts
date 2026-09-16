@@ -193,9 +193,22 @@ export const GHIBLI = {
   char: '#2f2a27',
   // grass marks
   grassBase: '#5aa845',
-  grassTip: '#cfe872',
-  /** Sun-bleached blade, where the patchiness noise runs high. */
-  grassDry: '#e2d977',
+  /**
+   * The blade's tip. envpaint's own is `#cfe872` — a cool, bluish yellow-green
+   * that, at this world's blade density, made the whole field read a value
+   * lighter and a good deal bluer than the meadow it stands in, so the window
+   * the field covers showed up as a pale lozenge on the lawn (2026-09-15, user
+   * direction: it *"must be invisible"*). Pulled into the meadow's own family
+   * — warmer, less blue, still lighter than the base, and landed by SOLVING
+   * for it rather than by eye: the field's mean pixel moves about 1.6 units of
+   * blue per unit of the tip's blue and about 0.5 of green per unit of green,
+   * measured across two renders, so this is the tip that puts the field on the
+   * meadow it stands in. **[D]**
+   */
+  grassTip: '#a8ec36',
+  /** Sun-bleached blade, where the patchiness noise runs high. Warmed with the
+   * tip above, and for the same reason. **[D]** */
+  grassDry: '#d8dd40',
   // wild flowers — envpaint's `flowers` palette, one bloom picked per stem
   flowerWhite: '#fff8f0',
   flowerYellow: '#ffe45c',
