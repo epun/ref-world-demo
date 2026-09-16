@@ -37,6 +37,19 @@
  *     of each envpaint `uStyleId` switch survives; the lighting is
  *     `src/world/toon.ts`'s shared chunk with a constant 1.0 shadow term.
  *
+ * THE MOVING WINDOW (2026-09-15, user direction: *"I want the grass density
+ * and style to look like EnvPaint in the valiocon version, not the old
+ * style"*). envpaint's world is 48 units across and carries 300 000 blades —
+ * about 130 a square unit. This world is 400 units across, so that per-unit
+ * density is twenty million blades. What the eye actually reads is blades per
+ * SCREEN PIXEL, so the tier's budget is spent inside a `span`-wide window
+ * around the camera's look-target instead of thinly over the whole map: at
+ * envpaint-like density in the middle of the frame, fading out over the last
+ * quarter of the window (never a hard edge — TASTE §2.1) into the ground
+ * shader's own meadow green, which carries the field from there to the
+ * horizon. `setCenter` slides the window; the caller quantises, because a
+ * re-lay re-bakes every blade's ground height.
+ *
  * INK NORMAL PASS. `src/world/ink.ts` renders a normal target with
  * `scene.overrideMaterial = MeshNormalMaterial`, which would draw this
  * geometry's rest-pose `position` attribute instead of the shader's blades.
@@ -50,6 +63,7 @@ import {
   BufferAttribute,
   Color,
   DoubleSide,
+  Vector2,
   InstancedBufferAttribute,
   InstancedBufferGeometry,
   Mesh,
@@ -102,7 +116,19 @@ const DEFAULTS = {
   noiseScale: 0.25,
   noiseStrength: 0.6,
   bladeHeight: 0.8,
-  bladeWidth: 0.11,
+  /**
+   * [D] envpaint's 0.11, widened.
+   *
+   * THE PIXELS, not the units: envpaint views its 48-unit world at about
+   * 0.048 world units a pixel, so its 0.8 × 0.11 blade is ~17 px tall and
+   * ~2.3 px wide. This world's default view is `FRUSTUM_HEIGHT` 40 over the
+   * viewport height — 0.05 u/px at 800 px — which is within 5% of the same
+   * scale, so the blade keeps envpaint's height exactly and reads the same
+   * size on screen. The WIDTH goes up because the density cannot: a tier's
+   * budget over the window below lands near 77 blades a square unit against
+   * envpaint's 130, and a blade 27% wider covers the difference.
+   */
+  bladeWidth: 0.14,
   lean: 0.45,
   /** Radians. envpaint's 30° default. */
   direction: (30 * Math.PI) / 180,
@@ -112,6 +138,21 @@ const DEFAULTS = {
   /** Camera frustum half-height — how far away we are. */
   zoom: 14,
 };
+
+/**
+ * [D] World units the window spans, by tier (see the header).
+ *
+ * A projection's default view covers roughly 64 × 69 units of GROUND, and
+ * 150 000 blades only reach envpaint's density over about 34 units square —
+ * so 44 puts real blades across the middle two thirds of the frame and lets
+ * the ground green carry the rest. A handset holds the same budget ratio.
+ */
+export const GRASS_SPAN_PROJECTION = 44;
+export const GRASS_SPAN_PHONE = 26;
+
+/** [D] Where the window's fade begins, as a fraction of its half-span. The
+ * blades shorten into the ground rather than ending on a line. */
+const FADE_IN = 0.72;
 
 const VERTEX = /* glsl */ `
 const float GG_SIZE = ${ggFloat(PAINTED_SIZE)};
@@ -137,6 +178,8 @@ uniform float uDirectionJitter;
 uniform float uCombStrength;
 uniform float uWindResponse;
 uniform float uZoom;
+uniform vec2 uCenter;
+uniform float uSpan;
 
 uniform float uWindTime;
 uniform vec2 uWindDir;
@@ -194,6 +237,12 @@ void main() {
 
   float heightNoise = mix(0.65, 1.35, windFbm(luv * 25.0 + 7.3, 3));
   float bh = uBladeHeight * heightNoise * mix(0.7, 1.3, aRand.z);
+  // The window's fade (see the header): the last quarter of the window
+  // shortens into the ground shader's own meadow green, so the field has an
+  // edge nobody can see rather than a line somebody can (TASTE §2.1).
+  vec2 fromCenter = abs(aOffset - uCenter) / max(uSpan * 0.5, 1e-3);
+  float edge = max(fromCenter.x, fromCenter.y);
+  bh *= 1.0 - smoothstep(${ggFloat(FADE_IN)}, 1.0, edge);
   float width = uBladeWidth * (1.0 - pow(t, 1.3));
 
   // Where the comb layer is painted it replaces the global lean entirely and
@@ -318,6 +367,9 @@ export interface GrassFieldOptions {
   region?: Texture | null;
   /** How much grass the MAP grows where nobody has painted, 0–1. */
   baseDensity?: number;
+  /** World units the window spans (see the header). Defaults to the whole
+   * painted map, which is the layout the field had before the window. */
+  span?: number;
   layers?: GrassLayers;
 }
 
@@ -332,6 +384,19 @@ export interface GrassField {
   setBaseDensity(value: number): void;
   /** Re-bake every blade's ground height — `refreshTerrain`'s call. */
   rebuild(heightAt: (x: number, z: number) => number): void;
+  /**
+   * Slide the window to a new centre and re-lay the field inside it (see the
+   * header).
+   *
+   * The caller QUANTISES: this re-writes every blade's offset and re-bakes
+   * every blade's ground height, so it is a once-in-a-while call keyed on the
+   * camera having actually gone somewhere, not a per-frame one. The layout
+   * itself stays deterministic — the same seeded jitter, translated — so the
+   * field never reshuffles as it slides.
+   */
+  setCenter(x: number, z: number, heightAt: (x: number, z: number) => number): void;
+  /** Where the window is centred, world x/z. */
+  center(): { x: number; z: number };
   /** Re-lay the field at a new blade count (the tier changed). */
   setCount(count: number): void;
   /** Blades currently laid. */
@@ -348,6 +413,7 @@ export interface GrassField {
  * that, and owns hiding the mesh on the `ink` style (docs/ghibli-port.md).
  */
 export function createGrassField(opts: GrassFieldOptions): GrassField {
+  const span = Math.max(1, opts.span ?? PAINTED_SIZE);
   const restGrass = emptyLayerTexture();
   const restComb = neutralCombTexture();
   const restPress = restPressTexture();
@@ -372,6 +438,8 @@ export function createGrassField(opts: GrassFieldOptions): GrassField {
     uCombStrength: { value: DEFAULTS.combStrength },
     uWindResponse: { value: DEFAULTS.windResponse },
     uZoom: { value: DEFAULTS.zoom },
+    uCenter: { value: new Vector2(0, 0) },
+    uSpan: { value: span },
     uColorBase: { value: new Color(GHIBLI.grassBase) },
     uColorTip: { value: new Color(GHIBLI.grassTip) },
     uColorDry: { value: new Color(GHIBLI.grassDry) },
@@ -387,6 +455,43 @@ export function createGrassField(opts: GrassFieldOptions): GrassField {
 
   let heightAt = opts.heightAt;
   let count = Math.max(1, Math.round(opts.count ?? GRASS_COUNT_PROJECTION));
+  let centerX = 0;
+  let centerZ = 0;
+
+  /**
+   * Lay `n` blades on the seeded jittered grid inside the window, and bake
+   * each one's ground height through the `Surface` seam.
+   *
+   * Pulled out of `build` because the window MOVES: sliding it re-runs
+   * exactly this, into the same buffers, rather than re-allocating a geometry
+   * (`setCenter`). The rand stream is re-seeded from the module constant every
+   * time, so the jitter and the four per-blade randoms are the same numbers at
+   * every centre and the field translates instead of reshuffling.
+   */
+  const lay = (
+    n: number,
+    offsets: Float32Array,
+    rands: Float32Array,
+    ground: Float32Array,
+  ): void => {
+    const k = Math.ceil(Math.sqrt(n));
+    const cell = span / k;
+    const half = span / 2;
+    const rand = mulberry32(GRASS_SEED);
+    for (let i = 0; i < n; i++) {
+      const gx = i % k;
+      const gz = (i / k) | 0;
+      const x = centerX - half + (gx + 0.5 + (rand() - 0.5) * 0.95) * cell;
+      const z = centerZ - half + (gz + 0.5 + (rand() - 0.5) * 0.95) * cell;
+      offsets[i * 2] = x;
+      offsets[i * 2 + 1] = z;
+      rands[i * 4] = rand();
+      rands[i * 4 + 1] = rand();
+      rands[i * 4 + 2] = rand();
+      rands[i * 4 + 3] = rand();
+      ground[i] = heightAt(x, z);
+    }
+  };
 
   /** The blade strip: shared by every instance, built once per count change
    * only because the instance attributes live on the same geometry. */
@@ -421,23 +526,7 @@ export function createGrassField(opts: GrassFieldOptions): GrassField {
     const offsets = new Float32Array(n * 2);
     const rands = new Float32Array(n * 4);
     const ground = new Float32Array(n);
-    const k = Math.ceil(Math.sqrt(n));
-    const cell = PAINTED_SIZE / k;
-    const half = PAINTED_SIZE / 2;
-    const rand = mulberry32(GRASS_SEED);
-    for (let i = 0; i < n; i++) {
-      const gx = i % k;
-      const gz = (i / k) | 0;
-      const x = -half + (gx + 0.5 + (rand() - 0.5) * 0.95) * cell;
-      const z = -half + (gz + 0.5 + (rand() - 0.5) * 0.95) * cell;
-      offsets[i * 2] = x;
-      offsets[i * 2 + 1] = z;
-      rands[i * 4] = rand();
-      rands[i * 4 + 1] = rand();
-      rands[i * 4 + 2] = rand();
-      rands[i * 4 + 3] = rand();
-      ground[i] = heightAt(x, z);
-    }
+    lay(n, offsets, rands, ground);
     geometry.setAttribute('aOffset', new InstancedBufferAttribute(offsets, 2));
     geometry.setAttribute('aRand', new InstancedBufferAttribute(rands, 4));
     geometry.setAttribute('aGround', new InstancedBufferAttribute(ground, 1));
@@ -477,6 +566,27 @@ export function createGrassField(opts: GrassFieldOptions): GrassField {
         ground.setX(i, heightAt(offsets.getX(i), offsets.getY(i)));
       }
       ground.needsUpdate = true;
+    },
+    setCenter(x: number, z: number, next: (x: number, z: number) => number): void {
+      centerX = x;
+      centerZ = z;
+      heightAt = next;
+      uniforms.uCenter.value.set(x, z);
+      const offsets = geometry.getAttribute('aOffset') as InstancedBufferAttribute;
+      const rands = geometry.getAttribute('aRand') as InstancedBufferAttribute;
+      const ground = geometry.getAttribute('aGround') as InstancedBufferAttribute;
+      lay(
+        count,
+        offsets.array as Float32Array,
+        rands.array as Float32Array,
+        ground.array as Float32Array,
+      );
+      offsets.needsUpdate = true;
+      rands.needsUpdate = true;
+      ground.needsUpdate = true;
+    },
+    center(): { x: number; z: number } {
+      return { x: centerX, z: centerZ };
     },
     setCount(next: number): void {
       const n = Math.max(1, Math.round(next));

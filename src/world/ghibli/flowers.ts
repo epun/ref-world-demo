@@ -34,6 +34,7 @@ import {
   InstancedBufferGeometry,
   Mesh,
   ShaderMaterial,
+  Vector2,
   Vector4,
   type Texture,
 } from 'three';
@@ -67,6 +68,26 @@ const GUST_HZ = 0.55;
 const FLUTTER = 0.05;
 const FLUTTER_HZ = 1.1;
 const PHASE_JITTER = 2.0;
+
+/**
+ * [D] World units the window spans, by tier — the blade field's window and
+ * this one are the same window (src/world/ghibli/grass.ts, the header there
+ * explains why there is one at all).
+ */
+/**
+ * Twice the blade window, on purpose: a bloom reads from much farther away
+ * than a blade does (a coloured head is two or three pixels of yellow on
+ * green, where a blade is one pixel of a slightly different green), and the
+ * same budget over the blades' own window sowed about twenty a square unit —
+ * a carpet of wildflowers rather than a meadow with flowers in it (measured on
+ * screen, 2026-09-15). Five a square unit at the map's 0.18 base density is
+ * roughly one bloom a square unit, which is the reference read.
+ */
+export const FLOWER_SPAN_PROJECTION = 88;
+export const FLOWER_SPAN_PHONE = 52;
+
+/** [D] Where the window's fade begins, as a fraction of its half-span. */
+const FADE_IN = 0.72;
 
 const DEFAULTS = {
   density: 1,
@@ -106,6 +127,8 @@ uniform float uHeadSize;
 uniform float uWindResponse;
 uniform float uNeedGrass;
 uniform float uZoom;
+uniform vec2 uCenter;
+uniform float uSpan;
 uniform vec4 uMix;
 uniform vec3 uWhite;
 uniform vec3 uYellow;
@@ -165,6 +188,11 @@ void main() {
   float far = smoothstep(9.0, 22.0, uZoom);
 
   float bh = uStemHeight * mix(0.25, 0.6, aRand.z);
+  // The window's fade, the blade field's exactly (src/world/ghibli/grass.ts):
+  // the last quarter shrinks into the ground rather than ending on a line.
+  vec2 fromCenter = abs(aOffset - uCenter) / max(uSpan * 0.5, 1e-3);
+  float windowFade = 1.0 - smoothstep(${ggFloat(FADE_IN)}, 1.0, max(fromCenter.x, fromCenter.y));
+  bh *= windowFade;
 
   float phase = ggWindHash(dot(aOffset, vec2(127.1, 311.7))) * ${ggFloat(PHASE_JITTER)};
   vec2 push = refWindAt(aOffset, uWindTime * ${ggFloat(GUST_HZ)},
@@ -205,7 +233,9 @@ void main() {
     pos += right * aVert.x * width * 0.5;
   } else {
     // The rose fills ~0.72 of the quad, so widen it onto the asked-for bloom.
-    float halfSize = uHeadSize * mix(0.14, 0.32, aRand.z) * 0.7;
+    // …and the bloom shrinks with the window fade too, so nothing is left
+    // hovering over bare ground at the rim.
+    float halfSize = uHeadSize * mix(0.14, 0.32, aRand.z) * 0.7 * windowFade;
     float a = aRand.y * GG_TAU;
     float ca = cos(a);
     float sa = sin(a);
@@ -297,6 +327,8 @@ export interface FlowerFieldOptions {
   heightAt: (x: number, z: number) => number;
   region?: Texture | null;
   baseDensity?: number;
+  /** World units the window spans. Defaults to the whole painted map. */
+  span?: number;
   layers?: FlowerLayers;
 }
 
@@ -307,6 +339,11 @@ export interface FlowerField {
   setRegion(region: Texture | null): void;
   setBaseDensity(value: number): void;
   rebuild(heightAt: (x: number, z: number) => number): void;
+  /** Slide the window and re-lay the field inside it. The caller quantises —
+   * see `GrassField.setCenter`, which this mirrors exactly. */
+  setCenter(x: number, z: number, heightAt: (x: number, z: number) => number): void;
+  /** Where the window is centred, world x/z. */
+  center(): { x: number; z: number };
   setCount(count: number): void;
   count(): number;
   setWind(field: WindField, timeMs: number): void;
@@ -315,6 +352,7 @@ export interface FlowerField {
 }
 
 export function createFlowerField(opts: FlowerFieldOptions): FlowerField {
+  const span = Math.max(1, opts.span ?? PAINTED_SIZE);
   const restLayer = emptyLayerTexture();
   const restPress = restPressTexture();
   const windUniforms = createWindUniforms();
@@ -336,6 +374,8 @@ export function createFlowerField(opts: FlowerFieldOptions): FlowerField {
     uWindResponse: { value: DEFAULTS.windResponse },
     uNeedGrass: { value: DEFAULTS.needGrass },
     uZoom: { value: DEFAULTS.zoom },
+    uCenter: { value: new Vector2(0, 0) },
+    uSpan: { value: span },
     uMix: { value: DEFAULTS.mix.clone() },
     uWhite: { value: new Color(GHIBLI.flowerWhite) },
     uYellow: { value: new Color(GHIBLI.flowerYellow) },
@@ -355,6 +395,36 @@ export function createFlowerField(opts: FlowerFieldOptions): FlowerField {
 
   let heightAt = opts.heightAt;
   let count = Math.max(1, Math.round(opts.count ?? FLOWER_COUNT_PROJECTION));
+  let centerX = 0;
+  let centerZ = 0;
+
+  /** Sow `n` blooms on the seeded jittered grid inside the window, and bake
+   * each one's ground height through the `Surface` seam. Re-run whole when the
+   * window slides (`setCenter`) — see the blade field's own `lay`. */
+  const lay = (
+    n: number,
+    offsets: Float32Array,
+    rands: Float32Array,
+    ground: Float32Array,
+  ): void => {
+    const k = Math.ceil(Math.sqrt(n));
+    const cell = span / k;
+    const half = span / 2;
+    const rand = mulberry32(FLOWER_SEED);
+    for (let i = 0; i < n; i++) {
+      const gx = i % k;
+      const gz = (i / k) | 0;
+      const x = centerX - half + (gx + 0.5 + (rand() - 0.5) * 0.95) * cell;
+      const z = centerZ - half + (gz + 0.5 + (rand() - 0.5) * 0.95) * cell;
+      offsets[i * 2] = x;
+      offsets[i * 2 + 1] = z;
+      rands[i * 4] = rand();
+      rands[i * 4 + 1] = rand();
+      rands[i * 4 + 2] = rand();
+      rands[i * 4 + 3] = rand();
+      ground[i] = heightAt(x, z);
+    }
+  };
 
   const build = (n: number): InstancedBufferGeometry => {
     const geometry = new InstancedBufferGeometry();
@@ -396,23 +466,7 @@ export function createFlowerField(opts: FlowerFieldOptions): FlowerField {
     const offsets = new Float32Array(n * 2);
     const rands = new Float32Array(n * 4);
     const ground = new Float32Array(n);
-    const k = Math.ceil(Math.sqrt(n));
-    const cell = PAINTED_SIZE / k;
-    const half = PAINTED_SIZE / 2;
-    const rand = mulberry32(FLOWER_SEED);
-    for (let i = 0; i < n; i++) {
-      const gx = i % k;
-      const gz = (i / k) | 0;
-      const x = -half + (gx + 0.5 + (rand() - 0.5) * 0.95) * cell;
-      const z = -half + (gz + 0.5 + (rand() - 0.5) * 0.95) * cell;
-      offsets[i * 2] = x;
-      offsets[i * 2 + 1] = z;
-      rands[i * 4] = rand();
-      rands[i * 4 + 1] = rand();
-      rands[i * 4 + 2] = rand();
-      rands[i * 4 + 3] = rand();
-      ground[i] = heightAt(x, z);
-    }
+    lay(n, offsets, rands, ground);
     geometry.setAttribute('aOffset', new InstancedBufferAttribute(offsets, 2));
     geometry.setAttribute('aRand', new InstancedBufferAttribute(rands, 4));
     geometry.setAttribute('aGround', new InstancedBufferAttribute(ground, 1));
@@ -449,6 +503,27 @@ export function createFlowerField(opts: FlowerFieldOptions): FlowerField {
         ground.setX(i, heightAt(offsets.getX(i), offsets.getY(i)));
       }
       ground.needsUpdate = true;
+    },
+    setCenter(x: number, z: number, next: (x: number, z: number) => number): void {
+      centerX = x;
+      centerZ = z;
+      heightAt = next;
+      uniforms.uCenter.value.set(x, z);
+      const offsets = geometry.getAttribute('aOffset') as InstancedBufferAttribute;
+      const rands = geometry.getAttribute('aRand') as InstancedBufferAttribute;
+      const ground = geometry.getAttribute('aGround') as InstancedBufferAttribute;
+      lay(
+        count,
+        offsets.array as Float32Array,
+        rands.array as Float32Array,
+        ground.array as Float32Array,
+      );
+      offsets.needsUpdate = true;
+      rands.needsUpdate = true;
+      ground.needsUpdate = true;
+    },
+    center(): { x: number; z: number } {
+      return { x: centerX, z: centerZ };
     },
     setCount(next: number): void {
       const n = Math.max(1, Math.round(next));

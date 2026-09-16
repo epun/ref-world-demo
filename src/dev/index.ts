@@ -196,6 +196,14 @@ export interface DevHandles {
   /** …and the fire driver's scorch texture (`WorldHandles.setPaintedScorch`)
    * — the drawn half of a burn. */
   setPaintedScorch?(texture: unknown): void;
+  /** …and the planting layers the ghibli elements read as live textures — the
+   * grass and flower weights and the comb (`WorldHandles.setPaintedLayers`).
+   * The drawn half of a planting stroke on that style. */
+  setPaintedLayers?(layers: {
+    grass?: unknown;
+    flowers?: unknown;
+    comb?: unknown;
+  }): void;
   /** …and reads them back, so the sliders start where the world is. */
   terrain?(): { elevation: number; tierStep: number; relief: number };
   /**
@@ -1963,6 +1971,7 @@ export async function initDevPanel(
       ...(handles.resetView ? { resetView: handles.resetView } : {}),
       ...(handles.setPaintedPath ? { setPaintedPath: handles.setPaintedPath } : {}),
       ...(handles.setPaintedScorch ? { setPaintedScorch: handles.setPaintedScorch } : {}),
+      ...(handles.setPaintedLayers ? { setPaintedLayers: handles.setPaintedLayers } : {}),
       // …and the landscape mode RE-APPLIED unchanged is exactly the other
       // rebuild: ground, `scatter.refreshLandscape()`, water levels. It is
       // what a water stroke needs and a height stroke does not — a pond

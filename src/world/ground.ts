@@ -60,13 +60,17 @@ import {
   RedFormat,
   RingGeometry,
   Vector2,
+  type Material,
   type Texture,
   type WebGLProgramParametersWithUniforms,
 } from 'three';
 import { MOTION, SURFACE } from '../taste/tokens';
+import { createGroundMaterial, type GhibliGround } from './ghibli/ground';
+import { bakeRegionTexture, rebakeRegion } from './ghibli/region';
 import { applyToon } from './toon';
 import { TERRAIN, terrainParams } from './landscape';
 import { PAINTED_SIZE } from './painted';
+import type { WorldStyle } from './style';
 import type { Surface } from './surface';
 
 /** Outer radius of the flat far field. Exported because the water pass
@@ -270,6 +274,38 @@ export interface Ground {
    * the elevation dial (it used to be a fixed 0).
    */
   rebuild(): void;
+  /**
+   * Switch the ground between the two looks (docs/TASTE.md §9,
+   * docs/ghibli-port.md §7).
+   *
+   * `ghibli` swaps BOTH meshes onto envpaint's terrain shader — meadow, dirt
+   * path, beach sand and wet sand at the waterline, rock on steep faces, snow
+   * above a noisy line — and re-points the four handles above at it, so a
+   * caller drives whichever material is live without knowing which it is.
+   * `ink` puts the shipped unlit paper back, byte for byte: the ghibli
+   * material is only BUILT on the first switch, so an ink-only world compiles
+   * nothing extra.
+   */
+  setStyle(style: WorldStyle): void;
+  /**
+   * Hand the ground the `grass` brush's live weight layer (ghibli only:
+   * meadow goes lush under painted grass). The shipped ground has no such
+   * mark, so this is a no-op on `ink` — the texture is remembered and reaches
+   * the ghibli material whenever the style switches to it.
+   */
+  setPaintedGrass(texture: Texture | null): void;
+  /**
+   * The baked geography every ghibli element reads (src/world/ghibli/region.ts)
+   * — meadow weight, beach weight, water proximity. Built HERE, from
+   * `sampleLandscape`, because the ground is the first consumer and the
+   * `rebuild()` that follows a landscape change is the one place it has to be
+   * re-baked. Shared, never copied: the grass and the flowers take this very
+   * object (src/world/scene.ts).
+   *
+   * Null until the ghibli style has been switched on once — nothing bakes a
+   * 128² texture for a world that will never read it.
+   */
+  region(): DataTexture | null;
 }
 
 export function createGround(surface: Surface): Ground {
@@ -448,6 +484,47 @@ ${groundNoiseGlsl}`,
   seatFar();
   group.add(farMesh);
 
+  // ── the ghibli ground (docs/ghibli-port.md §7) ────────────────────────────
+  /**
+   * envpaint's terrain shader and the baked geography it reads, built on the
+   * FIRST switch to that style and never before it: a world on `ink` bakes no
+   * 128² texture and compiles no extra program.
+   *
+   * The four handles below are style-agnostic — each writes the shipped
+   * material AND, when it exists, the ghibli one. That is deliberately not a
+   * branch: a caller that hands over a painted layer before the style switch
+   * (which is exactly what `src/dev/paint.ts` does at mount) must not lose it,
+   * so both materials always hold the same state and the swap is only about
+   * which one is on the meshes.
+   */
+  let ghibli: GhibliGround | null = null;
+  let regionTexture: DataTexture | null = null;
+  /** The layers handed over so far, replayed into the ghibli material when it
+   * is built (see above). */
+  let paintedPath: Texture | null = null;
+  let paintedScorch: Texture | null = null;
+  let paintedGrass: Texture | null = null;
+  let inkColor: Color | string = SURFACE.ink;
+  const ensureGhibli = (): GhibliGround => {
+    if (ghibli) return ghibli;
+    regionTexture = bakeRegionTexture();
+    const built = createGroundMaterial({ region: regionTexture });
+    built.setPaintedPath(paintedPath);
+    built.setPaintedScorch(paintedScorch);
+    built.setPaintedGrass(paintedGrass);
+    built.setInk(inkColor);
+    built.refresh();
+    ghibli = built;
+    return built;
+  };
+  const wearMaterial = (m: Material): void => {
+    // Both meshes always wear the SAME object (see the header's "two meshes,
+    // one material"), so a style switch cannot pull the field and the horizon
+    // apart any more than the dev colour grade can.
+    (fieldMesh as Mesh).material = m;
+    (farMesh as Mesh).material = m;
+  };
+
   return {
     group,
     material,
@@ -455,18 +532,34 @@ ${groundNoiseGlsl}`,
       // Wall-clock seconds, like the ripples: no integration, so a dropped
       // frame cannot make the wobble jump.
       markUniforms.uGroundTime.value = nowMs / 1000;
+      ghibli?.update(nowMs);
     },
     setInk: (color: Color | string): void => {
+      inkColor = color;
       markUniforms.uInk.value.set(color);
+      ghibli?.setInk(color);
     },
     setPaintedPath: (texture: Texture | null): void => {
+      paintedPath = texture;
       markUniforms.uPath.value = texture ?? emptyPath;
       markUniforms.uPathOn.value = texture ? 1 : 0;
+      ghibli?.setPaintedPath(texture);
     },
     setPaintedScorch: (texture: Texture | null): void => {
+      paintedScorch = texture;
       markUniforms.uScorch.value = texture ?? emptyPath;
       markUniforms.uScorchOn.value = texture ? 1 : 0;
+      ghibli?.setPaintedScorch(texture);
     },
+    setPaintedGrass: (texture: Texture | null): void => {
+      paintedGrass = texture;
+      ghibli?.setPaintedGrass(texture);
+    },
+    setStyle: (style: WorldStyle): void => {
+      if (style === 'ghibli') wearMaterial(ensureGhibli().material);
+      else wearMaterial(material);
+    },
+    region: (): DataTexture | null => regionTexture,
     rebuild: (): void => {
       displace();
       // The ring moves with the dials now: the sea floor is `SEA_LEVEL` and
@@ -474,6 +567,12 @@ ${groundNoiseGlsl}`,
       // back to zero and the world is flat paper again.
       seatFar();
       markUniforms.uStep.value = terrainParams().tierStep;
+      // The geography may have moved under the shoreline (a landscape switch
+      // comes through here, and so does a painted pond): the bake is re-run
+      // IN PLACE, so every element holding this texture sees the new coast
+      // without being handed anything.
+      if (regionTexture) rebakeRegion(regionTexture);
+      ghibli?.refresh();
     },
   };
 }

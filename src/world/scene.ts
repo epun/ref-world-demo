@@ -15,7 +15,22 @@ import { createGround, FIELD_SIZE } from './ground';
 import { createPhysicsWorld, type PhysicsWorld } from '../physics/world';
 import { deviceTier, type DeviceTier } from './device';
 import { createPropBodies, type PropBodies } from './rocks';
-import { InkPass } from './ink';
+import { INK_DEFAULTS, InkPass } from './ink';
+import {
+  createFlowerField,
+  FLOWER_COUNT_PHONE,
+  FLOWER_COUNT_PROJECTION,
+  FLOWER_SPAN_PHONE,
+  FLOWER_SPAN_PROJECTION,
+} from './ghibli/flowers';
+import {
+  createGrassField,
+  GRASS_COUNT_PHONE,
+  GRASS_COUNT_PROJECTION,
+  GRASS_SPAN_PHONE,
+  GRASS_SPAN_PROJECTION,
+} from './ghibli/grass';
+import { applyGhibliPost } from './ghibli/post';
 import { createLighting } from './lighting';
 import { createScatter, type Scatter } from './scatter';
 import { FlatShadows } from './shadows';
@@ -154,6 +169,24 @@ export interface WorldHandles {
    * of a trail. The placement half needs no handle — scatter reads the fire
    * field through the sampler seam already installed. */
   setPaintedScorch(texture: Texture | null): void;
+  /**
+   * Hand over the painted PLANTING layers the ghibli elements read as live
+   * buffers — the `grass` and `flowers` weights and the comb's direction
+   * layer (src/dev/paint.ts owns them; the buffers are the painted map's, so
+   * they are shared and never copied).
+   *
+   * What they do: the blade field grows thick where somebody painted grass
+   * and leans where they combed it, the bloom field blooms where they painted
+   * flowers, and the ground goes lush under the grass weight. Inert on `ink`
+   * — the shipped look grows its meadow as instanced ink marks through the
+   * placement roll instead, which needs no texture at all — but the layers
+   * are REMEMBERED, so a style switch later picks them up.
+   */
+  setPaintedLayers(layers: {
+    grass?: Texture | null;
+    flowers?: Texture | null;
+    comb?: Texture | null;
+  }): void;
   /** Slide the camera back to the world's default view (`CameraRig.resetView`)
    * — the tool strip's home button. Never a cut: the rig retargets. */
   resetView(): void;
@@ -434,6 +467,8 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
   (window as Window & { __refworldCamera?: unknown }).__refworldCamera = cameraRig.camera;
   // And the water, for the shoreline/ripple smokes and the stillness probe.
   (window as Window & { __refworldWater?: Water }).__refworldWater = water;
+  // The renderer itself, for the frame-cost probes (draw calls, triangles).
+  (window as Window & { __refworldRenderer?: WebGLRenderer }).__refworldRenderer = renderer;
   // The rigid-body world, for the physics smokes. Returns null until the
   // wasm chunk has loaded — a smoke has to wait for it.
   (
@@ -524,6 +559,144 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
   /** Scratch for the per-frame cel sun direction — one allocation, ever. */
   const toonSunDir = new Vector3();
 
+  // ── the ghibli element fields (docs/ghibli-port.md §1–§2) ────────────────
+  /**
+   * The GPU blade field and the bloom field, built on the FIRST switch to the
+   * ghibli style and never before it. They are the meadow on that style —
+   * which is why the scatter hides its tick / grass / flower ink marks there
+   * — and they are 150 000 and 40 000 instances on a projection, so a world
+   * on `ink` must not lay a single one of them out.
+   *
+   * Hidden rather than removed when the style switches back: an invisible
+   * mesh costs nothing per frame and the ink frame stays identical, while a
+   * switch back to ghibli is instant rather than another quarter-million
+   * blades' worth of layout.
+   */
+  let grass: ReturnType<typeof createGrassField> | null = null;
+  let flowers: ReturnType<typeof createFlowerField> | null = null;
+  /** The painted planting layers handed over so far (`setPaintedLayers`) —
+   * remembered, so a field built after the brush mounted still gets them. */
+  const paintedLayers: { grass: Texture | null; flowers: Texture | null; comb: Texture | null } = {
+    grass: null,
+    flowers: null,
+    comb: null,
+  };
+  /**
+   * The blade field's window slides with the camera (src/world/ghibli/grass.ts
+   * — the density has to be envpaint's where the eye is, and the tier's budget
+   * only covers a patch), and every slide re-bakes 150 000 ground heights.
+   * Straight off the Surface seam that is 651ms, measured — so the seam is
+   * sampled on a GRID over the window and each blade reads a bilinear tap of
+   * it: ~9 400 samples for the same window, at a step under half a unit, which
+   * still puts a blade beside a terrace lip on the lip rather than in it.
+   *
+   * Still the Surface seam and nothing else: this is a cache of its answers,
+   * exactly as the region bake is (src/world/ghibli/region.ts). Nothing here
+   * derives a height.
+   */
+  const GRID_SAMPLES = 97;
+  /** [D] How far the look-target may drift before the window is re-seated.
+   * The window is 44 units wide, so six keeps the dense patch under the eye
+   * and a pan re-lays the field a handful of times rather than every frame. */
+  const WINDOW_QUANTUM = 6;
+  const windowGrid = new Float32Array(GRID_SAMPLES * GRID_SAMPLES);
+  let gridX0 = 0;
+  let gridZ0 = 0;
+  let gridStep = 1;
+  let gridReady = false;
+  const bakeWindowGrid = (cx: number, cz: number, span: number): void => {
+    gridStep = span / (GRID_SAMPLES - 1);
+    gridX0 = cx - span / 2;
+    gridZ0 = cz - span / 2;
+    for (let iz = 0; iz < GRID_SAMPLES; iz++) {
+      const z = gridZ0 + iz * gridStep;
+      for (let ix = 0; ix < GRID_SAMPLES; ix++) {
+        windowGrid[iz * GRID_SAMPLES + ix] = surface.sampleHeight(gridX0 + ix * gridStep, z);
+      }
+    }
+    gridReady = true;
+  };
+  const windowHeightAt = (x: number, z: number): number => {
+    if (!gridReady) return surface.sampleHeight(x, z);
+    const fx = (x - gridX0) / gridStep;
+    const fz = (z - gridZ0) / gridStep;
+    // Outside the window every blade is faded out entirely, so the seam's own
+    // answer is both correct and rare.
+    if (fx < 0 || fz < 0 || fx > GRID_SAMPLES - 1 || fz > GRID_SAMPLES - 1) {
+      return surface.sampleHeight(x, z);
+    }
+    const ix = Math.min(GRID_SAMPLES - 2, Math.floor(fx));
+    const iz = Math.min(GRID_SAMPLES - 2, Math.floor(fz));
+    const tx = fx - ix;
+    const tz = fz - iz;
+    const row = iz * GRID_SAMPLES + ix;
+    const h00 = windowGrid[row]!;
+    const h10 = windowGrid[row + 1]!;
+    const h01 = windowGrid[row + GRID_SAMPLES]!;
+    const h11 = windowGrid[row + GRID_SAMPLES + 1]!;
+    return h00 * (1 - tx) * (1 - tz) + h10 * tx * (1 - tz) + h01 * (1 - tx) * tz + h11 * tx * tz;
+  };
+
+  const fieldSpan = tier === 'phone' ? GRASS_SPAN_PHONE : GRASS_SPAN_PROJECTION;
+  const ensureFields = (): void => {
+    if (grass && flowers) return;
+    const phone = tier === 'phone';
+    const look = cameraRig.lookAtPoint();
+    bakeWindowGrid(look.x, look.z, fieldSpan);
+    grass ??= createGrassField({
+      count: phone ? GRASS_COUNT_PHONE : GRASS_COUNT_PROJECTION,
+      span: fieldSpan,
+      heightAt: windowHeightAt,
+      region: ground.region(),
+      // FULL by default (2026-09-15, user direction): the ghibli meadow is
+      // envpaint's `fillMeadow` — grass everywhere the map says meadow,
+      // thinning on the beach and the mountain and none in the sea — rather
+      // than only where somebody has painted.
+      baseDensity: 1,
+      layers: { grass: paintedLayers.grass, comb: paintedLayers.comb },
+    });
+    flowers ??= createFlowerField({
+      count: phone ? FLOWER_COUNT_PHONE : FLOWER_COUNT_PROJECTION,
+      span: phone ? FLOWER_SPAN_PHONE : FLOWER_SPAN_PROJECTION,
+      heightAt: windowHeightAt,
+      region: ground.region(),
+      // A bloom wants meadow under it (`uNeedGrass`), so it reads the grass
+      // weight as well as its own.
+      layers: { flowers: paintedLayers.flowers, grass: paintedLayers.grass },
+    });
+    grass.setCenter(look.x, look.z, windowHeightAt);
+    flowers.setCenter(look.x, look.z, windowHeightAt);
+    scene.add(grass.mesh, flowers.mesh);
+  };
+  /** Slide the window onto the look-target, re-baking the height grid under
+   * it — the once-in-a-while call, keyed on the camera having actually gone
+   * somewhere (see `WINDOW_QUANTUM`). */
+  const reseatFields = (x: number, z: number): void => {
+    if (!grass || !flowers) return;
+    bakeWindowGrid(x, z, fieldSpan);
+    grass.setCenter(x, z, windowHeightAt);
+    flowers.setCenter(x, z, windowHeightAt);
+  };
+  /** Re-bake every blade's and bloom's ground height. Runs wherever
+   * `ground.rebuild()` does — the ground moved, so the field standing on it
+   * did too. */
+  const rebuildFields = (): void => {
+    if (grass) {
+      // The ground moved under the window, so its height grid is stale before
+      // a single blade is re-seated.
+      const at = grass.center();
+      bakeWindowGrid(at.x, at.z, fieldSpan);
+    }
+    grass?.rebuild(windowHeightAt);
+    flowers?.rebuild(windowHeightAt);
+    // `ground.rebuild()` re-bakes the region texture IN PLACE, so both fields
+    // are already holding the new one — but a field built before the first
+    // bake is holding null, so this is also where it arrives.
+    const region = ground.region();
+    grass?.setRegion(region);
+    flowers?.setRegion(region);
+  };
+
   // ── the look ──────────────────────────────────────────────────────────────
   /** The ghibli stamp value: the meadow under its own cool shadow tint, the
    * one flat tone a cel shadow takes on that paper. Computed once. */
@@ -546,7 +719,24 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
     lighting.fill.groundColor.set(ghibli ? GHIBLI.hemiGround : WORLD.neutralMid);
     setToonEnabled(ghibli);
     ink.setStyle(style);
+    // envpaint's pencil line over the cel materials: three dials, applied
+    // AFTER `ink.setStyle` (which owns the quantize switch and the ink
+    // colour). `ink` puts the shipped line back from the one copy of it.
+    if (ghibli) applyGhibliPost(ink);
+    else ink.setParams({ ...INK_DEFAULTS });
     scatter.setStyle(style);
+    // The ground wears envpaint's terrain shader on this style, and bakes the
+    // geography texture the fields below read — so it goes FIRST.
+    ground.setStyle(style);
+    if (ghibli) {
+      ensureFields();
+      rebuildFields();
+      grass?.setLayers({ grass: paintedLayers.grass, comb: paintedLayers.comb });
+      flowers?.setLayers({ flowers: paintedLayers.flowers, grass: paintedLayers.grass });
+      ground.setPaintedGrass(paintedLayers.grass);
+    }
+    if (grass) grass.mesh.visible = ghibli;
+    if (flowers) flowers.mesh.visible = ghibli;
     // Both stamp passes lerp paper → shadow as the sun's presence rises, so
     // both need the pair that belongs to the paper now underneath them. The
     // stamps stay one flat value cut sharp either way (TASTE §2.4).
@@ -611,6 +801,30 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
     // Weather-driven vertex wind: the environment's spring-glided strength
     // into the scatter's shared wind uniforms (three value writes).
     scatter.setWind(environment.state.wind, nowMs);
+    // …and the same field into every ghibli element that owns its own copy of
+    // the wind uniforms: the blades, the blooms and the water surfaces. One
+    // weather in the frame, never two (src/world/wind.ts). All no-ops until
+    // the ghibli style has been switched on once.
+    if (currentStyle === 'ghibli') {
+      const field = scatter.windField();
+      grass?.setWind(field, nowMs);
+      flowers?.setWind(field, nowMs);
+      // envpaint's distance collapse: zoomed out a blade is a pixel wide, so
+      // the field flattens toward one painted green rather than speckling.
+      const halfHeight =
+        (cameraRig.camera.top - cameraRig.camera.bottom) / 2 / Math.max(0.01, cameraRig.camera.zoom);
+      grass?.setZoom(halfHeight);
+      flowers?.setZoom(halfHeight);
+      // …and the window follows the eye, on its quantum.
+      if (grass) {
+        const look = cameraRig.lookAtPoint();
+        const at = grass.center();
+        if (Math.hypot(look.x - at.x, look.z - at.z) > WINDOW_QUANTUM) {
+          reseatFields(look.x, look.z);
+        }
+      }
+    }
+    water.setWind(scatter.windField(), nowMs);
     for (const callback of frameCallbacks) callback(dt, nowMs);
     // AFTER the frame callbacks (creatures step in there, and a creature
     // pushing a stone has to be resolved in the same frame it moved) and
@@ -652,6 +866,7 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
     setTerrain: (next: Partial<TerrainParams>): void => {
       setTerrainParams(next);
       ground.rebuild();
+      rebuildFields();
       scatter.refreshTerrain();
       water.refreshLevels();
       // The ground moved under every body: the heightfield collider is
@@ -661,7 +876,11 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
     terrain: (): TerrainParams => terrainParams(),
     setLandscape: (on: boolean): void => {
       setLandscapeMode(on ? 'landscape' : 'plain');
+      // The coast moved, so the geography bake did too — `ground.rebuild()`
+      // re-bakes it in place and `rebuildFields` re-seats every blade on the
+      // new ground.
       ground.rebuild();
+      rebuildFields();
       scatter.refreshLandscape();
       // The levels move with the mode — a basin sits under the plain's zero —
       // so the sheets are re-seated before they are shown.
@@ -680,6 +899,21 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
     },
     setPaintedScorch: (texture: Texture | null): void => {
       ground.setPaintedScorch(texture);
+    },
+    setPaintedLayers: (layers: {
+      grass?: Texture | null;
+      flowers?: Texture | null;
+      comb?: Texture | null;
+    }): void => {
+      // The buffers are the painted map's own — shared, never copied — so
+      // this is handed over once and every later dab is visible with nothing
+      // in between (src/world/painted.ts).
+      if ('grass' in layers) paintedLayers.grass = layers.grass ?? null;
+      if ('flowers' in layers) paintedLayers.flowers = layers.flowers ?? null;
+      if ('comb' in layers) paintedLayers.comb = layers.comb ?? null;
+      grass?.setLayers({ grass: paintedLayers.grass, comb: paintedLayers.comb });
+      flowers?.setLayers({ flowers: paintedLayers.flowers, grass: paintedLayers.grass });
+      ground.setPaintedGrass(paintedLayers.grass);
     },
     landscape: (): boolean => landscapeMode() === 'landscape',
     setSoloDrag: (enabled: boolean): void => {
