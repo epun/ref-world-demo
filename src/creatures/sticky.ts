@@ -202,12 +202,26 @@ export const STICKY: Record<PropKind, StickyProps> = {
 /**
  * [D] Biggest item a carrier can pick up, as a fraction of its own radius.
  *
- * 0.6 is what makes the pile legible: an item over half the carrier's own
- * size reads as two creatures in a heap rather than one creature wearing
- * something. It is also the growth curve's throttle — a carrier can only
- * reach the next tier of props by having eaten the one below it.
+ * ONE, and it was 0.6 until 2026-09-16 (user report: *"I don't see the sticky
+ * katamari effect where the character gathers objects as it touches them"*).
+ * The arithmetic is the whole story: a hatchling measures ~0.9u, so 0.6 put
+ * its ceiling at ~0.54u, and the smallest thing on the map is a ~0.5u stone
+ * with the rest of the scatter running to 1.7u and a loosened bush at ~1u.
+ * There was almost nothing a fresh creature could take, so the growth curve
+ * never bootstrapped and the game read as inert.
+ *
+ * 1.0 is also the reference feel: in Katamari Damacy you roll up things about
+ * your own size, and the ball is visibly made of objects as big as it was a
+ * minute ago. It stays a throttle — the tiers above the carrier are still out
+ * of reach until it has eaten its way up to them — just one whose first rung
+ * exists.
+ *
+ * SAME LIMIT DECIDES A PASSENGER (`carryLimit` in the manager's
+ * creature-onto-creature pass), so two creatures of equal size are now each
+ * eligible to carry the other. That tie is broken by id, deterministically,
+ * because two pages must reach the same pile — see `simulateSticky`.
  */
-export const PICKUP_RATIO = 0.6;
+export const PICKUP_RATIO = 1;
 
 /**
  * [D] How much volume actually becomes size.

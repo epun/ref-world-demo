@@ -88,6 +88,33 @@ export const WANDER_SPEED_DEFAULT = 1.4;
 export const DRIVE_SPEED = MAX_SPEED;
 
 /**
+ * How much faster a KATAMARI creature travels than a walking one. **[D]**
+ *
+ * User ask, 2026-09-16: *"Like Katamari Damacy, we should have the character
+ * ROLL versus walk. Right now, the walking cycle is way too slow."* A ball
+ * has no stride to outrun — the speed a walk reads as honest at is the speed
+ * its legs are taking, and a rolling creature has none. So the katamari world
+ * raises the ceiling: `MAX_SPEED × 3` = 3.6 u/s, for the stick and for the
+ * wander alike, with `DRIVE_TURN_TAU_MS` untouched (a faster ball that also
+ * turned faster would be a cursor).
+ *
+ * THREE, not more. Rolling already reads faster than walking at the same
+ * ground speed — the surface turns under the eye — so the multiplier is the
+ * starting point rather than the answer, and the ghost panel's wander/speed
+ * slider multiplies on top of it for tuning.
+ *
+ * TUNNELLING, since this is the number the substep guard was sized against:
+ * `stepCreatures` clamps dt at 250ms and covers `MAX_STEP_TRAVEL` (0.25u) per
+ * substep over at most `MAX_SUBSTEPS` (16), so 4u of travel per frame. At
+ * 3.6 u/s a clamped frame is 0.9u — 4 substeps of the 16 — so the guard still
+ * covers the katamari top speed four times over.
+ *
+ * EVERY OTHER WORLD IS UNCHANGED: outside the game the multiplier is 1 and
+ * the walk cycle keeps the speeds it shipped with.
+ */
+export const KATAMARI_SPEED_MUL = 3;
+
+/**
  * Turn responsiveness under the stick, as an exponential time constant.
  *
  * Short enough that the creature answers the thumb, long enough that a
@@ -902,6 +929,13 @@ export interface CreatureManager {
   /** Wander speed multiplier (demo panel tuning). 1 = spec speed. */
   setWanderSpeed(mult: number): void;
   /**
+   * The multiplier in force right now — what the panel's slider should open
+   * on. Not always `WANDER_SPEED_DEFAULT`: a katamari world starts at
+   * `KATAMARI_SPEED_MUL`, and a slider that opened on the shipped walk value
+   * there would be showing a number the world is not running.
+   */
+  wanderSpeed(): number;
+  /**
    * Manual move (dev panel gizmo). beginManualMove marks the creature whose
    * root is `root` as held: behavior is bypassed, the gait settles, and the
    * dragged root position is authoritative (neighbors still part around it).
@@ -975,12 +1009,36 @@ export function createCreatureManager(
    * a game that switched itself on by mistake is a world nobody asked for.
    */
   const katamari = sanitizeGame(options.game) === 'katamari';
+  /**
+   * The gait is OFF in a katamari world.
+   *
+   * A rolling ball has no walk cycle: the body is inside the pile's rolling
+   * group and the whole creature turns with its travel, so a leg shear and a
+   * waddle on top of that is two locomotions at once. Feeding the gait zero
+   * (rather than deleting it) keeps the amplitude spring at rest and leaves
+   * the ambient drift floor — which is `character.update`'s, not the gait's —
+   * running underneath, as TASTE §3 requires.
+   */
+  const locoSpeed = (speed: number): number => (katamari ? 0 : speed);
   const surface = options.surface ?? ROLLING_SURFACE;
   const slots = new Map<string, Slot>();
   let orderCounter = 0;
   let timersPaused = false;
   let aiPaused = false;
-  let wanderSpeedMult = WANDER_SPEED_DEFAULT;
+  /**
+   * The speed multiplier every creature here runs at — the agents' wander and
+   * the drive ceiling both read it, and the ghost panel's wander/speed slider
+   * writes it.
+   *
+   * KATAMARI GETS ITS OWN DEFAULT, and that is the whole of the speed change
+   * (user ask, 2026-09-16: *"the walking cycle is way too slow"*). It is a
+   * different default rather than a factor ON the shipped one because the
+   * shipped 1.4 is a tuning of a WALK — multiplying the two would put the
+   * stick at 5.04 u/s, past the 3 the ruling asked for. At
+   * `KATAMARI_SPEED_MUL` the drive ceiling is `MAX_SPEED × 3` = 3.6 u/s
+   * exactly, which is the number the substep guard was checked against.
+   */
+  let wanderSpeedMult = katamari ? KATAMARI_SPEED_MUL : WANDER_SPEED_DEFAULT;
 
   // ── physics scratch (allocation-free per frame) ───────────────────────────
   // The prop spatial hash rebuilds only when the scatter's collider version
@@ -1185,6 +1243,37 @@ export function createCreatureManager(
     if (katamari) {
       slot.clump = createClump(slot.baseR);
       root.add(slot.clump.group);
+      /*
+       * AND THE CREATURE ITSELF GOES IN THE BALL (user ask, 2026-09-16:
+       * *"like Katamari Damacy, we should have the character ROLL versus
+       * walk"*).
+       *
+       * The pile already rolled; the body slid along beside it, which read as
+       * a creature pushing a ball rather than a creature that IS one. So the
+       * body — and the stalk and topper and eyes parented to it — moves
+       * inside `clump.group`, the one thing in the rig that accumulates the
+       * no-slip roll. Eyes and topper turn with the ball, which is the whole
+       * look.
+       *
+       * THE BALL'S CENTRE IS THE ROLL CENTRE. `clump.group` sits at
+       * `(0, baseR, 0)` on the root — the middle of the creature — and the
+       * body mesh rests with its base at its own group's origin, so a wrapper
+       * at `(0, -baseR, 0)` inside the clump puts the body's centre on the
+       * rotation centre and its base back on the ground. Net local offset
+       * zero: the creature stands exactly where it stood, it just turns about
+       * its middle now.
+       *
+       * The HEADING stays on the root, untouched. The clump already expresses
+       * its world roll under whatever the root is doing
+       * (`inverse(root.quaternion) × worldQ`), so the two compose without
+       * either knowing about the other.
+       */
+      const ball = new Group();
+      ball.name = 'ball';
+      ball.position.set(0, -slot.baseR, 0);
+      // Reparent, not copy: `Object3D.add` detaches from the root first.
+      ball.add(character.group);
+      slot.clump.group.add(ball);
     }
     world.shadows.removeShadow(`egg-${slot.id}`);
     slot.eggShadow = null;
@@ -2472,6 +2561,13 @@ export function createCreatureManager(
     for (const entry of aliveScratch) {
       const { slot, root } = entry;
       if (slot.carriedBy) continue;
+      /*
+       * THE ROLLING BALL'S OWN RADIUS, growth and all: `growPass` writes
+       * `bodyR = baseR × clump.growth()` every frame and `clump.R()` is that
+       * same product, so the circle that picks things up is exactly the
+       * circle that is turning on the ground. A reach measured off `baseR`
+       * would leave a grown pile brushing past stones it visibly rolled over.
+       */
       const reach = slot.bodyR;
       const nearIdx = itemGrid.near(root.position.x, root.position.z, reach + itemGrid.cellSize);
       for (let k = 0; k < nearIdx.length; k++) {
@@ -2520,8 +2616,25 @@ export function createCreatureManager(
         const dx = a.root.position.x - b.root.position.x;
         const dz = a.root.position.z - b.root.position.z;
         if (Math.hypot(dx, dz) > a.slot.bodyR + b.slot.bodyR + CONTACT_PAD) continue;
-        if (b.slot.bodyR <= carryLimit(a.slot.bodyR)) stickCreature(a.slot, b.slot, a.root);
-        else if (a.slot.bodyR <= carryLimit(b.slot.bodyR)) stickCreature(b.slot, a.slot, b.root);
+        const aTakesB = b.slot.bodyR <= carryLimit(a.slot.bodyR);
+        const bTakesA = a.slot.bodyR <= carryLimit(b.slot.bodyR);
+        if (aTakesB && bTakesA) {
+          /*
+           * BOTH ELIGIBLE, which since `PICKUP_RATIO` became 1 means their
+           * radii are equal — each is exactly at the other's limit.
+           *
+           * Somebody has to carry, and it cannot be "whichever was visited
+           * first": `aliveScratch` is sorted by id, so the earlier slot would
+           * always win, and a page that had retired one of them would sort
+           * the pair differently and build the other pile. The BIGGER ID
+           * carries. It is arbitrary, and that is the point — it is a
+           * property of the two creatures and of nothing else, so every page
+           * reaches it.
+           */
+          const [carrier, rider] = a.slot.id > b.slot.id ? [a, b] : [b, a];
+          stickCreature(carrier.slot, rider.slot, carrier.root);
+        } else if (aTakesB) stickCreature(a.slot, b.slot, a.root);
+        else if (bTakesA) stickCreature(b.slot, a.slot, b.root);
       }
     }
 
@@ -2997,11 +3110,28 @@ export function createCreatureManager(
             root.position.z += (slot.follow.z - beforeZ) * k;
             root.rotation.y += shortestAngle(root.rotation.y, slot.follow.heading) * k;
 
+            /*
+             * AND THE BALL ROLLS HERE TOO, off the eased displacement.
+             *
+             * A roll phase is NOT on the wire (src/net/worldsync.ts: poses
+             * carry x/z/heading and nothing else). It does not need to be —
+             * roll is arc length over radius, so a page that knows how far
+             * the creature moved knows how far it turned, and every page
+             * derives the same answer from the same travel. Off the EASED
+             * displacement rather than the host's, for the same reason the
+             * gait reads it: what the viewer sees moving is what should be
+             * seen turning.
+             */
+            slot.clump?.roll(root.position.x - beforeX, root.position.z - beforeZ);
+
             // The gait reads the speed it is ACTUALLY travelling at, so a
             // followed creature walks for the same reason a simulated one
             // does — because it is moving — rather than being told to.
             const moved = Math.hypot(root.position.x - beforeX, root.position.z - beforeZ);
-            slot.character.setLocomotion(dt > 0 ? (moved / dt) * 1000 : 0, root.rotation.y);
+            slot.character.setLocomotion(
+              locoSpeed(dt > 0 ? (moved / dt) * 1000 : 0),
+              root.rotation.y,
+            );
             if (present) {
               slot.characterShadow?.setPosition(
                 root.position.x + slot.character.group.position.x,
@@ -3313,7 +3443,7 @@ export function createCreatureManager(
           if (!character) continue;
           // The gait reads the RESOLVED ground speed — walk cycles blend in
           // with actual movement and drift out to the ambient floor.
-          character.setLocomotion(Math.hypot(body.vx, body.vz), entry.heading);
+          character.setLocomotion(locoSpeed(Math.hypot(body.vx, body.vz)), entry.heading);
           if (slot.present) {
             slot.characterShadow?.setPosition(
               body.x + character.group.position.x,
@@ -3551,6 +3681,10 @@ export function createCreatureManager(
 
     pauseAi(paused): void {
       aiPaused = paused;
+    },
+
+    wanderSpeed(): number {
+      return wanderSpeedMult;
     },
 
     setWanderSpeed(mult): void {

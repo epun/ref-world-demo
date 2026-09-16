@@ -89,6 +89,17 @@ export interface Character {
    */
   setLocomotion(speed: number, heading: number): void;
   /**
+   * The gait layer's current values, as the deform uniforms hold them.
+   *
+   * READ ONLY, and it exists so the walk cycle can be ASKED about rather
+   * than inferred from a shader. The katamari world turns the gait off (the
+   * creature is a rolling ball, and a waddle on top of a roll is two
+   * locomotions at once), and the only honest way to pin that is to read the
+   * amplitude while the creature is moving. Optional, like the feed below:
+   * an older construction may not implement it.
+   */
+  gaitState?(): GaitState;
+  /**
    * Feed the current world-units-per-screen-pixel (frustum height / viewport
    * height / zoom) so the speech bubble can hold its screen-space legibility
    * floor (QA audit D4). Optional: headless callers and older constructions
@@ -337,6 +348,9 @@ export function createCharacter(
     setLocomotion(speed: number, heading: number): void {
       locoSpeed = speed;
       locoHeading = heading;
+    },
+    gaitState(): GaitState {
+      return gaitState;
     },
     setWorldUnitsPerPixel(v: number): void {
       bubble?.setWorldUnitsPerPixel(v);

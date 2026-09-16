@@ -791,6 +791,48 @@ Growth is applied to the root's uniform scale, which carries `bodyR`, the resolv
 pickup reach, the shadow stamp and `positions()` — and so the scatter's exclusion radius —
 in one write. **Speed is deliberately unchanged: this is a katamari, bigger is not slower.**
 
+**Rolling — the creature *is* the ball** *(2026-09-16)*. User ask: *"like Katamari Damacy, we
+should have the character ROLL versus walk. Right now, the walking cycle is way too slow."*
+The pile already rolled and the body slid along beside it, which read as a creature *pushing*
+a ball. So in a **`game: 'katamari'`** world the manager reparents `character.group` into
+`clump.group` — the one node that accumulates the no-slip roll — inside a wrapper named
+`ball` at local `(0, -baseR, 0)`. Since the clump already sits at `(0, baseR, 0)` on the root,
+the net local offset is zero: the body stands exactly where it stood and now turns about its
+own middle, with eyes, stalk and topper turning with it. Heading stays on the root, untouched;
+the clump's `inverse(root.quaternion) × worldQ` already composes the two. The **gait is off**
+there (fed 0, so the amplitude spring never leaves rest) — a waddle on top of a roll is two
+locomotions at once — while `character.update`'s ambient drift floor keeps running underneath.
+Roll accumulates from the *resolved* root displacement on the host and from the *eased* follow
+displacement on a viewer, for every alive creature whether or not it carries anything; a
+passenger rolls with its carrier's ball, because a carried creature is out of the movement
+pass entirely. **No roll phase is on the wire** (`poses` carry x/z/heading): roll is arc length
+over radius, so every page derives the same turn from the same travel.
+
+**Speed** — `KATAMARI_SPEED_MUL = 3` **[D]**. A ball has no stride to outrun, so the katamari
+world starts its speed multiplier at 3 instead of the shipped `WANDER_SPEED_DEFAULT` of 1.4
+(a *different default*, not a factor on top of it — multiplying the two would put the stick at
+5.04 u/s, past the ruling). Drive ceiling `MAX_SPEED × 3` = **3.6 u/s**, wander the same factor,
+`DRIVE_TURN_TAU_MS` untouched — a faster ball that also turned faster is a cursor. The substep
+guard still covers it: `stepCreatures` clamps dt at 250 ms and advances `MAX_STEP_TRAVEL`
+(0.25 u) per substep over at most `MAX_SUBSTEPS` (16), so 4 u per frame; 3.6 u/s × 0.25 s =
+0.9 u, four of the sixteen. The ghost panel's wander/speed slider opens on whatever the manager
+is actually running (`CreatureManager.wanderSpeed()`) and its ceiling moved to 5, so 3 is a
+starting point and not a wall. **Every other world keeps its walk cycle and its speeds.**
+
+**`PICKUP_RATIO` 0.6 → 1.0** *(2026-09-16)* **[D]**. User report: *"I don't see the sticky
+katamari effect where the character gathers objects as it touches them."* A hatchling measures
+~0.9 u, so 0.6 capped it at ~0.54 u while the smallest thing on the map is a ~0.5 u stone and
+the scatter runs to 1.7 u — there was no first rung, so the growth curve never bootstrapped.
+1.0 is also the reference feel: you roll up things about your own size. The ladder, for a 0.9 u
+hatchling: it can take stones up to 0.9 u immediately; ~4 of them put it at `bodyR` 1.2, where
+impact at the katamari top speed reaches 4.32 and knocks **trees** out of the ground
+(`tree.breakStrength` 4); ~11 more and `bodyR` passes 1.5, which is where a felled tree is
+small enough to stick; ~75 stones reach `bodyR` 2.7 and the monolith tier (impact 8) opens.
+The same limit decides a passenger, so two creatures of equal size are each eligible to carry
+the other — that tie goes to the **bigger id**, a property of the two creatures and of nothing
+else, so two pages build the same pile. The pickup overlap test reads the *growth-scaled*
+`bodyR`, the same number `clump.R()` rolls on.
+
 **`src/world/loose.ts`** — one `Mesh` per thing that is no longer scenery, on every page. An
 instance row cannot be removed, only overwritten, and a prop that has left the ground is
 filtered out of the scatter entirely, so something has to draw the tree lying in the field.

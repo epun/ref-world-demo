@@ -96,6 +96,53 @@ describe('carryLimit / impactOf', () => {
     expect(carryLimit(0)).toBe(0);
   });
 
+  /**
+   * THE FIRST RUNG HAS TO EXIST (user report, 2026-09-16: *"I don't see the
+   * sticky katamari effect where the character gathers objects as it touches
+   * them"*).
+   *
+   * At 0.6 a ~0.9u hatchling's ceiling was ~0.54u and the smallest stone on
+   * the map is ~0.5u, with the rest of the scatter running to 1.7u — so
+   * almost nothing could start a pile and the growth curve never left the
+   * ground. This is that arithmetic, as an assertion rather than a comment:
+   * an item the carrier's OWN size sticks.
+   */
+  it('lets a fresh creature take a stone its own size — the pile has to start', () => {
+    const hatchling = 0.9;
+    expect(carryLimit(hatchling)).toBeCloseTo(hatchling, 12);
+    for (const stone of [0.5, 0.7, 0.9]) {
+      expect(
+        decideContact({
+          itemR: stone,
+          rooted: false,
+          props: STICKY.rock,
+          impact: 1,
+          carrierR: hatchling,
+        }),
+      ).toBe('stick');
+    }
+    // And the tier above it is still out of reach until it has grown.
+    expect(
+      decideContact({
+        itemR: 1.7,
+        rooted: false,
+        props: STICKY.rock,
+        impact: 1,
+        carrierR: hatchling,
+      }),
+    ).toBe('shove');
+  });
+
+  /**
+   * And the consequence for CREATURES, which share the limit: two of exactly
+   * the same size are each eligible to carry the other. The manager breaks
+   * that tie on the bigger id (see `simulateSticky`) so two pages build the
+   * same pile; here it is only that the tie is real.
+   */
+  it('makes two equal creatures mutually eligible — a tie somebody must break', () => {
+    expect(carryLimit(1.4)).toBeGreaterThanOrEqual(1.4);
+  });
+
   it('is speed times radius — linear in size, so escalation stays readable', () => {
     expect(impactOf(3, 2)).toBeCloseTo(6, 12);
     expect(impactOf(6, 4)).toBeCloseTo(4 * impactOf(3, 2), 12);

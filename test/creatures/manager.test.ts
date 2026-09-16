@@ -17,13 +17,16 @@
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { Group, Mesh, Scene, Vector3 } from 'three';
+import { Group, Mesh, Quaternion, Scene, Vector3 } from 'three';
 import type { Object3D } from 'three';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { createCharacter } from '../../src/character/character';
 import {
   DRIVE_IDLE_MS,
+  DRIVE_SPEED,
+  KATAMARI_SPEED_MUL,
   MAX_POPULATION,
+  WANDER_SPEED_DEFAULT,
   chooseEviction,
   createCreatureManager,
   measureBodyRadius,
@@ -36,6 +39,7 @@ import { MOTION } from '../../src/taste/tokens';
 import { STICKY } from '../../src/creatures/sticky';
 import { EGG_RADIUS } from '../../src/egg/egg';
 import type { Collider } from '../../src/physics/colliders';
+import { MAX_STEP_TRAVEL, MAX_SUBSTEPS } from '../../src/physics/resolve';
 import type { WorldHandles } from '../../src/world/scene';
 import type { WorldGame } from '../../src/world/game';
 import { FLAT_SURFACE, ROLLING_SURFACE, type Surface } from '../../src/world/surface';
@@ -1289,7 +1293,7 @@ describe('drive hold — the stick owns the creature, the wander ai waits', () =
  * have decided anything.
  *
  * `fish` measures ~2.72u and `snowman` ~0.91u, so the snowman is comfortably
- * inside `carryLimit(fish)` = 0.6 × 2.72 = 1.63 and the fish is not inside
+ * inside `carryLimit(fish)` = 1.0 × 2.72 = 2.72 and the fish is not inside
  * the snowman's. Deliberately not a hand-set radius: the carry rule turns on
  * the REAL mesh footprint, and a test that set the numbers itself would pass
  * over a generator that had stopped measuring.
@@ -1879,5 +1883,225 @@ describe('the katamari is a per-world game — a world without it plays none', (
     expect(seen).toEqual([]);
     expect(manager.wrecks()).toEqual([]);
     manager.clearAll();
+  });
+});
+
+/**
+ * ROLLING, NOT WALKING — the katamari world only (user ask, 2026-09-16:
+ * *"like Katamari Damacy, we should have the character ROLL versus walk.
+ * Right now, the walking cycle is way too slow"*).
+ *
+ * Three things had to become true at once, and each one is worth its own
+ * assertion because each one alone would look like the feature and not be it:
+ * the CREATURE is inside the pile's rolling group (so eyes and topper turn
+ * with the ball instead of a ball rolling beside a walking creature), the
+ * walk cycle is OFF (a waddle on top of a roll is two locomotions), and the
+ * speeds go up (a ball has no stride to outrun).
+ *
+ * And the fourth: none of it reaches any other world. The ink/meridian world
+ * keeps the walk it shipped with, at the speeds it shipped with — the nested
+ * block at the bottom is that assertion.
+ */
+describe('the creature rolls — katamari locomotion', () => {
+  function rolling(game: WorldGame): {
+    world: WorldHandles;
+    manager: ReturnType<typeof createCreatureManager>;
+  } {
+    const world = stubWorld([]);
+    const manager = createCreatureManager(world, {
+      autoHatch: false,
+      surface: FLAT_SURFACE,
+      game,
+    });
+    // Grown: no shell to break, so the rig under test exists on frame one.
+    manager.spawn('roller', snowman, { hatchMs: 60_000, grown: true });
+    return { world, manager };
+  }
+
+  /** The one creature root in the scene. */
+  function rootOf(world: WorldHandles): Group {
+    for (const child of world.scene.children) {
+      if (child instanceof Group && child.name.startsWith('creature ')) return child;
+    }
+    throw new Error('no creature root');
+  }
+
+  function named(root: Object3D, name: string): Object3D | null {
+    let found: Object3D | null = null;
+    root.traverse((o) => {
+      if (found === null && o.name === name) found = o;
+    });
+    return found;
+  }
+
+  function firstMesh(root: Object3D): Mesh | null {
+    let found: Mesh | null = null;
+    root.traverse((o) => {
+      if (found === null && o instanceof Mesh) found = o;
+    });
+    return found;
+  }
+
+  /** How far a quaternion turns, radians in [0, pi]. */
+  function angleOf(q: Quaternion): number {
+    return 2 * Math.acos(Math.min(1, Math.abs(q.w)));
+  }
+
+  it('puts the body mesh inside the rolling group, centred on the roll centre', () => {
+    const { world, manager } = rolling('katamari');
+    const root = rootOf(world);
+    const baseR = measureBodyRadius(manager.latestCharacter()!);
+
+    const clump = named(root, 'clump');
+    const ball = named(root, 'ball');
+    expect(clump).not.toBeNull();
+    expect(ball).not.toBeNull();
+    // The ball hangs in the pile's rolling group, not beside it.
+    expect(ball!.parent).toBe(clump);
+    // The clump sits at the middle of the creature and the ball offsets the
+    // body back down by the same amount: the body's CENTRE is on the roll
+    // centre, and its base is still on the ground (net local offset zero).
+    expect(clump!.position.y).toBeCloseTo(baseR, 10);
+    expect(ball!.position.y).toBeCloseTo(-baseR, 10);
+    expect(clump!.position.y + ball!.position.y).toBeCloseTo(0, 12);
+
+    // And the body really moved: the mesh reaches the root only through the
+    // ball now.
+    const mesh = firstMesh(root);
+    expect(mesh).not.toBeNull();
+    let hop: Object3D | null = mesh;
+    let viaBall = false;
+    while (hop) {
+      if (hop === ball) viaBall = true;
+      hop = hop.parent;
+    }
+    expect(viaBall).toBe(true);
+    manager.clearAll();
+  });
+
+  it('returns the ball — and the mesh with it — to identity over one full roll', () => {
+    /*
+     * ONE FRAME PER HALF, because a FIRST pose is written rather than eased
+     * (see the follow branch): those are the only frames whose displacement
+     * is exactly the number this test hands them. The roll is pure
+     * integration of travel, so one exact 2piR step and a thousand small ones
+     * come to the same place — which the pure version of this pins in
+     * test/creatures/sticky.test.ts.
+     */
+    const { world, manager } = rolling('katamari');
+    const root = rootOf(world);
+    const R = measureBodyRadius(manager.latestCharacter()!);
+    const clump = named(root, 'clump')!;
+    const ball = named(root, 'ball')!;
+    manager.pauseAi(true);
+
+    const half = { x: root.position.x + Math.PI * R, z: root.position.z };
+    manager.followPoses([{ id: 'roller', x: half.x, z: half.z, heading: 0 }]);
+    manager.update(16, 1000);
+    // Halfway round: a real turn, not a decal sliding across the field.
+    expect(angleOf(clump.quaternion)).toBeCloseTo(Math.PI, 3);
+
+    manager.clearFollow();
+    manager.followPoses([{ id: 'roller', x: half.x + Math.PI * R, z: half.z, heading: 0 }]);
+    manager.update(16, 1016);
+    // A full turn: back where it started, with no residue.
+    expect(angleOf(clump.quaternion)).toBeCloseTo(0, 3);
+    // And the mesh's own frame came back with it — the whole point of
+    // reparenting the body into the ball.
+    root.updateMatrixWorld(true);
+    expect(angleOf(ball.getWorldQuaternion(new Quaternion()))).toBeCloseTo(0, 3);
+    manager.clearAll();
+  });
+
+  it('keeps the gait at zero while the creature is moving', () => {
+    const { manager } = rolling('katamari');
+    expect(manager.drive('roller', { x: 0, z: 1, mag: 1 })).toBe(true);
+    const start = manager.positionOf('roller')!.clone();
+    let now = 2000;
+    for (let i = 0; i < 40; i++) {
+      now += 33;
+      manager.update(33, now);
+    }
+    const end = manager.positionOf('roller')!;
+    // Really travelling…
+    expect(Math.hypot(end.x - start.x, end.z - start.z)).toBeGreaterThan(1);
+    // …and not walking while it does.
+    expect(manager.latestCharacter()!.gaitState!().amp).toBe(0);
+    manager.clearAll();
+  });
+
+  it('drives at the katamari top speed — three times the walking ceiling', () => {
+    const { manager } = rolling('katamari');
+    expect(KATAMARI_SPEED_MUL).toBe(3);
+    expect(manager.wanderSpeed()).toBe(KATAMARI_SPEED_MUL);
+    manager.drive('roller', { x: 0, z: 1, mag: 1 });
+    let now = 5000;
+    // One frame to settle the heading onto the stick, then a measured second.
+    now += 33;
+    manager.update(33, now);
+    const from = manager.positionOf('roller')!.clone();
+    let travelled = 0;
+    for (let i = 0; i < 30; i++) {
+      now += 33;
+      manager.update(33, now);
+      travelled += 33;
+    }
+    const to = manager.positionOf('roller')!;
+    const speed = (Math.hypot(to.x - from.x, to.z - from.z) / travelled) * 1000;
+    expect(speed).toBeCloseTo(MAX_SPEED * KATAMARI_SPEED_MUL, 2);
+    /*
+     * AND THE SUBSTEP GUARD STILL COVERS IT. `stepCreatures` clamps dt at
+     * 250ms and advances at most MAX_STEP_TRAVEL (0.25u) per substep over at
+     * most MAX_SUBSTEPS (16) — 4u of travel per frame. At this speed a
+     * clamped frame is 0.9u, four of the sixteen substeps.
+     */
+    const clampedFrameTravel = (MAX_SPEED * KATAMARI_SPEED_MUL * 250) / 1000;
+    expect(clampedFrameTravel).toBeCloseTo(0.9, 10);
+    expect(Math.ceil(clampedFrameTravel / MAX_STEP_TRAVEL)).toBeLessThanOrEqual(MAX_SUBSTEPS);
+    manager.clearAll();
+  });
+
+  /*
+   * THE OTHER WORLDS WALK, at the speeds they always did. Same stubs, same
+   * frames, same stick — only the game differs, so this measures the gate.
+   */
+  describe('every other world keeps its walk cycle', () => {
+    it('leaves the body mesh on the root, with no rolling group at all', () => {
+      const { world, manager } = rolling('none');
+      const root = rootOf(world);
+      expect(named(root, 'clump')).toBeNull();
+      expect(named(root, 'ball')).toBeNull();
+      // The two-level rig, exactly as it shipped: the root holds the
+      // character group, and the mesh is one level down inside it.
+      const mesh = firstMesh(root)!;
+      expect(mesh.parent!.parent).toBe(root);
+      manager.clearAll();
+    });
+
+    it('still walks, and still at the shipped speeds', () => {
+      // The speed constants themselves are untouched by the katamari work.
+      expect(DRIVE_SPEED).toBe(MAX_SPEED);
+      expect(WANDER_SPEED_DEFAULT).toBe(1.4);
+
+      const { manager } = rolling('none');
+      expect(manager.wanderSpeed()).toBe(WANDER_SPEED_DEFAULT);
+      manager.drive('roller', { x: 0, z: 1, mag: 1 });
+      let now = 5000;
+      now += 33;
+      manager.update(33, now);
+      const from = manager.positionOf('roller')!.clone();
+      let travelled = 0;
+      for (let i = 0; i < 30; i++) {
+        now += 33;
+        manager.update(33, now);
+        travelled += 33;
+      }
+      const to = manager.positionOf('roller')!;
+      const speed = (Math.hypot(to.x - from.x, to.z - from.z) / travelled) * 1000;
+      expect(speed).toBeCloseTo(DRIVE_SPEED * WANDER_SPEED_DEFAULT, 2);
+      // And the walk cycle is running — amplitude, not a rolling ball.
+      expect(manager.latestCharacter()!.gaitState!().amp).toBeGreaterThan(0.5);
+      manager.clearAll();
+    });
   });
 });
