@@ -456,3 +456,76 @@ describe('HardOptions.skipKind', () => {
     expect(body.x).toBeLessThan(rock.x - rock.r);
   });
 });
+
+/**
+ * `skipIf` — a PER-BODY collider filter (2026-09-16 katamari ruling: *"the
+ * user's character has priority … it shouldn't impede the character from
+ * moving unless the mass isn't big enough to overtake the object"*).
+ *
+ * The creature layer answers `true` for a prop that body is big enough to
+ * roll up. Here it is exercised as what it is: a filter, with no arithmetic
+ * of its own.
+ */
+describe('stepCreatures — skipIf', () => {
+  const tree = (): Collider => ({ x: 2, z: 0, r: 1, hard: true, kind: 'tree', key: 'tree:0' });
+
+  it('rolls a body straight through a collider it is told to ignore', () => {
+    const prop = tree();
+    const near = (): readonly Collider[] => [prop];
+    const body: CreatureBody = { x: 0, z: 0, vx: 2, vz: 0, r: R };
+    for (let frame = 0; frame < 100; frame++) {
+      body.vx = 2;
+      stepCreatures([body], 16, near, { skipIf: () => true });
+    }
+    expect(body.x).toBeGreaterThan(prop.x + prop.r);
+  });
+
+  it('is asked per BODY, so the same prop stops one creature and not the other', () => {
+    const prop = tree();
+    // Index 0 rolls over it; index 1 does not.
+    const rolls: CreatureBody = { x: 0, z: -4, vx: 2, vz: 0, r: R };
+    const walks: CreatureBody = { x: 0, z: 4, vx: 2, vz: 0, r: R };
+    // Far apart on z, so pair separation never enters into it.
+    const propFor = (b: CreatureBody): Collider => ({ ...prop, z: b.z });
+    const perBody = (x: number, z: number): readonly Collider[] =>
+      z < 0 ? [propFor(rolls)] : [propFor(walks)];
+    for (let frame = 0; frame < 100; frame++) {
+      rolls.vx = 2;
+      walks.vx = 2;
+      stepCreatures([rolls, walks], 16, perBody, { skipIf: (_c, index) => index === 0 });
+    }
+    expect(rolls.x).toBeGreaterThan(prop.x + prop.r);
+    expect(walks.x).toBeLessThan(prop.x - prop.r);
+  });
+
+  it('is honoured by the backstop too — a neighbour cannot push you back off', () => {
+    /*
+     * The backstop after pair separation re-seats a body out of any hard prop
+     * it was pushed into. If it did not honour the skip, a creature standing
+     * ON the prop it had just rolled over would be shoved back out by its own
+     * crowd — the skip on the way in and the enforcement on the way out.
+     *
+     * Two creatures overlapping each other, both sitting on the prop.
+     */
+    const prop = tree();
+    const near = (): readonly Collider[] => [prop];
+    const a: CreatureBody = { x: 2, z: 0, vx: 0, vz: 0, r: R };
+    const b: CreatureBody = { x: 2.2, z: 0, vx: 0, vz: 0, r: R };
+    stepCreatures([a, b], 16, near, { skipIf: () => true });
+    // Separated from each other, and neither evicted from the prop circle.
+    expect(Math.hypot(a.x - b.x, a.z - b.z)).toBeGreaterThanOrEqual(2 * R - RESOLVE_SKIN);
+    expect(Math.hypot(a.x - prop.x, a.z - prop.z)).toBeLessThan(prop.r + R);
+    expect(Math.hypot(b.x - prop.x, b.z - prop.z)).toBeLessThan(prop.r + R);
+  });
+
+  it('is the default OFF: with no predicate the prop still stops the body', () => {
+    const prop = tree();
+    const near = (): readonly Collider[] => [prop];
+    const body: CreatureBody = { x: 0, z: 0, vx: 2, vz: 0, r: R };
+    for (let frame = 0; frame < 100; frame++) {
+      body.vx = 2;
+      stepCreatures([body], 16, near);
+    }
+    expect(body.x).toBeLessThan(prop.x - prop.r);
+  });
+});

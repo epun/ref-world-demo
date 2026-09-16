@@ -823,15 +823,51 @@ starting point and not a wall. **Every other world keeps its walk cycle and its 
 katamari effect where the character gathers objects as it touches them."* A hatchling measures
 ~0.9 u, so 0.6 capped it at ~0.54 u while the smallest thing on the map is a ~0.5 u stone and
 the scatter runs to 1.7 u — there was no first rung, so the growth curve never bootstrapped.
-1.0 is also the reference feel: you roll up things about your own size. The ladder, for a 0.9 u
-hatchling: it can take stones up to 0.9 u immediately; ~4 of them put it at `bodyR` 1.2, where
-impact at the katamari top speed reaches 4.32 and knocks **trees** out of the ground
-(`tree.breakStrength` 4); ~11 more and `bodyR` passes 1.5, which is where a felled tree is
-small enough to stick; ~75 stones reach `bodyR` 2.7 and the monolith tier (impact 8) opens.
+1.0 is also the reference feel: you roll up things about your own size.
+
+The ladder it produces, for a 0.9 u hatchling at the katamari top speed of 3.6 u/s — and with
+the priority rule below, the first column is now what a prop's own footprint has to be under,
+not what impact it takes: **at spawn** anything up to 0.9 u sticks (the small stones, the
+bushes, the stumps); **3 stones of r 0.9** put it at `bodyR` 1.11, where impact crosses 4 and a
+tree too big to carry can still be felled; **4** reach `bodyR` 1.2, **11** reach 1.5 — the
+radius at which a full-sized tree is simply taken whole; **41** reach `bodyR` 2.22 and impact 8,
+the monolith tier; **75** reach 2.7; **109** reach 3.06 and impact 11, where a monolith bursts
+instead of coming up. (With smaller r 0.7 stones the same rungs are 9, 23, 35 and 158.)
+
 The same limit decides a passenger, so two creatures of equal size are each eligible to carry
 the other — that tie goes to the **bigger id**, a property of the two creatures and of nothing
 else, so two pages build the same pile. The pickup overlap test reads the *growth-scaled*
 `bodyR`, the same number `clump.R()` rolls on.
+
+**The character has priority** *(2026-09-16)*. User ruling: *"The user's character has
+priority; objects should stick to it as it moves or rolls over the object. It shouldn't impede
+the character from moving unless the mass isn't big enough to overtake the object."* So
+`decideContact` asks about SIZE FIRST and rootedness second: an item inside `carryLimit`
+sticks whether it is planted or loose, with no impact threshold to clear; above the limit an
+unrooted thing is `shove`d (never a block — a stone you can move does not stop you) and only a
+*rooted* one `block`s, where the old ladder (`shatterStrength` → `break`, `breakStrength` →
+`loose`, a building's cumulative `stages`) still lives unchanged. `stickiness: 0` still means
+never, so the cloud is never worn.
+
+Three seams carry that through the runtime. The pure resolve takes a per-body predicate,
+`StepOptions.skipIf(collider, index)` → `HardOptions.skipIf`, honoured by the integrate pass
+**and** by the post-separation backstop (a collider skipped on the way in and enforced on the
+way out would shove the creature back off what it just rolled onto); the manager answers it
+with `collider.r <= carryLimit(slot.bodyR)`, per creature, so the same sapling still stops a
+hatchling. The soft slowdown (`SOFT_SPEED_FACTOR`) is likewise not applied to a bush inside
+the limit — that factor is a bush resisting, and a bush about to be worn has nothing to resist
+with. And because a skipped collider produces no correction and therefore no `onContact`, the
+manager gathers those roll-over contacts itself, from the same `gatherNear` set it already has.
+Then `uprootOntoPile` takes the placement, draws it through the loose layer at the pose it was
+standing in and seats it: **one `stick` event, no `loose`, no round trip through the ground and
+no recoil flinch.** Uprooting something smaller than you costs nothing. On the rapier side the
+contact-pair filter is extended the same way — creature ball vs a fixed prop inside the limit
+returns `null`, using a new `PropBodies.sideByCollider` (the impact seam's own lookup, made
+public). A carrier's STUCK item colliders are deliberately not exempt: a swinging bench has to
+go on hitting everything, which is where the brief's instability comes from.
+
+Both halves are gated on `game: 'katamari'` **and** on physics being loaded: a page that
+cannot pick the prop up must not walk through it.
 
 **`src/world/loose.ts`** — one `Mesh` per thing that is no longer scenery, on every page. An
 instance row cannot be removed, only overwritten, and a prop that has left the ground is

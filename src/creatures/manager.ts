@@ -457,6 +457,10 @@ const NUDGE_MIN_SPEED = 0.15;
  * to say about its attitude gets this rather than four literals. */
 const IDENTITY_Q = { x: 0, y: 0, z: 0, w: 1 } as const;
 
+/** The y axis. Shared, never mutated — a placement's yaw is a turn about
+ * this and nothing else. */
+const UP = /* @__PURE__ */ new Vector3(0, 1, 0);
+
 type Phase = 'egg' | 'hatching' | 'alive' | 'retiring';
 
 /**
@@ -1965,9 +1969,31 @@ export function createCreatureManager(
         // stones colliding is what rapier is for.
         if ((aSlot === undefined) === (bSlot === undefined)) return flags;
         const slot = slots.get((aSlot ?? bSlot)!);
-        const item = bodies.itemByCollider(aSlot === undefined ? c1 : c2);
-        if (!slot || !item) return flags;
-        return item.r <= carryLimit(slot.bodyR) ? null : flags;
+        if (!slot) return flags;
+        const own = aSlot === undefined ? c2 : c1;
+        const other = aSlot === undefined ? c1 : c2;
+        const item = bodies.itemByCollider(other);
+        if (item) return item.r <= carryLimit(slot.bodyR) ? null : flags;
+        /*
+         * A STANDING PROP THE BALL IS BIG ENOUGH TO ROLL UP — no contact
+         * either (2026-09-16 ruling: *"it shouldn't impede the character from
+         * moving unless the mass isn't big enough to overtake the object"*).
+         *
+         * The creature's stand-in is kinematic, so a fixed cylinder was never
+         * going to push it; what the contact DOES do is fire the impact seam,
+         * which would flinch the prop's recoil and knock it loose — a `loose`
+         * event and a round trip through the ground for something the pickup
+         * pass is about to take whole. Filtering the pair out is what keeps
+         * uprooting free.
+         *
+         * ONLY THE CREATURE'S OWN BALL is exempt. A stuck bench's collider is
+         * in `colliderSlot` too, and it must go on hitting everything — that
+         * is where the brief's instability comes from.
+         */
+        if (own !== slot.kinematic?.ball?.handle) return flags;
+        const side = bodies.sideByCollider(other);
+        if (!side?.rooted) return flags;
+        return side.r <= carryLimit(slot.bodyR) ? null : flags;
       },
     });
   }
@@ -2299,6 +2325,94 @@ export function createCreatureManager(
   }
 
   /**
+   * A ROOTED PROP THE BALL IS BIG ENOUGH TO ROLL UP — out of the ground and
+   * onto the pile, in one step.
+   *
+   * > User ruling, 2026-09-16: *"The user's character has priority; objects
+   * > should stick to it as it moves or rolls over the object. It shouldn't
+   * > impede the character from moving unless the mass isn't big enough to
+   * > overtake the object."*
+   *
+   * NO `loose` ROUND TRIP, and that is the change. The old path for anything
+   * planted was: clear `breakStrength` → `loosen` (fixed body out, dynamic
+   * hull body in) → a `loose` event → wait for the pickup pass to find it in
+   * `items()` next frame → a `stick` event. For a bush the ball has just
+   * driven over that is two events, two frames and an impact threshold to
+   * describe one thing that happened. Here the placement is taken, the mesh
+   * is drawn at the pose it was standing in, and it is seated — ONE `stick`,
+   * and uprooting costs nothing.
+   *
+   * It is also why the resolve skips these colliders (`skipIf` below): a prop
+   * that ends up on the pile must not have stopped the creature on the way
+   * in, or the ruling reads backwards.
+   *
+   * The seat is computed exactly as `stickItem` computes one, off the
+   * placement's own pose instead of a live rapier transform — the prop was
+   * standing still, so where it stood IS where it was at the moment of
+   * contact.
+   */
+  function uprootOntoPile(slot: Slot, root: Group, collider: Collider): boolean {
+    const clump = slot.clump;
+    const key = collider.key;
+    const kind = collider.kind as PropKind | undefined;
+    if (!clump || key === undefined || kind === undefined) return false;
+    if (clump.items.has(key)) return false;
+    const parsed = parseItemKey(key);
+    // Measured BEFORE anything hides the placement — the instance row is the
+    // only thing that knows what scale and yaw it was drawn at.
+    const measured = placementDrawn(key, kind);
+    const variant = parsed?.variant ?? 0;
+    const scale = measured?.scale ?? 1;
+    const itemR = measured?.r ?? collider.r;
+    // Its centre, not its base: the ground under it through the one seam,
+    // plus its own radius (PLAN §7.2 — no height is derived anywhere else).
+    const itemY = surface.sampleHeight(collider.x, collider.z) + itemR;
+    clump.group.getWorldPosition(scratchVec);
+    const offset = clumpLocalOffset({
+      itemX: collider.x,
+      itemY,
+      itemZ: collider.z,
+      centreX: scratchVec.x,
+      centreY: scratchVec.y,
+      centreZ: scratchVec.z,
+      headingX: Math.sin(root.rotation.y),
+      headingZ: Math.cos(root.rotation.y),
+      R: clump.R(),
+      itemR,
+      clumpWorldQ: clump.worldQ,
+      growth: clump.growth(),
+    });
+    scratchQ.setFromAxisAngle(UP, measured?.rotY ?? 0);
+    const rotation = clumpLocalRotation(scratchQ, clump.worldQ);
+    const record: StickRecord = {
+      id: slot.id,
+      item: key,
+      kind,
+      variant,
+      scale,
+      ox: offset.x,
+      oy: offset.y,
+      oz: offset.z,
+      qx: rotation.x,
+      qy: rotation.y,
+      qz: rotation.z,
+      qw: rotation.w,
+    };
+    // The mesh goes where the prop was STANDING first, so the entrance slide
+    // is the short travel from its hole to its seat rather than a flight from
+    // the origin. `show` is idempotent, so the `seat` below finds this one.
+    if (looseMeshes) {
+      looseMeshes.show(key, kind, variant, scale);
+      looseMeshes.move(key, collider.x, itemY, collider.z, scratchQ);
+    }
+    // `seat` hides the placement through the one owner, which on the host
+    // drops the fixed cylinder too (`PropBodies.take`).
+    if (!seat(slot, record, { slide: true })) return false;
+    observer?.stick(record);
+    return true;
+  }
+
+  /**
    * Each alive body's speed as it ENTERED this frame's resolve, by the same
    * index `onContact` reports. Reused; see the note where it is filled.
    */
@@ -2536,14 +2650,35 @@ export function createCreatureManager(
       // one rule, whether the contact came from the pure resolve (here) or
       // from rapier's own events (the impact seam above).
       if (props.rooted) {
-        hitRooted(
-          bodies,
-          { key, kind, r: report.collider.r, x: report.collider.x, z: report.collider.z },
+        /*
+         * SIZE FIRST — the character has priority (`decideContact`, 2026-09-16).
+         *
+         * A planted thing inside this creature's carry limit is not an
+         * obstacle at all: it comes up and goes on the pile, with no impact
+         * threshold and no `loose` on the way. Only what it cannot carry
+         * reaches `hitRooted`, which is where the recoil, the break ladder
+         * and the staged damage all still live, unchanged.
+         */
+        const verdict = decideContact({
+          itemR: report.collider.r,
+          rooted: true,
+          props,
           impact,
-          report.slot.bodyR,
-          -report.nx,
-          -report.nz,
-        );
+          carrierR: report.slot.bodyR,
+        });
+        const root = report.slot.characterRoot;
+        if (verdict === 'stick' && root) {
+          uprootOntoPile(report.slot, root, report.collider);
+        } else {
+          hitRooted(
+            bodies,
+            { key, kind, r: report.collider.r, x: report.collider.x, z: report.collider.z },
+            impact,
+            report.slot.bodyR,
+            -report.nx,
+            -report.nz,
+          );
+        }
       }
       // ── 6. and whether it knocked something off ──────────────────────────
       const stuck = report.slot.clump?.outermost();
@@ -3221,8 +3356,59 @@ export function createCreatureManager(
             // Soft bodies: pushing through a bush is slow (~55% damped), and
             // the bush reacts — a brief localized sway kicked into the
             // scatter's wind path. That sway is the soft-body read.
+            /*
+             * WHAT THIS CREATURE ROLLS STRAIGHT OVER (2026-09-16 ruling).
+             *
+             * A prop inside its own carry limit is not an obstacle: the
+             * resolve skips it (`skipIf` on the step below), the soft
+             * slowdown does not apply to it, and it reports a contact here so
+             * the sticky pass can take it out of the ground and seat it. That
+             * report is the part that would otherwise go missing — a skipped
+             * collider produces no correction, so `resolveHard`'s own
+             * `onContact` never fires for one.
+             *
+             * KATAMARI ONLY, and gated on a `key` because a prop with no
+             * placement key is not something the pile can address.
+             */
+            const limit = carryLimit(bodyR);
+            if (katamari && bodiesOf() !== null) {
+              for (const c of near) {
+                if (!c.hard || c.key === undefined || !(c.r <= limit)) continue;
+                const dx = root.position.x - c.x;
+                const dz = root.position.z - c.z;
+                const d = Math.hypot(dx, dz);
+                if (d > bodyR + c.r + CONTACT_PAD) continue;
+                const nx = d > 1e-9 ? dx / d : 1;
+                const nz = d > 1e-9 ? dz / d : 0;
+                contacts.push({ slot, collider: c, nx, nz, speed: Math.hypot(vx, vz) });
+              }
+            }
+
             const soft = deepestSoftOverlap(root.position.x, root.position.z, bodyR, near);
-            if (soft) {
+            /*
+             * A CARRIABLE BUSH DOES NOT SLOW THE BALL DOWN either — same
+             * ruling, same reason. `SOFT_SPEED_FACTOR` is a bush resisting,
+             * and a bush the creature is about to wear has nothing to resist
+             * with. Above its limit the slowdown is exactly as it was.
+             */
+            if (soft && katamari && soft.r <= limit) {
+              // Reported by the roll-over gather above? No: that pass is hard
+              // colliders only, and a bush is soft. So it reports here, with
+              // the same outward-normal convention, and then nothing else
+              // happens to the velocity.
+              if (soft.key !== undefined && bodiesOf() !== null) {
+                const dx = root.position.x - soft.x;
+                const dz = root.position.z - soft.z;
+                const d = Math.hypot(dx, dz);
+                contacts.push({
+                  slot,
+                  collider: soft,
+                  nx: d > 1e-9 ? dx / d : 1,
+                  nz: d > 1e-9 ? dz / d : 0,
+                  speed: Math.hypot(vx, vz),
+                });
+              }
+            } else if (soft) {
               /*
                * A SOFT PROP REPORTS A CONTACT TOO, and it has to, because the
                * bush is the only soft kind in the world and it is the one
@@ -3406,6 +3592,30 @@ export function createCreatureManager(
         stepCreatures(stepBodies, dt, gatherNear, {
           hardPadFrac: HARD_PAD_FRAC,
           ...(physicsOn ? { skipKind: 'rock' } : {}),
+          /*
+           * `skipIf` — THE CHARACTER HAS PRIORITY (2026-09-16 ruling: *"it
+           * shouldn't impede the character from moving unless the mass isn't
+           * big enough to overtake the object"*).
+           *
+           * A planted prop inside THIS body's carry limit is not in its
+           * collider set at all, so the ball rolls over it and the sticky
+           * pass then takes it out of the ground onto the pile. Per body, so
+           * the same sapling still stops a hatchling and no longer stops the
+           * thing that has eaten a forest.
+           *
+           * Gated on the game AND on physics, like the roll-over gather it
+           * pairs with: a page that cannot pick the prop up must not walk
+           * through it.
+           */
+          ...(katamari && physicsOn
+            ? {
+                skipIf: (collider: Collider, index: number): boolean => {
+                  if (collider.key === undefined) return false;
+                  const entry = aliveScratch[index];
+                  return entry !== undefined && collider.r <= carryLimit(entry.slot.bodyR);
+                },
+              }
+            : {}),
           ...(physicsOn
             ? {
                 onContact: (index, collider, nx, nz): void => {

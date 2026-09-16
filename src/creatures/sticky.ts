@@ -397,16 +397,32 @@ export function debrisLifetimeMs(props: StickyProps): number {
 }
 
 /**
- * The whole game, in four lines.
+ * The whole game, in four lines — and SIZE IS THE FIRST QUESTION.
  *
- * A ROOTED prop either comes out of the ground or stops you dead — it is
- * never picked up directly, because a tree that flew onto a pile while still
- * standing in its hole is the pile going through the world rather than
- * taking it apart.
+ * > User ruling, 2026-09-16: *"The user's character has priority; objects
+ * > should stick to it as it moves or rolls over the object. It shouldn't
+ * > impede the character from moving unless the mass isn't big enough to
+ * > overtake the object."*
  *
- * An UNROOTED item either sticks (small enough, and sticky) or is shoved —
- * and shoved is not a failure, it is the stone rolling away, which the rapier
- * layer does for free.
+ * So the order is: can I carry it? Then it is MINE, rooted or not — a bush,
+ * a sign or a sapling the ball rolls over comes out of the ground and onto
+ * the pile in one step, with no impact threshold to clear and no `loose`
+ * round trip on the way. Uprooting something smaller than you costs nothing;
+ * that is what having priority means.
+ *
+ * Only what is too big to carry can stop you, and only if it is ROOTED:
+ *
+ *  - rooted and too big → `block`, and the old impact ladder decides whether
+ *    the block also breaks it (`shatterStrength` → `break`, `breakStrength`
+ *    → `loose`, a building's `stages` accumulating behind both). That ladder
+ *    is unchanged; it simply lives in this branch now, which is the only
+ *    branch where a prop is still standing in its hole after the contact.
+ *  - unrooted and too big → `shove`. Never a block: a stone you cannot carry
+ *    rolls away, which the rapier layer does for free, and the ruling says a
+ *    creature is not impeded by what it can move.
+ *
+ * `stickiness: 0` still means never, whatever the size — the cloud is scenery
+ * in the sky and a creature tall enough to reach one does not wear it.
  */
 export function decideContact(a: {
   itemR: number;
@@ -415,25 +431,28 @@ export function decideContact(a: {
   impact: number;
   carrierR: number;
 }): Outcome {
-  if (a.rooted) {
-    /*
-     * BREAK TAKES PRECEDENCE over coming out of the ground, and it is asked
-     * first for exactly that reason: `shatterStrength` is above
-     * `breakStrength`, so an impact that reaches it has already passed the
-     * looser test and a prop hit that hard should come apart rather than be
-     * lifted whole onto a pile. It is asked even of a kind whose
-     * `breakStrength` is `Infinity`, because those two thresholds are
-     * independent — though nothing in `STICKY` sets both today.
-     */
-    const shatter = a.props.shatterStrength;
-    if (shatter !== undefined && Number.isFinite(shatter) && a.impact >= shatter) return 'break';
-    // `Infinity` means NEVER, and it has to mean that even when it is asked
-    // about an infinite impact — `Infinity >= Infinity` is true, which would
-    // have handed a building to anyone who managed to overflow a speed.
-    if (!Number.isFinite(a.props.breakStrength)) return 'block';
-    return a.impact >= a.props.breakStrength ? 'loose' : 'block';
-  }
-  return a.itemR <= carryLimit(a.carrierR) && a.props.stickiness > 0 ? 'stick' : 'shove';
+  // SIZE FIRST, and rootedness is not consulted: small enough is stuck.
+  if (a.itemR <= carryLimit(a.carrierR) && a.props.stickiness > 0) return 'stick';
+  // Too big, and loose: it gets out of the way rather than standing in it.
+  if (!a.rooted) return 'shove';
+  /*
+   * Too big AND planted — the only thing in the world that says no.
+   *
+   * BREAK TAKES PRECEDENCE over coming out of the ground, and it is asked
+   * first for exactly that reason: `shatterStrength` is above
+   * `breakStrength`, so an impact that reaches it has already passed the
+   * looser test and a prop hit that hard should come apart rather than be
+   * lifted whole onto a pile. It is asked even of a kind whose
+   * `breakStrength` is `Infinity`, because those two thresholds are
+   * independent — though nothing in `STICKY` sets both today.
+   */
+  const shatter = a.props.shatterStrength;
+  if (shatter !== undefined && Number.isFinite(shatter) && a.impact >= shatter) return 'break';
+  // `Infinity` means NEVER, and it has to mean that even when it is asked
+  // about an infinite impact — `Infinity >= Infinity` is true, which would
+  // have handed a building to anyone who managed to overflow a speed.
+  if (!Number.isFinite(a.props.breakStrength)) return 'block';
+  return a.impact >= a.props.breakStrength ? 'loose' : 'block';
 }
 
 /**

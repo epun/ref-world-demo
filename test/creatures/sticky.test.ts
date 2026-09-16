@@ -170,20 +170,32 @@ describe('decideContact', () => {
       carrierR,
     });
 
+  /*
+   * EVERY CASE BELOW HANDS IT AN ITEM BIGGER THAN THE CARRIER, and that is
+   * deliberate since the 2026-09-16 ruling: `decideContact` asks about SIZE
+   * first, so anything inside the carry limit is simply stuck and none of
+   * these thresholds are consulted at all. The ladder they pin is what
+   * happens above the limit — which is the only place a prop can still say
+   * no. The size branch itself is pinned just below.
+   */
   it('blocks a rooted prop below its break strength and looses it at or above', () => {
-    expect(at('tree', STICKY.tree.breakStrength - 0.001, 1, 4)).toBe('block');
-    expect(at('tree', STICKY.tree.breakStrength, 1, 4)).toBe('loose');
-    expect(at('tree', STICKY.tree.breakStrength + 5, 1, 4)).toBe('loose');
+    expect(at('tree', STICKY.tree.breakStrength - 0.001, 4, 1)).toBe('block');
+    expect(at('tree', STICKY.tree.breakStrength, 4, 1)).toBe('loose');
+    expect(at('tree', STICKY.tree.breakStrength + 5, 4, 1)).toBe('loose');
   });
 
   it('never looses a building however hard it is hit', () => {
-    expect(at('building', 1e9, 8, 40)).toBe('block');
-    expect(at('mountain', Infinity, 20, 90)).toBe('block');
+    expect(at('building', 1e9, 8, 4)).toBe('block');
+    expect(at('mountain', Infinity, 20, 9)).toBe('block');
   });
 
   it('yields a bush to a walk — that is what a tiny break strength means', () => {
-    // A 1u creature at a stroll: impact 0.9 > the bush's 0.6.
-    expect(at('bush', impactOf(0.9, 1), 0.8, 1)).toBe('loose');
+    // A creature too small to wear the bush, at a stroll: impact 0.9 > the
+    // bush's 0.6, so it comes out of the ground and is left lying there.
+    expect(at('bush', impactOf(0.9, 1), 0.8, 0.5)).toBe('loose');
+    // And a creature big enough to wear it does not knock it loose at all —
+    // it takes it (2026-09-16: the character has priority).
+    expect(at('bush', impactOf(0.9, 1), 0.8, 1)).toBe('stick');
   });
 
   it('sticks an unrooted item inside the carry limit and shoves one outside it', () => {
@@ -199,13 +211,35 @@ describe('decideContact', () => {
   });
 
   it('is the same whichever way a growing creature approaches the table', () => {
-    // A tree at a fixed speed: too small, then big enough. Monotone in
-    // carrier radius, because impact is.
+    // A tree at a fixed speed, too big for either creature to carry: too
+    // small to fell it, then big enough. Monotone in carrier radius, because
+    // impact is.
     const speed = 2;
-    const small = at('tree', impactOf(speed, 1), 1, 1);
-    const large = at('tree', impactOf(speed, 6), 1, 6);
+    const small = at('tree', impactOf(speed, 1), 8, 1);
+    const large = at('tree', impactOf(speed, 6), 8, 6);
     expect(small).toBe('block');
     expect(large).toBe('loose');
+  });
+
+  /**
+   * THE SIZE BRANCH, which now comes first (user ruling, 2026-09-16: *"the
+   * user's character has priority; objects should stick to it as it moves or
+   * rolls over the object. It shouldn't impede the character from moving
+   * unless the mass isn't big enough to overtake the object"*).
+   */
+  it('sticks a ROOTED prop inside the carry limit at zero impact', () => {
+    // No threshold is cleared and it still comes up: uprooting something
+    // smaller than you costs nothing.
+    expect(at('tree', 0, 0.5, 1)).toBe('stick');
+    expect(at('building', 0, 3, 4)).toBe('stick');
+    // Not the cloud, whatever its size — `stickiness: 0` means never.
+    expect(at('cloud', 0, 0.01, 40)).toBe('block');
+  });
+
+  it('shoves an unrooted item it cannot carry instead of blocking on it', () => {
+    // The ruling's other half: a creature is never impeded by something it
+    // can move, and a stone it cannot carry rolls away.
+    expect(at('rock', 0, 4, 1)).toBe('shove');
   });
 });
 
