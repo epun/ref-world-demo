@@ -107,8 +107,17 @@ export interface Clump {
   R(): number;
   add(item: StuckItem): void;
   remove(key: string): StuckItem | undefined;
-  /** Roll by one frame's ground displacement. */
-  roll(dx: number, dz: number): void;
+  /**
+   * Roll by one frame's ground displacement.
+   *
+   * `blend` is how much of that travel turns into roll: the katamari's
+   * walk→roll blend (docs/PLAN.md §7.6), 0 for a creature that is still
+   * walking and 1 for a ball. It scales the ANGLE and not the travel, so the
+   * axis is unchanged and a half-blended creature turns half as far for the
+   * same distance rather than turning about a different point. Defaults to 1
+   * — a caller that has no blend is a pile that simply rolls.
+   */
+  roll(dx: number, dz: number, blend?: number): void;
   /** The thing furthest out, which is the one that gets knocked off. */
   outermost(): StuckItem | undefined;
   /** Advance the entrance slides. Not in any spec of the geometry — the
@@ -196,10 +205,11 @@ export function createClump(baseR: number): Clump {
       return item;
     },
 
-    roll(dx, dz): void {
+    roll(dx, dz, blend = 1): void {
       const unit = rollAxis(dx, dz);
       if (!unit) return;
-      const theta = rollDelta(Math.hypot(dx, dz), R());
+      const scale = Math.min(1, Math.max(0, blend));
+      const theta = rollDelta(Math.hypot(dx, dz), R()) * scale;
       if (!(Math.abs(theta) > 1e-9)) return;
       axis.set(unit.x, unit.y, unit.z);
       delta.setFromAxisAngle(axis, theta);

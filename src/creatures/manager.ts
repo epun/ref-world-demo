@@ -45,6 +45,7 @@ import { createEgg, EGG_RADIUS, type Egg } from '../egg/egg';
 import { startHatch, type HatchHandle } from '../egg/hatch';
 import type { EmoteName } from '../net/protocol';
 import type { StrokeList } from '../shape/types';
+import { Spring } from '../motion/spring';
 import { MOTION } from '../taste/tokens';
 import { FOLLOW_TAU_MS, followFraction, shortestAngle } from '../net/worldsync';
 import type { WorldHandles } from '../world/scene';
@@ -56,8 +57,11 @@ import { resolveName } from './naming';
 import { createClump, type Clump, type StuckItem } from './clump';
 import {
   carryLimit,
+  passLimit,
+  rollTarget,
   clumpLocalOffset,
   clumpLocalRotation,
+  creatureCarryLimit,
   decideContact,
   CONTACT_PAD,
   DROP_MIN_GAP_MS,
@@ -91,31 +95,68 @@ export const WANDER_SPEED_DEFAULT = 1.4;
 export const DRIVE_SPEED = MAX_SPEED;
 
 /**
- * How much faster a KATAMARI creature travels than a walking one. **[D]**
+ * How much faster a ROLLING katamari creature travels than the spec pace.
+ * **[D]**
  *
  * User ask, 2026-09-16: *"Like Katamari Damacy, we should have the character
  * ROLL versus walk. Right now, the walking cycle is way too slow."* A ball
  * has no stride to outrun — the speed a walk reads as honest at is the speed
- * its legs are taking, and a rolling creature has none. So the katamari world
- * raises the ceiling: `MAX_SPEED × 3` = 3.6 u/s, for the stick and for the
- * wander alike, with `DRIVE_TURN_TAU_MS` untouched (a faster ball that also
- * turned faster would be a cursor).
+ * its legs are taking, and a rolling creature has none. Then, from a phone on
+ * the deployed build: *"we need to up the speed and velocity by a lot."*
  *
- * THREE, not more. Rolling already reads faster than walking at the same
- * ground speed — the surface turns under the eye — so the multiplier is the
- * starting point rather than the answer, and the ghost panel's wander/speed
- * slider multiplies on top of it for tuning.
+ * SIX, from three. `MAX_SPEED × 6` = **7.2 u/s** — the ceiling a full push
+ * reaches once the ball is rolling. The island is ~100u across, so this
+ * crosses it in fourteen seconds; at 3.6 it took half a minute, which is what
+ * "by a lot" was about. The ghost panel's slider (ceiling 8) is where the
+ * next guess gets made.
  *
- * TUNNELLING, since this is the number the substep guard was sized against:
- * `stepCreatures` clamps dt at 250ms and covers `MAX_STEP_TRAVEL` (0.25u) per
- * substep over at most `MAX_SUBSTEPS` (16), so 4u of travel per frame. At
- * 3.6 u/s a clamped frame is 0.9u — 4 substeps of the 16 — so the guard still
- * covers the katamari top speed four times over.
+ * TUNNELLING, since this is the number the substep guard is sized against:
+ * `stepCreatures` clamps dt at 250 ms and advances at most `MAX_STEP_TRAVEL`
+ * (0.25 u) per substep over at most `MAX_SUBSTEPS` (16), so 4 u of travel per
+ * frame. At 7.2 u/s a clamped frame is 1.8 u — 8 of the 16 substeps — and
+ * 0.25 u is still under the smallest thing on the map to tunnel through (a
+ * 0.5 u stone's footprint, a ~0.9 u creature), so no step can leap one. The
+ * guard covers this ceiling with half of itself spare; `MAX_SUBSTEPS` did not
+ * need raising.
  *
- * EVERY OTHER WORLD IS UNCHANGED: outside the game the multiplier is 1 and
- * the walk cycle keeps the speeds it shipped with.
+ * EVERY OTHER WORLD IS UNCHANGED: outside the game the multiplier is
+ * `WANDER_SPEED_DEFAULT` and the walk cycle keeps the speeds it shipped with.
  */
-export const KATAMARI_SPEED_MUL = 3;
+export const KATAMARI_SPEED_MUL = 6;
+
+/**
+ * And the WALK ceiling in a katamari world. **[D]**
+ *
+ * A creature that is carrying nothing is not a ball yet — it walks (PLAN
+ * §7.6, the roll blend) — and walking at the rolling ceiling would be a
+ * hatchling sprinting. `MAX_SPEED × 2.5` = **3 u/s**: brisker than the
+ * shipped walk (`WANDER_SPEED_DEFAULT`, 1.68 u/s) because the island is
+ * bigger than the field that number was tuned on, and far enough under the
+ * rolling ceiling that the ball is the thing that goes fast.
+ *
+ * THE WANDER SITS HERE TOO, at the walk and never at the roll: an unattended
+ * creature crossing the island at 7.2 u/s reads as a world running away from
+ * the person watching it, and nobody asked for faster ai.
+ */
+export const KATAMARI_WALK_MUL = 2.5;
+
+/**
+ * [D] How much of a blocked push is turned along the wall instead.
+ *
+ * > User report, 2026-09-16: *"my character keeps on getting stuck on
+ * > objects."*
+ *
+ * `resolveHard` keeps the tangential component of a contact and drops the
+ * inward one, which slides along anything met at an angle and does nothing
+ * for a hit dead on — where the tangent is zero and the creature simply
+ * stands there. 0.8 turns most of the blocked speed into travel along the
+ * surface, so a flat wall, a building's face and the inside of a corner all
+ * deflect instead of holding. Not 1.0: something has to be lost to running
+ * into a wall, or a wall reads as a rail.
+ *
+ * KATAMARI ONLY (see the use site).
+ */
+export const WALL_SLIDE = 0.8;
 
 /**
  * Turn responsiveness under the stick, as an exponential time constant.
@@ -126,6 +167,23 @@ export const KATAMARI_SPEED_MUL = 3;
  * not a network.
  */
 export const DRIVE_TURN_TAU_MS = 90;
+
+/**
+ * The same, in a KATAMARI world — tighter, because it is going faster. **[D]**
+ *
+ * Exponential convergence covers ~90% of a turn in 2.3 τ and ~99% in 4.6 τ.
+ * At 90 ms that is 207 ms and 414 ms, and at 7.2 u/s the creature covers a
+ * metre and a half of ground before it is really pointing where the thumb
+ * asked — which does not read as easing, it reads as SLIDING. 60 ms puts the
+ * same turn at 138 ms and 276 ms, inside the ~250 ms where a hand still reads
+ * cause and effect.
+ *
+ * Still monotone and still ζ ≥ 1 in the sense that matters: this is
+ * `followFraction`, an exponential approach that cannot overshoot its target
+ * however hard the stick is thrown (TASTE §2.1, confidence 1.00). Sixty is a
+ * shorter constant, not a springier one.
+ */
+export const KATAMARI_TURN_TAU_MS = 60;
 
 /**
  * How long the stick keeps the creature after the last push. **[D]**
@@ -591,6 +649,25 @@ interface Slot {
   carriedBy: string | null;
   /** Ids of the creatures riding on THIS one. Set down free if it leaves. */
   passengers: Set<string>;
+  /**
+   * WALKING OR ROLLING, in [0, 1] — the katamari's locomotion blend
+   * (docs/PLAN.md §7.6).
+   *
+   * 0 is a creature on its legs and 1 is a ball. Written every frame by
+   * `growPass` from `rollSpring`, read by the gait amplitude, by how much of
+   * the travel turns into roll, and by the drive ceiling. Always 0 in a world
+   * without the game, where there is no clump to carry anything.
+   */
+  roll: number;
+  /**
+   * The ζ ≥ 1 spring `roll` comes off, over `MOTION.primaryMs`. Null until
+   * the creature is alive, and in every world but the katamari.
+   *
+   * Never on the wire: its target is `rollTarget(clump items, growth)`, and
+   * every page holds the same clump off the same `stick`/`drop` events — so
+   * each one derives the same blend rather than being told it.
+   */
+  rollSpring: Spring | null;
   /** When this carrier last shed something, on the loop's clock. Null until
    * it has. The `DROP_MIN_GAP_MS` gate, so a pile does not unravel in one
    * frame against a tree. */
@@ -1020,6 +1097,26 @@ export interface CreatureManager {
   applyShatter(record: ShatterRecord): void;
   /** Live wreck states, for the ghost panel and the tests. */
   wrecks(): { item: string; stage: number; removed: number }[];
+  /**
+   * How much of a BALL this creature is, 0…1 (docs/PLAN.md §7.6).
+   *
+   * A readout, not a control: the blend is derived from the pile on every
+   * page and nothing may set it. It exists so the ghost panel can show what
+   * a creature's locomotion is actually doing and so a test can assert the
+   * slide rather than infer it from a waddle. 0 for an id nobody holds, and 0
+   * for the whole of any world without the game.
+   */
+  rollBlend(id: string): number;
+  /**
+   * Top ground speed this creature would reach under a full push, u/s.
+   *
+   * A readout of `DRIVE_SPEED × driveMult(blend)`: the walk ceiling for a
+   * creature on its legs, the rolling one for a ball, and the same number
+   * either way in a world without the game. The panel shows it and the tests
+   * measure against it rather than re-deriving a multiplier, which is how the
+   * arithmetic stays in one place. 0 for an id nobody holds.
+   */
+  driveCeiling(id: string): number;
 }
 
 export function createCreatureManager(
@@ -1045,26 +1142,91 @@ export function createCreatureManager(
    * the ambient drift floor — which is `character.update`'s, not the gait's —
    * running underneath, as TASTE §3 requires.
    */
-  const locoSpeed = (speed: number): number => (katamari ? 0 : speed);
+  /**
+   * How much of a ball this creature is, 0…1 — and a PASSENGER RIDES ITS
+   * CARRIER'S (2026-09-16 ask: *"a passenger rides its carrier's blend"*).
+   *
+   * A creature sitting on a pile has no locomotion of its own: it is inside
+   * somebody else's ball, so it rolls when that ball rolls and it does not
+   * walk while it is up there. The walk up the carriers is bounded because a
+   * pile cannot be inside itself, and the guard is belt and braces.
+   */
+  const rollOf = (slot: Slot): number => {
+    let at: Slot = slot;
+    for (let hop = 0; hop < 8; hop++) {
+      const carrier = at.carriedBy === null ? null : slots.get(at.carriedBy);
+      if (!carrier) break;
+      at = carrier;
+    }
+    return at.roll;
+  };
+
+  /**
+   * How much of the WALK to show — the other side of the same blend.
+   *
+   * The gait used to be fed a flat zero in a katamari world (a waddle on top
+   * of a roll is two locomotions at once). It is now scaled instead, so a
+   * creature that has picked nothing up walks properly and one that has three
+   * stones on it has stopped waddling by the time it is rolling.
+   */
+  const gaitAmp = (slot: Slot): number => (katamari ? 1 - rollOf(slot) : 1);
   const surface = options.surface ?? ROLLING_SURFACE;
   const slots = new Map<string, Slot>();
   let orderCounter = 0;
   let timersPaused = false;
   let aiPaused = false;
   /**
-   * The speed multiplier every creature here runs at — the agents' wander and
-   * the drive ceiling both read it, and the ghost panel's wander/speed slider
-   * writes it.
+   * THE TOP of this world's speed range — the number the ghost panel's
+   * wander/speed slider holds and `wanderSpeed()` reports.
    *
-   * KATAMARI GETS ITS OWN DEFAULT, and that is the whole of the speed change
-   * (user ask, 2026-09-16: *"the walking cycle is way too slow"*). It is a
-   * different default rather than a factor ON the shipped one because the
-   * shipped 1.4 is a tuning of a WALK — multiplying the two would put the
-   * stick at 5.04 u/s, past the 3 the ruling asked for. At
-   * `KATAMARI_SPEED_MUL` the drive ceiling is `MAX_SPEED × 3` = 3.6 u/s
-   * exactly, which is the number the substep guard was checked against.
+   * KATAMARI GETS ITS OWN DEFAULT (user ask, 2026-09-16: *"the walking cycle
+   * is way too slow"*, then *"we need to up the speed and velocity by a
+   * lot"*). It is a different default rather than a factor ON the shipped
+   * one because the shipped 1.4 is a tuning of a WALK. At
+   * `KATAMARI_SPEED_MUL` the ROLLING drive ceiling is `MAX_SPEED × 6` =
+   * 7.2 u/s, which is the number the substep guard is checked against.
+   *
+   * Outside the katamari it is the only multiplier there is, exactly as it
+   * shipped: the wander and the stick both read it and nothing else.
    */
   let wanderSpeedMult = katamari ? KATAMARI_SPEED_MUL : WANDER_SPEED_DEFAULT;
+
+  /**
+   * What the panel's slider is saying RELATIVE to the shipped default — 1
+   * when nobody has touched it.
+   *
+   * The katamari has two ceilings (a walk and a roll) and one slider, so the
+   * slider scales the pair rather than owning one of them. Everywhere else
+   * there is one ceiling and this is 1.
+   */
+  const speedScale = (): number => (katamari ? wanderSpeedMult / KATAMARI_SPEED_MUL : 1);
+
+  /**
+   * The WALK ceiling multiplier — what a creature carrying nothing drives at,
+   * and what every agent wanders at (`KATAMARI_WALK_MUL`).
+   *
+   * The wander sits here and never at the rolling ceiling: an unattended
+   * creature crossing the island at 7.2 u/s is a world running away from the
+   * person watching it.
+   */
+  const walkMult = (): number =>
+    katamari ? KATAMARI_WALK_MUL * speedScale() : wanderSpeedMult;
+
+  /**
+   * The ceiling multiplier for a creature under somebody's thumb.
+   *
+   * On a katamari world it LERPS with the walk/roll blend: a creature on its
+   * legs drives at the walk ceiling and the same creature, three stones
+   * later, drives at the rolling one (docs/PLAN.md §7.6). The blend is a
+   * ζ ≥ 1 spring, so the speed arrives by sliding — there is no frame where
+   * the stick suddenly means something different.
+   */
+  const driveMult = (blend: number): number =>
+    katamari ? walkMult() + (wanderSpeedMult - walkMult()) * blend : wanderSpeedMult;
+
+  /** How fast a driven creature turns toward the push — tighter in a
+   * katamari world, because it is going more than twice as fast there. */
+  const turnTauMs = (): number => (katamari ? KATAMARI_TURN_TAU_MS : DRIVE_TURN_TAU_MS);
 
   // ── physics scratch (allocation-free per frame) ───────────────────────────
   // The prop spatial hash rebuilds only when the scatter's collider version
@@ -1278,6 +1440,8 @@ export function createCreatureManager(
       slot.carriedBy = null;
     }
     removeKinematic(slot);
+    slot.rollSpring?.dispose();
+    slot.rollSpring = null;
     slot.clump?.dispose();
     slot.clump = null;
     slot.agent?.dispose();
@@ -1343,6 +1507,19 @@ export function createCreatureManager(
      * item into.
      */
     if (katamari) {
+      /*
+       * WALK FIRST, ROLL WITH MASS (user ask, 2026-09-16: *"let's have them
+       * start walking at first and once they hit a few objects they begin to
+       * roll because they have mass"*).
+       *
+       * One spring per creature, from rest: a hatchling carrying nothing is
+       * at 0 and walks. `growPass` retargets it at `rollTarget` every frame
+       * and the blend slides over `MOTION.primaryMs` — ζ ≥ 1 by construction,
+       * so a creature becoming a ball can never overshoot into more roll than
+       * a roll (TASTE §2.1, confidence 1.00), and one that sheds its pile
+       * walks again the same way round.
+       */
+      slot.rollSpring = new Spring(0, { settleMs: MOTION.primaryMs });
       slot.clump = createClump(slot.baseR);
       root.add(slot.clump.group);
       /*
@@ -1385,7 +1562,9 @@ export function createCreatureManager(
     // answer (null → mild seeded variation).
     const seed = behaviorSeed(slot.id);
     slot.agent = new BehaviorAgent(seed, personalityFromChoice(slot.personalityChoice, seed));
-    slot.agent.setSpeedMultiplier(wanderSpeedMult);
+    // The WALK multiplier, not the rolling one: the wander is a walk
+    // wherever it happens (see `walkMult`).
+    slot.agent.setSpeedMultiplier(walkMult());
   }
 
   function beginHatch(slot: Slot, cause: 'timer' | 'forced'): void {
@@ -1601,6 +1780,62 @@ export function createCreatureManager(
     return slots.get(item.slice('creature:'.length)) ?? null;
   }
 
+  /** Scratch for `effectiveDrive` — one per manager, never per frame. */
+  const driveSum = { x: 0, z: 0 };
+
+  /** Sum one slot's own push and every passenger's, transitively. */
+  function addDrive(slot: Slot, depth: number): void {
+    const push = slot.drive;
+    if (push && push.mag > 0) {
+      driveSum.x += push.x;
+      driveSum.z += push.z;
+    }
+    // A pile can be a pile of piles. The depth guard is belt and braces: a
+    // cycle is already impossible (a creature carrying its own carrier is
+    // refused where the pile is built), and MAX_POPULATION bounds the rest.
+    if (depth >= 8) return;
+    for (const id of slot.passengers) {
+      const rider = slots.get(id);
+      if (rider) addDrive(rider, depth + 1);
+    }
+  }
+
+  /**
+   * WHAT THIS CREATURE IS BEING ASKED TO DO — its own stick plus every
+   * passenger's (2026-09-16, the stuck report).
+   *
+   * > User ruling: the player's character has priority and must always answer
+   * > its own phone.
+   *
+   * A carried creature has no locomotion of its own: its position is a seat
+   * on somebody's pile. Its drive used to be thrown away with it, so the
+   * moment a bigger creature picked you up your stick did nothing — the
+   * report's *"my character got stuck."* Now it is applied to the CARRIER, so
+   * every phone in a pile still steers the ball and a pile that four people
+   * are pushing goes where the four of them agree.
+   *
+   * The vectors add (each already carries its own strength) and the SUM is
+   * clamped to one stick's worth: four thumbs pushing the same way is not
+   * four times the speed, it is a full push, and the ceiling stays the
+   * ceiling. Two pushing opposite ways cancel, which is the honest answer.
+   *
+   * Nothing about this is on the wire. A recorded `drive` still names the
+   * passenger (src/session/recorder.ts) and the resolution happens HERE, on
+   * the frame it is applied — so the host and a replay of the same log reach
+   * the same velocity from the same events.
+   */
+  function effectiveDrive(slot: Slot): { x: number; z: number; mag: number } | null {
+    driveSum.x = 0;
+    driveSum.z = 0;
+    addDrive(slot, 0);
+    const mag = Math.hypot(driveSum.x, driveSum.z);
+    if (!(mag > 0)) return null;
+    // Clamp the MAGNITUDE and keep the direction: scaling each component by
+    // the same factor is what makes this a clamp rather than a squash.
+    const k = mag > 1 ? 1 / mag : 1;
+    return { x: driveSum.x * k, z: driveSum.z * k, mag: Math.min(1, mag) };
+  }
+
   /**
    * Where an item slides IN from, in clump-local space: wherever it actually
    * is at this instant.
@@ -1662,7 +1897,14 @@ export function createCreatureManager(
       rider.carriedBy = carrier.id;
       carrier.passengers.add(rider.id);
       rider.follow = null;
-      rider.drive = null;
+      /*
+       * ITS DRIVE IS KEPT, and that is the 2026-09-16 fix (the stuck
+       * report). Clearing it here was half of *"my character got stuck"*:
+       * the phone went on publishing an intent that the manager dropped on
+       * the floor for as long as the pile held it. The push now reaches the
+       * carrier instead (`effectiveDrive`), so a passenger's thumb steers the
+       * ball it is riding.
+       */
       world.shadows.removeShadow(`char-${rider.id}`);
       rider.characterShadow = null;
       removeKinematic(rider);
@@ -2082,6 +2324,28 @@ export function createCreatureManager(
         const item = bodies.itemByCollider(other);
         if (item) return item.r <= carryLimit(slot.bodyR) ? null : flags;
         /*
+         * A STUCK ITEM IS PART OF THE CARRIER'S BODY (user ruling,
+         * 2026-09-16, with the third stuck report).
+         *
+         * Its ball only exists so the pile can sweep through what is LOOSE —
+         * stones, fallen props, debris, other creatures. Against static world
+         * geometry it has nothing to say: a bench hanging off a ball cannot
+         * push a fixed cylinder or the heightfield (the carrier's body is
+         * kinematic, so no contact there can move anything), and what those
+         * contacts CAN do is fire the impact seam from a ball that is
+         * scraping the ground — damage and drops charged to a creature for
+         * standing still. The loose case is handled a few lines up, where
+         * `itemByCollider` found something; reaching here with a stuck
+         * item's collider means the other side is the ground or a planted
+         * prop, so there is no pair.
+         *
+         * The carrier's own ball keeps every one of those contacts: that is
+         * `hitRooted`, the recoil, the break ladder and the staged damage,
+         * and it is the same rule it always was.
+         */
+        const isStuckItem = own !== slot.kinematic?.ball?.handle;
+        if (isStuckItem) return null;
+        /*
          * A STANDING PROP THE BALL IS BIG ENOUGH TO ROLL UP — no contact
          * either (2026-09-16 ruling: *"it shouldn't impede the character from
          * moving unless the mass isn't big enough to overtake the object"*).
@@ -2093,14 +2357,16 @@ export function createCreatureManager(
          * pass is about to take whole. Filtering the pair out is what keeps
          * uprooting free.
          *
-         * ONLY THE CREATURE'S OWN BALL is exempt. A stuck bench's collider is
-         * in `colliderSlot` too, and it must go on hitting everything — that
-         * is where the brief's instability comes from.
+         * A stuck item's collider is in `colliderSlot` too, and it has
+         * already been answered above: it meets what is loose and nothing
+         * else.
          */
-        if (own !== slot.kinematic?.ball?.handle) return flags;
         const side = bodies.sideByCollider(other);
         if (!side?.rooted) return flags;
-        return side.r <= carryLimit(slot.bodyR) ? null : flags;
+        // `passLimit`, matching the resolve's own `skipIf`: a prop the ball
+        // pushes past is reported by the pure resolve's gather instead, so a
+        // contact here would be the same impact counted twice.
+        return side.r <= passLimit(slot.bodyR) ? null : flags;
       },
     });
   }
@@ -2272,39 +2538,27 @@ export function createCreatureManager(
   const itemPoints: { x: number; z: number }[] = [];
 
   /**
-   * One loose item's live rapier transform, SNAPSHOTTED off its body.
+   * Where a loose body IS, as seven plain numbers.
    *
-   * It has to be a snapshot rather than a live read (see `stickItem`): the
-   * pickup drops the body before it seats the item, and reading a rapier body
-   * that has been removed does not return stale numbers — it traps the wasm
-   * module (`RuntimeError: unreachable`), which threw out of the frame
-   * callback and took the world's whole `requestAnimationFrame` loop with it.
-   * On a busy katamari world that is the first pickup, and the page then sits
-   * there rendering the last frame it managed: the *"glitching out"* of the
-   * 200-creature report.
+   * Read off rapier and copied, because the body it came from does not
+   * survive the pickup — see `stickItem`.
    */
   interface ItemPose {
     x: number;
     y: number;
     z: number;
-    q: { x: number; y: number; z: number; w: number };
+    qx: number;
+    qy: number;
+    qz: number;
+    qw: number;
   }
-  /** Reused: one pickup is decided at a time. */
-  const itemPose: ItemPose = { x: 0, y: 0, z: 0, q: { x: 0, y: 0, z: 0, w: 1 } };
 
-  /** Read an item's transform into the scratch pose. Must be called while its
-   * body is still in the simulation. */
-  function readItemPose(item: LooseItem): ItemPose {
+  /** Snapshot a loose body's live transform. Must be called while the body
+   * is still IN the solver. */
+  function poseOf(item: LooseItem): ItemPose {
     const t = item.body.translation();
     const r = item.body.rotation();
-    itemPose.x = t.x;
-    itemPose.y = t.y;
-    itemPose.z = t.z;
-    itemPose.q.x = r.x;
-    itemPose.q.y = r.y;
-    itemPose.q.z = r.z;
-    itemPose.q.w = r.w;
-    return itemPose;
+    return { x: t.x, y: t.y, z: t.z, qx: r.x, qy: r.y, qz: r.z, qw: r.w };
   }
 
   /**
@@ -2314,15 +2568,23 @@ export function createCreatureManager(
    * stone actually is at the instant of contact, not where its placement was
    * — which is what makes the pile look assembled by running into things.
    *
-   * That transform arrives as a POSE the caller read before it took the item
-   * (see `ItemPose`), not off `item.body`: by the time this runs the body is
-   * gone, and asking a removed body where it is traps the whole module.
+   * THE POSE IS HANDED IN, AND THAT IS NOT A STYLE CHOICE (2026-09-16, the
+   * second stuck report). The caller has to drop the body first — `take`
+   * removes it from the solver and hides the placement, so the mesh the clump
+   * then holds is the only copy of the thing — and a rapier body that has
+   * been removed is a DEAD HANDLE: reading its translation traps the wasm
+   * (`RuntimeError: unreachable`). That throw came out of `update()`, so the
+   * host's whole frame loop died the first time any creature rolled over a
+   * loose stone: no more poses, every phone's creature frozen where it stood,
+   * which is exactly what *"my character got stuck"* looks like from a
+   * handset. The snapshot is taken while the body is alive and nothing here
+   * touches rapier at all.
    */
   function stickItem(carrier: Slot, item: LooseItem, root: Group, pose: ItemPose): void {
     const clump = carrier.clump;
     if (!clump) return;
     const t = pose;
-    const r = pose.q;
+    const r = { x: pose.qx, y: pose.qy, z: pose.qz, w: pose.qw };
     clump.group.getWorldPosition(scratchVec);
     const offset = clumpLocalOffset({
       itemX: t.x,
@@ -2896,12 +3158,13 @@ export function createCreatureManager(
           carrierR: slot.bodyR,
         });
         if (outcome !== 'stick') continue;
-        // `take` first: it drops the body and hides the placement, so the
-        // mesh the clump then holds is the only copy of the thing. Which is
-        // why the POSE is read on the line before it: `take` removes the
-        // rapier body, and a removed body cannot be asked anything (see
-        // `ItemPose`).
-        const pose = readItemPose(item);
+        // THE POSE BEFORE THE TAKE. `take` drops the rigid body, and a
+        // dropped rapier body is a dead handle whose translation traps the
+        // wasm — which took the host's whole frame loop with it the first
+        // time anybody rolled up a stone (see `stickItem`).
+        const pose = poseOf(item);
+        // `take` next: it hides the placement too, so the mesh the clump
+        // then holds is the only copy of the thing.
         if (!bodies.take(item.key)) continue;
         stickItem(slot, item, root, pose);
       }
@@ -2926,34 +3189,47 @@ export function createCreatureManager(
         const dx = a.root.position.x - b.root.position.x;
         const dz = a.root.position.z - b.root.position.z;
         if (Math.hypot(dx, dz) > a.slot.bodyR + b.slot.bodyR + CONTACT_PAD) continue;
-        const aTakesB = b.slot.bodyR <= carryLimit(a.slot.bodyR);
-        const bTakesA = a.slot.bodyR <= carryLimit(b.slot.bodyR);
-        if (aTakesB && bTakesA) {
-          /*
-           * BOTH ELIGIBLE, which since `PICKUP_RATIO` became 1 means their
-           * radii are equal — each is exactly at the other's limit.
-           *
-           * Somebody has to carry, and it cannot be "whichever was visited
-           * first": `aliveScratch` is sorted by id, so the earlier slot would
-           * always win, and a page that had retired one of them would sort
-           * the pair differently and build the other pile. The BIGGER ID
-           * carries. It is arbitrary, and that is the point — it is a
-           * property of the two creatures and of nothing else, so every page
-           * reaches it.
-           */
-          const [carrier, rider] = a.slot.id > b.slot.id ? [a, b] : [b, a];
-          stickCreature(carrier.slot, rider.slot, carrier.root);
-        } else if (aTakesB) stickCreature(a.slot, b.slot, a.root);
+        /*
+         * A CREATURE NEEDS A CLEAR SIZE GAP, not a tie
+         * (`CREATURE_CARRY_RATIO`, 2026-09-16 — the stuck report).
+         *
+         * `carryLimit` decides a PROP and is 1.0 of the carrier's radius; a
+         * creature is somebody's, with a phone in somebody's hand, so it
+         * takes a third again the size before it can be taken out of their
+         * control. Both cannot be true at once — `a ≥ 1.35 b` and
+         * `b ≥ 1.35 a` have no solution — so there is no mutual-eligibility
+         * tie here any more and nothing for two pages to disagree about.
+         * Equal-sized creatures fall through to the pair separation they had
+         * before the katamari, and both keep answering their own sticks.
+         */
+        const aTakesB = b.slot.bodyR <= creatureCarryLimit(a.slot.bodyR);
+        const bTakesA = a.slot.bodyR <= creatureCarryLimit(b.slot.bodyR);
+        if (aTakesB) stickCreature(a.slot, b.slot, a.root);
         else if (bTakesA) stickCreature(b.slot, a.slot, b.root);
       }
     }
 
-    // The carrier's stand-in and its stuck colliders, once everything is
-    // where it is going to be this frame.
-    for (const entry of aliveScratch) {
-      if (entry.slot.carriedBy) continue;
-      syncKinematic(entry.slot, entry.root);
-      syncStuckColliders(entry.slot);
+  }
+
+  /**
+   * THE STAND-INS — every carrier's kinematic body and the balls for what it
+   * is carrying, at the size and place it ends the frame at.
+   *
+   * Called AFTER `growPass` and not at the end of `simulateSticky`, which is
+   * where it used to live (2026-09-16). Growth is written in `growPass`, so a
+   * creature that picked something up this frame had its `bodyR` and its
+   * drawn scale updated a few lines after its rapier ball was sized — and the
+   * solver spent a frame holding a ball smaller than the circle the resolve
+   * was using. One radius, one frame, everywhere: the resolve circle, the
+   * exclusion radius, the drawn scale and the ball are all this `bodyR`, so
+   * there is no gap between two sizes for a creature to wedge in.
+   */
+  function syncStandIns(): void {
+    for (const slot of slots.values()) {
+      const root = slot.characterRoot;
+      if (!root || slot.phase !== 'alive' || slot.carriedBy) continue;
+      syncKinematic(slot, root);
+      syncStuckColliders(slot);
     }
   }
 
@@ -2981,6 +3257,18 @@ export function createCreatureManager(
       const g = clump.growth();
       root.scale.setScalar(g);
       slot.bodyR = slot.baseR * g;
+      /*
+       * AND WHETHER IT IS A BALL YET — here, because this is the pass that
+       * runs on EVERY page (docs/PLAN.md §7.6). The blend is derived from the
+       * clump's own item count and growth, both of which a viewer holds off
+       * the `stick` and `drop` events, so every screen reaches the same
+       * locomotion without a byte on the wire about it.
+       */
+      const spring = slot.rollSpring;
+      if (spring) {
+        spring.retarget(rollTarget(clump.items.size, g));
+        slot.roll = Math.min(1, Math.max(0, spring.update(dt)));
+      }
       if (slot.character) slot.characterShadow?.setRadius?.(slot.character.radius * g);
     }
   }
@@ -3072,6 +3360,8 @@ export function createCreatureManager(
         baseR: 0,
         clump: null,
         carriedBy: null,
+        roll: 0,
+        rollSpring: null,
         passengers: new Set<string>(),
         lastDropMs: null,
         kinematic: null,
@@ -3356,8 +3646,11 @@ export function createCreatureManager(
              * the two-level rig exists to prevent. The agent is stood down
              * the same way a driven one is; the gait sees speed 0 and drifts
              * out to the ambient floor rather than freezing.
+             *
+             * The gait amplitude is its CARRIER's blend (`gaitAmp` →
+             * `rollOf`): a passenger on a rolling ball is not walking either.
              */
-            slot.character.setLocomotion(0, root.rotation.y);
+            slot.character.setLocomotion(0, root.rotation.y, gaitAmp(slot));
           } else if (root && slot.phase === 'alive' && slot.manualHold) {
             // Gizmo-held (dev panel): the dragged root position is the
             // truth. The body still enters the physics pass, motionless, so
@@ -3438,15 +3731,20 @@ export function createCreatureManager(
              * gait reads it: what the viewer sees moving is what should be
              * seen turning.
              */
-            slot.clump?.roll(root.position.x - beforeX, root.position.z - beforeZ);
+            slot.clump?.roll(
+              root.position.x - beforeX,
+              root.position.z - beforeZ,
+              rollOf(slot),
+            );
 
             // The gait reads the speed it is ACTUALLY travelling at, so a
             // followed creature walks for the same reason a simulated one
             // does — because it is moving — rather than being told to.
             const moved = Math.hypot(root.position.x - beforeX, root.position.z - beforeZ);
             slot.character.setLocomotion(
-              locoSpeed(dt > 0 ? (moved / dt) * 1000 : 0),
+              dt > 0 ? (moved / dt) * 1000 : 0,
               root.rotation.y,
+              gaitAmp(slot),
             );
             if (present) {
               slot.characterShadow?.setPosition(
@@ -3496,15 +3794,16 @@ export function createCreatureManager(
              * where it is actually standing (src/behavior/agent.ts,
              * `AgentHold`).
              */
-            const driven = slot.drive && slot.drive.mag > 0 ? slot.drive : null;
+            const driven = effectiveDrive(slot);
             // Stamped from the loop's own clock, never `performance.now()`:
             // the window is compared against the same `nowMs` every other
             // timer here uses.
             if (driven) slot.drivenAtMs = nowMs;
             const held =
               slot.drivenAtMs !== null && nowMs - slot.drivenAtMs < DRIVE_IDLE_MS;
-            const driveVx = driven ? driven.x * DRIVE_SPEED * wanderSpeedMult : 0;
-            const driveVz = driven ? driven.z * DRIVE_SPEED * wanderSpeedMult : 0;
+            const ceiling = DRIVE_SPEED * driveMult(rollOf(slot));
+            const driveVx = driven ? driven.x * ceiling : 0;
+            const driveVz = driven ? driven.z * ceiling : 0;
             // What the hand is asking for, and where the creature is really
             // pointing: the held agent rides both rather than its own idea
             // of them, so the release is a drift-stop from the real speed
@@ -3540,13 +3839,25 @@ export function createCreatureManager(
              * collider produces no correction, so `resolveHard`'s own
              * `onContact` never fires for one.
              *
+             * AND WHAT IT PUSHES PAST (`BLOCK_RATIO`, 2026-09-16: *"my
+             * character keeps on getting stuck on objects … relax the actual
+             * physics a little bit"*). Between the carry limit and
+             * `passLimit` a planted prop is not a wall either: the resolve
+             * skips it too, the ball pushes through at the soft-body speed,
+             * and the prop takes the impact it always took. So both bands
+             * report here, and `decideContact` decides which of them this
+             * particular prop is in.
+             *
              * KATAMARI ONLY, and gated on a `key` because a prop with no
              * placement key is not something the pile can address.
              */
             const limit = carryLimit(bodyR);
+            const pass = passLimit(bodyR);
+            /** Pushing past something too big to wear — slowed, not stopped. */
+            let pushingPast = false;
             if (katamari && bodiesOf() !== null) {
               for (const c of near) {
-                if (!c.hard || c.key === undefined || !(c.r <= limit)) continue;
+                if (!c.hard || c.key === undefined || !(c.r <= pass)) continue;
                 const dx = root.position.x - c.x;
                 const dz = root.position.z - c.z;
                 const d = Math.hypot(dx, dz);
@@ -3554,7 +3865,20 @@ export function createCreatureManager(
                 const nx = d > 1e-9 ? dx / d : 1;
                 const nz = d > 1e-9 ? dz / d : 0;
                 contacts.push({ slot, collider: c, nx, nz, speed: Math.hypot(vx, vz) });
+                if (c.r > limit) pushingPast = true;
               }
+            }
+            /*
+             * THE PRICE OF PUSHING PAST: the bush's own slowdown, on a prop
+             * that is over the carry limit and under the block one. It is not
+             * free (that would be a creature walking through the world rather
+             * than into it) and it is not a stop. Applied once however many
+             * such props are in reach — being wedged between two saplings is
+             * still a creature moving.
+             */
+            if (pushingPast) {
+              vx *= SOFT_SPEED_FACTOR;
+              vz *= SOFT_SPEED_FACTOR;
             }
 
             const soft = deepestSoftOverlap(root.position.x, root.position.z, bodyR, near);
@@ -3622,6 +3946,57 @@ export function createCreatureManager(
               }
             }
 
+            /*
+             * A WALL DEFLECTS THE PUSH; IT DOES NOT ABSORB IT (`WALL_SLIDE`,
+             * 2026-09-16: *"my character keeps on getting stuck on
+             * objects"*).
+             *
+             * `resolveHard` drops the inward component of the velocity and
+             * keeps the tangent, which slides beautifully along anything hit
+             * at an angle and does nothing at all for a hit dead on: there
+             * the whole velocity is inward, the tangent is zero, and the
+             * creature stands against the wall until the person turns. That
+             * is the inside of a corner, the flat face of a building and any
+             * trunk approached square — and to the hand it is being stuck.
+             *
+             * So the inward part is turned along the surface instead of being
+             * thrown away. The side is whichever way the push is already
+             * leaning, with a fixed fallback dead on, so it is deterministic
+             * (the host decides, and a replay of the same drive decides the
+             * same). It cannot create penetration — the component it adds is
+             * tangential, and the resolve still runs afterwards.
+             *
+             * KATAMARI ONLY. Every other world keeps the wall it shipped
+             * with.
+             */
+            if (katamari && (vx !== 0 || vz !== 0)) {
+              const physicsNow = bodiesOf() !== null;
+              for (const c of near) {
+                if (!c.hard) continue;
+                // A prop this creature rolls up or pushes past is not a wall.
+                if (c.key !== undefined && c.r <= pass) continue;
+                // A stone rapier owns is not in the resolve's set either.
+                if (physicsNow && c.kind === 'rock') continue;
+                const dx = root.position.x - c.x;
+                const dz = root.position.z - c.z;
+                const d = Math.hypot(dx, dz);
+                if (d > bodyR + c.r * (1 + HARD_PAD_FRAC) + CONTACT_PAD) continue;
+                const nx = d > 1e-9 ? dx / d : 1;
+                const nz = d > 1e-9 ? dz / d : 0;
+                const vn = vx * nx + vz * nz;
+                // Not pushing into it: nothing to deflect.
+                if (vn >= 0) continue;
+                let tx = -nz;
+                let tz = nx;
+                if (vx * tx + vz * tz < 0) {
+                  tx = -tx;
+                  tz = -tz;
+                }
+                vx += tx * -vn * WALL_SLIDE;
+                vz += tz * -vn * WALL_SLIDE;
+              }
+            }
+
             // Movement itself is deferred to the substepped resolve phase
             // below — integrating here and resolving later is exactly the
             // gap that let a big clamped dt tunnel through a trunk.
@@ -3651,7 +4026,7 @@ export function createCreatureManager(
               const want = Math.atan2(vx, vz);
               heading =
                 root.rotation.y +
-                shortestAngle(root.rotation.y, want) * followFraction(dt, DRIVE_TURN_TAU_MS);
+                shortestAngle(root.rotation.y, want) * followFraction(dt, turnTauMs());
             }
 
             aliveScratch.push({ slot, root, body, heading });
@@ -3785,7 +4160,13 @@ export function createCreatureManager(
                 skipIf: (collider: Collider, index: number): boolean => {
                   if (collider.key === undefined) return false;
                   const entry = aliveScratch[index];
-                  return entry !== undefined && collider.r <= carryLimit(entry.slot.bodyR);
+                  // `passLimit`, not `carryLimit`: what it can carry AND what
+                  // it can push past (`BLOCK_RATIO`, 2026-09-16 — one
+                  // centimetre of prop radius used to be the difference
+                  // between rolling something up and being stopped dead by
+                  // it). The slowdown for the push-past band is applied where
+                  // the contacts are gathered, above.
+                  return entry !== undefined && collider.r <= passLimit(entry.slot.bodyR);
                 },
               }
             : {}),
@@ -3827,14 +4208,18 @@ export function createCreatureManager(
            * pile that kept turning while its carrier stood still would read
            * as wheels spinning on ice.
            */
-          slot.clump?.roll(body.x - root.position.x, body.z - root.position.z);
+          slot.clump?.roll(body.x - root.position.x, body.z - root.position.z, rollOf(slot));
           root.position.x = body.x;
           root.position.z = body.z;
           const character = slot.character;
           if (!character) continue;
           // The gait reads the RESOLVED ground speed — walk cycles blend in
           // with actual movement and drift out to the ambient floor.
-          character.setLocomotion(locoSpeed(Math.hypot(body.vx, body.vz)), entry.heading);
+          character.setLocomotion(
+            Math.hypot(body.vx, body.vz),
+            entry.heading,
+            gaitAmp(slot),
+          );
           if (slot.present) {
             slot.characterShadow?.setPosition(
               body.x + character.group.position.x,
@@ -3889,9 +4274,14 @@ export function createCreatureManager(
        * the frame's contact reports on the floor rather than keeping a list
        * nothing will ever read.
        */
-      if (manager.simulating()) simulateSticky(nowMs);
+      const simulating = manager.simulating();
+      if (simulating) simulateSticky(nowMs);
       else contacts.length = 0;
       growPass(dt);
+      // The rigid-body stand-ins last of all, so they are the size the
+      // creature IS rather than the size it was before it ate (see
+      // `syncStandIns`). Host only: a viewer holds no bodies to stand in.
+      if (simulating) syncStandIns();
     },
 
     has(id): boolean {
@@ -3988,11 +4378,14 @@ export function createCreatureManager(
     drive(id: string, vec: { x: number; z: number; mag: number } | null): boolean {
       const slot = slots.get(id);
       if (!slot || slot.phase !== 'alive') return false;
-      // IGNORED, not refused, while it is stuck to somebody else. The stick
-      // still works and the creature still answers to its phone the moment
-      // it is set down — a `false` here would have the handset's joystick
-      // report the creature gone, which it is not: it is on a pile.
-      if (slot.carriedBy) return true;
+      /*
+       * HELD EVEN WHILE IT IS ON SOMEBODY'S PILE (2026-09-16, the stuck
+       * report). A carried creature has no locomotion of its own, so the push
+       * is applied to its CARRIER on the frame — `effectiveDrive` sums the
+       * passengers' sticks with the carrier's own. It used to be dropped
+       * here, and a phone whose creature had been picked up could do nothing
+       * at all with it.
+       */
       slot.drive = vec && vec.mag > 0 ? { x: vec.x, z: vec.z, mag: vec.mag } : null;
       return true;
     },
@@ -4078,10 +4471,22 @@ export function createCreatureManager(
       return wanderSpeedMult;
     },
 
+    rollBlend(id): number {
+      const slot = slots.get(id);
+      return slot ? rollOf(slot) : 0;
+    },
+
+    driveCeiling(id): number {
+      const slot = slots.get(id);
+      return slot ? DRIVE_SPEED * driveMult(rollOf(slot)) : 0;
+    },
+
     setWanderSpeed(mult): void {
       wanderSpeedMult = Math.max(0, mult);
+      // The slider moves the whole range: a katamari world's walk is a
+      // fraction of it, every other world's only ceiling IS it.
       for (const slot of slots.values()) {
-        slot.agent?.setSpeedMultiplier(wanderSpeedMult);
+        slot.agent?.setSpeedMultiplier(walkMult());
       }
     },
 

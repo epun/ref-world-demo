@@ -13,11 +13,15 @@ import {
   carryLimit,
   CLUMP_FIT,
   clumpLocalOffset,
+  BLOCK_RATIO,
   clumpLocalRotation,
+  CREATURE_CARRY_RATIO,
+  creatureCarryLimit,
   decideContact,
   DROP_MIN_GAP_MS,
   growth,
   impactOf,
+  passLimit,
   PICKUP_RATIO,
   rollAxis,
   rollDelta,
@@ -140,12 +144,29 @@ describe('carryLimit / impactOf', () => {
   });
 
   /**
-   * And the consequence for CREATURES, which share the limit: two of exactly
-   * the same size are each eligible to carry the other. The manager breaks
-   * that tie on the bigger id (see `simulateSticky`) so two pages build the
-   * same pile; here it is only that the tie is real.
+   * A CREATURE IS NOT A PROP (`CREATURE_CARRY_RATIO`, 2026-09-16 — the stuck
+   * report).
+   *
+   * The pickup limit is 1.0 of the carrier's radius, so two creatures of the
+   * same size were each exactly at the other's limit and one of them became
+   * somebody's luggage on contact — with its stick doing nothing, which is
+   * what *"my character got stuck"* was. A creature is somebody's, so it
+   * takes a clear size gap: a third again as big, which no pair can satisfy
+   * in both directions.
    */
-  it('makes two equal creatures mutually eligible — a tie somebody must break', () => {
+  it('needs a size GAP to carry another creature, not a tie', () => {
+    expect(CREATURE_CARRY_RATIO).toBeGreaterThan(1);
+    // Equal size: neither carries the other, whichever way round it is asked.
+    expect(1.4 <= creatureCarryLimit(1.4)).toBe(false);
+    // And the gap is reachable — a creature a third again as wide carries.
+    expect(1.4 <= creatureCarryLimit(1.4 * CREATURE_CARRY_RATIO)).toBe(true);
+    // Mutual eligibility has no solution at all: no id tiebreak can exist.
+    for (const a of [0.4, 0.9, 1.4, 2.7, 6]) {
+      for (const b of [0.4, 0.9, 1.4, 2.7, 6]) {
+        expect(b <= creatureCarryLimit(a) && a <= creatureCarryLimit(b)).toBe(false);
+      }
+    }
+    // A PROP the same size still sticks: the two limits are different rules.
     expect(carryLimit(1.4)).toBeGreaterThanOrEqual(1.4);
   });
 
@@ -232,14 +253,53 @@ describe('decideContact', () => {
     // smaller than you costs nothing.
     expect(at('tree', 0, 0.5, 1)).toBe('stick');
     expect(at('building', 0, 3, 4)).toBe('stick');
-    // Not the cloud, whatever its size — `stickiness: 0` means never.
-    expect(at('cloud', 0, 0.01, 40)).toBe('block');
+    // Not the cloud, whatever its size — `stickiness: 0` means never. It is
+    // `shove` rather than `block` because it is well inside the block ratio,
+    // and academic either way: a cloud publishes no collider at all.
+    expect(at('cloud', 0, 0.01, 40)).toBe('shove');
   });
 
   it('shoves an unrooted item it cannot carry instead of blocking on it', () => {
     // The ruling's other half: a creature is never impeded by something it
     // can move, and a stone it cannot carry rolls away.
     expect(at('rock', 0, 4, 1)).toBe('shove');
+  });
+
+  /**
+   * BLOCKING IS THE EXCEPTION (`BLOCK_RATIO`, 2026-09-16: *"my character
+   * keeps on getting stuck on objects … relax the actual physics a little
+   * bit"*).
+   *
+   * One centimetre of prop radius used to be the difference between rolling
+   * something up and being stopped dead by it. Now there is a band above the
+   * carry limit where a planted prop is pushed PAST — slowed, damaged, never
+   * a wall — and only past `BLOCK_RATIO` of the limit does anything stop the
+   * creature at all.
+   */
+  it('pushes past a rooted prop until it is BLOCK_RATIO bigger than the limit', () => {
+    const body = 1;
+    expect(passLimit(body)).toBeCloseTo(BLOCK_RATIO * carryLimit(body), 12);
+    // Inside the carry limit: worn.
+    expect(at('tree', 0, carryLimit(body) * 0.9, body)).toBe('stick');
+    // In the band: pushed past, at any impact under the break threshold.
+    expect(at('tree', 0, carryLimit(body) * 1.2, body)).toBe('shove');
+    expect(at('tree', 0, passLimit(body) - 0.01, body)).toBe('shove');
+    // Over the line: a wall, exactly as before.
+    expect(at('tree', 0, passLimit(body) + 0.01, body)).toBe('block');
+    // And the break ladder is untouched on both sides of it: the same impact
+    // that used to free a prop still frees it.
+    expect(at('tree', STICKY.tree.breakStrength, passLimit(body) + 0.01, body)).toBe('loose');
+    expect(at('tree', STICKY.tree.breakStrength, carryLimit(body) * 1.2, body)).toBe('loose');
+  });
+
+  it('never lets a building be carried, and still wears it down', () => {
+    // A building's `breakStrength` is Infinity, so the band only changes
+    // whether it STOPS the creature — its stages accumulate either way
+    // (docs/PLAN.md §7.6, `hitRooted`).
+    const body = 1;
+    expect(at('building', 0, passLimit(body) + 0.01, body)).toBe('block');
+    expect(at('building', 1e6, passLimit(body) + 0.01, body)).toBe('block');
+    expect(at('building', 0, carryLimit(body) * 1.2, body)).toBe('shove');
   });
 });
 

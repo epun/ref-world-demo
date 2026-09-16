@@ -87,7 +87,17 @@ export interface Character {
    * (radians). Drives the gait layer: the walk cycle blends in with speed
    * and completes its last half-step when speed returns to zero.
    */
-  setLocomotion(speed: number, heading: number): void;
+  /**
+   * The ground speed and facing this frame, and how much of the WALK to
+   * show.
+   *
+   * `gaitAmp` scales the gait's amplitude target and nothing else — the step
+   * frequency still follows the real speed. 1 is the walk as it shipped; the
+   * katamari world lowers it toward 0 as a creature turns into a rolling
+   * ball (docs/PLAN.md §7.6) instead of lying to the gait about how fast the
+   * creature is travelling. Omitted means 1.
+   */
+  setLocomotion(speed: number, heading: number, gaitAmp?: number): void;
   /**
    * The gait layer's current values, as the deform uniforms hold them.
    *
@@ -301,6 +311,8 @@ export function createCharacter(
   let gaitState: GaitState = NEUTRAL_GAIT;
   let locoSpeed = 0;
   let locoHeading = 0;
+  /** How much of the walk to show (see `setLocomotion`). */
+  let locoAmp = 1;
 
   const radius =
     (Math.max(box.max.x - box.min.x, box.max.z - box.min.z) / 2) * scale * SHADOW_FIT;
@@ -345,9 +357,10 @@ export function createCharacter(
         bubble.show(name);
       }
     },
-    setLocomotion(speed: number, heading: number): void {
+    setLocomotion(speed: number, heading: number, gaitAmp = 1): void {
       locoSpeed = speed;
       locoHeading = heading;
+      locoAmp = gaitAmp;
     },
     gaitState(): GaitState {
       return gaitState;
@@ -369,7 +382,7 @@ export function createCharacter(
 
       // Gait: phase/amplitude follow the reported speed; the uniforms are a
       // separate additive layer, so emote and walk compose instead of fight.
-      gaitState = gait.update(dt, locoSpeed, locoHeading);
+      gaitState = gait.update(dt, locoSpeed, locoHeading, locoAmp);
       deform.setGait(gaitState);
 
       // The eye needs no carry: it is paint in the body material, and its

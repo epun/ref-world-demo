@@ -59,15 +59,60 @@ export const KNOB_RATIO = 0.38;
  */
 export const DEADZONE = 0.1;
 
-/** How far the knob may leave the centre, as a fraction of the radius. */
+/**
+ * How far the knob may leave the centre, as a fraction of the radius.
+ *
+ * AND WHERE FULL SPEED IS (2026-09-16). `stickVector` rescales onto this,
+ * not onto the rim: the knob stops moving exactly where the strength reaches
+ * 1, so "as far as the knob goes" IS full speed. It used to reach 1 only at
+ * the RIM of the well while the knob stopped at half the radius — so a thumb
+ * pushed to where the control visibly stopped was asking for about 0.4 of the
+ * speed, and the rest of the range was a thumb sliding over glass with
+ * nothing moving under it (user report: *"we should assign speed velocity to
+ * the joy stick so the farther the push the faster the character goes"*).
+ */
 export const KNOB_TRAVEL = 0.5;
+
+/**
+ * [D] Response curve on the stick's strength: `mag ** DRIVE_CURVE`.
+ *
+ * > User ask, 2026-09-16: *"the farther the push the faster the character
+ * > goes … let's have them start walking at first."*
+ *
+ * Linear travel is linear in SPEED, and that is not what a hand expects from
+ * a stick: half a push reads as "a walk", not as "half of my top speed",
+ * because the top speed is the thing the hand is calibrated against. An
+ * exponent above 1 spends more of the travel in the slow half — at 1.6, half
+ * a push is a third of the ceiling and a quarter push is a tenth — and the
+ * rim is still exactly the ceiling, so nothing is lost at the top.
+ *
+ * 1.6 rather than 2: squaring makes the first third of the travel almost
+ * nothing, and a control with a dead-feeling half is the deadzone complaint
+ * again in a different costume. Monotone and continuous either way, with
+ * `f(0) = 0` and `f(1) = 1`, so it adds no cut and no step anywhere.
+ */
+export const DRIVE_CURVE = 1.6;
+
+/**
+ * The strength a push of `mag` is asking for, after the curve.
+ *
+ * Applied where the stick becomes an INTENT (`stickToWorld`) rather than
+ * inside `stickVector`, because the knob is painted from the raw vector and
+ * has to keep following the thumb one-to-one — a knob that eased away from
+ * the finger reads as lag, not as easing.
+ */
+export function driveResponse(mag: number): number {
+  if (!(mag > 0)) return 0;
+  return Math.pow(Math.min(1, mag), DRIVE_CURVE);
+}
 
 export interface StickVector {
   /** Screen right, −1..1. */
   x: number;
   /** Screen DOWN, −1..1 — the direction y grows in a browser. */
   y: number;
-  /** 0 at rest, 1 at the rim. Already deadzoned and clamped. */
+  /** 0 at rest, 1 where the KNOB'S TRAVEL ENDS. Already deadzoned and
+   * clamped, and LINEAR — the response curve lives in `stickToWorld`. */
   mag: number;
 }
 
@@ -85,6 +130,17 @@ export const STICK_REST: StickVector = { x: 0, y: 0, mag: 0 };
  * would make the creature jump straight to a tenth of full speed the
  * instant the stick left the middle, which is a hard cut in velocity and
  * the motion law forbids those at confidence 1.00.
+ *
+ * FULL STRENGTH IS AT `KNOB_TRAVEL`, NOT AT THE RIM (2026-09-16, user
+ * report: *"we should assign speed velocity to the joy stick so the farther
+ * the push the faster the character goes"*). The knob stops moving at half
+ * the well's radius, so that is where the hand believes the control ends —
+ * and it was where the strength was still only 0.44, with the rest of the
+ * range lying outside the visible control. The rescale now ends where the
+ * knob does: the thumb and the knob travel together, and the stop is the
+ * ceiling. Dragging further is still clamped rather than refused, because a
+ * thumb that overshoots a small control is a thumb still asking for full
+ * speed.
  */
 export function stickVector(
   centreX: number,
@@ -102,7 +158,8 @@ export function stickVector(
   // clamping is what makes the disc a disc.
   const ux = dx / raw;
   const uy = dy / raw;
-  const mag = Math.min(1, (raw - DEADZONE) / (1 - DEADZONE));
+  const span = Math.max(1e-6, KNOB_TRAVEL - DEADZONE);
+  const mag = Math.min(1, (raw - DEADZONE) / span);
   return { x: ux * mag, y: uy * mag, mag };
 }
 
@@ -140,11 +197,21 @@ export function stickToWorld(v: StickVector, azimuth: number): WorldVector {
   // away-from-viewer = (−sin, −cos); screen-right = (cos, −sin).
   const away = -v.y;
   const right = v.x;
-  return {
-    x: away * -sin + right * cos,
-    z: away * -cos + right * -sin,
-    mag: v.mag,
-  };
+  const wx = away * -sin + right * cos;
+  const wz = away * -cos + right * -sin;
+  /*
+   * AND THE RESPONSE CURVE, here (see `driveResponse`).
+   *
+   * This is the seam where a thumb becomes an INTENT — the one thing the
+   * manager reads as a strength — so it is where the curve belongs. The
+   * DIRECTION is taken as a unit vector and the strength multiplies it, so
+   * `mag` and `hypot(x, z)` cannot drift apart: the manager scales by the
+   * creature's own speed and inherits nothing from screen geometry.
+   */
+  const len = Math.hypot(wx, wz);
+  const mag = driveResponse(v.mag);
+  if (!(len > 1e-9)) return WORLD_REST;
+  return { x: (wx / len) * mag, z: (wz / len) * mag, mag };
 }
 
 /** Waver of the stick's rings, CSS px — the same hand as every border. */
@@ -301,7 +368,10 @@ export function mountJoystick(options: JoystickOptions): JoystickHandle {
 
   const paint = (): void => {
     // Half the radius of travel: the knob stays inside its well at full
-    // deflection, so the control never looks broken at the limit.
+    // deflection, so the control never looks broken at the limit — and
+    // since `stickVector` rescales onto `KNOB_TRAVEL`, the knob now arrives
+    // at that stop exactly when the strength reaches 1. Thumb and knob
+    // travel together, and where the knob stops is full speed.
     const tx = value.x * R * KNOB_TRAVEL;
     const ty = value.y * R * KNOB_TRAVEL;
     knob.setAttribute('transform', `translate(${tx.toFixed(2)} ${ty.toFixed(2)})`);

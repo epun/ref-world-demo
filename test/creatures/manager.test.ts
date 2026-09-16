@@ -24,7 +24,10 @@ import { createCharacter } from '../../src/character/character';
 import {
   DRIVE_IDLE_MS,
   DRIVE_SPEED,
+  DRIVE_TURN_TAU_MS,
   KATAMARI_SPEED_MUL,
+  KATAMARI_TURN_TAU_MS,
+  KATAMARI_WALK_MUL,
   MAX_POPULATION,
   WANDER_SPEED_DEFAULT,
   chooseEviction,
@@ -36,7 +39,7 @@ import {
 import { BehaviorAgent, MAX_SPEED } from '../../src/behavior/agent';
 import { generatedName } from '../../src/creatures/naming';
 import { MOTION } from '../../src/taste/tokens';
-import { carryLimit, STICKY } from '../../src/creatures/sticky';
+import { carryLimit, passLimit, STICKY } from '../../src/creatures/sticky';
 import { EGG_RADIUS } from '../../src/egg/egg';
 import type { Collider } from '../../src/physics/colliders';
 import {
@@ -49,6 +52,13 @@ import type { WorldHandles } from '../../src/world/scene';
 import type { WorldGame } from '../../src/world/game';
 import { FLAT_SURFACE, ROLLING_SURFACE, type Surface } from '../../src/world/surface';
 import { isWater } from '../../src/world/landscape';
+import {
+  DEADZONE,
+  DRIVE_CURVE,
+  KNOB_TRAVEL,
+  stickToWorld,
+  stickVector,
+} from '../../src/world/joystick';
 import { bird, fish, quadruped, snowman, circleBlob } from '../fixtures/strokes';
 
 // createEgg paints its shell texture through a 2d canvas; off-DOM the
@@ -1435,16 +1445,31 @@ describe('sticky — one creature carrying another', () => {
     manager.clearAll();
   });
 
-  it('ignores a drive on a carried creature rather than refusing it', () => {
-    // A `false` would have the handset report the creature gone, which it is
-    // not: it is on a pile, and it will answer again the moment it is down.
+  it('a carried creature keeps its stick — and steers its carrier', () => {
+    /*
+     * THE STUCK REPORT, 2026-09-16: *"my character got stuck."*
+     *
+     * A carried creature's drive used to be dropped on the floor, so a phone
+     * whose creature had been picked up could do nothing with it at all. The
+     * ruling is that the player's character always answers its own phone —
+     * and since a passenger has no locomotion of its own (its position is a
+     * seat on a pile), what the push moves is the PILE. The event on the wire
+     * is unchanged: it still names the passenger, and the manager resolves it
+     * to the carrier on the frame it applies it.
+     */
     const { world, manager } = pair({ physics: true });
     const roots = rootsOf(world, manager);
     const big = roots.get('big')!;
     roots.get('small')!.position.set(big.position.x, 0, big.position.z);
     manager.update(16, 1000);
     expect(manager.drive('small', { x: 1, z: 0, mag: 1 })).toBe(true);
-    expect(manager.driven()).toEqual([]);
+    expect(manager.driven()).toEqual(['small']);
+
+    // Nobody is touching the carrier's own stick, and the carrier moves.
+    const from = manager.positionOf('big')!.clone();
+    for (let f = 0; f < 60; f++) manager.update(16, 1016 + f * 16);
+    const to = manager.positionOf('big')!;
+    expect(to.x - from.x).toBeGreaterThan(0.3);
     manager.clearAll();
   });
 
@@ -1649,10 +1674,18 @@ describe('sticky — impact is in world units per SECOND', () => {
         shatter: () => {},
       },
     });
-    // Exactly MAX_SPEED under the thumb, so the arithmetic in the assertions
-    // is the arithmetic in the code rather than times the wander multiplier.
-    manager.setWanderSpeed(1);
+    /*
+     * Exactly MAX_SPEED under the thumb, so the arithmetic in the assertions
+     * is the arithmetic in the code rather than times a multiplier.
+     *
+     * The slider is the ROLLING ceiling and a creature carrying nothing
+     * drives at `KATAMARI_WALK_MUL` of it (the walk/roll blend, docs/PLAN.md
+     * §7.6) — so `6 / 2.5` puts this walker's ceiling at 1.0, which
+     * `driveCeiling` then confirms rather than this comment claiming it.
+     */
+    manager.setWanderSpeed(KATAMARI_SPEED_MUL / KATAMARI_WALK_MUL);
     manager.spawn('walker', snowman, { hatchMs: 60_000, grown: true });
+    expect(manager.driveCeiling('walker')).toBeCloseTo(MAX_SPEED, 6);
 
     const at = manager.positionOf('walker')!;
     const bodyR = manager.positions().find((p) => p.kind === 'character')!.r;
@@ -1954,6 +1987,44 @@ describe('the creature rolls — katamari locomotion', () => {
     return 2 * Math.acos(Math.min(1, Math.abs(q.w)));
   }
 
+  /**
+   * Give a creature a pile, through the EVENT path.
+   *
+   * `applyStick` is what a viewer applies and what the host's own decision
+   * goes through, so a pile built this way is the pile the room agrees on —
+   * and passengers are the one item kind that needs no loose-mesh layer to
+   * seat, which is why the snacks are creatures.
+   *
+   * Then run the clock: the blend is a spring over `MOTION.primaryMs`, so
+   * this is the slide the ask requires and not a state anybody sets.
+   */
+  function feed(
+    manager: ReturnType<typeof createCreatureManager>,
+    id: string,
+    count: number,
+    settleMs = 0,
+  ): void {
+    for (let i = 0; i < count; i++) {
+      manager.spawn(`snack-${id}-${i}`, snowman, { hatchMs: 60_000, grown: true });
+      manager.applyStick({
+        id,
+        item: `creature:snack-${id}-${i}`,
+        ox: 0,
+        oy: 1,
+        oz: i * 0.1,
+        qx: 0,
+        qy: 0,
+        qz: 0,
+        qw: 1,
+      });
+    }
+    let now = 100_000;
+    for (let t = 0; t < settleMs; t += 33) {
+      now += 33;
+      manager.update(33, now);
+    }
+  }
+
   it('puts the body mesh inside the rolling group, centred on the roll centre', () => {
     const { world, manager } = rolling('katamari');
     const root = rootOf(world);
@@ -1997,10 +2068,21 @@ describe('the creature rolls — katamari locomotion', () => {
      */
     const { world, manager } = rolling('katamari');
     const root = rootOf(world);
-    const R = measureBodyRadius(manager.latestCharacter()!);
     const clump = named(root, 'clump')!;
     const ball = named(root, 'ball')!;
+    /*
+     * A BALL FIRST. The roll is scaled by the walk/roll blend now (a creature
+     * carrying nothing walks, and a walking creature's ball stays upright),
+     * so this settles the blend to 1 before measuring a no-slip roll — eight
+     * seconds is deep into a `MOTION.primaryMs` spring's tail, which is what
+     * makes the third-decimal assertions below honest.
+     */
+    feed(manager, 'roller', 3, 8000);
+    expect(manager.rollBlend('roller')).toBeCloseTo(1, 6);
+    // The pile's radius, which is what the roll is measured against.
+    const R = manager.positions().find((p) => p.kind === 'character')!.r;
     manager.pauseAi(true);
+    manager.clearFollow();
 
     const half = { x: root.position.x + Math.PI * R, z: root.position.z };
     manager.followPoses([{ id: 'roller', x: half.x, z: half.z, heading: 0 }]);
@@ -2020,51 +2102,380 @@ describe('the creature rolls — katamari locomotion', () => {
     manager.clearAll();
   });
 
-  it('keeps the gait at zero while the creature is moving', () => {
-    const { manager } = rolling('katamari');
-    expect(manager.drive('roller', { x: 0, z: 1, mag: 1 })).toBe(true);
-    const start = manager.positionOf('roller')!.clone();
+  /*
+   * WALK FIRST, ROLL WITH MASS (user ask, 2026-09-16: *"let's have them start
+   * walking at first and once they hit a few objects they begin to roll
+   * because they have mass"*).
+   *
+   * The gait used to be fed a flat zero on a katamari world, so a hatchling
+   * that had picked nothing up slid across the field like a decal. It is a
+   * BLEND now — one ζ ≥ 1 spring per creature over `MOTION.primaryMs`,
+   * retargeted at `rollTarget(items, growth)` — and it moves three things at
+   * once: the gait's amplitude, how much of the travel turns into roll, and
+   * the drive ceiling.
+   */
+  it('walks at spawn: gait running, ball upright, walk ceiling', () => {
+    const { world, manager } = rolling('katamari');
+    const root = rootOf(world);
+    const clump = named(root, 'clump')!;
+    expect(manager.rollBlend('roller')).toBe(0);
+    expect(manager.driveCeiling('roller')).toBeCloseTo(MAX_SPEED * KATAMARI_WALK_MUL, 6);
+
+    manager.drive('roller', { x: 0, z: 1, mag: 1 });
     let now = 2000;
-    for (let i = 0; i < 40; i++) {
+    for (let i = 0; i < 60; i++) {
       now += 33;
       manager.update(33, now);
     }
-    const end = manager.positionOf('roller')!;
-    // Really travelling…
-    expect(Math.hypot(end.x - start.x, end.z - start.z)).toBeGreaterThan(1);
-    // …and not walking while it does.
-    expect(manager.latestCharacter()!.gaitState!().amp).toBe(0);
+    // Really travelling, and WALKING while it does.
+    expect(manager.latestCharacter()!.gaitState!().amp).toBeGreaterThan(0.5);
+    // And the ball is upright: nothing of the travel became roll.
+    expect(angleOf(clump.quaternion)).toBeCloseTo(0, 6);
     manager.clearAll();
   });
 
-  it('drives at the katamari top speed — three times the walking ceiling', () => {
+  it('rises to a roll over three sticks — monotone, no overshoot, gait to nothing', () => {
     const { manager } = rolling('katamari');
-    expect(KATAMARI_SPEED_MUL).toBe(3);
-    expect(manager.wanderSpeed()).toBe(KATAMARI_SPEED_MUL);
+    // One item is not a pile: still walking.
+    feed(manager, 'roller', 1, 1000);
+    expect(manager.rollBlend('roller')).toBe(0);
+
+    // Three is (ROLL_MASS_ITEMS), and mass gets there anyway (ROLL_GROWTH) —
+    // whichever comes first, which for same-size snacks is the growth.
+    feed(manager, 'roller', 2);
     manager.drive('roller', { x: 0, z: 1, mag: 1 });
-    let now = 5000;
-    // One frame to settle the heading onto the stick, then a measured second.
-    now += 33;
-    manager.update(33, now);
-    const from = manager.positionOf('roller')!.clone();
+    let now = 200_000;
+    let previous = manager.rollBlend('roller');
+    let peak = previous;
+    for (let i = 0; i < 300; i++) {
+      now += 33;
+      manager.update(33, now);
+      const blend = manager.rollBlend('roller');
+      // Monotone up, and never past 1: the spring is ζ ≥ 1, so there is no
+      // frame where a creature is more than fully a ball.
+      expect(blend).toBeGreaterThanOrEqual(previous - 1e-12);
+      expect(blend).toBeLessThanOrEqual(1);
+      peak = Math.max(peak, blend);
+      previous = blend;
+    }
+    expect(peak).toBeGreaterThan(0.99);
+    // The walk has gone with it, and the ceiling is the rolling one.
+    expect(manager.latestCharacter()!.gaitState!().amp).toBeLessThan(0.02);
+    expect(manager.driveCeiling('roller')).toBeCloseTo(MAX_SPEED * KATAMARI_SPEED_MUL, 4);
+    manager.clearAll();
+  });
+
+  it('walks again when the pile comes off', () => {
+    const { manager } = rolling('katamari');
+    feed(manager, 'roller', 3, 6000);
+    expect(manager.rollBlend('roller')).toBeGreaterThan(0.99);
+
+    // Everything off, one at a time, the way a drop travels.
+    for (let i = 0; i < 3; i++) {
+      manager.applyDrop({
+        id: 'roller',
+        item: `creature:snack-roller-${i}`,
+        x: 20 + i,
+        z: 20,
+        qx: 0,
+        qy: 0,
+        qz: 0,
+        qw: 1,
+      });
+    }
+    let now = 300_000;
+    for (let i = 0; i < 300; i++) {
+      now += 33;
+      manager.update(33, now);
+    }
+    expect(manager.rollBlend('roller')).toBeLessThan(0.01);
+    expect(manager.driveCeiling('roller')).toBeCloseTo(MAX_SPEED * KATAMARI_WALK_MUL, 4);
+    manager.clearAll();
+  });
+
+  it('gives a passenger its carrier’s blend, not its own', () => {
+    const { manager } = rolling('katamari');
+    feed(manager, 'roller', 3, 6000);
+    expect(manager.rollBlend('roller')).toBeGreaterThan(0.99);
+    // A passenger carries nothing of its own — its own spring is at rest —
+    // and it is inside a rolling ball, so it rolls with it.
+    expect(manager.rollBlend('snack-roller-0')).toBe(manager.rollBlend('roller'));
+    manager.clearAll();
+  });
+
+  it('is derived on a viewer from the same events, with nothing on the wire', () => {
+    /*
+     * The blend is never sent (docs/PLAN.md §7.6: poses carry x/z/heading).
+     * A viewer holds the same clump off the same `stick` events, so it
+     * derives the same number — which is what lets a phone show the same
+     * locomotion as the projection without another field in the format.
+     */
+    const host = rolling('katamari');
+    const viewer = rolling('katamari');
+    // The viewer decides nothing: no bodies, and its ai is a follower.
+    viewer.manager.pauseAi(true);
+    feed(host.manager, 'roller', 3, 4000);
+    feed(viewer.manager, 'roller', 3, 4000);
+    expect(viewer.manager.rollBlend('roller')).toBeCloseTo(
+      host.manager.rollBlend('roller'),
+      6,
+    );
+    host.manager.clearAll();
+    viewer.manager.clearAll();
+  });
+
+  it('rolls PROPORTIONALLY while the blend is climbing', () => {
+    /*
+     * No snap: at blend 0 the ball node is upright, at 1 it rolls fully, and
+     * in between the same travel turns it partly. Measured as a ratio against
+     * the no-slip angle for the distance actually covered, so this is the
+     * blend and not the speed.
+     */
+    const { world, manager } = rolling('katamari');
+    const root = rootOf(world);
+    const clump = named(root, 'clump')!;
+    feed(manager, 'roller', 3);
+    manager.pauseAi(true);
+    manager.clearFollow();
+
+    const R = manager.positions().find((p) => p.kind === 'character')!.r;
+    let now = 400_000;
+    // One eased frame at a time, walking it a fixed distance.
+    const step = 0.2;
+    let turned = 0;
+    let travelled = 0;
+    let blendSum = 0;
+    let frames = 0;
+    for (let i = 0; i < 20; i++) {
+      const before = angleOf(clump.quaternion);
+      const from = root.position.x;
+      manager.followPoses([
+        { id: 'roller', x: root.position.x + step, z: root.position.z, heading: 0 },
+      ]);
+      now += 33;
+      manager.update(33, now);
+      const moved = root.position.x - from;
+      travelled += moved;
+      turned += Math.abs(angleOf(clump.quaternion) - before);
+      blendSum += manager.rollBlend('roller');
+      frames++;
+    }
+    const noSlip = travelled / R;
+    const mean = blendSum / frames;
+    // Part of the way round, in proportion to the blend — and strictly less
+    // than a full no-slip roll, which is what "no snap" means here.
+    expect(mean).toBeGreaterThan(0.05);
+    expect(mean).toBeLessThan(0.95);
+    expect(turned).toBeGreaterThan(noSlip * mean * 0.5);
+    expect(turned).toBeLessThan(noSlip);
+    manager.clearAll();
+  });
+
+  /** How fast a creature is actually travelling under a given push, u/s. */
+  function drivenSpeed(
+    manager: ReturnType<typeof createCreatureManager>,
+    id: string,
+    push: { x: number; z: number; mag: number },
+    startMs = 5000,
+  ): number {
+    manager.drive(id, push);
+    let now = startMs;
+    // A few frames to settle the heading onto the stick, then a measured
+    // second: the turn is eased, so the first frames are a curve.
+    for (let i = 0; i < 10; i++) {
+      now += 33;
+      manager.update(33, now);
+    }
+    const from = manager.positionOf(id)!.clone();
     let travelled = 0;
     for (let i = 0; i < 30; i++) {
       now += 33;
       manager.update(33, now);
       travelled += 33;
     }
-    const to = manager.positionOf('roller')!;
-    const speed = (Math.hypot(to.x - from.x, to.z - from.z) / travelled) * 1000;
+    const to = manager.positionOf(id)!;
+    return (Math.hypot(to.x - from.x, to.z - from.z) / travelled) * 1000;
+  }
+
+  it('drives at the katamari top speed — six times the spec pace', () => {
+    /*
+     * User report, 2026-09-16, off the deployed build: *"we need to up the
+     * speed and velocity by a lot."* 3 → 6, so the rolling ceiling is
+     * 7.2 u/s and the island is fourteen seconds across instead of thirty.
+     */
+    const { manager } = rolling('katamari');
+    expect(KATAMARI_SPEED_MUL).toBe(6);
+    expect(manager.wanderSpeed()).toBe(KATAMARI_SPEED_MUL);
+    // A BALL: the rolling ceiling belongs to a creature with mass on it, and
+    // a hatchling drives at the walk one (the blend, docs/PLAN.md §7.6).
+    feed(manager, 'roller', 3, 8000);
+    expect(manager.driveCeiling('roller')).toBeCloseTo(MAX_SPEED * KATAMARI_SPEED_MUL, 4);
+    const speed = drivenSpeed(manager, 'roller', { x: 0, z: 1, mag: 1 });
     expect(speed).toBeCloseTo(MAX_SPEED * KATAMARI_SPEED_MUL, 2);
     /*
      * AND THE SUBSTEP GUARD STILL COVERS IT. `stepCreatures` clamps dt at
      * 250ms and advances at most MAX_STEP_TRAVEL (0.25u) per substep over at
      * most MAX_SUBSTEPS (16) — 4u of travel per frame. At this speed a
-     * clamped frame is 0.9u, four of the sixteen substeps.
+     * clamped frame is 1.8u, EIGHT of the sixteen substeps, and 0.25u is
+     * still well under the smallest footprint on the map (a 0.5u stone), so
+     * no substep can leap a collider. Nothing needed raising.
      */
     const clampedFrameTravel = (MAX_SPEED * KATAMARI_SPEED_MUL * 250) / 1000;
-    expect(clampedFrameTravel).toBeCloseTo(0.9, 10);
+    expect(clampedFrameTravel).toBeCloseTo(1.8, 10);
+    expect(Math.ceil(clampedFrameTravel / MAX_STEP_TRAVEL)).toBe(8);
     expect(Math.ceil(clampedFrameTravel / MAX_STEP_TRAVEL)).toBeLessThanOrEqual(MAX_SUBSTEPS);
+    manager.clearAll();
+  });
+
+  it('is proportional to the push — half a stick is a third of the ceiling', () => {
+    /*
+     * The other half of the same report: *"we should assign speed velocity to
+     * the joy stick so the farther the push the faster the character goes."*
+     * The stick's own curve is `driveResponse` (src/world/joystick.ts); what
+     * this pins is that the manager scales by whatever strength arrives and
+     * normalises nothing on the way in.
+     */
+    const { manager } = rolling('katamari');
+    // Whatever this creature's ceiling actually is — a hatchling's walk here,
+    // since it is carrying nothing. The claim is the PROPORTION.
+    const ceiling = manager.driveCeiling('roller');
+    expect(ceiling).toBeCloseTo(MAX_SPEED * KATAMARI_WALK_MUL, 6);
+    // Straight through the real handset path: a thumb halfway through the
+    // knob's travel, mapped by the camera, curved, driven.
+    const half = stickToWorld(
+      stickVector(0, 0, 0, -(DEADZONE + (KNOB_TRAVEL - DEADZONE) / 2), 1),
+      0,
+    );
+    expect(half.mag).toBeCloseTo(0.5 ** DRIVE_CURVE, 6);
+    expect(drivenSpeed(manager, 'roller', half)).toBeCloseTo(ceiling * half.mag, 2);
+
+    const full = stickToWorld(stickVector(0, 0, 0, -KNOB_TRAVEL, 1), 0);
+    expect(full.mag).toBeCloseTo(1, 6);
+    expect(drivenSpeed(manager, 'roller', full, 30_000)).toBeCloseTo(ceiling, 2);
+    manager.clearAll();
+  });
+
+  it('wanders at the WALK ceiling, so an unattended creature does not race', () => {
+    /*
+     * The ruling with the speed raise (2026-09-16): the STICK gets 7.2 u/s,
+     * the ai does not. An unattended creature crossing the island at the
+     * rolling ceiling is a world running away from the person watching it.
+     *
+     * Measured rather than asserted off a constant: twenty seconds of
+     * wandering, and the fastest frame in it. The walk ceiling is the agent's
+     * own upper bound (`MAX_SPEED × (0.35 + 0.65 × energy) × mult`), so
+     * nothing here can reach the rolling one unless the wiring hands it over.
+     */
+    const world = stubWorld([]);
+    const manager = createCreatureManager(world, {
+      autoHatch: false,
+      surface: FLAT_SURFACE,
+      game: 'katamari',
+    });
+    // `adventure` is the restless answer: this one actually goes somewhere.
+    manager.spawn('rover', snowman, {
+      hatchMs: 60_000,
+      grown: true,
+      personality: 'adventure',
+    });
+    expect(KATAMARI_WALK_MUL).toBeLessThan(KATAMARI_SPEED_MUL);
+    expect(manager.wanderSpeed()).toBe(KATAMARI_SPEED_MUL);
+
+    let now = 5000;
+    let last = manager.positionOf('rover')!.clone();
+    let fastest = 0;
+    for (let i = 0; i < 2400; i++) {
+      now += 33;
+      manager.update(33, now);
+      const at = manager.positionOf('rover')!;
+      fastest = Math.max(fastest, (Math.hypot(at.x - last.x, at.z - last.z) / 33) * 1000);
+      last = at.clone();
+    }
+    // It really does wander…
+    expect(fastest).toBeGreaterThan(0.2);
+    // …and never faster than a walk.
+    expect(fastest).toBeLessThanOrEqual(MAX_SPEED * KATAMARI_WALK_MUL * 1.02);
+    manager.clearAll();
+  });
+
+  it('picks up momentum at once — no ramp between the thumb and the ceiling', () => {
+    /*
+     * User ask, 2026-09-16: *"relax the actual physics a little bit so that
+     * it's a bit easier to pick up momentum."* The manager substitutes the
+     * stick's velocity directly (`driveVx = driven.x × ceiling`) rather than
+     * easing a speed toward it, so the acceleration is one frame — well
+     * inside the ~400 ms the ask allows. Pinned because the obvious "fix" for
+     * a stick that feels jerky is to put a spring here, and that spring would
+     * be the lag the report was about.
+     */
+    const { manager } = rolling('katamari');
+    const ceiling = manager.driveCeiling('roller');
+    manager.drive('roller', { x: 0, z: 1, mag: 1 });
+    let now = 5000;
+    let last = manager.positionOf('roller')!.clone();
+    let covered = 0;
+    // 400ms of frames, measured from the very first one.
+    for (let i = 0; i < 12; i++) {
+      now += 33;
+      manager.update(33, now);
+      const at = manager.positionOf('roller')!;
+      covered += Math.hypot(at.x - last.x, at.z - last.z);
+      last = at.clone();
+    }
+    expect((covered / (12 * 33)) * 1000).toBeGreaterThan(ceiling * 0.9);
+
+    /*
+     * AND A TURN DOES NOT COST IT. The velocity is the STICK's direction, not
+     * the creature's facing — the facing eases behind it (`turnTauMs`) — so
+     * swinging the thumb changes where the creature is going without ever
+     * taking its speed away.
+     */
+    manager.drive('roller', { x: 1, z: 0, mag: 1 });
+    last = manager.positionOf('roller')!.clone();
+    covered = 0;
+    for (let i = 0; i < 9; i++) {
+      now += 33;
+      manager.update(33, now);
+      const at = manager.positionOf('roller')!;
+      covered += Math.hypot(at.x - last.x, at.z - last.z);
+      last = at.clone();
+    }
+    expect((covered / (9 * 33)) * 1000).toBeGreaterThan(ceiling * 0.9);
+    manager.clearAll();
+  });
+
+  it('turns tighter at the katamari speed, and still cannot overshoot', () => {
+    /*
+     * At 7.2 u/s a 200ms heading lag is a metre and a half of sliding, so the
+     * turn constant is shorter here (KATAMARI_TURN_TAU_MS). Exponential
+     * either way: monotone, and it never crosses the heading it is going to.
+     */
+    expect(KATAMARI_TURN_TAU_MS).toBeLessThan(DRIVE_TURN_TAU_MS);
+    const { manager } = rolling('katamari');
+    manager.drive('roller', { x: 0, z: 1, mag: 1 });
+    let now = 5000;
+    for (let i = 0; i < 40; i++) {
+      now += 33;
+      manager.update(33, now);
+    }
+    const facing = manager.poses()[0]!.heading;
+    // A quarter turn asked for, and a quarter turn arrived at inside 250ms —
+    // approached from one side, never past it.
+    manager.drive('roller', { x: 1, z: 0, mag: 1 });
+    let overshoot = 0;
+    for (let i = 0; i < 8; i++) {
+      now += 33;
+      manager.update(33, now);
+      const turned = Math.abs(
+        Math.atan2(
+          Math.sin(manager.poses()[0]!.heading - facing),
+          Math.cos(manager.poses()[0]!.heading - facing),
+        ),
+      );
+      overshoot = Math.max(overshoot, turned);
+    }
+    expect(overshoot).toBeGreaterThan(Math.PI / 2 * 0.8);
+    expect(overshoot).toBeLessThanOrEqual(Math.PI / 2 + 1e-9);
     manager.clearAll();
   });
 
@@ -2157,7 +2568,9 @@ describe('the character has priority — what it can carry cannot stop it', () =
    * the thing into, and `instanceRefs` so the placement has a measurable
    * scale and radius.
    */
-  function rollOver(c: Omit<Collider, 'x' | 'z'> & { gap: number }): {
+  function rollOver(
+    c: Omit<Collider, 'x' | 'z'> & { gap: number; mag?: number; turn?: boolean },
+  ): {
     stuck: string[];
     loosed: string[];
     bumped: string[];
@@ -2248,10 +2661,12 @@ describe('the character has priority — what it can carry cannot stop it', () =
         shatter: () => {},
       },
     });
-    // MAX_SPEED exactly under the thumb, so the arithmetic in the assertions
-    // is the arithmetic in the code rather than times a multiplier.
-    manager.setWanderSpeed(1);
+    // MAX_SPEED exactly under the thumb (see `walkInto` above for the
+    // 6 / 2.5: the slider is the rolling ceiling, a creature carrying
+    // nothing drives at the walk fraction of it).
+    manager.setWanderSpeed(KATAMARI_SPEED_MUL / KATAMARI_WALK_MUL);
     manager.spawn('walker', snowman, { hatchMs: 60_000, grown: true });
+    expect(manager.driveCeiling('walker')).toBeCloseTo(MAX_SPEED, 6);
 
     const at = manager.positionOf('walker')!.clone();
     const bodyR = manager.positions().find((p) => p.kind === 'character')!.r;
@@ -2259,8 +2674,15 @@ describe('the character has priority — what it can carry cannot stop it', () =
     colliders.push({ ...c, x: at.x + bodyR + c.r - c.gap, z: at.z });
     version++;
 
-    manager.drive('walker', { x: 1, z: 0, mag: 1 });
+    const mag = c.mag ?? 1;
+    manager.drive('walker', { x: mag, z: 0, mag });
     manager.update(16, 1000);
+    if (c.turn === true) {
+      // Mid-contact, the thumb swings a quarter turn: the pickup must not
+      // depend on which way the creature happens to be facing.
+      manager.drive('walker', { x: 0, z: mag, mag });
+      manager.update(16, 1016);
+    }
     const after = manager.positionOf('walker')!;
     const travelled = after.x - at.x;
     manager.clearAll();
@@ -2308,21 +2730,75 @@ describe('the character has priority — what it can carry cannot stop it', () =
     expect(loosed).toEqual([]);
   });
 
-  it('is still stopped by a tree it is too small to carry', () => {
+  it('is still stopped by a tree far bigger than it can carry', () => {
     const { stuck, loosed, bumped, travelled } = rollOver({
-      r: 1.6,
+      // Over `passLimit` — a ~0.91u snowman pushes past anything up to 1.46u
+      // since the 2026-09-16 relaxation, so a wall has to be bigger than it
+      // used to be to still be a wall.
+      r: 2.4,
       hard: true,
       kind: 'tree',
       key: 'tree:0:4.00:4.00',
       gap: 0.2,
     });
-    // Over the limit: blocked at contact — it started 0.2u inside the circle,
-    // so the correction pushes it BACK, and it ends the frame behind where it
-    // began rather than a frame's travel ahead.
+    // Over the block line: blocked at contact — it started 0.2u inside the
+    // circle, so the correction pushes it BACK, and it ends the frame behind
+    // where it began rather than a frame's travel ahead.
     expect(travelled).toBeLessThan(0);
     expect(stuck).toEqual([]);
     // Nothing came up, and the trunk flinched — the old ladder, untouched.
     expect(loosed).toEqual([]);
     expect(bumped).toEqual(['tree:0:4.00:4.00']);
+  });
+
+  /*
+   * RELAXED, per the third stuck report (2026-09-16: *"I think we can relax
+   * the actual physics a little bit so that it's a bit easier to pick up
+   * momentum and pick things up to your character"*).
+   */
+  it('pushes PAST a tree between its carry limit and the block ratio', () => {
+    const { stuck, loosed, bumped, travelled, bodyR } = rollOver({
+      r: 1.2,
+      hard: true,
+      kind: 'tree',
+      key: 'tree:0:6.00:6.00',
+      gap: 0.2,
+    });
+    // In the band: too big to wear, not big enough to stop it.
+    expect(1.2).toBeGreaterThan(carryLimit(bodyR));
+    expect(1.2).toBeLessThan(passLimit(bodyR));
+    expect(stuck).toEqual([]);
+    // It kept going — slowed to the soft-body factor, never held.
+    expect(travelled).toBeGreaterThan(0);
+    expect(travelled).toBeCloseTo((MAX_SPEED * SOFT_SPEED_FACTOR * 16) / 1000, 4);
+    // And the tree still took the hit it always took.
+    expect(bumped).toEqual(['tree:0:6.00:6.00']);
+    expect(loosed).toEqual([]);
+  });
+
+  it('sticks at a crawl — there is no speed threshold on a pickup', () => {
+    const { stuck, travelled } = rollOver({
+      r: 0.5,
+      hard: true,
+      kind: 'tree',
+      key: 'tree:0:7.00:7.00',
+      gap: 0.2,
+      // A twentieth of the stick: as slow as a hand can ask for.
+      mag: 0.05,
+    });
+    expect(stuck).toEqual(['tree:0:7.00:7.00']);
+    expect(travelled).toBeGreaterThan(0);
+  });
+
+  it('sticks while the thumb is turning, not only while it is pointing at it', () => {
+    const { stuck } = rollOver({
+      r: 0.5,
+      hard: false,
+      kind: 'bush',
+      key: 'bush:0:8.00:8.00',
+      gap: 0.2,
+      turn: true,
+    });
+    expect(stuck).toEqual(['bush:0:8.00:8.00']);
   });
 });

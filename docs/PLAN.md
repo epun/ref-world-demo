@@ -808,16 +808,63 @@ passenger rolls with its carrier's ball, because a carried creature is out of th
 pass entirely. **No roll phase is on the wire** (`poses` carry x/z/heading): roll is arc length
 over radius, so every page derives the same turn from the same travel.
 
-**Speed** — `KATAMARI_SPEED_MUL = 3` **[D]**. A ball has no stride to outrun, so the katamari
-world starts its speed multiplier at 3 instead of the shipped `WANDER_SPEED_DEFAULT` of 1.4
-(a *different default*, not a factor on top of it — multiplying the two would put the stick at
-5.04 u/s, past the ruling). Drive ceiling `MAX_SPEED × 3` = **3.6 u/s**, wander the same factor,
-`DRIVE_TURN_TAU_MS` untouched — a faster ball that also turned faster is a cursor. The substep
-guard still covers it: `stepCreatures` clamps dt at 250 ms and advances `MAX_STEP_TRAVEL`
-(0.25 u) per substep over at most `MAX_SUBSTEPS` (16), so 4 u per frame; 3.6 u/s × 0.25 s =
-0.9 u, four of the sixteen. The ghost panel's wander/speed slider opens on whatever the manager
-is actually running (`CreatureManager.wanderSpeed()`) and its ceiling moved to 5, so 3 is a
-starting point and not a wall. **Every other world keeps its walk cycle and its speeds.**
+**Walk first, roll with mass** *(2026-09-16)* **[D]**. User ask: *"let's have them start
+walking at first and once they hit a few objects they begin to roll because they have mass."*
+The gait used to be fed a flat zero on a katamari world, so a hatchling that had picked nothing
+up slid across the field like a decal. It is a BLEND now — one ζ ≥ 1 `Spring` per creature over
+`MOTION.primaryMs`, retargeted every frame at `rollTarget(items, growth)`: 1 once the clump
+holds `ROLL_MASS_ITEMS` (**3**) or `growth` reaches `ROLL_GROWTH` (**1.08**), whichever comes
+first, and back to 0 if the pile is shed. Three things read it, and the whole point is that they
+move together:
+
+- the **gait amplitude** target is scaled by `1 − blend` (`setLocomotion`'s third argument, a
+  new optional `gaitAmp` on `Character` and `GaitController`): the step frequency still follows
+  the real travel, so a creature becoming a ball stops waddling rather than being told it has
+  stopped moving, and one that sheds its pile picks the walk up mid-stride;
+- the **roll accumulation** is scaled by it (`Clump.roll(dx, dz, blend)` scales the ANGLE, not
+  the travel, so the axis is unchanged): at 0 the `ball` node stays upright, at 1 it is the
+  no-slip roll it always was, and in between the same distance turns it partly — no snap;
+- the **drive ceiling** lerps `MAX_SPEED × KATAMARI_WALK_MUL` → `MAX_SPEED × KATAMARI_SPEED_MUL`
+  by it (`driveMult`), so a hatchling drives at 3 u/s and the same creature three stones later
+  drives at 7.2. The wander does NOT lerp: an agent always walks (see **Speed** below).
+
+A **passenger rides its carrier's blend** (`rollOf` walks up the carriers): a creature sitting
+on a pile has no locomotion of its own — it is inside somebody else's ball. And **nothing about
+the blend is on the wire**: it is derived in `growPass`, which runs on every page, from the
+clump's own item count and growth — both of which a viewer holds off the `stick` and `drop`
+events. `CreatureManager.rollBlend(id)` and `driveCeiling(id)` are readouts for the panel and
+the tests; nothing sets either.
+
+**Speed** — two ceilings, both **[D]**, both katamari-only *(raised 2026-09-16 on the user
+report: "we need to up the speed and velocity by a lot")*. `KATAMARI_SPEED_MUL = 6` is the
+ROLLING ceiling — `MAX_SPEED × 6` = **7.2 u/s**, which crosses the ~100 u island in fourteen
+seconds instead of thirty — and `KATAMARI_WALK_MUL = 2.5` is the WALK ceiling, **3 u/s**, what a
+creature carrying nothing drives at and what every agent wanders at. The wander sits at the walk
+and never at the roll: an unattended creature crossing the island at 7.2 u/s is a world running
+away from the person watching it. Both are *different defaults*, not factors on the shipped
+`WANDER_SPEED_DEFAULT`. `KATAMARI_TURN_TAU_MS = 60` (from 90) because at 7.2 u/s a 200 ms
+heading lag is a metre and a half of sliding; it is still `followFraction`, monotone and unable
+to overshoot. The substep guard still covers it: `stepCreatures` clamps dt at 250 ms and
+advances `MAX_STEP_TRAVEL` (0.25 u) per substep over at most `MAX_SUBSTEPS` (16), so 4 u per
+frame; 7.2 u/s × 0.25 s = 1.8 u, eight of the sixteen, with 0.25 u still well under the smallest
+footprint on the map (a 0.5 u stone) so no substep can leap a collider — nothing needed raising.
+The ghost panel's wander/speed slider opens on `CreatureManager.wanderSpeed()` (the rolling
+ceiling) with its max at 8 and scales the pair. **Every other world keeps its walk cycle and its
+speeds.**
+
+**The stick's strength is the push** *(2026-09-16)* **[D]**. User ask: *"we should assign speed
+velocity to the joy stick so the farther the push the faster the character goes."* It nominally
+already was — `driveVx = driven.x × ceiling` and `driven.x` carries the magnitude — but two
+things stood between the thumb and the speed. `stickVector` rescaled the strength onto the
+well's RIM while the knob stops at `KNOB_TRAVEL` (half the radius), so a thumb pushed to where
+the control visibly ends was asking for 0.44 and the rest of the range lay outside the control;
+the rescale now ends where the knob does, and thumb and knob travel together. Then
+`DRIVE_CURVE = 1.6` in `driveResponse`, applied in `stickToWorld` (the seam where a thumb becomes
+an intent, so the knob keeps following the finger one-to-one): half a push is a third of the
+ceiling, a quarter push a tenth, and the stop is still exactly the ceiling. `f(0) = 0`,
+`f(1) = 1`, monotone — no cut anywhere. The wire is unchanged and carries the magnitude to three
+decimals (`src/net/worldsync.ts` clamps, never normalises), and the recorder quantises only its
+CHANGE detector, never the value it writes.
 
 **`PICKUP_RATIO` 0.6 → 1.0** *(2026-09-16)* **[D]**. User report: *"I don't see the sticky
 katamari effect where the character gathers objects as it touches them."* A hatchling measures
@@ -868,6 +915,91 @@ go on hitting everything, which is where the brief's instability comes from.
 
 Both halves are gated on `game: 'katamari'` **and** on physics being loaded: a page that
 cannot pick the prop up must not walk through it.
+
+**"my character got stuck" — three causes** *(2026-09-16, user report from a phone on
+`valiocon`, then a second report off the deployed build)*. All three are fixed and pinned by
+`test/creatures/stuck.test.ts`, which drives a hatchling from six spawn points in eight
+headings over the real island and the real scatter — once through the pure resolve and once
+with a real rapier world under it — and asserts it never covers less than 0.05 u in any 1.5 s
+window while driven, unless something rooted and above its carry limit is holding it, in
+which case a 90° heading change has to free it inside 1.5 s.
+
+- **A creature was being CARRIED, and a passenger's drive was thrown away.** `PICKUP_RATIO`
+  is 1.0 and it decided passengers too, so two hatchlings of equal size were each exactly at
+  the other's limit: the first contact made one of them luggage and its stick went nowhere.
+  **`CREATURE_CARRY_RATIO` = 1.35 [D]** now decides a creature (`creatureCarryLimit` in
+  `src/creatures/sticky.ts`): a carrier needs `bodyR ≥ 1.35 × other.bodyR`. Both directions
+  cannot hold at once, so the mutual-eligibility tie — and the bigger-id tiebreak that broke
+  it — is gone; equal-sized creatures separate as they did before the katamari. A prop is
+  unchanged at 1.0: a prop has no phone, and taking somebody's creature out of their hands
+  needs a visible size gap. **And a carried creature's drive is no longer ignored** — it is
+  summed with its carrier's own and applied to the CARRIER, clamped to one stick's
+  magnitude, so every phone in a pile still steers the ball. The wire is untouched: a
+  recorded `drive` still names the passenger and the manager resolves it to the carrier at
+  apply time, on the host and on replay identically.
+- **The first stone anybody rolled up killed the host's frame loop.** `take` removes the
+  stone's rigid body, and the pickup then read that body's translation — a removed rapier
+  body is a dead handle and the read traps the wasm (`RuntimeError: unreachable`). The throw
+  came out of `update()`, so the projection stopped simulating: no more poses, and every
+  creature in the room froze where it stood. The pose is now snapshotted as seven plain
+  numbers BEFORE the take (`poseOf`, `stickItem`). This is the one that needed rapier to
+  find, which is why that half of the test exists.
+- **The rigid-body stand-ins were a frame behind the growth.** `growPass` writes `bodyR` and
+  the drawn scale; the kinematic ball and the stuck-item balls were sized at the end of
+  `simulateSticky`, a few lines earlier, so a creature that ate something spent a frame with
+  a solver ball smaller than the circle the resolve was using. `syncStandIns` now runs after
+  `growPass` — one radius everywhere, every frame.
+
+**Relaxed, because being stuck is a physics feel and not only a bug** *(2026-09-16, third
+report: "My character keeps on getting stuck on objects, and once it sticks to an object, it
+can't move. I think we can relax the actual physics a little bit so that it's a bit easier to
+pick up momentum and pick things up to your character")*. All four are **[D]** and all four are
+katamari-only; every other world keeps the physics it shipped with.
+
+- **Blocking is the exception.** `BLOCK_RATIO = 1.6`: a rooted prop only `block`s when its
+  radius is over `1.6 × carryLimit`. Between the carry limit and that line it is `shove` — the
+  ball pushes past, slowed by `SOFT_SPEED_FACTOR` (a bush's own price) and taking the impact it
+  always took, but never held. One centimetre of prop radius used to be the difference between
+  rolling something up and being stopped dead by it. The break ladder is untouched on both
+  sides of the line, and a building still blocks and still wears down through its stages.
+  `passLimit` is the one function that says it, and the resolve's `skipIf`, the roll-over
+  gather and the rapier contact filter all read it so nothing can disagree about which props
+  are walls.
+- **A wall deflects the push instead of absorbing it.** `WALL_SLIDE = 0.8`. `resolveHard` keeps
+  the tangential component of a contact and drops the inward one, which slides beautifully
+  along anything met at an angle and does nothing for a hit dead on — where the tangent is zero
+  and the creature simply stands there. That is the inside of a corner, a building's flat face
+  and any trunk approached square, and to the hand it is being stuck. The blocked component is
+  now turned along the surface (the side the push is already leaning, with a fixed fallback
+  dead on, so the host and a replay agree). It cannot create penetration: what it adds is
+  tangential and the resolve still runs after it.
+- **Sticking is easy.** `CONTACT_PAD` 0.05 → **0.25**: the old pad was the solver's own slop, so
+  a pickup needed the circles all but exactly tangent on the one frame the pass looked — and at
+  7.2 u/s a frame is 0.24 u of travel. A quarter unit is a hand's width at world scale. There
+  is no speed threshold on a pickup and never was (size first, since the priority ruling), and
+  the tests now pin that at a twentieth of a push and through a mid-contact turn.
+- **A stuck item is part of the carrier's body.** Its ball exists so the pile can sweep through
+  what is LOOSE — stones, fallen props, debris, other creatures. `filterContactPair` now gives
+  it no pair at all against static geometry: the ground, the fixed cylinders, anything planted.
+  The carrier's body is kinematic so those contacts could never move it, but they DO fire the
+  impact seam, which charged damage and drops to a creature for a ball scraping the terrain.
+  The cost is named: a stuck bench no longer knocks a ROOTED sign loose (§7.6's own example) —
+  the carrier's own ball still hits everything rooted, which is where `hitRooted`, the recoil
+  and the staged damage live.
+- **Momentum needed nothing.** The drive is a velocity substitution (`driveVx = driven.x ×
+  ceiling`), not a spring, so a creature is at its ceiling on the first frame — inside the
+  ~400 ms the ask allowed, with no token to derive. A heading change costs no speed either: the
+  velocity is the STICK's direction and the facing eases behind it. Both are pinned, because the
+  obvious "fix" for a stick that feels jerky is to put a spring here and that spring would be
+  the lag the report was about.
+
+What the sweep did **not** find, stated because it was the suspicion: nothing on the map
+holds a driven creature. The resolve keeps the tangential component, so pressing into the sea
+wall or a trunk slides along it; a right-angled corner of two mountain-sized colliders does
+pin a creature, and a 90° turn frees it inside a window (`HEAD_ON_SLIDE` is for creature
+pairs; this is the wall slide). And rapier cannot pin anything either — a creature stands in
+that world as a KINEMATIC POSITION-BASED body written from the resolved position every frame,
+so contacts move what it touches and never it.
 
 **`src/world/loose.ts`** — one `Mesh` per thing that is no longer scenery, on every page. An
 instance row cannot be removed, only overwritten, and a prop that has left the ground is
