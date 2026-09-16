@@ -343,33 +343,45 @@ function treeChunks(kind: InflatedPropKind): Chunk[][] {
  * Every breakable kind's chunks, per variant: `[variant] → chunks`. Built
  * once; the caller owns the map (nothing is cached here).
  *
- * ROUTE 4, THE LIBRARY (2026-09-16, docs/katamari-props.md §c). On a
- * katamari world the props are the game's own models and their seams came
- * with them: `katamariChunksByKind` (src/world/katamari/source.ts) hands
- * back a `Chunk[][]` per kind — a multipart glb's own meshes staged top-down,
- * a single-mesh one cut by the same wobbled height plane a tree is cut by —
- * and those REPLACE the authored kind's chunks wholesale. Nothing is mixed:
- * a world draws one prop set and breaks that one.
+ * ROUTE 4, THE LIBRARY (2026-09-16, docs/katamari-props.md §c). On a katamari
+ * world most props are the game's own models and their seams came with them:
+ * `katamariChunksByKind` (src/world/katamari/attach.ts) hands back a
+ * `Chunk[][]` per kind — a multipart glb's own meshes staged top-down, a
+ * single-mesh one cut by the same wobbled height plane a tree is cut by — and
+ * those REPLACE that kind's authored chunks.
  *
- * The keys of that map are `PropKind`s and a few of them (the three junk
- * tiers, and the bushes and stumps the authored world never broke) are not
- * `ChunkKind`s. They are cast in, and the cast is safe for the only reason
- * that matters: every consumer looks a kind UP (`set?.[variant]?.[index]`,
- * src/world/loose.ts and src/world/debris.ts) and a kind the map has no row
- * for is already handled as "nothing to draw".
+ * Only that kind's, though: a breakable kind the library does not cover keeps
+ * its authored route, because the prop source keeps its authored VARIANTS too
+ * (`mountain` — the game's island masses read as floating slabs, so a range
+ * here is still the inflated lump). One prop set per kind, either way, and the
+ * chunks always match the variants on screen.
+ *
+ * The keys of the library map are `PropKind`s and a few of them (the three
+ * junk tiers, and the bushes and stumps the authored world never broke) are
+ * not `ChunkKind`s. They are cast in, and the cast is safe for the only
+ * reason that matters: every consumer looks a kind UP
+ * (`set?.[variant]?.[index]`, src/world/loose.ts and src/world/debris.ts) and
+ * a kind the map has no row for is already handled as "nothing to draw".
  */
 export function buildChunkGeometries(
   library?: ReadonlyMap<string, Chunk[][]> | null,
 ): Map<ChunkKind, Chunk[][]> {
   const out = new Map<ChunkKind, Chunk[][]>();
-  if (library && library.size > 0) {
-    for (const [kind, chunks] of library) out.set(kind as ChunkKind, chunks);
-    return out;
+  const fromLibrary = new Set<string>();
+  if (library) {
+    for (const [kind, chunks] of library) {
+      out.set(kind as ChunkKind, chunks);
+      fromLibrary.add(kind);
+    }
   }
   for (const kind of ['monolith', 'mountain', 'rock'] as const) {
-    out.set(kind, lumpChunks(kind));
+    if (!fromLibrary.has(kind)) out.set(kind, lumpChunks(kind));
   }
-  for (const kind of ARCH_CHUNK_KINDS) out.set(kind, archChunks(kind));
-  for (const kind of ['tree', 'conifer'] as const) out.set(kind, treeChunks(kind));
+  for (const kind of ARCH_CHUNK_KINDS) {
+    if (!fromLibrary.has(kind)) out.set(kind, archChunks(kind));
+  }
+  for (const kind of ['tree', 'conifer'] as const) {
+    if (!fromLibrary.has(kind)) out.set(kind, treeChunks(kind));
+  }
   return out;
 }

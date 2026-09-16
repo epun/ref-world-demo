@@ -27,9 +27,11 @@
  *     `rooted`, or the pickup rules and the row would disagree about the same
  *     prop. `test/world/katamari/catalog.test.ts` pins that.
  *
- * `beach: true` marks the rows that belong on the sand rather than inland —
- * parasols, boats, shells, the boathouse, the palm. The scatter's beach region
- * is where they go (docs/katamari-props.md §a).
+ * `beach: true` marks the rows that belong on the sand — parasols, boats,
+ * shells, the boathouse, the palm, the two outcrops. The scatter's beach
+ * region is where they go, and only they go there (docs/katamari-props.md
+ * §a). A row that belongs in BOTH places carries `inland: true` beside it:
+ * stones, a brick, a shell.
  *
  * NAMES ARE DATA. `name` is the manifest's own object name, verbatim, so a row
  * can be traced back to the library and to the game; it is a key, never
@@ -66,6 +68,18 @@ export type KatamariNewKind = (typeof KATAMARI_NEW_KINDS)[number];
  * `cloud` is deliberately absent — it is scenery in the sky with no collider
  * (`STICKY.cloud.stickiness` is 0) and no katamari object reads as one.
  */
+/*
+ * `mountain` LEFT THIS LIST (2026-09-16, read off a frame).
+ *
+ * The library's own island masses — Coral Island, Top Shell Island — are
+ * floating hexagonal slabs, and a range built out of them read as stacked
+ * platforms hovering over the meadow rather than as landscape. A mountain in
+ * this world is the authored inflated lump and stays one: the katamari prop
+ * source MIXES, keeping the stock variants for any kind this table does not
+ * fill (`mountain`, and `cloud`, which no katamari object reads as). The two
+ * islands moved down to the `large` tier as beached outcrops, which is the
+ * size they actually read at.
+ */
 const REPLACED_KINDS: readonly PropKind[] = [
   'tree',
   'conifer',
@@ -74,7 +88,6 @@ const REPLACED_KINDS: readonly PropKind[] = [
   'stump',
   'cactus',
   'monolith',
-  'mountain',
   'building',
   'palm',
   'picnicTable',
@@ -104,8 +117,22 @@ export interface KatamariEntry {
   /** In the ground: knocked loose before it can be carried. Must match
    * `STICKY[kind].rooted` for a replacement kind. */
   rooted: boolean;
-  /** Belongs on the sand rather than inland. */
+  /** Belongs on the sand. Inland is the default home of a row, so this is
+   * the flag that MOVES one to the beach — and `inland` below is what keeps
+   * a row in both places (see it). */
   beach?: boolean;
+  /**
+   * Belongs inland as well.
+   *
+   * The default is `!beach`: a row is inland unless it is a beach row, and
+   * the scatter's per-variant region filter admits exactly one set in each
+   * region (src/world/scatter.ts). A few things are honestly both — a stone
+   * is the commonest thing on a beach AND in a field, and so are a brick and
+   * a shell somebody carried up from the tideline — so those rows carry
+   * `beach: true` and `inland: true` together and are admitted in both.
+   * **[D]**
+   */
+  inland?: boolean;
   /** Lowercase display name, for the new kinds — the only string here this
    * world would ever show (TASTE §5). */
   label?: string;
@@ -137,10 +164,13 @@ export const KATAMARI_CATALOG: readonly KatamariEntry[] = [
   { id: '00e9', name: "Garden Plant (M)", file: "00e9_Garden_Plant_M.glb", kind: 'bush', tier: 'small', heightUnits: 1.3, rooted: true },
   { id: '04cd', name: "Strawberry Plant", file: "04cd_Strawberry_Plant.glb", kind: 'bush', tier: 'small', heightUnits: 1, rooted: true },
   // rock
-  { id: '03a9', name: "Rock", file: "03a9_Rock.glb", kind: 'rock', tier: 'small', heightUnits: 1.1, rooted: false },
-  { id: '03aa', name: "Black Rock", file: "03aa_Black_Rock.glb", kind: 'rock', tier: 'small', heightUnits: 1, rooted: false },
+  // Three of the four stones stand on the sand as well as inland — shingle
+  // is the commonest thing on a beach, and a beach with no stones on it was
+  // the first thing the wired render got wrong. The big rock stays inland.
+  { id: '03a9', name: "Rock", file: "03a9_Rock.glb", kind: 'rock', tier: 'small', heightUnits: 1.1, rooted: false, beach: true, inland: true },
+  { id: '03aa', name: "Black Rock", file: "03aa_Black_Rock.glb", kind: 'rock', tier: 'small', heightUnits: 1, rooted: false, beach: true, inland: true },
   { id: '03ab', name: "Big Rock", file: "03ab_Big_Rock.glb", kind: 'rock', tier: 'small', heightUnits: 1.5, rooted: false },
-  { id: '02f8', name: "Garden Rock", file: "02f8_Garden_Rock.glb", kind: 'rock', tier: 'small', heightUnits: 1.2, rooted: false },
+  { id: '02f8', name: "Garden Rock", file: "02f8_Garden_Rock.glb", kind: 'rock', tier: 'small', heightUnits: 1.2, rooted: false, beach: true, inland: true },
   // stump
   { id: '02fb', name: "Tree Stump", file: "02fb_Tree_Stump.glb", kind: 'stump', tier: 'small', heightUnits: 1.2, rooted: true },
   // cactus — the library has no cactus; a daruma is the same silhouette slot,
@@ -149,10 +179,6 @@ export const KATAMARI_CATALOG: readonly KatamariEntry[] = [
   // monolith — the standing-stone slot: one rock, one statue.
   { id: '03af', name: "The Oni Rock", file: "03af_The_Oni_Rock.glb", kind: 'monolith', tier: 'large', heightUnits: 4.2, rooted: true },
   { id: '03e9', name: "Fish Statue", file: "03e9_Fish_Statue.glb", kind: 'monolith', tier: 'large', heightUnits: 3.8, rooted: true },
-  // mountain — the game's own island masses, which is exactly what this
-  // kind is on a tropical island.
-  { id: '056e', name: "Coral Island", file: "056e_Coral_Island.glb", kind: 'mountain', tier: 'building', heightUnits: 14, rooted: true },
-  { id: '039e', name: "Top Shell Island", file: "039e_Top_Shell_Island.glb", kind: 'mountain', tier: 'building', heightUnits: 12, rooted: true, beach: true },
   // building — the harbour town's fish-named blocks, plus the shops.
   { id: '026a', name: "Apartment Building", file: "026a_Apartment_Building.glb", kind: 'building', tier: 'building', heightUnits: 7.2, rooted: true },
   { id: '026c', name: "Marlin Building", file: "026c_Marlin_Building.glb", kind: 'building', tier: 'building', heightUnits: 5, rooted: true },
@@ -186,11 +212,11 @@ export const KATAMARI_CATALOG: readonly KatamariEntry[] = [
   { id: '0352', name: "Coffee (Can)", file: "0352_Coffee_Can.glb", kind: 'small', tier: 'small', heightUnits: 0.35, rooted: false, label: 'coffee can' },
   { id: '0030', name: "Milk Carton", file: "0030_Milk_Carton.glb", kind: 'small', tier: 'small', heightUnits: 0.4, rooted: false, label: 'milk carton' },
   { id: '0002', name: "Persimmon", file: "0002_Persimmon.glb", kind: 'small', tier: 'small', heightUnits: 0.25, rooted: false, label: 'persimmon' },
-  { id: '0003', name: "Brick", file: "0003_Brick.glb", kind: 'small', tier: 'small', heightUnits: 0.3, rooted: false, label: 'brick' },
+  { id: '0003', name: "Brick", file: "0003_Brick.glb", kind: 'small', tier: 'small', heightUnits: 0.3, rooted: false, beach: true, inland: true, label: 'brick' },
   { id: '04eb', name: "Ant", file: "04eb_Ant.glb", kind: 'small', tier: 'small', heightUnits: 0.2, rooted: false, label: 'ant' },
-  { id: '03a7', name: "Ammonite", file: "03a7_Ammonite.glb", kind: 'small', tier: 'small', heightUnits: 0.4, rooted: false, beach: true, label: 'ammonite' },
-  { id: '0120', name: "Striped Fish", file: "0120_Striped_Fish.glb", kind: 'small', tier: 'small', heightUnits: 0.4, rooted: false, beach: true, label: 'striped fish' },
-  { id: '01dd', name: "Bonito", file: "01dd_Bonito.glb", kind: 'small', tier: 'small', heightUnits: 0.6, rooted: false, beach: true, label: 'bonito' },
+  { id: '03a7', name: "Ammonite", file: "03a7_Ammonite.glb", kind: 'small', tier: 'small', heightUnits: 0.4, rooted: false, beach: true, inland: true, label: 'ammonite' },
+  { id: '0120', name: "Striped Fish", file: "0120_Striped_Fish.glb", kind: 'small', tier: 'small', heightUnits: 0.4, rooted: false, beach: true, inland: true, label: 'striped fish' },
+  { id: '01dd', name: "Bonito", file: "01dd_Bonito.glb", kind: 'small', tier: 'small', heightUnits: 0.6, rooted: false, beach: true, inland: true, label: 'bonito' },
   // medium — street furniture, festival cloth, shop signs.
   { id: '0284', name: "Vending Machine ", file: "0284_Vending_Machine.glb", kind: 'medium', tier: 'medium', heightUnits: 2.2, rooted: true, label: 'vending machine' },
   { id: '0394', name: "Wooden Bench", file: "0394_Wooden_Bench.glb", kind: 'medium', tier: 'medium', heightUnits: 1, rooted: false, label: 'wooden bench' },
@@ -223,6 +249,11 @@ export const KATAMARI_CATALOG: readonly KatamariEntry[] = [
   { id: '00e5', name: "Wall (Long)", file: "00e5_Wall_Long.glb", kind: 'large', tier: 'large', heightUnits: 1.6, rooted: true, label: 'wall' },
   { id: '0288', name: "Small Fishing Boat", file: "0288_Small_Fishing_Boat.glb", kind: 'large', tier: 'large', heightUnits: 2.4, rooted: false, beach: true, label: 'fishing boat' },
   { id: '01b1', name: "Sailboat", file: "01b1_Sailboat.glb", kind: 'large', tier: 'large', heightUnits: 3, rooted: false, beach: true, label: 'sailboat' },
+  // The two island masses, at the size they read at: an outcrop on the sand,
+  // not a range. Heights chosen off their own aspect (1.6 and 1.8 wide per
+  // unit of height) so the footprint lands under 6 u — 4.7 and 4.9. **[D]**
+  { id: '056e', name: "Coral Island", file: "056e_Coral_Island.glb", kind: 'large', tier: 'large', heightUnits: 3, rooted: true, beach: true, label: 'coral outcrop' },
+  { id: '039e', name: "Top Shell Island", file: "039e_Top_Shell_Island.glb", kind: 'large', tier: 'large', heightUnits: 2.8, rooted: true, beach: true, label: 'shell outcrop' },
 ];
 
 /** Where the curate script writes, and where the loader reads. */

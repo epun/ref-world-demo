@@ -98,7 +98,9 @@ describe('katamari catalog', () => {
       stump: [0.6, 2],
       cactus: [1.5, 4],
       monolith: [3, 6],
-      mountain: [10, 20],
+      // No `mountain` row any more (2026-09-16): the game's island masses
+      // are floating slabs and read as platforms, so the mountain stays the
+      // authored inflated lump and the two islands are `large` outcrops.
       building: [2.4, 12],
       palm: [4, 8],
       picnicTable: [1, 3],

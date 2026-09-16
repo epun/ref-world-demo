@@ -40,8 +40,14 @@ export interface PropVariantMeta {
   id: string;
   /** Lowercase display name, where the variant has one (TASTE §5). */
   label?: string;
-  /** Belongs on the sand rather than inland (the scatter's region filter). */
+  /** Belongs on the sand (the scatter's region filter). */
   beach?: boolean;
+  /**
+   * Belongs inland as well. The default is `!beach`, so a variant is in
+   * exactly one region unless it says otherwise — and a few honestly belong
+   * in both (a stone is the commonest thing on a beach AND in a field).
+   */
+  inland?: boolean;
   /** In the ground: overrides the kind's `STICKY.rooted`. */
   rooted: boolean;
   /** Overrides the kind's `STICKY.tier`. */

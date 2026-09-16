@@ -1913,6 +1913,42 @@ export function buildInflatedVariant(
  * scaled to its variant height, grounded (min.y = 0) and centered in x/z,
  * so instances only need translate + y-rotation + uniform scale.
  */
+/**
+ * SOME of the authored variants — the kinds asked for, through whichever of
+ * the two construction paths each belongs to.
+ *
+ * `buildPropGeometries` is this over every kind, and stays the world's normal
+ * entry point. This exists for the ONE caller that wants a few: a katamari
+ * world's prop source, which replaces most kinds with library models and
+ * keeps the authored variants for the kinds the library has nothing honest
+ * for — the mountain (the game's own island masses read as floating slabs,
+ * not as landscape) and the cloud (no katamari object is one). Building only
+ * those two keeps the swap off the inflate pipeline for the other eleven.
+ */
+export function buildStockVariants(kinds: readonly PropKind[]): Map<PropKind, PropVariant[]> {
+  const out = new Map<PropKind, PropVariant[]>();
+  for (const kind of kinds) {
+    if (isPropTierKind(kind)) {
+      out.set(kind, []);
+    } else if ((INFLATED_PROP_KINDS as readonly string[]).includes(kind)) {
+      const inflated = kind as InflatedPropKind;
+      out.set(
+        kind,
+        PROP_VARIANT_DEFS[inflated].map((_def, i) => buildInflatedVariant(inflated, i)),
+      );
+    } else {
+      const arch = kind as ArchPropKind;
+      out.set(
+        kind,
+        ARCH_VARIANT_DEFS[arch].map((def) =>
+          normalizeVariant(mergeArchParts(def.parts()), def.height, `${kind}/${def.name}`),
+        ),
+      );
+    }
+  }
+  return out;
+}
+
 export function buildPropGeometries(): Map<PropKind, PropVariant[]> {
   const out = new Map<PropKind, PropVariant[]>();
   for (const kind of INFLATED_PROP_KINDS) {

@@ -71,6 +71,7 @@ function metaOf(entry: KatamariEntry): PropVariantMeta {
     id: entry.id,
     ...(entry.label === undefined ? {} : { label: entry.label }),
     ...(entry.beach === undefined ? {} : { beach: entry.beach }),
+    ...(entry.inland === undefined ? {} : { inland: entry.inland }),
     rooted: entry.rooted,
     tier: entry.tier,
   };

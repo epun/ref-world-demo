@@ -95,18 +95,20 @@ one of three **new** kinds:
 | `medium` | `medium` | vending machine, bench, folding chair, mailbox, telephone, trash can, bicycle, delivery bike, lanterns, ramen sign, teahouse banner, shop curtain, matsuri tent, pedestrian signal, weathercock, compass, and on the sand: parasol, boat, lifeguard chair | mixed |
 | `large` | `large` | japanese car, froggy car, steamroller, ox, park entrance, lamp post, telephone pole, wall, and on the sand: fishing boat, sailboat | mixed |
 
-Replacement kinds and what now stands in for them: `tree` → the game's four
+Replacement kinds and what now stands in for them (**eleven**, since
+`mountain` left the set on 2026-09-16 — see §f): `tree` → the game's four
 trees; `conifer` → the xmas tree and the two giant trees; `bush` → garden and
 strawberry plants; `rock` → the four rocks; `stump` → tree stump; `cactus` →
 giant daruma (the library has no cactus; same silhouette slot **[D]**);
-`monolith` → the oni rock and a fish statue; `mountain` → coral island and top
-shell island (the game's own island masses, which is what this kind is on a
-tropical island); `building` → the harbour town's fish-named blocks plus car
+`monolith` → the oni rock and a fish statue; `building` → the harbour town's fish-named blocks plus car
 wash, factory, bookstore, ryokan, boathouse; `palm` → palm tree;
 `picnicTable` → street stall; `waterTower` → propane tank and weather station.
 
 `beach: true` marks the sand set: parasols, boats, shells and fish, the
-boathouse, the palm, the top shell island.
+boathouse, the palm, the two outcrops. A row that belongs in BOTH places
+carries `inland: true` beside it (2026-09-16): the three smaller stones, the
+brick and the shells — a beach wants shingle on it and the same stone belongs
+in a field.
 
 ## a. `src/world/props.ts` — the extension seam
 
@@ -254,6 +256,8 @@ pops (TASTE §2.1).
 | §d rooted, twice (open) | **closed: `rooted` per model wins.** `src/world/rocks.ts` asks `stickyFor(kind, variant).rooted` instead of `kind === 'rock'`, so any unrooted library variant is a dynamic body from the start and any rooted one is a fixed cylinder — a bench behaves like a stone and the vending machine beside it like a trunk. |
 | §e loading order | **changed on decision:** the scatter does NOT stand on the inflated props while the library loads. A katamari world starts on `katamariPendingSource()` — the catalog's placement rules with no geometry — so the first second is ground, water and marks, and the props slide in on one `setPropSource` → `rebuild()`. Drawing the authored props and then swapping them reads as the world changing its mind; an empty second does not. |
 | the load gate | `startKatamariWorld(game)` — `./models` and `./attach` are both DYNAMIC imports behind the game, so no other world carries the loader, `GLTFLoader` or the cel shader in its first chunk, and `game: 'none'` never calls the loader at all (pinned in `test/world/katamari/wiring.test.ts`). `vite.config.ts` drops `public/katamari/` from a build whose world did not ask for the game, so the personal-use assets ship to the katamari deployment only. |
+| `mountain` (2026-09-16, off a frame) | **out of the replacement set.** Coral Island and Top Shell Island are floating hexagonal slabs, and a range built of them read as stacked platforms hovering over the meadow. A mountain here is the authored inflated lump — which is also what `MOUNTAIN_FOOTPRINT` and the mountain pre-pass measure — so `katamariPropSource` MIXES: `buildStockVariants` fills any kind the catalog does not (`mountain`, and `cloud`, so a painted sky still draws), those variants carry no `meta`, and `stickyFor`/`materialFor` fall through to the kind's own row and the stock/ghibli albedo with no branch anywhere downstream. `buildChunkGeometries(library)` does the same per kind: a breakable kind the library does not cover keeps its authored route. The two islands moved to the `large` tier as beach-flagged outcrops at 3 / 2.8 units — 4.7 and 4.9 u across, inside the ~6 u a prop may be. |
+| both-region rows (2026-09-16) | `inland?: boolean` on the catalog row, default `!beach`. The filter admits `beach === true` on the sand and `inland ?? !beach` elsewhere, so one flag still means one region and the handful that are honestly both — `Rock`, `Black Rock`, `Garden Rock`, `Brick`, the three shells — stand in either. `--catalog` is a new mode of `scripts/katamari-curate.mjs`: it rewrites `catalog.json` from the table with no library, which is what a table edit like this one needs. |
 | the footprint cap | **new, read off the first render [D]:** scaling to a height alone is right for a tree and wrong for a pizza. `KATAMARI_ASPECT_CAP = 2.2` in `models.ts` — past 2.2 times its own height, a model's WIDTH sets the uniform scale, so `heightUnits` reads as "how big is this" for the flat rows (food, shells, the cassette tape) and as a height for everything else. Before it, a 0.3-unit pizza was six units across and taller than the tree beside it. |
 
 ## what is still open
@@ -263,7 +267,11 @@ pops (TASTE §2.1).
   point to tune against a frame, exactly as TASTE §2.1 says of its own 1823 ms.
 - **The junk tiers' densities are a first pass [D]** — a katamari town could be denser still
   near the buildings, which would want a `town` region rather than a number.
-- **No cactus, no beach rock.** The library has neither, so on a katamari world the `cactus`
-  kind stands in as a daruma and the beach carries the sand set without shingle.
+- **No cactus.** The library has none, so on a katamari world the `cactus` kind stands in as
+  a daruma. (The beach DID lack shingle; `inland: true` on the stones fixed that.)
+- **A cluster can spill one prop over the tideline.** The region is decided at the cluster's
+  seat and its neighbours are thrown 0.6–1.6 steps around it, so a scree seeded a step inland
+  may put one stone on the sand. That is the grove staying one species; what cannot happen is
+  the sand seeding an inland set of its own.
 - **The ink style shows the models' own textures**, which are coloured — deliberate (§b), and
   the reason the two palette gates already report `n/a` on this world (TASTE §9).

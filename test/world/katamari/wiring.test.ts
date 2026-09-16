@@ -31,6 +31,7 @@ import { STICKY, stickyFor } from '../../../src/creatures/sticky';
 import { buildChunkGeometries } from '../../../src/world/chunks';
 import {
   KATAMARI_CATALOG,
+  KATAMARI_REPLACED_KINDS,
   katamariVariantsOf,
   type KatamariEntry,
 } from '../../../src/world/katamari/catalog';
@@ -53,7 +54,11 @@ import {
   type PropKind,
 } from '../../../src/world/props';
 import { computePlacements, setScatterSeed, variantCount } from '../../../src/world/scatter';
-import { setIslandMode, setLandscapeMode } from '../../../src/world/landscape';
+import {
+  sampleLandscape,
+  setIslandMode,
+  setLandscapeMode,
+} from '../../../src/world/landscape';
 
 const MODELS = join(process.cwd(), 'public', 'katamari', 'models');
 
@@ -160,10 +165,43 @@ describe('the katamari prop source', () => {
     for (const variant of rocks) expect(variant.geometry).toBe(rockModel.geometry);
     expect(rocks[0]!.height).toBe(ROCK.heightUnits);
     expect(rocks[0]!.meta!.id).toBe(ROCK.id);
-    // A kind with no model at all is absent rather than stock: a katamari
-    // world draws the library's props and never a mix.
-    expect(source.variants.has('bush' as PropKind)).toBe(false);
+    // A kind the library has nothing for falls back on the AUTHORED variants
+    // (2026-09-16): the mountain and the cloud always, and here — with only
+    // two glbs parsed — every other kind as well. A stock variant carries no
+    // meta, which is how everything downstream tells the two apart.
+    const mountains = source.variants.get('mountain' as PropKind)!;
+    expect(mountains.length).toBe(PROP_VARIANT_COUNTS.mountain);
+    for (const variant of mountains) expect(variant.meta).toBeUndefined();
+    expect(source.variants.get('cloud' as PropKind)!.length).toBe(PROP_VARIANT_COUNTS.cloud);
+    expect(source.counts.mountain).toBe(PROP_VARIANT_COUNTS.mountain);
+    // …and the two library-drawn kinds here do carry it.
+    for (const variant of rocks) expect(variant.meta).toBeDefined();
     source.draw?.dispose();
+  });
+
+  it('keeps the mountain authored — the library’s islands are not a range', () => {
+    // The game's island masses are floating hexagonal slabs; a range built of
+    // them read as platforms hovering over the meadow (2026-09-16, off a
+    // frame). They are `large` beach props now, and no row names `mountain`.
+    expect(KATAMARI_REPLACED_KINDS).not.toContain('mountain');
+    expect(KATAMARI_CATALOG.some((e) => e.kind === 'mountain')).toBe(false);
+    expect(katamariPlacementSource().counts.mountain).toBe(PROP_VARIANT_COUNTS.mountain);
+    for (const id of ['056e', '039e']) {
+      const row = KATAMARI_CATALOG.find((e) => e.id === id)!;
+      expect(row.kind).toBe('large');
+      expect(row.tier).toBe('large');
+      expect(row.beach).toBe(true);
+    }
+  });
+
+  it('keeps the outcrops’ footprint under six units', () => {
+    // Why they could move down a tier at all: at these heights the widest
+    // horizontal span is well inside a prop's business, not a landmark's.
+    for (const id of ['056e', '039e']) {
+      const model = library.byId.get(id);
+      if (!model) continue; // only the two parsed models are loaded here
+      expect(model.radius * 2).toBeLessThan(6);
+    }
   });
 
   it('draws every library variant with a material of the library’s own', () => {
@@ -217,6 +255,36 @@ describe('the per-variant region filter', () => {
     // below vacuous.
     expect(sand).toBeGreaterThan(0);
     expect(inland).toBeGreaterThan(0);
+  });
+
+  it('admits the both-region rows on the sand AND inland', () => {
+    setActivePropSource(katamariPlacementSource());
+    setScatterSeed(7);
+    const rows = katamariVariantsOf('rock');
+    // The stones that carry `inland: true` beside `beach: true` — the beach
+    // wants shingle and the same stone belongs in a field (2026-09-16).
+    const both = rows
+      .map((row, i) => ({ row, i }))
+      .filter(({ row }) => row.beach === true && row.inland === true);
+    expect(both.length).toBeGreaterThan(0);
+    const placements = computePlacements({ kindDensity: { rock: 1 } }).filter(
+      (p) => p.kind === 'rock',
+    );
+    const used = new Set(placements.map((p) => p.variant));
+    // Every both-region stone is placed somewhere…
+    for (const { i } of both) expect(used, `rock variant ${i}`).toContain(i);
+    // …and the inland-only one is inland. Not "never on sand": a cluster's
+    // region is decided at its SEAT and its neighbours are thrown 0.6–1.6
+    // steps around it, so a cell that straddles the tideline can put one
+    // stone of a field's scree over the line. That is the grove staying one
+    // species, which is the rule the cluster is for — what must not happen is
+    // the sand growing its own inland set.
+    const inlandOnly = rows.findIndex((row) => row.beach !== true);
+    expect(inlandOnly).toBeGreaterThanOrEqual(0);
+    const of = placements.filter((p) => p.variant === inlandOnly);
+    const onSand = of.filter((p) => sampleLandscape(p.x, p.z).region === 'beach');
+    expect(of.length).toBeGreaterThan(20);
+    expect(onSand.length / of.length).toBeLessThan(0.05);
   });
 
   it('rolls the same picks twice from the same seed', () => {
@@ -301,10 +369,13 @@ describe('the chunk map', () => {
   it('replaces the authored chunk routes wholesale', () => {
     const library_ = katamariChunksByKind(library);
     const built = buildChunkGeometries(library_);
-    // The library's kinds, and nothing re-inflated: an authored `monolith`
-    // row would mean two prop sets in one world.
+    // A kind the library covers comes from the library…
     expect(built.get('rock')).toBe(library_.get('rock'));
-    expect(built.has('monolith')).toBe(false);
+    // …and a breakable kind it does not keeps its authored route, because the
+    // prop source keeps that kind's authored VARIANTS too. One prop set per
+    // kind, and the chunks always match what is on screen.
+    expect(library_.has('mountain')).toBe(false);
+    expect(built.get('mountain')!.length).toBe(PROP_VARIANT_COUNTS.mountain);
     // …and with no library it is exactly the authored map it always was.
     const stock = buildChunkGeometries();
     expect(stock.has('monolith')).toBe(true);

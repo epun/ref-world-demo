@@ -98,7 +98,9 @@
       "kind": "rock",
       "tier": "small",
       "heightUnits": 1.1,
-      "rooted": false
+      "rooted": false,
+      "beach": true,
+      "inland": true
     },
     {
       "id": "03aa",
@@ -107,7 +109,9 @@
       "kind": "rock",
       "tier": "small",
       "heightUnits": 1,
-      "rooted": false
+      "rooted": false,
+      "beach": true,
+      "inland": true
     },
     {
       "id": "03ab",
@@ -125,7 +129,9 @@
       "kind": "rock",
       "tier": "small",
       "heightUnits": 1.2,
-      "rooted": false
+      "rooted": false,
+      "beach": true,
+      "inland": true
     },
     {
       "id": "02fb",
@@ -162,25 +168,6 @@
       "tier": "large",
       "heightUnits": 3.8,
       "rooted": true
-    },
-    {
-      "id": "056e",
-      "name": "Coral Island",
-      "file": "056e_Coral_Island.glb",
-      "kind": "mountain",
-      "tier": "building",
-      "heightUnits": 14,
-      "rooted": true
-    },
-    {
-      "id": "039e",
-      "name": "Top Shell Island",
-      "file": "039e_Top_Shell_Island.glb",
-      "kind": "mountain",
-      "tier": "building",
-      "heightUnits": 12,
-      "rooted": true,
-      "beach": true
     },
     {
       "id": "026a",
@@ -448,6 +435,8 @@
       "tier": "small",
       "heightUnits": 0.3,
       "rooted": false,
+      "beach": true,
+      "inland": true,
       "label": "brick"
     },
     {
@@ -469,6 +458,7 @@
       "heightUnits": 0.4,
       "rooted": false,
       "beach": true,
+      "inland": true,
       "label": "ammonite"
     },
     {
@@ -480,6 +470,7 @@
       "heightUnits": 0.4,
       "rooted": false,
       "beach": true,
+      "inland": true,
       "label": "striped fish"
     },
     {
@@ -491,6 +482,7 @@
       "heightUnits": 0.6,
       "rooted": false,
       "beach": true,
+      "inland": true,
       "label": "bonito"
     },
     {
@@ -797,6 +789,28 @@
       "rooted": false,
       "beach": true,
       "label": "sailboat"
+    },
+    {
+      "id": "056e",
+      "name": "Coral Island",
+      "file": "056e_Coral_Island.glb",
+      "kind": "large",
+      "tier": "large",
+      "heightUnits": 3,
+      "rooted": true,
+      "beach": true,
+      "label": "coral outcrop"
+    },
+    {
+      "id": "039e",
+      "name": "Top Shell Island",
+      "file": "039e_Top_Shell_Island.glb",
+      "kind": "large",
+      "tier": "large",
+      "heightUnits": 2.8,
+      "rooted": true,
+      "beach": true,
+      "label": "shell outcrop"
     }
   ]
 }

@@ -708,7 +708,9 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
    * set. A library model does have one — a parasol belongs on the sand and a
    * mailbox does not (`beach` in src/world/katamari/catalog.ts) — so the
    * variant is rolled over the subset the REGION admits: on the beach the
-   * `beach: true` rows only, everywhere else the rest.
+   * `beach: true` rows, inland the rest, and in BOTH the handful that carry
+   * `inland: true` beside their beach flag (stones, a brick, a shell — the
+   * beach wants shingle on it and the same stone belongs in a field).
    *
    * The determinism is unchanged and that is the point: the kind rolls
    * first, exactly as it did, and then the SAME hash indexes the admitted
@@ -717,9 +719,9 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
    * shipped, and the world is placement-identical.
    *
    * A kind with nothing admitted in a region places nothing there. That is
-   * the honest outcome rather than a fallback: the catalog has no beach rock
-   * in it, so a katamari beach has no rocks on it, and quietly putting a
-   * vending machine on the sand instead would be worse than an empty dune.
+   * the honest outcome rather than a fallback: quietly putting a vending
+   * machine on the sand because nothing else was admitted would be worse
+   * than an empty dune.
    */
   const source = activePropSource();
   const admittedCache = new Map<string, number[]>();
@@ -730,7 +732,11 @@ export function computePlacements(opts: PlacementOptions = {}): Placement[] {
     const meta = isMark(kind) ? undefined : source?.meta.get(kind as PropKind);
     const list: number[] = [];
     for (let v = 0; v < variantCount(kind); v++) {
-      if (meta && (meta[v]?.beach === true) !== beach) continue;
+      const m = meta?.[v];
+      // No meta: a stock variant, welcome anywhere (the shipped world).
+      // Otherwise the region has to admit it — `inland` defaults to "not a
+      // beach row", so one flag still means one region.
+      if (m && !(beach ? m.beach === true : (m.inland ?? m.beach !== true))) continue;
       list.push(v);
     }
     admittedCache.set(key, list);

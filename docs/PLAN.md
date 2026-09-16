@@ -974,8 +974,10 @@ and architectural props (docs/katamari-props.md; user ask, 2026-09-15). The seam
 source** (`src/world/props-source.ts` for the pure half, `PropSource` in `src/world/props.ts`
 for the geometry): `createScatter({ source })` takes either `stockPropSource()` — the authored
 props, which is every other world — or `katamariPropSource(library)`, and `computePlacements`
-reads its variant counts from the active source rather than from a frozen table. Twelve kinds
-(`tree` … `waterTower`) have their VARIANTS replaced; three new `PropKind`s — `small`,
+reads its variant counts from the active source rather than from a frozen table. **Eleven**
+kinds have their VARIANTS replaced; `mountain` and `cloud` keep the AUTHORED ones — the game's
+island masses read as floating slabs, not as a range, so the source MIXES per kind and the
+chunk map does too; three new `PropKind`s — `small`,
 `medium`, `large` — are the junk tiers, with an empty stock variant list and a shipped density
 of 0, so no other world can place one. Counts and the per-variant region flags come off the
 in-bundle catalog and never off the download, so the placement stays pure: a katamari world
@@ -985,7 +987,8 @@ marks only** for the second before the glbs land (`startKatamariWorld`, then one
 makes). Per VARIANT rather than per kind: `stickyFor(kind, variant)` lets a model overrule its
 kind about rootedness (a bench is not planted, the vending machine beside it is) and
 `src/world/rocks.ts` gives **anything unrooted** a dynamic body the way it always gave one to a
-rock; the beach admits the catalog's `beach: true` rows and nothing else. Chunks are the
+rock; the beach admits the catalog's `beach: true` rows and nothing else, bar the handful that
+carry `inland: true` beside it and stand in both (the stones, a brick, the shells). Chunks are the
 models' own `parts` — `buildChunkGeometries(library)`. The look is the library's own
 (`createKatamariMaterial`, posterised texture under the world's toon chain) on `ghibli` and a
 stock textured `MeshStandardMaterial` on `ink`, because the world is defined by `game` and its

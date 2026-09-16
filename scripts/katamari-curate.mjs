@@ -13,6 +13,7 @@
  * Usage:
  *   node scripts/katamari-curate.mjs --source <library-dir>
  *   node scripts/katamari-curate.mjs --verify
+ *   node scripts/katamari-curate.mjs --catalog
  *
  *   --source   the unpacked library (the folder holding manifest.json and the
  *              .glb files). Also read from KATAMARI_LIBRARY.
@@ -20,6 +21,13 @@
  *              already published and that catalog.json is exactly what the
  *              table serialises to. This is what the test suite runs, because
  *              the library is not in the repo and never will be.
+ *   --catalog  no library needed either: rewrite `catalog.json` from the
+ *              table and nothing else. For a table edit that only moves rows
+ *              between kinds, renames a tier or adds a flag — which needs no
+ *              new file copied and must not need 35 MB of library to publish.
+ *              It refuses to drop a published model (that is a `--source` run
+ *              plus a deletion by hand), so it can only ever bring the JSON
+ *              back in step with the `.ts`.
  *   --quiet    totals only, no per-model table.
  *
  * IDEMPOTENT, in the strong sense: a file whose bytes already match is not
@@ -47,11 +55,17 @@ const MAX_TRIANGLES = 150_000;
 const MAX_BYTES = 4 * 1024 * 1024;
 
 function parseArgs(argv) {
-  const out = { source: process.env.KATAMARI_LIBRARY ?? '', verify: false, quiet: false };
+  const out = {
+    source: process.env.KATAMARI_LIBRARY ?? '',
+    verify: false,
+    catalog: false,
+    quiet: false,
+  };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--source') out.source = argv[++i] ?? '';
     else if (arg === '--verify') out.verify = true;
+    else if (arg === '--catalog') out.catalog = true;
     else if (arg === '--quiet') out.quiet = true;
     else {
       console.error(`unknown argument: ${arg}`);
@@ -90,6 +104,7 @@ function serializeCatalog(table) {
       rooted: entry.rooted,
     };
     if (entry.beach === true) row.beach = true;
+    if (entry.inland === true) row.inland = true;
     if (entry.label !== undefined) row.label = entry.label;
     return row;
   });
@@ -121,8 +136,8 @@ function fail(messages) {
 
 function printTable(rows, quiet) {
   if (!quiet) {
-    const widths = [6, 22, 13, 9, 7, 7, 6, 8];
-    const head = ['id', 'name', 'kind', 'tier', 'height', 'rooted', 'beach', 'tris'];
+    const widths = [6, 22, 13, 9, 7, 7, 6, 7, 8];
+    const head = ['id', 'name', 'kind', 'tier', 'height', 'rooted', 'beach', 'inland', 'tris'];
     const line = (cells) =>
       cells.map((c, i) => String(c).padEnd(widths[i]).slice(0, widths[i])).join(' ');
     console.log(line(head));
@@ -137,6 +152,7 @@ function printTable(rows, quiet) {
           r.heightUnits,
           r.rooted ? 'yes' : 'no',
           r.beach ? 'yes' : '',
+          (r.inland ?? !r.beach) ? 'yes' : '',
           r.triangles ?? '',
         ]),
       );
@@ -178,6 +194,33 @@ async function verify(table, args) {
   if (problems.length > 0) fail(problems);
   printTable(rows, args.quiet);
   console.log('verified: every model published, catalog.json matches the table.');
+}
+
+/**
+ * Rewrite `catalog.json` from the table, with no library — see `--catalog`.
+ *
+ * Every model the table names must already be published, which is what keeps
+ * this from publishing a row whose glb nobody copied.
+ */
+function writeCatalog(table, args) {
+  const paths = publicPaths();
+  const problems = [];
+  const rows = [];
+  for (const entry of table.KATAMARI_CATALOG) {
+    const path = join(paths.models, entry.file);
+    if (!existsSync(path)) problems.push(`${entry.id}: ${entry.file} is not published`);
+    else rows.push({ ...entry, bytes: readFileSync(path).length });
+  }
+  if (problems.length > 0) fail(problems);
+  const written = writeIfChanged(paths.catalog, serializeCatalog(table));
+  printTable(rows, args.quiet);
+  const named = new Set(table.KATAMARI_CATALOG.map((e) => e.file));
+  const stale = readdirSync(paths.models).filter((f) => f.endsWith('.glb') && !named.has(f));
+  console.log(`catalog.json ${written ? 'rewritten' : 'unchanged'}.`);
+  if (stale.length > 0) {
+    console.log(`\n${stale.length} published model(s) the table no longer names — delete by hand:`);
+    for (const f of stale) console.log(`  public/katamari/models/${f}`);
+  }
 }
 
 async function curate(table, args) {
@@ -254,7 +297,8 @@ async function curate(table, args) {
 const args = parseArgs(process.argv.slice(2));
 const table = await loadTable();
 if (args.verify) await verify(table, args);
+else if (args.catalog) writeCatalog(table, args);
 else if (args.source === '') {
-  console.error('pass --source <library-dir> (or KATAMARI_LIBRARY), or --verify');
+  console.error('pass --source <library-dir> (or KATAMARI_LIBRARY), or --verify, or --catalog');
   process.exit(2);
 } else await curate(table, args);
