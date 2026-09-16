@@ -159,9 +159,10 @@ type WorldDrawing = IncomingDrawing & {
   resident?: boolean;
   /**
    * The pure pipeline's output, built off this thread before the offer —
-   * `SpawnOptions.blueprint` (src/character/blueprintPool.ts). Only the
-   * restore path sets it; a live drawing arrives one at a time and pays the
-   * pipeline where it always did.
+   * `SpawnOptions.blueprint` (src/character/blueprintPool.ts). Set by the two
+   * paths that go through `createIngestQueue`: the store's restore and the
+   * feed's own arrivals. Absent, the gate builds it inline exactly as it did
+   * before the pool existed, which is what a page with no workers does.
    */
   blueprint?: CreatureBlueprint;
 };
