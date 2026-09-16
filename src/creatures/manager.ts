@@ -90,31 +90,50 @@ export const WANDER_SPEED_DEFAULT = 1.4;
 export const DRIVE_SPEED = MAX_SPEED;
 
 /**
- * How much faster a KATAMARI creature travels than a walking one. **[D]**
+ * How much faster a ROLLING katamari creature travels than the spec pace.
+ * **[D]**
  *
  * User ask, 2026-09-16: *"Like Katamari Damacy, we should have the character
  * ROLL versus walk. Right now, the walking cycle is way too slow."* A ball
  * has no stride to outrun — the speed a walk reads as honest at is the speed
- * its legs are taking, and a rolling creature has none. So the katamari world
- * raises the ceiling: `MAX_SPEED × 3` = 3.6 u/s, for the stick and for the
- * wander alike, with `DRIVE_TURN_TAU_MS` untouched (a faster ball that also
- * turned faster would be a cursor).
+ * its legs are taking, and a rolling creature has none. Then, from a phone on
+ * the deployed build: *"we need to up the speed and velocity by a lot."*
  *
- * THREE, not more. Rolling already reads faster than walking at the same
- * ground speed — the surface turns under the eye — so the multiplier is the
- * starting point rather than the answer, and the ghost panel's wander/speed
- * slider multiplies on top of it for tuning.
+ * SIX, from three. `MAX_SPEED × 6` = **7.2 u/s** — the ceiling a full push
+ * reaches once the ball is rolling. The island is ~100u across, so this
+ * crosses it in fourteen seconds; at 3.6 it took half a minute, which is what
+ * "by a lot" was about. The ghost panel's slider (ceiling 8) is where the
+ * next guess gets made.
  *
- * TUNNELLING, since this is the number the substep guard was sized against:
- * `stepCreatures` clamps dt at 250ms and covers `MAX_STEP_TRAVEL` (0.25u) per
- * substep over at most `MAX_SUBSTEPS` (16), so 4u of travel per frame. At
- * 3.6 u/s a clamped frame is 0.9u — 4 substeps of the 16 — so the guard still
- * covers the katamari top speed four times over.
+ * TUNNELLING, since this is the number the substep guard is sized against:
+ * `stepCreatures` clamps dt at 250 ms and advances at most `MAX_STEP_TRAVEL`
+ * (0.25 u) per substep over at most `MAX_SUBSTEPS` (16), so 4 u of travel per
+ * frame. At 7.2 u/s a clamped frame is 1.8 u — 8 of the 16 substeps — and
+ * 0.25 u is still under the smallest thing on the map to tunnel through (a
+ * 0.5 u stone's footprint, a ~0.9 u creature), so no step can leap one. The
+ * guard covers this ceiling with half of itself spare; `MAX_SUBSTEPS` did not
+ * need raising.
  *
- * EVERY OTHER WORLD IS UNCHANGED: outside the game the multiplier is 1 and
- * the walk cycle keeps the speeds it shipped with.
+ * EVERY OTHER WORLD IS UNCHANGED: outside the game the multiplier is
+ * `WANDER_SPEED_DEFAULT` and the walk cycle keeps the speeds it shipped with.
  */
-export const KATAMARI_SPEED_MUL = 3;
+export const KATAMARI_SPEED_MUL = 6;
+
+/**
+ * And the WALK ceiling in a katamari world. **[D]**
+ *
+ * A creature that is carrying nothing is not a ball yet — it walks (PLAN
+ * §7.6, the roll blend) — and walking at the rolling ceiling would be a
+ * hatchling sprinting. `MAX_SPEED × 2.5` = **3 u/s**: brisker than the
+ * shipped walk (`WANDER_SPEED_DEFAULT`, 1.68 u/s) because the island is
+ * bigger than the field that number was tuned on, and far enough under the
+ * rolling ceiling that the ball is the thing that goes fast.
+ *
+ * THE WANDER SITS HERE TOO, at the walk and never at the roll: an unattended
+ * creature crossing the island at 7.2 u/s reads as a world running away from
+ * the person watching it, and nobody asked for faster ai.
+ */
+export const KATAMARI_WALK_MUL = 2.5;
 
 /**
  * Turn responsiveness under the stick, as an exponential time constant.
@@ -125,6 +144,23 @@ export const KATAMARI_SPEED_MUL = 3;
  * not a network.
  */
 export const DRIVE_TURN_TAU_MS = 90;
+
+/**
+ * The same, in a KATAMARI world — tighter, because it is going faster. **[D]**
+ *
+ * Exponential convergence covers ~90% of a turn in 2.3 τ and ~99% in 4.6 τ.
+ * At 90 ms that is 207 ms and 414 ms, and at 7.2 u/s the creature covers a
+ * metre and a half of ground before it is really pointing where the thumb
+ * asked — which does not read as easing, it reads as SLIDING. 60 ms puts the
+ * same turn at 138 ms and 276 ms, inside the ~250 ms where a hand still reads
+ * cause and effect.
+ *
+ * Still monotone and still ζ ≥ 1 in the sense that matters: this is
+ * `followFraction`, an exponential approach that cannot overshoot its target
+ * however hard the stick is thrown (TASTE §2.1, confidence 1.00). Sixty is a
+ * shorter constant, not a springier one.
+ */
+export const KATAMARI_TURN_TAU_MS = 60;
 
 /**
  * How long the stick keeps the creature after the last push. **[D]**
@@ -1032,19 +1068,48 @@ export function createCreatureManager(
   let timersPaused = false;
   let aiPaused = false;
   /**
-   * The speed multiplier every creature here runs at — the agents' wander and
-   * the drive ceiling both read it, and the ghost panel's wander/speed slider
-   * writes it.
+   * THE TOP of this world's speed range — the number the ghost panel's
+   * wander/speed slider holds and `wanderSpeed()` reports.
    *
-   * KATAMARI GETS ITS OWN DEFAULT, and that is the whole of the speed change
-   * (user ask, 2026-09-16: *"the walking cycle is way too slow"*). It is a
-   * different default rather than a factor ON the shipped one because the
-   * shipped 1.4 is a tuning of a WALK — multiplying the two would put the
-   * stick at 5.04 u/s, past the 3 the ruling asked for. At
-   * `KATAMARI_SPEED_MUL` the drive ceiling is `MAX_SPEED × 3` = 3.6 u/s
-   * exactly, which is the number the substep guard was checked against.
+   * KATAMARI GETS ITS OWN DEFAULT (user ask, 2026-09-16: *"the walking cycle
+   * is way too slow"*, then *"we need to up the speed and velocity by a
+   * lot"*). It is a different default rather than a factor ON the shipped
+   * one because the shipped 1.4 is a tuning of a WALK. At
+   * `KATAMARI_SPEED_MUL` the ROLLING drive ceiling is `MAX_SPEED × 6` =
+   * 7.2 u/s, which is the number the substep guard is checked against.
+   *
+   * Outside the katamari it is the only multiplier there is, exactly as it
+   * shipped: the wander and the stick both read it and nothing else.
    */
   let wanderSpeedMult = katamari ? KATAMARI_SPEED_MUL : WANDER_SPEED_DEFAULT;
+
+  /**
+   * What the panel's slider is saying RELATIVE to the shipped default — 1
+   * when nobody has touched it.
+   *
+   * The katamari has two ceilings (a walk and a roll) and one slider, so the
+   * slider scales the pair rather than owning one of them. Everywhere else
+   * there is one ceiling and this is 1.
+   */
+  const speedScale = (): number => (katamari ? wanderSpeedMult / KATAMARI_SPEED_MUL : 1);
+
+  /**
+   * The WALK ceiling multiplier — what a creature carrying nothing drives at,
+   * and what every agent wanders at (`KATAMARI_WALK_MUL`).
+   *
+   * The wander sits here and never at the rolling ceiling: an unattended
+   * creature crossing the island at 7.2 u/s is a world running away from the
+   * person watching it.
+   */
+  const walkMult = (): number =>
+    katamari ? KATAMARI_WALK_MUL * speedScale() : wanderSpeedMult;
+
+  /** The ceiling multiplier for a creature under somebody's thumb. */
+  const driveMult = (): number => wanderSpeedMult;
+
+  /** How fast a driven creature turns toward the push — tighter in a
+   * katamari world, because it is going more than twice as fast there. */
+  const turnTauMs = (): number => (katamari ? KATAMARI_TURN_TAU_MS : DRIVE_TURN_TAU_MS);
 
   // ── physics scratch (allocation-free per frame) ───────────────────────────
   // The prop spatial hash rebuilds only when the scatter's collider version
@@ -1289,7 +1354,9 @@ export function createCreatureManager(
     // answer (null → mild seeded variation).
     const seed = behaviorSeed(slot.id);
     slot.agent = new BehaviorAgent(seed, personalityFromChoice(slot.personalityChoice, seed));
-    slot.agent.setSpeedMultiplier(wanderSpeedMult);
+    // The WALK multiplier, not the rolling one: the wander is a walk
+    // wherever it happens (see `walkMult`).
+    slot.agent.setSpeedMultiplier(walkMult());
   }
 
   function beginHatch(slot: Slot, cause: 'timer' | 'forced'): void {
@@ -3448,8 +3515,9 @@ export function createCreatureManager(
             if (driven) slot.drivenAtMs = nowMs;
             const held =
               slot.drivenAtMs !== null && nowMs - slot.drivenAtMs < DRIVE_IDLE_MS;
-            const driveVx = driven ? driven.x * DRIVE_SPEED * wanderSpeedMult : 0;
-            const driveVz = driven ? driven.z * DRIVE_SPEED * wanderSpeedMult : 0;
+            const ceiling = DRIVE_SPEED * driveMult();
+            const driveVx = driven ? driven.x * ceiling : 0;
+            const driveVz = driven ? driven.z * ceiling : 0;
             // What the hand is asking for, and where the creature is really
             // pointing: the held agent rides both rather than its own idea
             // of them, so the release is a drift-stop from the real speed
@@ -3596,7 +3664,7 @@ export function createCreatureManager(
               const want = Math.atan2(vx, vz);
               heading =
                 root.rotation.y +
-                shortestAngle(root.rotation.y, want) * followFraction(dt, DRIVE_TURN_TAU_MS);
+                shortestAngle(root.rotation.y, want) * followFraction(dt, turnTauMs());
             }
 
             aliveScratch.push({ slot, root, body, heading });
@@ -4033,8 +4101,10 @@ export function createCreatureManager(
 
     setWanderSpeed(mult): void {
       wanderSpeedMult = Math.max(0, mult);
+      // The slider moves the whole range: a katamari world's walk is a
+      // fraction of it, every other world's only ceiling IS it.
       for (const slot of slots.values()) {
-        slot.agent?.setSpeedMultiplier(wanderSpeedMult);
+        slot.agent?.setSpeedMultiplier(walkMult());
       }
     },
 

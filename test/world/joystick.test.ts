@@ -16,8 +16,11 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   DEADZONE,
+  DRIVE_CURVE,
+  KNOB_TRAVEL,
   STICK_REST,
   WORLD_REST,
+  driveResponse,
   stickToWorld,
   stickVector,
   wavyRingPoints,
@@ -44,6 +47,26 @@ describe('stickVector', () => {
     const justOut = at(DEADZONE + 0.001, 0);
     expect(justOut.mag).toBeGreaterThan(0);
     expect(justOut.mag).toBeLessThan(0.01);
+  });
+
+  it('reaches full strength where the KNOB stops, not at the rim', () => {
+    /*
+     * User report, 2026-09-16: *"we should assign speed velocity to the joy
+     * stick so the farther the push the faster the character goes."*
+     *
+     * The strength used to be rescaled onto the well's RIM while the knob
+     * stopped at half its radius — so a thumb at the visible end of the
+     * control was asking for 0.44, and the rest of the range was outside the
+     * control altogether. Now the two ends coincide.
+     */
+    expect(at(KNOB_TRAVEL, 0).mag).toBeCloseTo(1, 6);
+    // Half the usable travel is half the strength: still LINEAR here, the
+    // curve lives in `stickToWorld`.
+    const half = DEADZONE + (KNOB_TRAVEL - DEADZONE) / 2;
+    expect(at(half, 0).mag).toBeCloseTo(0.5, 6);
+    // And past the knob's stop it is clamped, never refused: a thumb that
+    // overshoots a small control is still asking for everything.
+    expect(at(KNOB_TRAVEL + 0.2, 0).mag).toBeCloseTo(1, 6);
   });
 
   it('clamps to the disc, so a corner is not faster than an axis', () => {
@@ -120,15 +143,45 @@ describe('stickToWorld', () => {
     expect(b.z).toBeCloseTo(0, 6);
   });
 
-  it('preserves strength, and rotation alone cannot change it', () => {
+  it('curves the strength, and rotation alone cannot change it', () => {
     for (const az of [0, 0.4, ISO, 2.2, -1.1]) {
       const v = stickToWorld({ x: 0.6, y: -0.8, mag: 0.5 }, az);
-      expect(v.mag).toBe(0.5);
+      // Half a push is a THIRD of the ceiling (`DRIVE_CURVE`): small pushes
+      // are a slow walk, and the same half push means the same thing at
+      // every camera angle.
+      expect(v.mag).toBeCloseTo(0.5 ** DRIVE_CURVE, 12);
+      expect(v.mag).toBeCloseTo(0.33, 2);
       // The direction stays a unit vector; `mag` carries the strength, so
       // the manager can scale by the creature's own speed rather than
       // inheriting a magnitude from screen geometry.
-      expect(Math.hypot(v.x, v.z)).toBeCloseTo(1, 6);
+      expect(Math.hypot(v.x, v.z)).toBeCloseTo(v.mag, 6);
     }
+  });
+
+  it('leaves a full push at the ceiling, and rest at rest', () => {
+    // f(1) = 1 and f(0) = 0: the curve spends the travel differently and
+    // takes nothing off either end.
+    expect(stickToWorld({ x: 0, y: -1, mag: 1 }, ISO).mag).toBeCloseTo(1, 12);
+    expect(driveResponse(1)).toBe(1);
+    expect(driveResponse(0)).toBe(0);
+    expect(driveResponse(-1)).toBe(0);
+    // Monotone the whole way up — a response curve with a flat or falling
+    // stretch is a stick that stops answering somewhere in its travel.
+    let previous = 0;
+    for (let m = 0.02; m <= 1.0001; m += 0.02) {
+      const next = driveResponse(m);
+      expect(next).toBeGreaterThan(previous);
+      previous = next;
+    }
+  });
+
+  it('is proportional all the way down, so a small push is a slow walk', () => {
+    // The whole ask, as four numbers on one curve.
+    expect(driveResponse(0.25)).toBeCloseTo(0.25 ** DRIVE_CURVE, 12);
+    expect(driveResponse(0.25)).toBeLessThan(0.12);
+    expect(driveResponse(0.5)).toBeGreaterThan(0.3);
+    expect(driveResponse(0.75)).toBeGreaterThan(0.6);
+    expect(DRIVE_CURVE).toBeGreaterThan(1);
   });
 
   it('is rest at rest, at every camera angle', () => {

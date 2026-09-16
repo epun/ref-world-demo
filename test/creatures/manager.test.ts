@@ -24,7 +24,10 @@ import { createCharacter } from '../../src/character/character';
 import {
   DRIVE_IDLE_MS,
   DRIVE_SPEED,
+  DRIVE_TURN_TAU_MS,
   KATAMARI_SPEED_MUL,
+  KATAMARI_TURN_TAU_MS,
+  KATAMARI_WALK_MUL,
   MAX_POPULATION,
   WANDER_SPEED_DEFAULT,
   chooseEviction,
@@ -49,6 +52,13 @@ import type { WorldHandles } from '../../src/world/scene';
 import type { WorldGame } from '../../src/world/game';
 import { FLAT_SURFACE, ROLLING_SURFACE, type Surface } from '../../src/world/surface';
 import { isWater } from '../../src/world/landscape';
+import {
+  DEADZONE,
+  DRIVE_CURVE,
+  KNOB_TRAVEL,
+  stickToWorld,
+  stickVector,
+} from '../../src/world/joystick';
 import { bird, fish, quadruped, snowman, circleBlob } from '../fixtures/strokes';
 
 // createEgg paints its shell texture through a 2d canvas; off-DOM the
@@ -2052,34 +2062,158 @@ describe('the creature rolls — katamari locomotion', () => {
     manager.clearAll();
   });
 
-  it('drives at the katamari top speed — three times the walking ceiling', () => {
-    const { manager } = rolling('katamari');
-    expect(KATAMARI_SPEED_MUL).toBe(3);
-    expect(manager.wanderSpeed()).toBe(KATAMARI_SPEED_MUL);
-    manager.drive('roller', { x: 0, z: 1, mag: 1 });
-    let now = 5000;
-    // One frame to settle the heading onto the stick, then a measured second.
-    now += 33;
-    manager.update(33, now);
-    const from = manager.positionOf('roller')!.clone();
+  /** How fast a creature is actually travelling under a given push, u/s. */
+  function drivenSpeed(
+    manager: ReturnType<typeof createCreatureManager>,
+    id: string,
+    push: { x: number; z: number; mag: number },
+    startMs = 5000,
+  ): number {
+    manager.drive(id, push);
+    let now = startMs;
+    // A few frames to settle the heading onto the stick, then a measured
+    // second: the turn is eased, so the first frames are a curve.
+    for (let i = 0; i < 10; i++) {
+      now += 33;
+      manager.update(33, now);
+    }
+    const from = manager.positionOf(id)!.clone();
     let travelled = 0;
     for (let i = 0; i < 30; i++) {
       now += 33;
       manager.update(33, now);
       travelled += 33;
     }
-    const to = manager.positionOf('roller')!;
-    const speed = (Math.hypot(to.x - from.x, to.z - from.z) / travelled) * 1000;
+    const to = manager.positionOf(id)!;
+    return (Math.hypot(to.x - from.x, to.z - from.z) / travelled) * 1000;
+  }
+
+  it('drives at the katamari top speed — six times the spec pace', () => {
+    /*
+     * User report, 2026-09-16, off the deployed build: *"we need to up the
+     * speed and velocity by a lot."* 3 → 6, so the rolling ceiling is
+     * 7.2 u/s and the island is fourteen seconds across instead of thirty.
+     */
+    const { manager } = rolling('katamari');
+    expect(KATAMARI_SPEED_MUL).toBe(6);
+    expect(manager.wanderSpeed()).toBe(KATAMARI_SPEED_MUL);
+    const speed = drivenSpeed(manager, 'roller', { x: 0, z: 1, mag: 1 });
     expect(speed).toBeCloseTo(MAX_SPEED * KATAMARI_SPEED_MUL, 2);
     /*
      * AND THE SUBSTEP GUARD STILL COVERS IT. `stepCreatures` clamps dt at
      * 250ms and advances at most MAX_STEP_TRAVEL (0.25u) per substep over at
      * most MAX_SUBSTEPS (16) — 4u of travel per frame. At this speed a
-     * clamped frame is 0.9u, four of the sixteen substeps.
+     * clamped frame is 1.8u, EIGHT of the sixteen substeps, and 0.25u is
+     * still well under the smallest footprint on the map (a 0.5u stone), so
+     * no substep can leap a collider. Nothing needed raising.
      */
     const clampedFrameTravel = (MAX_SPEED * KATAMARI_SPEED_MUL * 250) / 1000;
-    expect(clampedFrameTravel).toBeCloseTo(0.9, 10);
+    expect(clampedFrameTravel).toBeCloseTo(1.8, 10);
+    expect(Math.ceil(clampedFrameTravel / MAX_STEP_TRAVEL)).toBe(8);
     expect(Math.ceil(clampedFrameTravel / MAX_STEP_TRAVEL)).toBeLessThanOrEqual(MAX_SUBSTEPS);
+    manager.clearAll();
+  });
+
+  it('is proportional to the push — half a stick is a third of the ceiling', () => {
+    /*
+     * The other half of the same report: *"we should assign speed velocity to
+     * the joy stick so the farther the push the faster the character goes."*
+     * The stick's own curve is `driveResponse` (src/world/joystick.ts); what
+     * this pins is that the manager scales by whatever strength arrives and
+     * normalises nothing on the way in.
+     */
+    const { manager } = rolling('katamari');
+    const ceiling = MAX_SPEED * KATAMARI_SPEED_MUL;
+    // Straight through the real handset path: a thumb halfway through the
+    // knob's travel, mapped by the camera, curved, driven.
+    const half = stickToWorld(
+      stickVector(0, 0, 0, -(DEADZONE + (KNOB_TRAVEL - DEADZONE) / 2), 1),
+      0,
+    );
+    expect(half.mag).toBeCloseTo(0.5 ** DRIVE_CURVE, 6);
+    expect(drivenSpeed(manager, 'roller', half)).toBeCloseTo(ceiling * half.mag, 2);
+
+    const full = stickToWorld(stickVector(0, 0, 0, -KNOB_TRAVEL, 1), 0);
+    expect(full.mag).toBeCloseTo(1, 6);
+    expect(drivenSpeed(manager, 'roller', full, 30_000)).toBeCloseTo(ceiling, 2);
+    manager.clearAll();
+  });
+
+  it('wanders at the WALK ceiling, so an unattended creature does not race', () => {
+    /*
+     * The ruling with the speed raise (2026-09-16): the STICK gets 7.2 u/s,
+     * the ai does not. An unattended creature crossing the island at the
+     * rolling ceiling is a world running away from the person watching it.
+     *
+     * Measured rather than asserted off a constant: twenty seconds of
+     * wandering, and the fastest frame in it. The walk ceiling is the agent's
+     * own upper bound (`MAX_SPEED × (0.35 + 0.65 × energy) × mult`), so
+     * nothing here can reach the rolling one unless the wiring hands it over.
+     */
+    const world = stubWorld([]);
+    const manager = createCreatureManager(world, {
+      autoHatch: false,
+      surface: FLAT_SURFACE,
+      game: 'katamari',
+    });
+    // `adventure` is the restless answer: this one actually goes somewhere.
+    manager.spawn('rover', snowman, {
+      hatchMs: 60_000,
+      grown: true,
+      personality: 'adventure',
+    });
+    expect(KATAMARI_WALK_MUL).toBeLessThan(KATAMARI_SPEED_MUL);
+    expect(manager.wanderSpeed()).toBe(KATAMARI_SPEED_MUL);
+
+    let now = 5000;
+    let last = manager.positionOf('rover')!.clone();
+    let fastest = 0;
+    for (let i = 0; i < 2400; i++) {
+      now += 33;
+      manager.update(33, now);
+      const at = manager.positionOf('rover')!;
+      fastest = Math.max(fastest, (Math.hypot(at.x - last.x, at.z - last.z) / 33) * 1000);
+      last = at.clone();
+    }
+    // It really does wander…
+    expect(fastest).toBeGreaterThan(0.2);
+    // …and never faster than a walk.
+    expect(fastest).toBeLessThanOrEqual(MAX_SPEED * KATAMARI_WALK_MUL * 1.02);
+    manager.clearAll();
+  });
+
+  it('turns tighter at the katamari speed, and still cannot overshoot', () => {
+    /*
+     * At 7.2 u/s a 200ms heading lag is a metre and a half of sliding, so the
+     * turn constant is shorter here (KATAMARI_TURN_TAU_MS). Exponential
+     * either way: monotone, and it never crosses the heading it is going to.
+     */
+    expect(KATAMARI_TURN_TAU_MS).toBeLessThan(DRIVE_TURN_TAU_MS);
+    const { manager } = rolling('katamari');
+    manager.drive('roller', { x: 0, z: 1, mag: 1 });
+    let now = 5000;
+    for (let i = 0; i < 40; i++) {
+      now += 33;
+      manager.update(33, now);
+    }
+    const facing = manager.poses()[0]!.heading;
+    // A quarter turn asked for, and a quarter turn arrived at inside 250ms —
+    // approached from one side, never past it.
+    manager.drive('roller', { x: 1, z: 0, mag: 1 });
+    let overshoot = 0;
+    for (let i = 0; i < 8; i++) {
+      now += 33;
+      manager.update(33, now);
+      const turned = Math.abs(
+        Math.atan2(
+          Math.sin(manager.poses()[0]!.heading - facing),
+          Math.cos(manager.poses()[0]!.heading - facing),
+        ),
+      );
+      overshoot = Math.max(overshoot, turned);
+    }
+    expect(overshoot).toBeGreaterThan(Math.PI / 2 * 0.8);
+    expect(overshoot).toBeLessThanOrEqual(Math.PI / 2 + 1e-9);
     manager.clearAll();
   });
 

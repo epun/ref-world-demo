@@ -808,16 +808,36 @@ passenger rolls with its carrier's ball, because a carried creature is out of th
 pass entirely. **No roll phase is on the wire** (`poses` carry x/z/heading): roll is arc length
 over radius, so every page derives the same turn from the same travel.
 
-**Speed** — `KATAMARI_SPEED_MUL = 3` **[D]**. A ball has no stride to outrun, so the katamari
-world starts its speed multiplier at 3 instead of the shipped `WANDER_SPEED_DEFAULT` of 1.4
-(a *different default*, not a factor on top of it — multiplying the two would put the stick at
-5.04 u/s, past the ruling). Drive ceiling `MAX_SPEED × 3` = **3.6 u/s**, wander the same factor,
-`DRIVE_TURN_TAU_MS` untouched — a faster ball that also turned faster is a cursor. The substep
-guard still covers it: `stepCreatures` clamps dt at 250 ms and advances `MAX_STEP_TRAVEL`
-(0.25 u) per substep over at most `MAX_SUBSTEPS` (16), so 4 u per frame; 3.6 u/s × 0.25 s =
-0.9 u, four of the sixteen. The ghost panel's wander/speed slider opens on whatever the manager
-is actually running (`CreatureManager.wanderSpeed()`) and its ceiling moved to 5, so 3 is a
-starting point and not a wall. **Every other world keeps its walk cycle and its speeds.**
+**Speed** — two ceilings, both **[D]**, both katamari-only *(raised 2026-09-16 on the user
+report: "we need to up the speed and velocity by a lot")*. `KATAMARI_SPEED_MUL = 6` is the
+ROLLING ceiling — `MAX_SPEED × 6` = **7.2 u/s**, which crosses the ~100 u island in fourteen
+seconds instead of thirty — and `KATAMARI_WALK_MUL = 2.5` is the WALK ceiling, **3 u/s**, what a
+creature carrying nothing drives at and what every agent wanders at. The wander sits at the walk
+and never at the roll: an unattended creature crossing the island at 7.2 u/s is a world running
+away from the person watching it. Both are *different defaults*, not factors on the shipped
+`WANDER_SPEED_DEFAULT`. `KATAMARI_TURN_TAU_MS = 60` (from 90) because at 7.2 u/s a 200 ms
+heading lag is a metre and a half of sliding; it is still `followFraction`, monotone and unable
+to overshoot. The substep guard still covers it: `stepCreatures` clamps dt at 250 ms and
+advances `MAX_STEP_TRAVEL` (0.25 u) per substep over at most `MAX_SUBSTEPS` (16), so 4 u per
+frame; 7.2 u/s × 0.25 s = 1.8 u, eight of the sixteen, with 0.25 u still well under the smallest
+footprint on the map (a 0.5 u stone) so no substep can leap a collider — nothing needed raising.
+The ghost panel's wander/speed slider opens on `CreatureManager.wanderSpeed()` (the rolling
+ceiling) with its max at 8 and scales the pair. **Every other world keeps its walk cycle and its
+speeds.**
+
+**The stick's strength is the push** *(2026-09-16)* **[D]**. User ask: *"we should assign speed
+velocity to the joy stick so the farther the push the faster the character goes."* It nominally
+already was — `driveVx = driven.x × ceiling` and `driven.x` carries the magnitude — but two
+things stood between the thumb and the speed. `stickVector` rescaled the strength onto the
+well's RIM while the knob stops at `KNOB_TRAVEL` (half the radius), so a thumb pushed to where
+the control visibly ends was asking for 0.44 and the rest of the range lay outside the control;
+the rescale now ends where the knob does, and thumb and knob travel together. Then
+`DRIVE_CURVE = 1.6` in `driveResponse`, applied in `stickToWorld` (the seam where a thumb becomes
+an intent, so the knob keeps following the finger one-to-one): half a push is a third of the
+ceiling, a quarter push a tenth, and the stop is still exactly the ceiling. `f(0) = 0`,
+`f(1) = 1`, monotone — no cut anywhere. The wire is unchanged and carries the magnitude to three
+decimals (`src/net/worldsync.ts` clamps, never normalises), and the recorder quantises only its
+CHANGE detector, never the value it writes.
 
 **`PICKUP_RATIO` 0.6 → 1.0** *(2026-09-16)* **[D]**. User report: *"I don't see the sticky
 katamari effect where the character gathers objects as it touches them."* A hatchling measures
