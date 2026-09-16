@@ -48,6 +48,7 @@ import {
   selfMark,
   subsample,
   WORLD_MAP_EXTENT,
+  worldMapExtent,
   type BodyKind,
   type Inhabitant,
 } from '../../src/ui/minimap';
@@ -58,6 +59,7 @@ import {
   coastInland,
   coastOutline,
   islandOutline,
+  mapScale,
   setIslandMode,
   setLandscapeMode,
   waterOutline,
@@ -84,6 +86,10 @@ describe('fixed world extent', () => {
     // reaches ±160 and the range runs out to z ≈ -147, so the map has to.
     expect(WORLD_MAP_EXTENT).toBeGreaterThanOrEqual(160);
     expect(WORLD_MAP_EXTENT).toBeLessThanOrEqual(220);
+    // …and the extent actually drawn rides the map's own scale
+    // (src/world/landscape.ts `MAP_SCALE`), so a map of an island twice as
+    // wide still contains it: 370 against a coast that reaches 352.52.
+    expect(worldMapExtent()).toBe(WORLD_MAP_EXTENT * mapScale());
   });
 });
 
@@ -92,25 +98,25 @@ describe('mapToWorld', () => {
     for (const [x, z] of [
       [0, 0],
       [37.5, -88],
-      [-WORLD_MAP_EXTENT, WORLD_MAP_EXTENT],
+      [-worldMapExtent(), worldMapExtent()],
       [12.4, 12.4],
     ] as const) {
-      const at = worldToMap(x, z, WORLD_MAP_EXTENT, frame);
-      const back = mapToWorld(at.px, at.py, WORLD_MAP_EXTENT, frame);
+      const at = worldToMap(x, z, worldMapExtent(), frame);
+      const back = mapToWorld(at.px, at.py, worldMapExtent(), frame);
       expect(back.x).toBeCloseTo(x, 6);
       expect(back.z).toBeCloseTo(z, 6);
     }
   });
 
   it('maps the frame center to the world origin', () => {
-    const at = mapToWorld(frame.w / 2, frame.h / 2, WORLD_MAP_EXTENT, frame);
+    const at = mapToWorld(frame.w / 2, frame.h / 2, worldMapExtent(), frame);
     expect(at.x).toBeCloseTo(0);
     expect(at.z).toBeCloseTo(0);
   });
 
   it('survives a degenerate frame', () => {
     const tiny: MapFrame = { w: 10, h: 10, inset: 5 };
-    const at = mapToWorld(5, 5, WORLD_MAP_EXTENT, tiny);
+    const at = mapToWorld(5, 5, worldMapExtent(), tiny);
     expect(Number.isFinite(at.x)).toBe(true);
     expect(Number.isFinite(at.z)).toBe(true);
   });
@@ -197,7 +203,7 @@ describe('phone helper reuse', () => {
     expect(a).toEqual(b);
     expect(a.length).toBeGreaterThan(0);
     // …and the same uniform world→canvas projection.
-    const at = worldToMap(0, 0, WORLD_MAP_EXTENT, frame);
+    const at = worldToMap(0, 0, worldMapExtent(), frame);
     expect(at.px).toBeCloseTo(frame.w / 2);
     expect(at.py).toBeCloseTo(frame.h / 2);
   });
@@ -211,9 +217,9 @@ describe('water on the map', () => {
       const poly = waterOutline(body);
       expect(poly.length).toBeGreaterThan(3);
       for (const [x, z] of poly) {
-        expect(Math.abs(x)).toBeLessThan(WORLD_MAP_EXTENT);
-        expect(Math.abs(z)).toBeLessThan(WORLD_MAP_EXTENT);
-        const at = worldToMap(x, z, WORLD_MAP_EXTENT, frame);
+        expect(Math.abs(x)).toBeLessThan(worldMapExtent());
+        expect(Math.abs(z)).toBeLessThan(worldMapExtent());
+        const at = worldToMap(x, z, worldMapExtent(), frame);
         expect(at.px).toBeGreaterThan(0);
         expect(at.px).toBeLessThan(frame.w);
         expect(at.py).toBeGreaterThan(0);
@@ -466,7 +472,7 @@ describe('the map draws an island in a lake', () => {
     const mapFrame: MapFrame = { w: 200, h: 200, inset: mapBorderInset(scale) + 5 * scale };
     const project = (poly: readonly [number, number][]): [number, number][] =>
       poly.map(([x, z]) => {
-        const at = worldToMap(x, z, WORLD_MAP_EXTENT, mapFrame);
+        const at = worldToMap(x, z, worldMapExtent(), mapFrame);
         return [at.px, at.py];
       });
     const matches = (call: FillCall, poly: readonly [number, number][]): boolean => {
@@ -505,7 +511,7 @@ describe('the map draws an island in a lake', () => {
     const scale = mapMarkScale(200);
     const mapFrame: MapFrame = { w: 200, h: 200, inset: mapBorderInset(scale) + 5 * scale };
     const coast = coastOutline().map(([x, z]) => {
-      const at = worldToMap(x, z, WORLD_MAP_EXTENT, mapFrame);
+      const at = worldToMap(x, z, worldMapExtent(), mapFrame);
       return [at.px, at.py] as [number, number];
     });
 
@@ -541,8 +547,8 @@ describe('the map draws an island in a lake', () => {
     // The island is inside the mapped square, so the coast really is drawn
     // rather than clipped away.
     for (const [x, z] of coastOutline()) {
-      expect(Math.abs(x)).toBeLessThan(WORLD_MAP_EXTENT);
-      expect(Math.abs(z)).toBeLessThan(WORLD_MAP_EXTENT);
+      expect(Math.abs(x)).toBeLessThan(worldMapExtent());
+      expect(Math.abs(z)).toBeLessThan(worldMapExtent());
     }
   });
 });
@@ -612,7 +618,7 @@ describe('the map draws where YOU are', () => {
   const scale = mapMarkScale(200);
   const mapFrame: MapFrame = { w: 200, h: 200, inset: mapBorderInset(scale) + 5 * scale };
   const at = (x: number, z: number): { px: number; py: number } =>
-    worldToMap(x, z, WORLD_MAP_EXTENT, mapFrame);
+    worldToMap(x, z, worldMapExtent(), mapFrame);
   /** The light-valued rings on the frame. The knockout ring is the ONLY
    * thing on this map drawn in WORLD.light as a stroke — everything else
    * light is a fill (the eggs) or the ground. */
@@ -757,9 +763,15 @@ describe('bodyKindAt reads the landscape', () => {
   it('takes the forest and the range from the map, not from a new threshold', () => {
     // Two bearings the authored layout puts a wood and a range on — read off
     // `sampleLandscape().region`, which is the only thing that decides it.
-    const wood = offCoast(Math.PI, -30);
+    //
+    // The probe walks INLAND by a share of the island, not a count of units
+    // (2026-09-16, `MAP_SCALE` in src/world/landscape.ts): the features move
+    // out with the coast, so 30 units in on a doubled island lands in the open
+    // plain outside the western stand rather than inside it.
+    const inland = -30 * mapScale();
+    const wood = offCoast(Math.PI, inland);
     expect(bodyKindAt(wood.x, wood.z)).toBe('forest');
-    const range = offCoast(-Math.PI / 2, -30);
+    const range = offCoast(-Math.PI / 2, inland);
     expect(bodyKindAt(range.x, range.z)).toBe('mountain');
   });
 
@@ -805,7 +817,7 @@ describe('the body grid', () => {
 
   it('samples every cell and puts the sea at the corners', () => {
     const res = bodyGridRes(264);
-    const kinds = sampleBodyGrid(res, gridFrame, WORLD_MAP_EXTENT);
+    const kinds = sampleBodyGrid(res, gridFrame, worldMapExtent());
     expect(kinds).toHaveLength(res * res);
     // The map is a map of an island: the corners are open water.
     for (const [i, j] of [
@@ -823,9 +835,9 @@ describe('the body grid', () => {
 
   it('puts a pond where the landscape puts one, with a pale rim round it', () => {
     const res = bodyGridRes(264);
-    const kinds = sampleBodyGrid(res, gridFrame, WORLD_MAP_EXTENT);
+    const kinds = sampleBodyGrid(res, gridFrame, worldMapExtent());
     const pond = WATER_BODIES.find((b) => b.kind === 'pond')!;
-    const at = worldToMap(pond.x, pond.z, WORLD_MAP_EXTENT, gridFrame);
+    const at = worldToMap(pond.x, pond.z, worldMapExtent(), gridFrame);
     const i = Math.floor((at.px / gridFrame.w) * res);
     const j = Math.floor((at.py / gridFrame.h) * res);
     const kind = kinds[j * res + i]!;
@@ -940,7 +952,7 @@ describe('the ghibli map draws the painted body', () => {
     const scale = mapMarkScale(200);
     const mapFrame: MapFrame = { w: 200, h: 200, inset: mapBorderInset(scale) + 5 * scale };
     const coast = coastOutline().map(([x, z]) => {
-      const at = worldToMap(x, z, WORLD_MAP_EXTENT, mapFrame);
+      const at = worldToMap(x, z, worldMapExtent(), mapFrame);
       return [at.px, at.py] as [number, number];
     });
     expect(

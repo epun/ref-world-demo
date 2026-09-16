@@ -107,6 +107,17 @@ The traps, in order of how easily they get violated:
   authored coast** — everything outside `ISLAND_LOBES` is water, so nothing else needs to know
   where the edge of the world is (PLAN §7). It is behind `setIslandMode`, off by default: every
   other world's map is the one that shipped before the island landed.
+  **The island is TWICE the diameter since 2026-09-16 (user ask), and that is ONE number** —
+  `MAP_SCALE` in `src/world/landscape.ts`, read through `mapScale()` and gated on
+  `islandMode` like the coast itself. Every extent that has to cover the land rides it (the
+  ground field and its three bakes, the base blade span, the scatter extent, the physics
+  heightfield, the spawn disc, the minimap, the sea disc and the camera's depth range), and
+  the RESOLUTION is what is held fixed across it — the ground quad stays 1.25 u, every texel
+  its own size. A number scales when it says WHERE something is and not when it says HOW BIG
+  a physical thing is: a beach, a pond, a shore ramp and the terrain noise are all unchanged.
+  Don't capture the exported layout (`ISLAND`, `ISLAND_LOBES`, `WATER_BODIES`, `FOREST_BLOBS`,
+  `MOUNTAIN_BLOBS`) into a module-scope const — they are live bindings `setIslandMode`
+  re-points, so read them after the flag is set. PLAN §7 has the full list.
 
 ## Running the room
 

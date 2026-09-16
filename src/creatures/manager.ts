@@ -52,7 +52,7 @@ import { FOLLOW_TAU_MS, followFraction, shortestAngle } from '../net/worldsync';
 import type { WorldHandles } from '../world/scene';
 import type { ShadowHandle } from '../world/shadows';
 import { ROLLING_SURFACE, type Surface } from '../world/surface';
-import { isWater } from '../world/landscape';
+import { isWater, mapScale } from '../world/landscape';
 import { sanitizeGame, type WorldGame } from '../world/game';
 import { resolveName } from './naming';
 import { createClump, type Clump, type StuckItem } from './clump';
@@ -335,12 +335,22 @@ const CRACK_TEASER = 0.3;
 /**
  * How far from the origin a creature may spawn, world units. **[D]**
  *
- * Inside `TERRAIN.farStart` (150), where the authored geography is still at
+ * Inside `farFieldStart` (150), where the authored geography is still at
  * full height, with a margin so a spot never lands on the ramp down to the
  * flat outer disc. Wide on purpose: the point is a population that reads as
  * scattered over the whole field, not a clutch at the hatch clearing.
  */
 export const SPAWN_RADIUS = 120;
+
+/**
+ * …and the radius actually drawn from: `SPAWN_RADIUS` through `mapScale`
+ * (2026-09-16, the island doubled), so a room still spreads over the whole map
+ * instead of over its middle quarter. 240 on the doubled island, which is the
+ * same margin inside `farFieldStart`'s own 300.
+ */
+export function spawnRadius(): number {
+  return SPAWN_RADIUS * mapScale();
+}
 
 /** How many candidate spots one id tries before settling for the last. */
 const SPAWN_ATTEMPTS = 8;
@@ -389,7 +399,7 @@ export function spawnSpot(id: string): { x: number; z: number } {
   for (let attempt = 0; attempt < SPAWN_ATTEMPTS; attempt++) {
     const u = hashId(id, attempt * 2 + 1) / 0x100000000;
     const v = hashId(id, attempt * 2 + 2) / 0x100000000;
-    const radius = SPAWN_RADIUS * Math.sqrt(u);
+    const radius = spawnRadius() * Math.sqrt(u);
     const angle = v * Math.PI * 2;
     spot = { x: Math.cos(angle) * radius, z: Math.sin(angle) * radius };
     if (!isWater(spot.x, spot.z, SPAWN_WATER_PAD)) return spot;

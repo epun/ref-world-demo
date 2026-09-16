@@ -243,21 +243,42 @@ export const MOUNTAIN_FALLOFF = 12;
  * near the edges of a bigger scattered region now, one per bearing, with at
  * least 20 units of open plain between any two of them — and each is roughly
  * half again as wide as it was. Every feature edge stays 40 units off the
- * origin, so the hatch clearing keeps a real horizon. */
-export const FOREST_BLOBS: readonly Blob[] = [
+ * origin, so the hatch clearing keeps a real horizon.
+ *
+ * CENTRE AND RADIUS both ride `mapScale` (2026-09-16): a forest is a REGION
+ * and it has to stay one readable mass with an arm. Moving the two blobs apart
+ * without growing them would have pulled the arm off the stand. */
+const FOREST_BLOBS_AUTHORED: readonly Blob[] = [
   { x: -95, z: 20, r: 40, seed: 101 },
   { x: -60, z: 55, r: 18, seed: 102 },
 ];
 
+/**
+ * The stand as the map being read has it — the authored pair above, or that
+ * pair through `mapScale` when the island is on (see `MAP_SCALE`). A `let`
+ * with a module setter rather than a function, so the fifty consumers that
+ * already read this name keep reading it: ES live bindings hand every one of
+ * them the layout the flag chose (`setIslandMode`).
+ */
+export let FOREST_BLOBS: readonly Blob[] = FOREST_BLOBS_AUTHORED;
+
 /** [D] A backdrop range along the whole north edge: four overlapping masses
  * out past z = -90 — mountains are scenery the creatures walk toward, and a
- * range that reads as a horizon has to be both long and far. */
-export const MOUNTAIN_BLOBS: readonly Blob[] = [
+ * range that reads as a horizon has to be both long and far.
+ *
+ * CENTRE AND RADIUS both ride `mapScale` (2026-09-16), and here it is not a
+ * preference: the four masses OVERLAP by about five units, so doubling the
+ * centres alone would have opened 40-unit gaps between them and the range
+ * would have come apart into four separate hills. */
+const MOUNTAIN_BLOBS_AUTHORED: readonly Blob[] = [
   { x: -50, z: -105, r: 24, seed: 201 },
   { x: -5, z: -118, r: 26, seed: 202 },
   { x: 40, z: -112, r: 24, seed: 203 },
   { x: 80, z: -90, r: 20, seed: 204 },
 ];
+
+/** The range as the map being read has it — see `FOREST_BLOBS` above. */
+export let MOUNTAIN_BLOBS: readonly Blob[] = MOUNTAIN_BLOBS_AUTHORED;
 
 const LAKE_X = 80;
 const LAKE_Z = 70;
@@ -283,8 +304,15 @@ const LAKE_Z = 70;
  *     comfortably past the 6 the layout asks for, so no arm of it can ever
  *     pinch the ring shut.
  *
- * (Its HEIGHT is the fourth thing — see TERRAIN.islandRise.) */
-export const WATER_BODIES: readonly WaterBody[] = [
+ * (Its HEIGHT is the fourth thing — see TERRAIN.islandRise.)
+ *
+ * WHAT `MAP_SCALE` DOES TO THIS LIST (2026-09-16). The lake scales WHOLE —
+ * centre, radius and its own island with it — so the ring above keeps its
+ * measured proportions exactly and simply doubles: 15.8 units at the tightest
+ * point of a 84-unit lake. The PONDS only move: a pond is a physical thing you
+ * stand beside, not a proportion of the map, so 6 stays 6 and every clearance
+ * the layout asks for only widens. */
+const WATER_BODIES_AUTHORED: readonly WaterBody[] = [
   {
     kind: 'lake',
     x: LAKE_X,
@@ -303,6 +331,9 @@ export const WATER_BODIES: readonly WaterBody[] = [
   // stand.
   { kind: 'pond', x: -95, z: -58, r: 6, seed: 404 },
 ];
+
+/** The bodies as the map being read has them — see `FOREST_BLOBS` above. */
+export let WATER_BODIES: readonly WaterBody[] = WATER_BODIES_AUTHORED;
 
 // ── the island ───────────────────────────────────────────────────────────────
 
@@ -334,15 +365,23 @@ export const WATER_BODIES: readonly WaterBody[] = [
  * range's eastern mass (test/world/island.test.ts measures it rather than
  * trusting this comment). Nothing in the authored layout moved.
  *
- * Measured coast radius: 131.7 .. 176.3 — inside the displaced ground field
- * (±200) with the whole sea-floor slope to spare.
+ * Measured coast radius: 131.7 .. 176.3 at the authored size — inside the
+ * displaced ground field (±200) with the whole sea-floor slope to spare.
+ *
+ * TWICE AS BIG (2026-09-16, user ask). The lobes below are the AUTHORED map;
+ * what the world reads is them through `mapScale`, so on the katamari world
+ * the main mass is 300 across the radius, the coast measures **263.4 .. 352.6**
+ * and the ground field is ±400 to hold it. The scale is uniform and about the
+ * origin, so every number in this comment and in test/world/island.test.ts
+ * comes out exactly doubled — see `MAP_SCALE` for what scales and what does
+ * not.
  */
-export const ISLAND: Blob = { x: 0, z: 0, r: 150, seed: 501 };
+const ISLAND_AUTHORED: Blob = { x: 0, z: 0, r: 150, seed: 501 };
 
 /** The lobes the coast is the union of — the main mass first, then the three
  * headlands. [D] */
-export const ISLAND_LOBES: readonly Blob[] = [
-  ISLAND,
+const ISLAND_LOBES_AUTHORED: readonly Blob[] = [
+  ISLAND_AUTHORED,
   // The north headland, behind the range.
   { x: 7, z: -39, r: 115, seed: 505 },
   // The south-east headland, behind the lake. 114 rather than the 110 that
@@ -355,6 +394,124 @@ export const ISLAND_LOBES: readonly Blob[] = [
   // The west headland, behind the forest.
   { x: -56, z: 21, r: 90, seed: 521 },
 ];
+
+/** The main mass as the map being read has it — see `FOREST_BLOBS`. */
+export let ISLAND: Blob = ISLAND_AUTHORED;
+
+/** The coast's lobes as the map being read has them — see `FOREST_BLOBS`. */
+export let ISLAND_LOBES: readonly Blob[] = ISLAND_LOBES_AUTHORED;
+
+// ── the map's scale ──────────────────────────────────────────────────────────
+
+/**
+ * TWICE AS BIG (2026-09-16, user ask — *"make the island twice as big"*).
+ *
+ * Read as twice the DIAMETER: every horizontal number that is a property of
+ * the MAP is multiplied by this about the origin, so the coast's 150-unit main
+ * mass becomes 300, the three headlands go with it, and the land area is four
+ * times what it was. It is a scale ABOUT THE ORIGIN and it is uniform, which
+ * is the whole reason this is one number and not a second layout: the wobble
+ * phases key off a blob's seed and the polar angle, and both survive a uniform
+ * scale, so `coastInland(2x, 2z)` is exactly `2 · coastInland(x, z)` and every
+ * clearance, ring width and bay depth the island's tests measure comes out
+ * exactly doubled rather than re-authored. [D]
+ *
+ * WHAT IT DOES NOT TOUCH, and why — the rule is "a beach is a beach". A number
+ * is scaled when it says WHERE something is on the map and left alone when it
+ * says HOW BIG a physical thing is:
+ *
+ *   - scaled: the coast's lobes; the forest and the range, centre AND radius
+ *     (a region has to stay one readable mass — at their authored radii the
+ *     four mountain masses would have stopped overlapping and the range would
+ *     have come apart into four hills); the lake, centre and radius and its
+ *     own island with it (a landmark, and the ring of water round the island
+ *     is a measured pair — scaling the centre alone would have pulled the
+ *     island toward one shore); the ponds' CENTRES; `TERRAIN.islandRamp`, so
+ *     a lake island twice as wide keeps the bank profile it was authored
+ *     with; and the far-field gate (`farFieldStart` / `farFieldEnd`), which
+ *     is where the land settles onto the flat outer disc and therefore has to
+ *     stay outside the coast.
+ *   - not scaled: `BEACH_WIDTH`, `TERRAIN.coastRamp`, `TERRAIN.shoreRamp`,
+ *     `basinRim`, `basinDrop`, `SEA_LEVEL`, every shelf height and ramp
+ *     width, the terrace step, the noise wavelengths and amplitudes, the
+ *     hatch clearing, and a POND's own radius. A beach is two strides of sand
+ *     whatever the island is; a pond is a thing you stand beside; and leaving
+ *     the shelf ramps and the noise alone is what keeps every gradient on the
+ *     map exactly the one that was measured against the 0.6 bound.
+ *
+ * VERTICALS ARE UNTOUCHED. The island is twice as wide and exactly as high,
+ * so every slope on it is half what it was — which is the one direction the
+ * gradient bound can be moved in for free.
+ *
+ * ⚠️ THE EXPORTED LAYOUT IS A LIVE BINDING. `ISLAND`, `ISLAND_LOBES`,
+ * `WATER_BODIES`, `FOREST_BLOBS` and `MOUNTAIN_BLOBS` are `let`s that
+ * `setIslandMode` re-points (see `applyMapScale`) — so read them THROUGH the
+ * import, and never copy one into a module-scope `const` that is evaluated
+ * before the flag is set. `scene.ts` sets it in `start` before it builds
+ * anything, which is the same contract `activeTerrain` and scatter's
+ * `activeSeed` already carry; a test that captures `WATER_BODIES[0]` at import
+ * time gets the authored lake and measures a place the water is not.
+ */
+export const MAP_SCALE = 2;
+
+/**
+ * The factor every map extent is read through: `MAP_SCALE` with the island
+ * on, exactly 1 without it.
+ *
+ * Gated on `islandMode` like the coast itself, and for the same reason: the
+ * default branch builds every world's deployment at once, and meridian and
+ * the public world must be the map they already have, to the bit.
+ */
+export function mapScale(): number {
+  return islandMode() ? MAP_SCALE : 1;
+}
+
+/** One blob scaled about the origin — centre and radius together. */
+function scaleBlob(b: Blob, k: number): Blob {
+  return { x: b.x * k, z: b.z * k, r: b.r * k, seed: b.seed };
+}
+
+/**
+ * One water body scaled about the origin.
+ *
+ * A LAKE scales whole, its island with it (see `MAP_SCALE`). A POND keeps its
+ * authored radius and only moves — which only ever widens the clearances the
+ * layout asks for, never narrows them.
+ */
+function scaleWaterBody(b: WaterBody, k: number): WaterBody {
+  const out: WaterBody = {
+    kind: b.kind,
+    x: b.x * k,
+    z: b.z * k,
+    r: b.kind === 'lake' ? b.r * k : b.r,
+    seed: b.seed,
+  };
+  if (b.island) out.island = scaleBlob(b.island, k);
+  return out;
+}
+
+/**
+ * Point the exported layout at the map the flag chose.
+ *
+ * At k = 1 it hands back the AUTHORED objects themselves, not copies: a world
+ * without the island reads the identical arrays it always did.
+ */
+function applyMapScale(k: number): void {
+  if (k === 1) {
+    FOREST_BLOBS = FOREST_BLOBS_AUTHORED;
+    MOUNTAIN_BLOBS = MOUNTAIN_BLOBS_AUTHORED;
+    WATER_BODIES = WATER_BODIES_AUTHORED;
+    ISLAND = ISLAND_AUTHORED;
+    ISLAND_LOBES = ISLAND_LOBES_AUTHORED;
+  } else {
+    FOREST_BLOBS = FOREST_BLOBS_AUTHORED.map((b) => scaleBlob(b, k));
+    MOUNTAIN_BLOBS = MOUNTAIN_BLOBS_AUTHORED.map((b) => scaleBlob(b, k));
+    WATER_BODIES = WATER_BODIES_AUTHORED.map((b) => scaleWaterBody(b, k));
+    ISLAND = scaleBlob(ISLAND_AUTHORED, k);
+    ISLAND_LOBES = [ISLAND, ...ISLAND_LOBES_AUTHORED.slice(1).map((b) => scaleBlob(b, k))];
+  }
+  coastReach = ISLAND_LOBES.reduce((m, l) => Math.max(m, Math.hypot(l.x, l.z) + l.r * WOBBLE_MAX), 0);
+}
 
 /**
  * [D] Where the sea sits, world units, BEFORE the elevation dial — under the
@@ -373,8 +530,9 @@ export const SEA_LEVEL = -1.2;
 export const BEACH_WIDTH = 14;
 
 /** Largest radius any lobe's edge can reach from the ORIGIN — a bracket for
- * the coast walk below, never a substitute for the real edge. */
-const COAST_REACH = ISLAND_LOBES.reduce(
+ * the coast walk below, never a substitute for the real edge. Re-derived
+ * whenever the map's scale changes (`applyMapScale`), never restated. */
+let coastReach = ISLAND_LOBES_AUTHORED.reduce(
   (m, l) => Math.max(m, Math.hypot(l.x, l.z) + l.r * WOBBLE_MAX),
   0,
 );
@@ -496,6 +654,12 @@ export function islandMode(): boolean {
  */
 export function setIslandMode(on: boolean): void {
   activeIslandMode = on;
+  // The island is TWICE AS BIG (2026-09-16, `MAP_SCALE`), so the flag that
+  // decides whether there is a coast at all is also the flag that decides how
+  // far the map reaches. One call, here, so the geography can never be read
+  // half-scaled: every extent below and every consumer's live binding move
+  // together.
+  applyMapScale(mapScale());
 }
 
 /**
@@ -978,10 +1142,24 @@ function clearGate(r0: number): number {
   return smoothstep(TERRAIN.clearRadius, TERRAIN.clearEdge, r0);
 }
 
-/** The far-field gate: 1 over the world, 0 past `farEnd`, where the terrain
- * has to meet the flat outer ground disc. */
+/**
+ * Where the land starts settling onto the flat outer ground disc, world units
+ * — `TERRAIN.farStart` through `mapScale`, because this is the map's own rim
+ * and it has to stay outside the coast (see `MAP_SCALE`).
+ */
+export function farFieldStart(): number {
+  return TERRAIN.farStart * mapScale();
+}
+
+/** …and where it is exactly 0. `TERRAIN.farEnd` through `mapScale`. */
+export function farFieldEnd(): number {
+  return TERRAIN.farEnd * mapScale();
+}
+
+/** The far-field gate: 1 over the world, 0 past `farFieldEnd`, where the
+ * terrain has to meet the flat outer ground disc. */
 function farGate(r0: number): number {
-  return 1 - smoothstep(TERRAIN.farStart, TERRAIN.farEnd, r0);
+  return 1 - smoothstep(farFieldStart(), farFieldEnd(), r0);
 }
 
 /**
@@ -1014,6 +1192,18 @@ function shelfWeight(blobs: readonly Blob[], falloff: number, x: number, z: numb
  */
 function smoothField(x: number, z: number): number {
   const { elevation, relief } = activeTerrain;
+  // The shelf APRONS do NOT ride `mapScale` (2026-09-16, and measured before
+  // it was decided). Widening them with the map was tried first, on the theory
+  // that a range twice as wide keeps its foothills in proportion: it made the
+  // range's 70-unit apron a 140-unit one, which reaches from z = -210 to
+  // z = -18 and lifted most of the open plain with it. Measured on
+  // test/world/landscape.test.ts's own metric — the mean height of each
+  // environment against the open plain — the plain's own reference went from
+  // 0.06 to 0.64 and the forest stopped standing a tier over it (1.12 → 0.49).
+  // So an apron is a PHYSICAL width, like a beach and like the noise
+  // wavelengths above: a bigger island gets more foothills, not wider ones,
+  // and each environment stands on its own shelf rather than on its
+  // neighbour's. [D]
   const shelf =
     TERRAIN.forestShelf *
       elevation *
@@ -1366,7 +1556,12 @@ export function terrainHeight(x: number, z: number): number {
       // small headland looks like.
       const climb = isl.r * (inIsl / edge);
       const rise =
-        TERRAIN.islandRise * elevation * smoothstep(0, TERRAIN.islandRamp * relief, climb);
+        TERRAIN.islandRise *
+        elevation *
+        // The bank runs over a fraction of the island's OWN radius, so a lake
+        // island twice as wide has to spread its rise over twice the climb or
+        // the crown would swallow it (`MAP_SCALE`).
+        smoothstep(0, TERRAIN.islandRamp * relief * mapScale(), climb);
       h = Math.max(h, waterLevel(body) + terrace(rise));
     }
   }
@@ -1417,12 +1612,34 @@ export function terrainNormal(x: number, z: number): { x: number; y: number; z: 
 
 /** Default vertex count of an outer shoreline. */
 export const OUTLINE_POINTS = 96;
+/** …and the count an outer shoreline is walked at, through `mapScale`: the
+ * LAKE scales with the map (`MAP_SCALE`), so a ring twice as long keeps the
+ * ~2.7 units a chord the number above was picked for. A pond does not scale
+ * and simply gets a finer ring than it needs, which costs a few vertices. */
+export function outlinePoints(): number {
+  return OUTLINE_POINTS * mapScale();
+}
 /** Default vertex count of the COAST — twice an outer shoreline's, because it
  * is ten times as long: the lake's 96 points sit ~2.7 units apart and 192 on
  * the coast sit ~4.9, which is the same order and the same read. [D] */
 export const COAST_OUTLINE_POINTS = 192;
+/**
+ * …and the count the coast is actually walked at: `COAST_OUTLINE_POINTS`
+ * through `mapScale`, so a coastline twice as long keeps the ~4.9 units a
+ * segment the number above was picked for (`MAP_SCALE`) instead of drawing
+ * the same 192 chords across twice the arc. The collider wall, the drawn
+ * ribbon, the surf and the minimap all read it. [D]
+ */
+export function coastOutlinePoints(): number {
+  return COAST_OUTLINE_POINTS * mapScale();
+}
 /** Default vertex count of an island shoreline. */
 export const ISLAND_OUTLINE_POINTS = 64;
+/** …and the count it is walked at, through `mapScale` — the lake's island
+ * doubles with the lake, so its chords stay the length they were. */
+export function islandOutlinePoints(): number {
+  return ISLAND_OUTLINE_POINTS * mapScale();
+}
 
 function ringOutline(b: Blob, points: number): [number, number][] {
   const out: [number, number][] = [];
@@ -1439,7 +1656,7 @@ function ringOutline(b: Blob, points: number): [number, number][] {
  * nothing interrupts it, so it is also the polygon the fill is built from.
  * A lake's island is a HOLE in that fill, not a bite out of this loop —
  * `islandOutline` below. */
-export function waterOutline(body: WaterBody, points = OUTLINE_POINTS): [number, number][] {
+export function waterOutline(body: WaterBody, points = outlinePoints()): [number, number][] {
   return ringOutline(body, points);
 }
 
@@ -1448,7 +1665,7 @@ export function waterOutline(body: WaterBody, points = OUTLINE_POINTS): [number,
  * and into the water at every vertex. Null for a pond. */
 export function islandOutline(
   body: WaterBody,
-  points = ISLAND_OUTLINE_POINTS,
+  points = islandOutlinePoints(),
 ): [number, number][] | null {
   const isl = islandBlob(body);
   return isl ? ringOutline(isl, points) : null;
@@ -1460,7 +1677,7 @@ export function islandOutline(
  * evaluating a formula, because the union of three wobbled discs has no
  * closed form.
  *
- * Deterministic to the bit: a fixed bracket (0 to `COAST_REACH`, which no
+ * Deterministic to the bit: a fixed bracket (0 to `coastReach`, which no
  * lobe's edge can pass) and a fixed iteration count, so the same theta always
  * gives the same radius on every device. 40 halvings take the bracket under
  * 1e-10 units, which is far finer than the geometry it describes.
@@ -1469,7 +1686,7 @@ export function coastRadius(theta: number): number {
   const cos = Math.cos(theta);
   const sin = Math.sin(theta);
   let lo = 0;
-  let hi = COAST_REACH;
+  let hi = coastReach;
   for (let i = 0; i < 40; i++) {
     const mid = (lo + hi) / 2;
     if (coastInland(cos * mid, sin * mid) > 0) lo = mid;
@@ -1487,7 +1704,7 @@ export function coastRadius(theta: number): number {
  * the lake's island treatment inverted (src/world/water.ts), and the drawn
  * shore ribbon and the foam ride these same points.
  */
-export function coastOutline(points = COAST_OUTLINE_POINTS): [number, number][] {
+export function coastOutline(points = coastOutlinePoints()): [number, number][] {
   const out: [number, number][] = [];
   for (let i = 0; i < points; i++) {
     const theta = (i / points) * TAU;
@@ -1559,7 +1776,7 @@ export function waterColliders(): Collider[] {
   // every other authored body — and only with the island on, because with it
   // off there is no coast to walk and no ocean to be kept out of.
   if (mapped() && islandMode()) {
-    const poly = coastOutline(COAST_OUTLINE_POINTS * SHORE_WALK_SUBDIVISION);
+    const poly = coastOutline(coastOutlinePoints() * SHORE_WALK_SUBDIVISION);
     const push = WATER_COLLIDER_R - WATER_COLLIDER_BITE;
     let acc = 0;
     let next = step * 0.5;
@@ -1694,7 +1911,7 @@ function walkShore(
 export function shoreSamples(body: WaterBody, spacing = SHORE_SPACING): ShoreSample[] {
   const out: ShoreSample[] = [];
   walkShore(waterOutline(body, OUTLINE_POINTS * SHORE_WALK_SUBDIVISION), false, spacing, out);
-  const isl = islandOutline(body, ISLAND_OUTLINE_POINTS * SHORE_WALK_SUBDIVISION);
+  const isl = islandOutline(body, islandOutlinePoints() * SHORE_WALK_SUBDIVISION);
   if (isl) walkShore(isl, true, spacing, out);
   return out;
 }
@@ -1716,7 +1933,7 @@ export function shoreSamples(body: WaterBody, spacing = SHORE_SPACING): ShoreSam
  */
 export function coastShoreSamples(spacing = SHORE_SPACING): ShoreSample[] {
   const out: ShoreSample[] = [];
-  walkShore(coastOutline(COAST_OUTLINE_POINTS * SHORE_WALK_SUBDIVISION), true, spacing, out);
+  walkShore(coastOutline(coastOutlinePoints() * SHORE_WALK_SUBDIVISION), true, spacing, out);
   return out;
 }
 

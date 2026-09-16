@@ -19,9 +19,10 @@
  * xz in the fragment shader, and it costs the fills nothing: they go back to
  * their plain earcut geometry, which is also the geometry the ink pass draws.
  *
- * 512² over the painted map's 400 units — 0.78 units a texel, against a foam
+ * 512² over the ground field's 400 units — 0.78 units a texel, against a foam
  * rim of about one and a half to three units, so the rim is four texels wide
- * at its thinnest. **[D]**
+ * at its thinnest. **[D]** Both ride `mapScale` (2026-09-16, the island
+ * doubled), so the texel is 0.78 on any size of map.
  *
  * INSIDE IS POSITIVE. A texel in water holds its distance to the nearest dry
  * texel, in world units; a texel on land holds 0, which is the value the
@@ -30,16 +31,32 @@
  */
 
 import { DataTexture, FloatType, LinearFilter, RedFormat } from 'three';
-import { PAINTED_SIZE } from '../painted';
+import { FIELD_SIZE, fieldSize } from '../field';
 import { distanceTransform } from '../painted-water';
 import { ggFloat } from './shared';
 
-/** Texels a side. */
+/** Texels a side on a world with no island. */
 export const SHORE_RES = 512;
 
-/** World units the bake spans, centred on the origin — the painted map's own
- * extent, so one uv mapping reads this texture and every other bake alike. */
-export const SHORE_SIZE = PAINTED_SIZE;
+/** World units the bake spans on a world with no island, centred on the
+ * origin — the displaced ground field's own extent. */
+export const SHORE_SIZE = FIELD_SIZE;
+
+/**
+ * …and the two the bake actually uses: both through `mapScale`
+ * (2026-09-16, `MAP_SCALE` in src/world/landscape.ts), so the TEXEL stays
+ * 0.78 world units and the foam rim is still four texels wide at its
+ * thinnest. 1024² over 800 units on the doubled island — a million
+ * `isWater` calls and one distance transform over the same, which is the
+ * price of a coast twice as long.
+ */
+export function shoreSize(): number {
+  return fieldSize();
+}
+
+export function shoreRes(): number {
+  return Math.round(SHORE_RES * (fieldSize() / FIELD_SIZE));
+}
 
 /**
  * Bake the water into a fresh `DataTexture`.
@@ -50,7 +67,7 @@ export const SHORE_SIZE = PAINTED_SIZE;
  */
 export function bakeShoreTexture(
   isWater: (x: number, z: number) => boolean,
-  res: number = SHORE_RES,
+  res: number = shoreRes(),
 ): DataTexture {
   const texture = new DataTexture(new Float32Array(res * res), res, res, RedFormat, FloatType);
   // LINEAR here, unlike the height bake: this field is smooth by construction
@@ -76,8 +93,9 @@ export function rebakeShore(
 ): void {
   const res = texture.image.width;
   const data = texture.image.data as Float32Array;
-  const step = SHORE_SIZE / res;
-  const origin = -SHORE_SIZE / 2 + step * 0.5;
+  const size = shoreSize();
+  const step = size / res;
+  const origin = -size / 2 + step * 0.5;
   // The SOURCE of the transform is dry land: the distance we want, inside
   // water, is the distance to the nearest dry texel.
   const land = new Uint8Array(res * res);
@@ -106,12 +124,15 @@ export function rebakeShore(
  * none, every point reads a long way from shore, which is open water, and the
  * surface renders as its deep band rather than as a sheet of foam.
  */
-export const GG_SHORE_GLSL = /* glsl */ `
+export function ggShoreGlsl(): string {
+  const size = shoreSize();
+  return /* glsl */ `
 uniform sampler2D uShoreTex;
 uniform float uShoreOn;
 
 float ggShoreAt(vec2 world) {
-  vec2 uv = world / ${ggFloat(SHORE_SIZE)} + 0.5;
+  vec2 uv = world / ${ggFloat(size)} + 0.5;
   float baked = texture2D(uShoreTex, uv).r;
-  return mix(${ggFloat(SHORE_SIZE)}, baked, uShoreOn);
+  return mix(${ggFloat(size)}, baked, uShoreOn);
 }`;
+}

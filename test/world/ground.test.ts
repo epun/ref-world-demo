@@ -19,7 +19,14 @@ import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { Color, Mesh, MeshBasicMaterial, type BufferAttribute } from 'three';
 import { SURFACE } from '../../src/taste/tokens';
-import { FIELD_SEGMENTS, FIELD_SIZE, createGround } from '../../src/world/ground';
+import {
+  FIELD_SEGMENTS,
+  FIELD_SIZE,
+  createGround,
+  fieldQuad,
+  fieldSegments,
+  fieldSize,
+} from '../../src/world/ground';
 import {
   setIslandMode,
   setLandscapeMode,
@@ -76,11 +83,19 @@ describe('ground — what gets built', () => {
   });
 
   it('keeps the field at the budgeted density', () => {
-    // ~205k triangles is the ceiling this world pays for its ground.
+    // ~205k triangles is the ceiling this world pays for its ground on a world
+    // with no island; 819k on the doubled one (2026-09-16, `MAP_SCALE` in
+    // src/world/landscape.ts), because what is held fixed across the scale is
+    // the QUAD and not the count — a quad wider than a terrace riser washes
+    // the drawn contour out (PLAN §7.1 measured it, and re-measured it for the
+    // doubled island: the riser's own run is 1.99 units at the steepest slope
+    // on the map, so a 1.25-unit quad still puts more than one vertex across
+    // it while a 2.5-unit one would be wider than the riser).
     expect(FIELD_SEGMENTS).toBeLessThanOrEqual(320);
+    expect(fieldQuad()).toBeLessThanOrEqual(1.25);
     const index = field().geometry.getIndex();
     expect(index).not.toBeNull();
-    expect(index!.count / 3).toBe(FIELD_SEGMENTS * FIELD_SEGMENTS * 2);
+    expect(index!.count / 3).toBe(fieldSegments() * fieldSegments() * 2);
   });
 });
 
@@ -110,7 +125,9 @@ describe('ground — the field is the surface', () => {
     // ONE flat number, and the far ring is seated on that number rather than
     // on zero.
     const attr = positionOf(field());
-    const half = FIELD_SIZE / 2;
+    // `fieldSize`, not `FIELD_SIZE`: the field's side rides the island's scale
+    // and the rim moves out with it (±200, and ±400 on the doubled island).
+    const half = fieldSize() / 2;
     const floor = ROLLING_SURFACE.sampleHeight(half, 0);
     // A floor, not paper: the ocean is a real basin under the plain.
     expect(floor).toBeLessThan(-1);
@@ -122,7 +139,7 @@ describe('ground — the field is the surface', () => {
       rim++;
       expect(attr.getY(i), `rim vertex at ${x},${z}`).toBeCloseTo(floor, 5);
     }
-    expect(rim).toBe(FIELD_SEGMENTS * 4);
+    expect(rim).toBe(fieldSegments() * 4);
     // …and the ring is seated on it, so the two meet with no seam to hide.
     const far = createGround(ROLLING_SURFACE).group.getObjectByName('ground-far')!;
     expect(far.position.y).toBe(floor);
@@ -275,6 +292,9 @@ describe('ground — it rebuilds under the terrain dials', () => {
     return shader.uniforms.uStep as { value: number };
   }
 
+  // 60s: the field is 411k vertices on the doubled island (2026-09-16,
+  // `MAP_SCALE`) and this walks every one of them twice, through the Surface
+  // seam, across two rebuilds.
   it('re-displaces every vertex from the surface — elevation 0 is a flat field', () => {
     const ground = createGround(ROLLING_SURFACE);
     const mesh = field(ground);
@@ -307,7 +327,7 @@ describe('ground — it rebuilds under the terrain dials', () => {
         4,
       );
     }
-  });
+  }, 60_000);
 
   it('tracks the tier spacing in uStep — the hatch is cut at the same step', () => {
     // The drawn lip lines are `fract(h / uStep)`: a hatch drawn at the old
@@ -345,6 +365,7 @@ describe('ground — the plain mode is a flat field', () => {
     for (let i = 0; i < attr.count; i++) expect(attr.getY(i)).toBe(0);
   });
 
+  // 60s: same reason as above — every vertex of the doubled field, twice.
   it('re-displaces on rebuild when the map is switched on', () => {
     // What WorldHandles.setLandscape leans on: the same geometry, re-cut.
     const ground = inPlain(() => createGround(ROLLING_SURFACE));
@@ -369,5 +390,5 @@ describe('ground — the plain mode is a flat field', () => {
       ground.rebuild();
       for (let i = 0; i < attr.count; i++) expect(attr.getY(i)).toBe(0);
     });
-  });
+  }, 60_000);
 });

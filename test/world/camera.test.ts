@@ -37,11 +37,13 @@ import {
   CameraRig,
   FRUSTUM_HEIGHT,
   ISLAND_VIEW_MARGIN,
+  cameraDistance,
+  cameraFar,
   panLimitFor,
   zoomMinFor,
 } from '../../src/world/camera';
-import { GROUND_RADIUS } from '../../src/world/ground';
-import { coastRadius, setIslandMode } from '../../src/world/landscape';
+import { GROUND_RADIUS, groundRadius } from '../../src/world/ground';
+import { coastRadius, mapScale, setIslandMode } from '../../src/world/landscape';
 
 // The island floor and the frame-relative pan bound are the ISLAND's — every
 // test below that reads them is asking about the katamari world's camera.
@@ -56,21 +58,37 @@ describe('with the island off, the camera is the one that shipped', () => {
       expect(zoomMinFor(1.78)).toBe(0.45);
       expect(panLimitFor(390 / 844, 0.05)).toBe(200);
       expect(panLimitFor(1.78, 1)).toBe(200);
+      // …and the depth range is the one the public world shipped with, to the
+      // unit: the two functions answer their own constants with no island.
+      expect(groundRadius()).toBe(GROUND_RADIUS);
+      expect(cameraDistance()).toBe(CAMERA_DISTANCE);
+      expect(cameraFar()).toBe(CAMERA_FAR);
     } finally {
       setIslandMode(true);
     }
   });
 });
 
-/** The island's widest reach, measured here at twice the rig's own angular
+/**
+ * The island's widest reach, measured here at twice the rig's own angular
  * resolution — so this is a bound on the rig's number, not a copy of it.
  * `coastRadius` reads `ISLAND_LOBES` directly and so does not ride the
- * landscape mode: the floor is the same in the plain world. */
-const COAST_MAX = (() => {
-  let max = 0;
-  for (let i = 0; i < 720; i++) max = Math.max(max, coastRadius((i / 720) * Math.PI * 2));
-  return max;
-})();
+ * landscape mode: the floor is the same in the plain world.
+ *
+ * MEASURED ON DEMAND and memoised, never at module load: the lobes ride the
+ * map's own scale (src/world/landscape.ts `MAP_SCALE`) and `setIslandMode`
+ * re-points them, which happens in `beforeAll` — after this module has been
+ * evaluated. Measured 176.26 at the authored size, 352.52 doubled.
+ */
+let coastMaxCache: number | null = null;
+const coastMax = (): number => {
+  if (coastMaxCache === null) {
+    let max = 0;
+    for (let i = 0; i < 720; i++) max = Math.max(max, coastRadius((i / 720) * Math.PI * 2));
+    coastMaxCache = max;
+  }
+  return coastMaxCache;
+};
 
 /** The iso elevation the rig rests at — `atan(1/√2)`; the ground plane's
  * vertical extent on screen is `2R·sin` of it. */
@@ -93,19 +111,19 @@ describe('zoomMinFor', () => {
   it('fits the whole island across a portrait phone, where width binds', () => {
     const aspect = 0.5;
     const zoom = zoomMinFor(aspect);
-    expect(visibleWidth(aspect, zoom)).toBeGreaterThanOrEqual(2 * (COAST_MAX + SEA_SHOWN));
+    expect(visibleWidth(aspect, zoom)).toBeGreaterThanOrEqual(2 * (coastMax() + SEA_SHOWN));
     // Width is the narrow axis here, so it is the constraint that set the
     // floor: the frame is taller than the island needs.
-    expect(visibleHeight(zoom)).toBeGreaterThan(2 * COAST_MAX * ISO_SIN);
+    expect(visibleHeight(zoom)).toBeGreaterThan(2 * coastMax() * ISO_SIN);
   });
 
   it('fits the whole island up a landscape phone, foreshortening included', () => {
     const aspect = 1.78;
     const zoom = zoomMinFor(aspect);
-    expect(visibleHeight(zoom)).toBeGreaterThanOrEqual(2 * (COAST_MAX + SEA_SHOWN) * ISO_SIN);
+    expect(visibleHeight(zoom)).toBeGreaterThanOrEqual(2 * (coastMax() + SEA_SHOWN) * ISO_SIN);
     // Height binds at this aspect (1.78 > 1/sin(iso) ≈ 1.73), and the extra
     // width is free.
-    expect(visibleWidth(aspect, zoom)).toBeGreaterThan(2 * (COAST_MAX + SEA_SHOWN));
+    expect(visibleWidth(aspect, zoom)).toBeGreaterThan(2 * (coastMax() + SEA_SHOWN));
   });
 
   it('falls as the viewport narrows — the floor is not a constant', () => {
@@ -116,7 +134,7 @@ describe('zoomMinFor', () => {
   });
 
   it('is the island plus its margin, on the narrower axis', () => {
-    const r = COAST_MAX + ISLAND_VIEW_MARGIN;
+    const r = coastMax() + ISLAND_VIEW_MARGIN;
     // Portrait: width. Two samples of the closed form, to pin the derivation
     // rather than only its consequences.
     expect(zoomMinFor(0.5)).toBeCloseTo((FRUSTUM_HEIGHT * 0.5) / (2 * r), 3);
@@ -147,8 +165,8 @@ describe('panLimitFor', () => {
           visibleWidth(aspect, zoom) / 2,
           visibleHeight(zoom) / 2 / ISO_SIN,
         );
-        if (half < COAST_MAX + ISLAND_VIEW_MARGIN / 2) continue;
-        expect(half - panLimitFor(aspect, zoom)).toBeGreaterThanOrEqual(COAST_MAX);
+        if (half < coastMax() + ISLAND_VIEW_MARGIN / 2) continue;
+        expect(half - panLimitFor(aspect, zoom)).toBeGreaterThanOrEqual(coastMax());
       }
     }
   });
@@ -162,7 +180,10 @@ describe('panLimitFor', () => {
     for (let zoom = floor; zoom <= 2.6; zoom *= 1.1) {
       const limit = panLimitFor(aspect, zoom);
       expect(limit).toBeGreaterThan(previous);
-      expect(limit).toBeLessThanOrEqual(200);
+      // …and never past the ceiling, which rides the map (`MAP_SCALE`): a
+      // 200-unit ceiling on an island whose coast reaches 352 would have put
+      // the far shore out of reach at every zoom.
+      expect(limit).toBeLessThanOrEqual(200 * mapScale());
       previous = limit;
     }
     // …and at the default framing it is all but the frame's own half-width, so
@@ -284,12 +305,18 @@ describe('CameraRig zoom floor', () => {
 describe('CameraRig depth range', () => {
   it('reaches past the sea disc on both sides of the target', () => {
     const rig = new CameraRig(1.78);
-    expect(CAMERA_DISTANCE).toBeGreaterThan(GROUND_RADIUS);
-    expect(CAMERA_FAR).toBeGreaterThanOrEqual(CAMERA_DISTANCE + GROUND_RADIUS);
+    // `cameraDistance` / `cameraFar` and not the two constants: the sea disc
+    // rides the island's scale (src/world/field.ts `groundRadius`), so the
+    // depth range that has to clear it rides with it — 3200 / 6400 on the
+    // doubled island against the 1800 / 3800 the plain world keeps. The
+    // constants ARE those plain numbers, and the two agree with the island
+    // off (pinned below).
+    expect(cameraDistance()).toBeGreaterThan(groundRadius());
+    expect(cameraFar()).toBeGreaterThanOrEqual(cameraDistance() + groundRadius());
     expect(rig.camera.near).toBe(CAMERA_NEAR);
-    expect(rig.camera.far).toBe(CAMERA_FAR);
+    expect(rig.camera.far).toBe(cameraFar());
     // The old range stopped 480 units out and cut the horizon.
-    expect(CAMERA_FAR).toBeGreaterThan(480);
+    expect(cameraFar()).toBeGreaterThan(480);
   });
 
   it('keeps the near edge of the sea disc in front of the near plane at the lowest orbit', () => {
@@ -307,14 +334,16 @@ describe('CameraRig depth range', () => {
     const view = target.clone().sub(eye).normalize();
     // The horizontal bearing from the target toward the eye, on the ground.
     const toEye = new Vector3(eye.x - target.x, 0, eye.z - target.z).normalize();
-    const nearEdge = new Vector3(toEye.x, 0, toEye.z).multiplyScalar(GROUND_RADIUS);
+    const nearEdge = new Vector3(toEye.x, 0, toEye.z).multiplyScalar(groundRadius());
     const farEdge = nearEdge.clone().multiplyScalar(-1);
 
     const depthOf = (p: Vector3): number => p.clone().sub(eye).dot(view);
     expect(depthOf(nearEdge)).toBeGreaterThan(rig.camera.near);
     expect(depthOf(farEdge)).toBeLessThan(rig.camera.far);
     // And with the pannable region thrown in on top of the disc.
-    const panned = nearEdge.clone().multiplyScalar((GROUND_RADIUS + 200) / GROUND_RADIUS);
+    const panned = nearEdge
+      .clone()
+      .multiplyScalar((groundRadius() + 200 * mapScale()) / groundRadius());
     expect(depthOf(panned)).toBeGreaterThan(rig.camera.near);
   });
 });

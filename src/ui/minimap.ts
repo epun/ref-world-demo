@@ -90,6 +90,7 @@ import {
   coastInland,
   coastOutline,
   islandMode,
+  mapScale,
   islandOutline,
   landscapeMode,
   sampleLandscape,
@@ -115,6 +116,18 @@ import type { WorldStyle } from '../world/style';
  * units out at the south-east headland, and at 175 the map cut the corner off
  * it. A map of an island has to contain the island. */
 export const WORLD_MAP_EXTENT = 185;
+
+/**
+ * …and the half-extent the map is actually drawn at: `WORLD_MAP_EXTENT`
+ * through `mapScale` (2026-09-16, the island doubled) — 370, which holds the
+ * doubled coast's measured 352.52 with the same 17.5 units of breathing room
+ * the 185 above holds over 176.26. A map of an island has to contain the
+ * island at either size, and on a world with no island the two are the one
+ * number that shipped.
+ */
+export function worldMapExtent(): number {
+  return WORLD_MAP_EXTENT * mapScale();
+}
 
 /** Inverse of worldToMap: canvas px → world x/z under the same uniform,
  * centered mapping. Lets a click land where the map says it will. */
@@ -625,9 +638,10 @@ export function installWorldMinimap(opts: WorldMinimapOptions): WorldMinimapHand
   const islandFills: [number, number][][] = WATER_BODIES.map((body) =>
     islandOutline(body),
   ).filter((poly): poly is [number, number][] => poly !== null);
-  // The coast, at map scale. The world draws it at 192 points and subdivides
-  // that fourfold for the pen; the map is a couple of hundred pixels across,
-  // so the cheap ring is the whole of the gain — the same call the lake makes.
+  // The coast, at map scale. The world draws it at `coastOutlinePoints` and
+  // subdivides that fourfold for the pen; the map is a couple of hundred pixels
+  // across, so the cheap ring is the whole of the gain — the same call the lake
+  // makes.
   const coastFill: [number, number][] = coastOutline();
   let waterCache: { px: number; py: number }[][] = [];
   let islandCache: { px: number; py: number }[][] = [];
@@ -637,7 +651,7 @@ export function installWorldMinimap(opts: WorldMinimapOptions): WorldMinimapHand
     polys: readonly [number, number][][],
     frame: MapFrame,
   ): { px: number; py: number }[][] =>
-    polys.map((poly) => poly.map(([x, z]) => worldToMap(x, z, WORLD_MAP_EXTENT, frame)));
+    polys.map((poly) => poly.map(([x, z]) => worldToMap(x, z, worldMapExtent(), frame)));
   const waterMarks = (frame: MapFrame): void => {
     const key = `${frame.w}|${frame.h}|${frame.inset}`;
     if (key !== waterCacheKey) {
@@ -683,7 +697,7 @@ export function installWorldMinimap(opts: WorldMinimapOptions): WorldMinimapHand
     const bodyCtx = surface.getContext('2d');
     if (!bodyCtx) return null;
     const image = bodyCtx.createImageData(res, res);
-    image.data.set(bodyGridRgba(sampleBodyGrid(res, frame, WORLD_MAP_EXTENT)));
+    image.data.set(bodyGridRgba(sampleBodyGrid(res, frame, worldMapExtent())));
     bodyCtx.putImageData(image, 0, 0);
     bodyCanvas = surface;
     bodyKey = key;
@@ -803,7 +817,7 @@ export function installWorldMinimap(opts: WorldMinimapOptions): WorldMinimapHand
     // Prop marks: sparse neutral dots, the terrain at a glance.
     ctx.fillStyle = WORLD.neutral;
     for (const p of propMarks()) {
-      const at = worldToMap(p.x, p.z, WORLD_MAP_EXTENT, frame);
+      const at = worldToMap(p.x, p.z, worldMapExtent(), frame);
       ctx.beginPath();
       ctx.arc(at.px, at.py, 1.1 * scale, 0, Math.PI * 2);
       ctx.fill();
@@ -816,7 +830,7 @@ export function installWorldMinimap(opts: WorldMinimapOptions): WorldMinimapHand
     ctx.strokeStyle = palette.ink;
     ctx.lineWidth = 1;
     for (const egg of eggs) {
-      const at = worldToMap(egg.x, egg.z, WORLD_MAP_EXTENT, frame);
+      const at = worldToMap(egg.x, egg.z, worldMapExtent(), frame);
       ctx.beginPath();
       ctx.arc(at.px, at.py, EGG_DOT_R * scale, 0, Math.PI * 2);
       ctx.fill();
@@ -826,7 +840,7 @@ export function installWorldMinimap(opts: WorldMinimapOptions): WorldMinimapHand
     // Characters: the near-black marks — inhabitants, no "self" here.
     ctx.fillStyle = CHARACTER.body;
     for (const c of characters) {
-      const at = worldToMap(c.x, c.z, WORLD_MAP_EXTENT, frame);
+      const at = worldToMap(c.x, c.z, worldMapExtent(), frame);
       ctx.beginPath();
       ctx.arc(at.px, at.py, CREATURE_DOT_R * scale, 0, Math.PI * 2);
       ctx.fill();
@@ -839,7 +853,7 @@ export function installWorldMinimap(opts: WorldMinimapOptions): WorldMinimapHand
     opts.cameraRig.camera.getWorldDirection(viewDir);
     const look = groundLookTarget(camPos, viewDir);
     if (look) {
-      const at = worldToMap(look.x, look.z, WORLD_MAP_EXTENT, frame);
+      const at = worldToMap(look.x, look.z, worldMapExtent(), frame);
       const az = opts.cameraRig.azimuth;
       // Ground view direction: from the camera toward the target is
       // (-sin az, -cos az) in world x/z; map is north-up (x→px, z→py).
@@ -879,7 +893,7 @@ export function installWorldMinimap(opts: WorldMinimapOptions): WorldMinimapHand
     // label over it.
     const mine = selfMark(opts.self?.(), eggs);
     if (mine) {
-      const at = worldToMap(mine.x, mine.z, WORLD_MAP_EXTENT, frame);
+      const at = worldToMap(mine.x, mine.z, worldMapExtent(), frame);
       // Your OWN mark, whichever one you are — the same shape as everybody
       // else's, at SELF_SCALE, redrawn over the ordinary one it replaces.
       const inner = (mine.egg ? EGG_DOT_R : CREATURE_DOT_R) * SELF_SCALE;
@@ -961,12 +975,13 @@ export function installWorldMinimap(opts: WorldMinimapOptions): WorldMinimapHand
     const at = mapToWorld(
       event.clientX - rect.left,
       event.clientY - rect.top,
-      WORLD_MAP_EXTENT,
+      worldMapExtent(),
       frameFor(w, h, inset, scale),
     );
     // Clamp to the mapped region so a border click stays on the ground.
-    const x = Math.max(-WORLD_MAP_EXTENT, Math.min(WORLD_MAP_EXTENT, at.x));
-    const z = Math.max(-WORLD_MAP_EXTENT, Math.min(WORLD_MAP_EXTENT, at.z));
+    const extent = worldMapExtent();
+    const x = Math.max(-extent, Math.min(extent, at.x));
+    const z = Math.max(-extent, Math.min(extent, at.z));
     // Told BEFORE the reframe: whoever else is framing has to have let go
     // by the time this slide starts, or it fights the first frame of it.
     opts.onFocus?.(x, z);
