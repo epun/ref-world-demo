@@ -25,6 +25,9 @@ import {
 } from './ghibli/flowers';
 import {
   createGrassField,
+  GRASS_BASE_PHONE,
+  GRASS_BASE_PROJECTION,
+  GRASS_BASE_SPAN,
   GRASS_COUNT_PHONE,
   GRASS_COUNT_PROJECTION,
   GRASS_SPAN_PHONE,
@@ -631,6 +634,13 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
    * blades' worth of layout.
    */
   let grass: ReturnType<typeof createGrassField> | null = null;
+  /**
+   * The BASE blade field: every meadow texel of the island, at a uniform
+   * density, with the whole base budget in it (2026-09-16, user direction:
+   * grass over the entire map). `grass` above is the dense NEAR field that
+   * draws on top of it around the look-target.
+   */
+  let baseGrass: ReturnType<typeof createGrassField> | null = null;
   let flowers: ReturnType<typeof createFlowerField> | null = null;
   /** The painted planting layers handed over so far (`setPaintedLayers`) —
    * remembered, so a field built after the brush mounted still gets them. */
@@ -670,7 +680,22 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
       // weight as well as its own.
       layers: { flowers: paintedLayers.flowers, grass: paintedLayers.grass },
     });
-    scene.add(grass.mesh, flowers.mesh);
+    baseGrass ??= createGrassField({
+      count: phone ? GRASS_BASE_PHONE : GRASS_BASE_PROJECTION,
+      layout: 'box',
+      span: GRASS_BASE_SPAN,
+      height: ground.heightTexture(),
+      region: ground.region(),
+      baseDensity: 1,
+      // Ten units between neighbours at this budget, so a base blade is wider
+      // than a near one and keeps a floor in PIXELS as the camera pulls back
+      // (src/world/ghibli/grass.ts).
+      bladeWidth: 0.22,
+      minBladePx: 1.5,
+      layers: { grass: paintedLayers.grass, comb: paintedLayers.comb },
+    });
+    // The base field FIRST, so the dense near field draws over it.
+    scene.add(baseGrass.mesh, grass.mesh, flowers.mesh);
   };
   /**
    * Slide the window onto the look-target — three uniform writes, so this runs
@@ -695,9 +720,13 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
     const region = ground.region();
     const height = ground.heightTexture();
     grass?.setRegion(region);
+    baseGrass?.setRegion(region);
     flowers?.setRegion(region);
     grass?.setHeight(height);
+    baseGrass?.setHeight(height);
     flowers?.setHeight(height);
+    // …and the water's own bake, for the same reason: the shoreline moved.
+    water.setShore(ground.shoreTexture());
   };
 
   // ── the look ──────────────────────────────────────────────────────────────
@@ -736,10 +765,12 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
       rebuildFields();
       followFields();
       grass?.setLayers({ grass: paintedLayers.grass, comb: paintedLayers.comb });
+      baseGrass?.setLayers({ grass: paintedLayers.grass, comb: paintedLayers.comb });
       flowers?.setLayers({ flowers: paintedLayers.flowers, grass: paintedLayers.grass });
       ground.setPaintedGrass(paintedLayers.grass);
     }
     if (grass) grass.mesh.visible = ghibli;
+    if (baseGrass) baseGrass.mesh.visible = ghibli;
     if (flowers) flowers.mesh.visible = ghibli;
     // Both stamp passes lerp paper → shadow as the sun's presence rises, so
     // both need the pair that belongs to the paper now underneath them. The
@@ -812,13 +843,21 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
     if (currentStyle === 'ghibli') {
       const field = scatter.windField();
       grass?.setWind(field, nowMs);
+      baseGrass?.setWind(field, nowMs);
       flowers?.setWind(field, nowMs);
       // envpaint's distance collapse: zoomed out a blade is a pixel wide, so
       // the field flattens toward one painted green rather than speckling.
       const halfHeight =
         (cameraRig.camera.top - cameraRig.camera.bottom) / 2 / Math.max(0.01, cameraRig.camera.zoom);
       grass?.setZoom(halfHeight);
+      baseGrass?.setZoom(halfHeight);
       flowers?.setZoom(halfHeight);
+      // World units a pixel, so a base blade can keep a floor in pixels as the
+      // camera pulls back (src/world/ghibli/grass.ts). The rig's own frustum
+      // over the viewport, which is the one place that number lives.
+      const unitsPerPx = (halfHeight * 2) / Math.max(1, window.innerHeight);
+      grass?.setPixelScale(unitsPerPx);
+      baseGrass?.setPixelScale(unitsPerPx);
       // …and the window follows the eye. Three uniform writes: the field's
       // layout is window-local and its heights come from the bake, so there is
       // nothing on the CPU to re-lay (src/world/ghibli/height.ts).
@@ -914,6 +953,7 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
       if ('flowers' in layers) paintedLayers.flowers = layers.flowers ?? null;
       if ('comb' in layers) paintedLayers.comb = layers.comb ?? null;
       grass?.setLayers({ grass: paintedLayers.grass, comb: paintedLayers.comb });
+      baseGrass?.setLayers({ grass: paintedLayers.grass, comb: paintedLayers.comb });
       flowers?.setLayers({ flowers: paintedLayers.flowers, grass: paintedLayers.grass });
       ground.setPaintedGrass(paintedLayers.grass);
     },

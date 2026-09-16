@@ -68,8 +68,9 @@ import { MOTION, SURFACE } from '../taste/tokens';
 import { createGroundMaterial, type GhibliGround } from './ghibli/ground';
 import { bakeHeightTexture, rebakeHeight } from './ghibli/height';
 import { bakeRegionTexture, rebakeRegion } from './ghibli/region';
+import { bakeShoreTexture, rebakeShore } from './ghibli/shore';
 import { applyToon } from './toon';
-import { TERRAIN, terrainParams } from './landscape';
+import { isWater, TERRAIN, terrainParams } from './landscape';
 import { PAINTED_SIZE } from './painted';
 import type { WorldStyle } from './style';
 import type { Surface } from './surface';
@@ -319,6 +320,17 @@ export interface Ground {
    */
   heightTexture(): DataTexture | null;
   /**
+   * The baked SHORE field the ghibli water surfaces band off
+   * (src/world/ghibli/shore.ts) — one exact distance transform of
+   * `isWater`, which answers for the authored bodies, the sea and every
+   * painted one.
+   *
+   * Baked here for the same reason the other two are: `rebuild()` is the one
+   * call that knows the map moved. Null until the ghibli style has been
+   * switched on once.
+   */
+  shoreTexture(): DataTexture | null;
+  /**
    * Tell the ghibli ground where the blade field's window is, so the meadow
    * takes that field's own colour exactly where the field is drawn
    * (src/world/ghibli/ground.ts). A no-op on `ink`, which has no such field.
@@ -518,6 +530,7 @@ ${groundNoiseGlsl}`,
   let ghibli: GhibliGround | null = null;
   let regionTexture: DataTexture | null = null;
   let heightTexture: DataTexture | null = null;
+  let shoreTexture: DataTexture | null = null;
   /** The window the blade field is drawing, replayed into the ghibli material
    * when it is built (the style can switch after the camera has moved). */
   let fieldWindow: { x: number; z: number; span: number } = { x: 0, z: 0, span: 0 };
@@ -531,6 +544,7 @@ ${groundNoiseGlsl}`,
     if (ghibli) return ghibli;
     regionTexture = bakeRegionTexture();
     heightTexture = bakeHeightTexture((x, z) => surface.sampleHeight(x, z));
+    shoreTexture = bakeShoreTexture((x, z) => isWater(x, z));
     const built = createGroundMaterial({ region: regionTexture });
     built.setFieldWindow(fieldWindow.x, fieldWindow.z, fieldWindow.span);
     built.setPaintedPath(paintedPath);
@@ -585,6 +599,7 @@ ${groundNoiseGlsl}`,
     },
     region: (): DataTexture | null => regionTexture,
     heightTexture: (): DataTexture | null => heightTexture,
+    shoreTexture: (): DataTexture | null => shoreTexture,
     setFieldWindow: (x: number, z: number, span: number): void => {
       fieldWindow = { x, z, span };
       ghibli?.setFieldWindow(x, z, span);
@@ -605,6 +620,10 @@ ${groundNoiseGlsl}`,
       // field above was just re-displaced from. One bake, 65k samples, and
       // every blade in the world comes with it (src/world/ghibli/height.ts).
       if (heightTexture) rebakeHeight(heightTexture, (x, z) => surface.sampleHeight(x, z));
+      // …and the shoreline, which a landscape switch or a painted pond moves:
+      // one pass here, and every water surface in the world bands off the new
+      // coast without being handed anything (src/world/ghibli/shore.ts).
+      if (shoreTexture) rebakeShore(shoreTexture, (x, z) => isWater(x, z));
       ghibli?.refresh();
     },
   };

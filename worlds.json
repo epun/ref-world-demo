@@ -9,7 +9,7 @@
     "valiocon": {
       "host": "ref-world-valiocon.vercel.app",
       "residents": "none",
-      "hatch": "manual",
+      "hatch": "timer",
       "style": "ghibli",
       "game": "katamari",
       "dev": true

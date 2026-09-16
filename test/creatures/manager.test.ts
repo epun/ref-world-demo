@@ -17,13 +17,16 @@
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { Group, Mesh, Scene, Vector3 } from 'three';
+import { Group, Mesh, Quaternion, Scene, Vector3 } from 'three';
 import type { Object3D } from 'three';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { createCharacter } from '../../src/character/character';
 import {
   DRIVE_IDLE_MS,
+  DRIVE_SPEED,
+  KATAMARI_SPEED_MUL,
   MAX_POPULATION,
+  WANDER_SPEED_DEFAULT,
   chooseEviction,
   createCreatureManager,
   measureBodyRadius,
@@ -33,9 +36,15 @@ import {
 import { BehaviorAgent, MAX_SPEED } from '../../src/behavior/agent';
 import { generatedName } from '../../src/creatures/naming';
 import { MOTION } from '../../src/taste/tokens';
-import { STICKY } from '../../src/creatures/sticky';
+import { carryLimit, STICKY } from '../../src/creatures/sticky';
 import { EGG_RADIUS } from '../../src/egg/egg';
 import type { Collider } from '../../src/physics/colliders';
+import {
+  MAX_STEP_TRAVEL,
+  MAX_SUBSTEPS,
+  SOFT_SPEED_FACTOR,
+} from '../../src/physics/resolve';
+import type { LooseMeshes } from '../../src/world/loose';
 import type { WorldHandles } from '../../src/world/scene';
 import type { WorldGame } from '../../src/world/game';
 import { FLAT_SURFACE, ROLLING_SURFACE, type Surface } from '../../src/world/surface';
@@ -80,6 +89,7 @@ function stubBodies(): unknown {
     loosen: () => null,
     bump: () => {},
     itemByCollider: () => undefined,
+    sideByCollider: () => null,
     sync: () => {},
     update: () => {},
     dispose: () => {},
@@ -1289,7 +1299,7 @@ describe('drive hold — the stick owns the creature, the wander ai waits', () =
  * have decided anything.
  *
  * `fish` measures ~2.72u and `snowman` ~0.91u, so the snowman is comfortably
- * inside `carryLimit(fish)` = 0.6 × 2.72 = 1.63 and the fish is not inside
+ * inside `carryLimit(fish)` = 1.0 × 2.72 = 2.72 and the fish is not inside
  * the snowman's. Deliberately not a hand-set radius: the carry rule turns on
  * the REAL mesh footprint, and a test that set the numbers itself would pass
  * over a generator that had stopped measuring.
@@ -1580,6 +1590,7 @@ describe('sticky — impact is in world units per SECOND', () => {
           return { key, kind: 'bush', variant: 0, scale: 1, x: 0, z: 0, r: 1 };
         },
         itemByCollider: () => undefined,
+        sideByCollider: () => null,
         sync: () => {},
         update: () => {},
         dispose: () => {},
@@ -1879,5 +1890,439 @@ describe('the katamari is a per-world game — a world without it plays none', (
     expect(seen).toEqual([]);
     expect(manager.wrecks()).toEqual([]);
     manager.clearAll();
+  });
+});
+
+/**
+ * ROLLING, NOT WALKING — the katamari world only (user ask, 2026-09-16:
+ * *"like Katamari Damacy, we should have the character ROLL versus walk.
+ * Right now, the walking cycle is way too slow"*).
+ *
+ * Three things had to become true at once, and each one is worth its own
+ * assertion because each one alone would look like the feature and not be it:
+ * the CREATURE is inside the pile's rolling group (so eyes and topper turn
+ * with the ball instead of a ball rolling beside a walking creature), the
+ * walk cycle is OFF (a waddle on top of a roll is two locomotions), and the
+ * speeds go up (a ball has no stride to outrun).
+ *
+ * And the fourth: none of it reaches any other world. The ink/meridian world
+ * keeps the walk it shipped with, at the speeds it shipped with — the nested
+ * block at the bottom is that assertion.
+ */
+describe('the creature rolls — katamari locomotion', () => {
+  function rolling(game: WorldGame): {
+    world: WorldHandles;
+    manager: ReturnType<typeof createCreatureManager>;
+  } {
+    const world = stubWorld([]);
+    const manager = createCreatureManager(world, {
+      autoHatch: false,
+      surface: FLAT_SURFACE,
+      game,
+    });
+    // Grown: no shell to break, so the rig under test exists on frame one.
+    manager.spawn('roller', snowman, { hatchMs: 60_000, grown: true });
+    return { world, manager };
+  }
+
+  /** The one creature root in the scene. */
+  function rootOf(world: WorldHandles): Group {
+    for (const child of world.scene.children) {
+      if (child instanceof Group && child.name.startsWith('creature ')) return child;
+    }
+    throw new Error('no creature root');
+  }
+
+  function named(root: Object3D, name: string): Object3D | null {
+    let found: Object3D | null = null;
+    root.traverse((o) => {
+      if (found === null && o.name === name) found = o;
+    });
+    return found;
+  }
+
+  function firstMesh(root: Object3D): Mesh | null {
+    let found: Mesh | null = null;
+    root.traverse((o) => {
+      if (found === null && o instanceof Mesh) found = o;
+    });
+    return found;
+  }
+
+  /** How far a quaternion turns, radians in [0, pi]. */
+  function angleOf(q: Quaternion): number {
+    return 2 * Math.acos(Math.min(1, Math.abs(q.w)));
+  }
+
+  it('puts the body mesh inside the rolling group, centred on the roll centre', () => {
+    const { world, manager } = rolling('katamari');
+    const root = rootOf(world);
+    const baseR = measureBodyRadius(manager.latestCharacter()!);
+
+    const clump = named(root, 'clump');
+    const ball = named(root, 'ball');
+    expect(clump).not.toBeNull();
+    expect(ball).not.toBeNull();
+    // The ball hangs in the pile's rolling group, not beside it.
+    expect(ball!.parent).toBe(clump);
+    // The clump sits at the middle of the creature and the ball offsets the
+    // body back down by the same amount: the body's CENTRE is on the roll
+    // centre, and its base is still on the ground (net local offset zero).
+    expect(clump!.position.y).toBeCloseTo(baseR, 10);
+    expect(ball!.position.y).toBeCloseTo(-baseR, 10);
+    expect(clump!.position.y + ball!.position.y).toBeCloseTo(0, 12);
+
+    // And the body really moved: the mesh reaches the root only through the
+    // ball now.
+    const mesh = firstMesh(root);
+    expect(mesh).not.toBeNull();
+    let hop: Object3D | null = mesh;
+    let viaBall = false;
+    while (hop) {
+      if (hop === ball) viaBall = true;
+      hop = hop.parent;
+    }
+    expect(viaBall).toBe(true);
+    manager.clearAll();
+  });
+
+  it('returns the ball — and the mesh with it — to identity over one full roll', () => {
+    /*
+     * ONE FRAME PER HALF, because a FIRST pose is written rather than eased
+     * (see the follow branch): those are the only frames whose displacement
+     * is exactly the number this test hands them. The roll is pure
+     * integration of travel, so one exact 2piR step and a thousand small ones
+     * come to the same place — which the pure version of this pins in
+     * test/creatures/sticky.test.ts.
+     */
+    const { world, manager } = rolling('katamari');
+    const root = rootOf(world);
+    const R = measureBodyRadius(manager.latestCharacter()!);
+    const clump = named(root, 'clump')!;
+    const ball = named(root, 'ball')!;
+    manager.pauseAi(true);
+
+    const half = { x: root.position.x + Math.PI * R, z: root.position.z };
+    manager.followPoses([{ id: 'roller', x: half.x, z: half.z, heading: 0 }]);
+    manager.update(16, 1000);
+    // Halfway round: a real turn, not a decal sliding across the field.
+    expect(angleOf(clump.quaternion)).toBeCloseTo(Math.PI, 3);
+
+    manager.clearFollow();
+    manager.followPoses([{ id: 'roller', x: half.x + Math.PI * R, z: half.z, heading: 0 }]);
+    manager.update(16, 1016);
+    // A full turn: back where it started, with no residue.
+    expect(angleOf(clump.quaternion)).toBeCloseTo(0, 3);
+    // And the mesh's own frame came back with it — the whole point of
+    // reparenting the body into the ball.
+    root.updateMatrixWorld(true);
+    expect(angleOf(ball.getWorldQuaternion(new Quaternion()))).toBeCloseTo(0, 3);
+    manager.clearAll();
+  });
+
+  it('keeps the gait at zero while the creature is moving', () => {
+    const { manager } = rolling('katamari');
+    expect(manager.drive('roller', { x: 0, z: 1, mag: 1 })).toBe(true);
+    const start = manager.positionOf('roller')!.clone();
+    let now = 2000;
+    for (let i = 0; i < 40; i++) {
+      now += 33;
+      manager.update(33, now);
+    }
+    const end = manager.positionOf('roller')!;
+    // Really travelling…
+    expect(Math.hypot(end.x - start.x, end.z - start.z)).toBeGreaterThan(1);
+    // …and not walking while it does.
+    expect(manager.latestCharacter()!.gaitState!().amp).toBe(0);
+    manager.clearAll();
+  });
+
+  it('drives at the katamari top speed — three times the walking ceiling', () => {
+    const { manager } = rolling('katamari');
+    expect(KATAMARI_SPEED_MUL).toBe(3);
+    expect(manager.wanderSpeed()).toBe(KATAMARI_SPEED_MUL);
+    manager.drive('roller', { x: 0, z: 1, mag: 1 });
+    let now = 5000;
+    // One frame to settle the heading onto the stick, then a measured second.
+    now += 33;
+    manager.update(33, now);
+    const from = manager.positionOf('roller')!.clone();
+    let travelled = 0;
+    for (let i = 0; i < 30; i++) {
+      now += 33;
+      manager.update(33, now);
+      travelled += 33;
+    }
+    const to = manager.positionOf('roller')!;
+    const speed = (Math.hypot(to.x - from.x, to.z - from.z) / travelled) * 1000;
+    expect(speed).toBeCloseTo(MAX_SPEED * KATAMARI_SPEED_MUL, 2);
+    /*
+     * AND THE SUBSTEP GUARD STILL COVERS IT. `stepCreatures` clamps dt at
+     * 250ms and advances at most MAX_STEP_TRAVEL (0.25u) per substep over at
+     * most MAX_SUBSTEPS (16) — 4u of travel per frame. At this speed a
+     * clamped frame is 0.9u, four of the sixteen substeps.
+     */
+    const clampedFrameTravel = (MAX_SPEED * KATAMARI_SPEED_MUL * 250) / 1000;
+    expect(clampedFrameTravel).toBeCloseTo(0.9, 10);
+    expect(Math.ceil(clampedFrameTravel / MAX_STEP_TRAVEL)).toBeLessThanOrEqual(MAX_SUBSTEPS);
+    manager.clearAll();
+  });
+
+  /*
+   * THE OTHER WORLDS WALK, at the speeds they always did. Same stubs, same
+   * frames, same stick — only the game differs, so this measures the gate.
+   */
+  describe('every other world keeps its walk cycle', () => {
+    it('leaves the body mesh on the root, with no rolling group at all', () => {
+      const { world, manager } = rolling('none');
+      const root = rootOf(world);
+      expect(named(root, 'clump')).toBeNull();
+      expect(named(root, 'ball')).toBeNull();
+      // The two-level rig, exactly as it shipped: the root holds the
+      // character group, and the mesh is one level down inside it.
+      const mesh = firstMesh(root)!;
+      expect(mesh.parent!.parent).toBe(root);
+      manager.clearAll();
+    });
+
+    it('still walks, and still at the shipped speeds', () => {
+      // The speed constants themselves are untouched by the katamari work.
+      expect(DRIVE_SPEED).toBe(MAX_SPEED);
+      expect(WANDER_SPEED_DEFAULT).toBe(1.4);
+
+      const { manager } = rolling('none');
+      expect(manager.wanderSpeed()).toBe(WANDER_SPEED_DEFAULT);
+      manager.drive('roller', { x: 0, z: 1, mag: 1 });
+      let now = 5000;
+      now += 33;
+      manager.update(33, now);
+      const from = manager.positionOf('roller')!.clone();
+      let travelled = 0;
+      for (let i = 0; i < 30; i++) {
+        now += 33;
+        manager.update(33, now);
+        travelled += 33;
+      }
+      const to = manager.positionOf('roller')!;
+      const speed = (Math.hypot(to.x - from.x, to.z - from.z) / travelled) * 1000;
+      expect(speed).toBeCloseTo(DRIVE_SPEED * WANDER_SPEED_DEFAULT, 2);
+      // And the walk cycle is running — amplitude, not a rolling ball.
+      expect(manager.latestCharacter()!.gaitState!().amp).toBeGreaterThan(0.5);
+      manager.clearAll();
+    });
+  });
+});
+
+/**
+ * THE CHARACTER HAS PRIORITY (user ruling, 2026-09-16: *"the user's
+ * character has priority; objects should stick to it as it moves or rolls
+ * over the object. It shouldn't impede the character from moving unless the
+ * mass isn't big enough to overtake the object"*).
+ *
+ * The pair above this block — a walk into a `r: 1` bush and into a `r: 1`
+ * tree — is the OTHER half of the same rule: a ~0.91u snowman's carry limit
+ * is 0.91, so a 1u prop is still too big, still blocks, and still goes
+ * through the impact ladder. These tests use a 0.5u prop, which is inside
+ * the limit, and pin the part that changed: it comes up whole, it emits one
+ * `stick` and no `loose`, and it never slows the creature down.
+ */
+describe('the character has priority — what it can carry cannot stop it', () => {
+  /** A `LooseMeshes` that draws nothing and remembers everything. */
+  function stubLoose(scene: Scene): { api: LooseMeshes; shown: string[] } {
+    const shown: string[] = [];
+    const objects = new Map<string, Object3D>();
+    return {
+      shown,
+      api: {
+        show(item: string): Object3D {
+          const existing = objects.get(item);
+          if (existing) return existing;
+          const object = new Group();
+          scene.add(object);
+          objects.set(item, object);
+          shown.push(item);
+          return object;
+        },
+        move: () => {},
+        remove: () => {},
+        get: (item: string) => objects.get(item),
+        dispose: () => {},
+      },
+    };
+  }
+
+  /**
+   * One creature driven straight at one prop, with everything the uproot
+   * path actually touches: a `PropBodies` that records, a loose layer to draw
+   * the thing into, and `instanceRefs` so the placement has a measurable
+   * scale and radius.
+   */
+  function rollOver(c: Omit<Collider, 'x' | 'z'> & { gap: number }): {
+    stuck: string[];
+    loosed: string[];
+    bumped: string[];
+    taken: string[];
+    /** How far the creature actually travelled on the contact frame. */
+    travelled: number;
+    bodyR: number;
+  } {
+    const stuck: string[] = [];
+    const loosed: string[] = [];
+    const bumped: string[] = [];
+    const taken: string[] = [];
+    const colliders: Collider[] = [];
+    let version = 1;
+    const scene = new Scene();
+    const loose = stubLoose(scene);
+    const bodies = {
+      items: () => [],
+      onSettle: () => {},
+      onImpact: () => {},
+      onTake: () => {},
+      registerForeign: () => {},
+      unregisterForeign: () => {},
+      adopt: () => {},
+      release: () => false,
+      take: (key: string) => {
+        taken.push(key);
+        return true;
+      },
+      restore: () => null,
+      bump: (key: string) => {
+        bumped.push(key);
+      },
+      loosen: (key: string) => {
+        loosed.push(key);
+        return { key, kind: c.kind, variant: 0, scale: 1, x: 0, z: 0, r: c.r };
+      },
+      itemByCollider: () => undefined,
+      sideByCollider: () => null,
+      sync: () => {},
+      update: () => {},
+      dispose: () => {},
+    };
+    const world = {
+      scene,
+      cameraRig: { frameAt: () => {} },
+      shadows: {
+        addShadow: () => ({ setPosition: () => {}, setRadius: () => {} }),
+        removeShadow: () => {},
+      },
+      bodies: () => bodies,
+      physics: () => null,
+      enablePhysics: async () => {},
+      scatter: {
+        colliders: () => colliders,
+        collidersVersion: () => version,
+        positions: () => [],
+        nudge: () => {},
+        setTaken: () => {},
+        // What `placementDrawn` reads: the row the prop is drawn from.
+        instanceRefs: (kind: string) =>
+          colliders
+            .filter((col) => col.kind === kind)
+            .map((col) => ({
+              key: col.key!,
+              scale: 1,
+              radius: col.r,
+              placement: { rotY: 0 },
+            })),
+      },
+    } as unknown as WorldHandles;
+
+    const manager = createCreatureManager(world, {
+      autoHatch: false,
+      surface: FLAT_SURFACE,
+      game: 'katamari',
+      loose: loose.api,
+      observer: {
+        egg: () => {},
+        hatch: () => {},
+        retire: () => {},
+        emote: () => {},
+        stick: (r) => stuck.push(r.item),
+        drop: () => {},
+        loose: (item) => loosed.push(item),
+        settle: () => {},
+        crack: () => {},
+        shatter: () => {},
+      },
+    });
+    // MAX_SPEED exactly under the thumb, so the arithmetic in the assertions
+    // is the arithmetic in the code rather than times a multiplier.
+    manager.setWanderSpeed(1);
+    manager.spawn('walker', snowman, { hatchMs: 60_000, grown: true });
+
+    const at = manager.positionOf('walker')!.clone();
+    const bodyR = manager.positions().find((p) => p.kind === 'character')!.r;
+    // Already overlapping, straight ahead on +x.
+    colliders.push({ ...c, x: at.x + bodyR + c.r - c.gap, z: at.z });
+    version++;
+
+    manager.drive('walker', { x: 1, z: 0, mag: 1 });
+    manager.update(16, 1000);
+    const after = manager.positionOf('walker')!;
+    const travelled = after.x - at.x;
+    manager.clearAll();
+    return { stuck, loosed, bumped, taken, travelled, bodyR };
+  }
+
+  it('rolls over a small bush and wears it — one stick, no loose, no slowdown', () => {
+    const { stuck, loosed, bumped, taken, travelled, bodyR } = rollOver({
+      r: 0.5,
+      hard: false,
+      kind: 'bush',
+      key: 'bush:0:9.00:9.00',
+      gap: 0.2,
+    });
+    // Inside its own limit, which is the whole test.
+    expect(0.5).toBeLessThanOrEqual(carryLimit(bodyR));
+    // Straight onto the pile: ONE stick event, and no round trip through
+    // the ground on the way.
+    expect(stuck).toEqual(['bush:0:9.00:9.00']);
+    expect(loosed).toEqual([]);
+    // Nothing flinched: uprooting something smaller than you costs nothing.
+    expect(bumped).toEqual([]);
+    // And the placement is gone, through the one owner.
+    expect(taken).toContain('bush:0:9.00:9.00');
+    // NO SOFT SLOWDOWN. A damped frame would travel MAX_SPEED x 0.45 x 16ms;
+    // this travelled the undamped distance.
+    const full = (MAX_SPEED * 16) / 1000;
+    expect(travelled).toBeCloseTo(full, 4);
+    expect(travelled).toBeGreaterThan(full * SOFT_SPEED_FACTOR * 1.5);
+  });
+
+  it('rolls over a small tree without being stopped by its trunk', () => {
+    const { stuck, loosed, travelled } = rollOver({
+      r: 0.5,
+      hard: true,
+      kind: 'tree',
+      key: 'tree:0:9.00:9.00',
+      gap: 0.2,
+    });
+    // A HARD collider it can carry: the resolve skipped it (`skipIf`), so the
+    // creature kept its whole frame of travel instead of being pushed back to
+    // contact — which is the ruling in one number.
+    expect(travelled).toBeCloseTo((MAX_SPEED * 16) / 1000, 4);
+    expect(stuck).toEqual(['tree:0:9.00:9.00']);
+    expect(loosed).toEqual([]);
+  });
+
+  it('is still stopped by a tree it is too small to carry', () => {
+    const { stuck, loosed, bumped, travelled } = rollOver({
+      r: 1.6,
+      hard: true,
+      kind: 'tree',
+      key: 'tree:0:4.00:4.00',
+      gap: 0.2,
+    });
+    // Over the limit: blocked at contact — it started 0.2u inside the circle,
+    // so the correction pushes it BACK, and it ends the frame behind where it
+    // began rather than a frame's travel ahead.
+    expect(travelled).toBeLessThan(0);
+    expect(stuck).toEqual([]);
+    // Nothing came up, and the trunk flinched — the old ladder, untouched.
+    expect(loosed).toEqual([]);
+    expect(bumped).toEqual(['tree:0:4.00:4.00']);
   });
 });

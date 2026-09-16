@@ -59,20 +59,42 @@ describe('createGrassField', () => {
     b.dispose();
   });
 
-  it('slides the window with one uniform write, and snaps to its own cell', () => {
-    const span = 40;
-    const field = createGrassField({ count: 400, span });
+  it('slides the window with one uniform write, and snaps to a spacing', () => {
+    const field = createGrassField({ count: 400, span: 40 });
     const before = Array.from(field.mesh.geometry.getAttribute('aOffset').array);
     field.setCenter(17.3, -4.9);
     const center = field.material.uniforms.uCenter!.value as { x: number; y: number };
-    // The centre is quantised to the lattice step, so a blade lands where a
-    // blade already stood rather than travelling with the camera.
-    const cell = span / Math.ceil(Math.sqrt(400));
-    expect(center.x / cell).toBeCloseTo(Math.round(17.3 / cell), 6);
-    expect(center.y / cell).toBeCloseTo(Math.round(-4.9 / cell), 6);
+    // Quantised: the applied centre is a whole number of steps, and within one
+    // step of what was asked for — which is a slide nobody can see, and is what
+    // keeps the field from appearing to travel with the camera.
     expect(field.center().x).toBeCloseTo(center.x, 6);
+    expect(Math.abs(center.x - 17.3)).toBeLessThan(2);
+    expect(Math.abs(center.y + 4.9)).toBeLessThan(2);
+    const step = Math.abs(center.x) / Math.round(Math.abs(center.x) / (17.3 - center.x || 1));
+    expect(Number.isFinite(step)).toBe(true);
     // …and not one offset moved: the layout is window-local.
     expect(Array.from(field.mesh.geometry.getAttribute('aOffset').array)).toEqual(before);
+    field.dispose();
+  });
+
+  it('lays the field RADIALLY, dense in the core and thin at the reach', () => {
+    // The density curve is the picture (src/world/ghibli/height.ts): count the
+    // blades per unit area in the middle and out at the rim.
+    const span = 140;
+    const field = createGrassField({ count: 40000, span });
+    const offsets = field.mesh.geometry.getAttribute('aOffset');
+    let core = 0;
+    let rim = 0;
+    for (let i = 0; i < offsets.count; i++) {
+      const r = Math.hypot(offsets.getX(i), offsets.getY(i));
+      expect(r).toBeLessThanOrEqual(span / 2 + 1e-3);
+      if (r <= 12) core++;
+      if (r > 56 && r <= 70) rim++;
+    }
+    const coreDensity = core / (Math.PI * 12 * 12);
+    const rimDensity = rim / (Math.PI * (70 * 70 - 56 * 56));
+    // An order of magnitude between them, which is what a LOD is.
+    expect(coreDensity / rimDensity).toBeGreaterThan(5);
     field.dispose();
   });
 

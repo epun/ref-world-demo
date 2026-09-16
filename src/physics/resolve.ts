@@ -90,6 +90,23 @@ export interface HardOptions {
    */
   skipKind?: string;
   /**
+   * Ignore an individual collider — asked once per collider per sweep.
+   *
+   * What it is for: the katamari ruling of 2026-09-16 (*"the user's
+   * character has priority … it shouldn't impede the character from moving
+   * unless the mass isn't big enough to overtake the object"*). A prop the
+   * creature is big enough to roll up must not stop it on the way in, so
+   * the creature layer answers `true` for every rooted prop inside its own
+   * carry limit and the sweep passes straight through — the pickup pass
+   * then takes it out of the ground and onto the pile.
+   *
+   * A FILTER AND NOTHING ELSE: it decides which colliders are in the set,
+   * and the arithmetic applied to the ones that are is untouched. Pure, and
+   * called with no state of its own, so the same body and the same nearby
+   * set always resolve the same way.
+   */
+  skipIf?(collider: Collider): boolean;
+  /**
    * Called once per HARD CORRECTION, with the collider that caused it and
    * the outward contact normal.
    *
@@ -147,6 +164,7 @@ export function resolveHard(
 ): boolean {
   let touched = false;
   const skipKind = opts.skipKind;
+  const skipIf = opts.skipIf;
   const onContact = opts.onContact;
   const maxPasses = Math.max(passes, RESOLVE_PASSES_MAX);
   const pad = 1 + Math.max(0, hardPadFrac);
@@ -156,6 +174,8 @@ export function resolveHard(
       if (!c.hard) continue;
       // A kind the caller has handed to a real solver (see HardOptions).
       if (skipKind !== undefined && c.kind === skipKind) continue;
+      // A collider this particular body rolls over (see HardOptions).
+      if (skipIf !== undefined && skipIf(c)) continue;
       const dx = body.x - c.x;
       const dz = body.z - c.z;
       const rr = r + c.r * pad;
@@ -320,6 +340,19 @@ export interface StepOptions {
   /** Ignore this prop kind's footprint circles — see HardOptions. */
   skipKind?: string;
   /**
+   * Ignore one collider for ONE body, by body index into `bodies` — the
+   * per-body half of `HardOptions.skipIf`, and the seam the katamari's
+   * "the character has priority" ruling runs through: a prop small enough
+   * for THAT creature to carry does not stop it, and the same prop still
+   * stops a smaller one.
+   *
+   * Honoured by the backstop as well as the integrate-and-resolve pass. It
+   * has to be: the backstop's whole job is re-seating a body out of a hard
+   * prop, so a collider skipped on the way in and enforced on the way out
+   * would push the creature back off the thing it just rolled onto.
+   */
+  skipIf?(collider: Collider, index: number): boolean;
+  /**
    * Every hard correction, by BODY INDEX into `bodies` plus the collider
    * and the outward normal — see HardOptions. Only the integrate-and-
    * resolve pass reports; the positional backstop after pair separation
@@ -362,19 +395,29 @@ export function stepCreatures(
   const passes = opts.passes ?? SEPARATION_PASSES;
   const pad = opts.hardPadFrac ?? 0;
   const skip = opts.skipKind;
+  const skipIf = opts.skipIf;
   const report = opts.onContact;
   // One reusable options record and one reusable closure: this runs per
   // body per substep, and allocating either here would be an allocation
   // per creature per frame.
   let reportIndex = 0;
+  // `reportIndex` is the body being stepped, so one closure serves every
+  // body — the predicate is per body without a per-body allocation.
+  const perBodySkip =
+    skipIf === undefined ? {} : { skipIf: (c: Collider): boolean => skipIf(c, reportIndex) };
   const hardOpts: HardOptions = {
     ...(skip === undefined ? {} : { skipKind: skip }),
+    ...perBodySkip,
     ...(report === undefined
       ? {}
       : { onContact: (c: Collider, nx: number, nz: number) => report(reportIndex, c, nx, nz) }),
   };
-  // The backstop never reports (see StepOptions.onContact).
-  const backstopOpts: HardOptions = skip === undefined ? {} : { skipKind: skip };
+  // The backstop never reports (see StepOptions.onContact), but it DOES
+  // honour the skip — see StepOptions.skipIf.
+  const backstopOpts: HardOptions = {
+    ...(skip === undefined ? {} : { skipKind: skip }),
+    ...perBodySkip,
+  };
 
   let vMax = 0;
   for (const b of bodies) {
@@ -400,7 +443,9 @@ export function stepCreatures(
     // the extra rounds handle prop-adjacent squeezes.
     for (let k = 0; k < passes; k++) {
       if (!separateCreatures(bodies, 1)) break;
-      for (const b of bodies) {
+      for (let i = 0; i < bodies.length; i++) {
+        const b = bodies[i]!;
+        reportIndex = i;
         backstopScratch.x = b.x;
         backstopScratch.z = b.z;
         backstopScratch.vx = 0;

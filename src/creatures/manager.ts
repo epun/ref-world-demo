@@ -89,6 +89,33 @@ export const WANDER_SPEED_DEFAULT = 1.4;
 export const DRIVE_SPEED = MAX_SPEED;
 
 /**
+ * How much faster a KATAMARI creature travels than a walking one. **[D]**
+ *
+ * User ask, 2026-09-16: *"Like Katamari Damacy, we should have the character
+ * ROLL versus walk. Right now, the walking cycle is way too slow."* A ball
+ * has no stride to outrun — the speed a walk reads as honest at is the speed
+ * its legs are taking, and a rolling creature has none. So the katamari world
+ * raises the ceiling: `MAX_SPEED × 3` = 3.6 u/s, for the stick and for the
+ * wander alike, with `DRIVE_TURN_TAU_MS` untouched (a faster ball that also
+ * turned faster would be a cursor).
+ *
+ * THREE, not more. Rolling already reads faster than walking at the same
+ * ground speed — the surface turns under the eye — so the multiplier is the
+ * starting point rather than the answer, and the ghost panel's wander/speed
+ * slider multiplies on top of it for tuning.
+ *
+ * TUNNELLING, since this is the number the substep guard was sized against:
+ * `stepCreatures` clamps dt at 250ms and covers `MAX_STEP_TRAVEL` (0.25u) per
+ * substep over at most `MAX_SUBSTEPS` (16), so 4u of travel per frame. At
+ * 3.6 u/s a clamped frame is 0.9u — 4 substeps of the 16 — so the guard still
+ * covers the katamari top speed four times over.
+ *
+ * EVERY OTHER WORLD IS UNCHANGED: outside the game the multiplier is 1 and
+ * the walk cycle keeps the speeds it shipped with.
+ */
+export const KATAMARI_SPEED_MUL = 3;
+
+/**
  * Turn responsiveness under the stick, as an exponential time constant.
  *
  * Short enough that the creature answers the thumb, long enough that a
@@ -429,6 +456,10 @@ const NUDGE_MIN_SPEED = 0.15;
 /** No rotation. Shared, and never mutated — an item set down with nothing
  * to say about its attitude gets this rather than four literals. */
 const IDENTITY_Q = { x: 0, y: 0, z: 0, w: 1 } as const;
+
+/** The y axis. Shared, never mutated — a placement's yaw is a turn about
+ * this and nothing else. */
+const UP = /* @__PURE__ */ new Vector3(0, 1, 0);
 
 type Phase = 'egg' | 'hatching' | 'alive' | 'retiring';
 
@@ -903,6 +934,13 @@ export interface CreatureManager {
   /** Wander speed multiplier (demo panel tuning). 1 = spec speed. */
   setWanderSpeed(mult: number): void;
   /**
+   * The multiplier in force right now — what the panel's slider should open
+   * on. Not always `WANDER_SPEED_DEFAULT`: a katamari world starts at
+   * `KATAMARI_SPEED_MUL`, and a slider that opened on the shipped walk value
+   * there would be showing a number the world is not running.
+   */
+  wanderSpeed(): number;
+  /**
    * Manual move (dev panel gizmo). beginManualMove marks the creature whose
    * root is `root` as held: behavior is bypassed, the gait settles, and the
    * dragged root position is authoritative (neighbors still part around it).
@@ -976,12 +1014,36 @@ export function createCreatureManager(
    * a game that switched itself on by mistake is a world nobody asked for.
    */
   const katamari = sanitizeGame(options.game) === 'katamari';
+  /**
+   * The gait is OFF in a katamari world.
+   *
+   * A rolling ball has no walk cycle: the body is inside the pile's rolling
+   * group and the whole creature turns with its travel, so a leg shear and a
+   * waddle on top of that is two locomotions at once. Feeding the gait zero
+   * (rather than deleting it) keeps the amplitude spring at rest and leaves
+   * the ambient drift floor — which is `character.update`'s, not the gait's —
+   * running underneath, as TASTE §3 requires.
+   */
+  const locoSpeed = (speed: number): number => (katamari ? 0 : speed);
   const surface = options.surface ?? ROLLING_SURFACE;
   const slots = new Map<string, Slot>();
   let orderCounter = 0;
   let timersPaused = false;
   let aiPaused = false;
-  let wanderSpeedMult = WANDER_SPEED_DEFAULT;
+  /**
+   * The speed multiplier every creature here runs at — the agents' wander and
+   * the drive ceiling both read it, and the ghost panel's wander/speed slider
+   * writes it.
+   *
+   * KATAMARI GETS ITS OWN DEFAULT, and that is the whole of the speed change
+   * (user ask, 2026-09-16: *"the walking cycle is way too slow"*). It is a
+   * different default rather than a factor ON the shipped one because the
+   * shipped 1.4 is a tuning of a WALK — multiplying the two would put the
+   * stick at 5.04 u/s, past the 3 the ruling asked for. At
+   * `KATAMARI_SPEED_MUL` the drive ceiling is `MAX_SPEED × 3` = 3.6 u/s
+   * exactly, which is the number the substep guard was checked against.
+   */
+  let wanderSpeedMult = katamari ? KATAMARI_SPEED_MUL : WANDER_SPEED_DEFAULT;
 
   // ── physics scratch (allocation-free per frame) ───────────────────────────
   // The prop spatial hash rebuilds only when the scatter's collider version
@@ -1186,6 +1248,37 @@ export function createCreatureManager(
     if (katamari) {
       slot.clump = createClump(slot.baseR);
       root.add(slot.clump.group);
+      /*
+       * AND THE CREATURE ITSELF GOES IN THE BALL (user ask, 2026-09-16:
+       * *"like Katamari Damacy, we should have the character ROLL versus
+       * walk"*).
+       *
+       * The pile already rolled; the body slid along beside it, which read as
+       * a creature pushing a ball rather than a creature that IS one. So the
+       * body — and the stalk and topper and eyes parented to it — moves
+       * inside `clump.group`, the one thing in the rig that accumulates the
+       * no-slip roll. Eyes and topper turn with the ball, which is the whole
+       * look.
+       *
+       * THE BALL'S CENTRE IS THE ROLL CENTRE. `clump.group` sits at
+       * `(0, baseR, 0)` on the root — the middle of the creature — and the
+       * body mesh rests with its base at its own group's origin, so a wrapper
+       * at `(0, -baseR, 0)` inside the clump puts the body's centre on the
+       * rotation centre and its base back on the ground. Net local offset
+       * zero: the creature stands exactly where it stood, it just turns about
+       * its middle now.
+       *
+       * The HEADING stays on the root, untouched. The clump already expresses
+       * its world roll under whatever the root is doing
+       * (`inverse(root.quaternion) × worldQ`), so the two compose without
+       * either knowing about the other.
+       */
+      const ball = new Group();
+      ball.name = 'ball';
+      ball.position.set(0, -slot.baseR, 0);
+      // Reparent, not copy: `Object3D.add` detaches from the root first.
+      ball.add(character.group);
+      slot.clump.group.add(ball);
     }
     world.shadows.removeShadow(`egg-${slot.id}`);
     slot.eggShadow = null;
@@ -1876,9 +1969,31 @@ export function createCreatureManager(
         // stones colliding is what rapier is for.
         if ((aSlot === undefined) === (bSlot === undefined)) return flags;
         const slot = slots.get((aSlot ?? bSlot)!);
-        const item = bodies.itemByCollider(aSlot === undefined ? c1 : c2);
-        if (!slot || !item) return flags;
-        return item.r <= carryLimit(slot.bodyR) ? null : flags;
+        if (!slot) return flags;
+        const own = aSlot === undefined ? c2 : c1;
+        const other = aSlot === undefined ? c1 : c2;
+        const item = bodies.itemByCollider(other);
+        if (item) return item.r <= carryLimit(slot.bodyR) ? null : flags;
+        /*
+         * A STANDING PROP THE BALL IS BIG ENOUGH TO ROLL UP — no contact
+         * either (2026-09-16 ruling: *"it shouldn't impede the character from
+         * moving unless the mass isn't big enough to overtake the object"*).
+         *
+         * The creature's stand-in is kinematic, so a fixed cylinder was never
+         * going to push it; what the contact DOES do is fire the impact seam,
+         * which would flinch the prop's recoil and knock it loose — a `loose`
+         * event and a round trip through the ground for something the pickup
+         * pass is about to take whole. Filtering the pair out is what keeps
+         * uprooting free.
+         *
+         * ONLY THE CREATURE'S OWN BALL is exempt. A stuck bench's collider is
+         * in `colliderSlot` too, and it must go on hitting everything — that
+         * is where the brief's instability comes from.
+         */
+        if (own !== slot.kinematic?.ball?.handle) return flags;
+        const side = bodies.sideByCollider(other);
+        if (!side?.rooted) return flags;
+        return side.r <= carryLimit(slot.bodyR) ? null : flags;
       },
     });
   }
@@ -2210,6 +2325,94 @@ export function createCreatureManager(
   }
 
   /**
+   * A ROOTED PROP THE BALL IS BIG ENOUGH TO ROLL UP — out of the ground and
+   * onto the pile, in one step.
+   *
+   * > User ruling, 2026-09-16: *"The user's character has priority; objects
+   * > should stick to it as it moves or rolls over the object. It shouldn't
+   * > impede the character from moving unless the mass isn't big enough to
+   * > overtake the object."*
+   *
+   * NO `loose` ROUND TRIP, and that is the change. The old path for anything
+   * planted was: clear `breakStrength` → `loosen` (fixed body out, dynamic
+   * hull body in) → a `loose` event → wait for the pickup pass to find it in
+   * `items()` next frame → a `stick` event. For a bush the ball has just
+   * driven over that is two events, two frames and an impact threshold to
+   * describe one thing that happened. Here the placement is taken, the mesh
+   * is drawn at the pose it was standing in, and it is seated — ONE `stick`,
+   * and uprooting costs nothing.
+   *
+   * It is also why the resolve skips these colliders (`skipIf` below): a prop
+   * that ends up on the pile must not have stopped the creature on the way
+   * in, or the ruling reads backwards.
+   *
+   * The seat is computed exactly as `stickItem` computes one, off the
+   * placement's own pose instead of a live rapier transform — the prop was
+   * standing still, so where it stood IS where it was at the moment of
+   * contact.
+   */
+  function uprootOntoPile(slot: Slot, root: Group, collider: Collider): boolean {
+    const clump = slot.clump;
+    const key = collider.key;
+    const kind = collider.kind as PropKind | undefined;
+    if (!clump || key === undefined || kind === undefined) return false;
+    if (clump.items.has(key)) return false;
+    const parsed = parseItemKey(key);
+    // Measured BEFORE anything hides the placement — the instance row is the
+    // only thing that knows what scale and yaw it was drawn at.
+    const measured = placementDrawn(key, kind);
+    const variant = parsed?.variant ?? 0;
+    const scale = measured?.scale ?? 1;
+    const itemR = measured?.r ?? collider.r;
+    // Its centre, not its base: the ground under it through the one seam,
+    // plus its own radius (PLAN §7.2 — no height is derived anywhere else).
+    const itemY = surface.sampleHeight(collider.x, collider.z) + itemR;
+    clump.group.getWorldPosition(scratchVec);
+    const offset = clumpLocalOffset({
+      itemX: collider.x,
+      itemY,
+      itemZ: collider.z,
+      centreX: scratchVec.x,
+      centreY: scratchVec.y,
+      centreZ: scratchVec.z,
+      headingX: Math.sin(root.rotation.y),
+      headingZ: Math.cos(root.rotation.y),
+      R: clump.R(),
+      itemR,
+      clumpWorldQ: clump.worldQ,
+      growth: clump.growth(),
+    });
+    scratchQ.setFromAxisAngle(UP, measured?.rotY ?? 0);
+    const rotation = clumpLocalRotation(scratchQ, clump.worldQ);
+    const record: StickRecord = {
+      id: slot.id,
+      item: key,
+      kind,
+      variant,
+      scale,
+      ox: offset.x,
+      oy: offset.y,
+      oz: offset.z,
+      qx: rotation.x,
+      qy: rotation.y,
+      qz: rotation.z,
+      qw: rotation.w,
+    };
+    // The mesh goes where the prop was STANDING first, so the entrance slide
+    // is the short travel from its hole to its seat rather than a flight from
+    // the origin. `show` is idempotent, so the `seat` below finds this one.
+    if (looseMeshes) {
+      looseMeshes.show(key, kind, variant, scale);
+      looseMeshes.move(key, collider.x, itemY, collider.z, scratchQ);
+    }
+    // `seat` hides the placement through the one owner, which on the host
+    // drops the fixed cylinder too (`PropBodies.take`).
+    if (!seat(slot, record, { slide: true })) return false;
+    observer?.stick(record);
+    return true;
+  }
+
+  /**
    * Each alive body's speed as it ENTERED this frame's resolve, by the same
    * index `onContact` reports. Reused; see the note where it is filled.
    */
@@ -2447,14 +2650,35 @@ export function createCreatureManager(
       // one rule, whether the contact came from the pure resolve (here) or
       // from rapier's own events (the impact seam above).
       if (props.rooted) {
-        hitRooted(
-          bodies,
-          { key, kind, r: report.collider.r, x: report.collider.x, z: report.collider.z },
+        /*
+         * SIZE FIRST — the character has priority (`decideContact`, 2026-09-16).
+         *
+         * A planted thing inside this creature's carry limit is not an
+         * obstacle at all: it comes up and goes on the pile, with no impact
+         * threshold and no `loose` on the way. Only what it cannot carry
+         * reaches `hitRooted`, which is where the recoil, the break ladder
+         * and the staged damage all still live, unchanged.
+         */
+        const verdict = decideContact({
+          itemR: report.collider.r,
+          rooted: true,
+          props,
           impact,
-          report.slot.bodyR,
-          -report.nx,
-          -report.nz,
-        );
+          carrierR: report.slot.bodyR,
+        });
+        const root = report.slot.characterRoot;
+        if (verdict === 'stick' && root) {
+          uprootOntoPile(report.slot, root, report.collider);
+        } else {
+          hitRooted(
+            bodies,
+            { key, kind, r: report.collider.r, x: report.collider.x, z: report.collider.z },
+            impact,
+            report.slot.bodyR,
+            -report.nx,
+            -report.nz,
+          );
+        }
       }
       // ── 6. and whether it knocked something off ──────────────────────────
       const stuck = report.slot.clump?.outermost();
@@ -2480,6 +2704,13 @@ export function createCreatureManager(
     for (const entry of aliveScratch) {
       const { slot, root } = entry;
       if (slot.carriedBy) continue;
+      /*
+       * THE ROLLING BALL'S OWN RADIUS, growth and all: `growPass` writes
+       * `bodyR = baseR × clump.growth()` every frame and `clump.R()` is that
+       * same product, so the circle that picks things up is exactly the
+       * circle that is turning on the ground. A reach measured off `baseR`
+       * would leave a grown pile brushing past stones it visibly rolled over.
+       */
       const reach = slot.bodyR;
       const nearIdx = itemGrid.near(root.position.x, root.position.z, reach + itemGrid.cellSize);
       for (let k = 0; k < nearIdx.length; k++) {
@@ -2528,8 +2759,25 @@ export function createCreatureManager(
         const dx = a.root.position.x - b.root.position.x;
         const dz = a.root.position.z - b.root.position.z;
         if (Math.hypot(dx, dz) > a.slot.bodyR + b.slot.bodyR + CONTACT_PAD) continue;
-        if (b.slot.bodyR <= carryLimit(a.slot.bodyR)) stickCreature(a.slot, b.slot, a.root);
-        else if (a.slot.bodyR <= carryLimit(b.slot.bodyR)) stickCreature(b.slot, a.slot, b.root);
+        const aTakesB = b.slot.bodyR <= carryLimit(a.slot.bodyR);
+        const bTakesA = a.slot.bodyR <= carryLimit(b.slot.bodyR);
+        if (aTakesB && bTakesA) {
+          /*
+           * BOTH ELIGIBLE, which since `PICKUP_RATIO` became 1 means their
+           * radii are equal — each is exactly at the other's limit.
+           *
+           * Somebody has to carry, and it cannot be "whichever was visited
+           * first": `aliveScratch` is sorted by id, so the earlier slot would
+           * always win, and a page that had retired one of them would sort
+           * the pair differently and build the other pile. The BIGGER ID
+           * carries. It is arbitrary, and that is the point — it is a
+           * property of the two creatures and of nothing else, so every page
+           * reaches it.
+           */
+          const [carrier, rider] = a.slot.id > b.slot.id ? [a, b] : [b, a];
+          stickCreature(carrier.slot, rider.slot, carrier.root);
+        } else if (aTakesB) stickCreature(a.slot, b.slot, a.root);
+        else if (bTakesA) stickCreature(b.slot, a.slot, b.root);
       }
     }
 
@@ -3005,11 +3253,28 @@ export function createCreatureManager(
             root.position.z += (slot.follow.z - beforeZ) * k;
             root.rotation.y += shortestAngle(root.rotation.y, slot.follow.heading) * k;
 
+            /*
+             * AND THE BALL ROLLS HERE TOO, off the eased displacement.
+             *
+             * A roll phase is NOT on the wire (src/net/worldsync.ts: poses
+             * carry x/z/heading and nothing else). It does not need to be —
+             * roll is arc length over radius, so a page that knows how far
+             * the creature moved knows how far it turned, and every page
+             * derives the same answer from the same travel. Off the EASED
+             * displacement rather than the host's, for the same reason the
+             * gait reads it: what the viewer sees moving is what should be
+             * seen turning.
+             */
+            slot.clump?.roll(root.position.x - beforeX, root.position.z - beforeZ);
+
             // The gait reads the speed it is ACTUALLY travelling at, so a
             // followed creature walks for the same reason a simulated one
             // does — because it is moving — rather than being told to.
             const moved = Math.hypot(root.position.x - beforeX, root.position.z - beforeZ);
-            slot.character.setLocomotion(dt > 0 ? (moved / dt) * 1000 : 0, root.rotation.y);
+            slot.character.setLocomotion(
+              locoSpeed(dt > 0 ? (moved / dt) * 1000 : 0),
+              root.rotation.y,
+            );
             if (present) {
               slot.characterShadow?.setPosition(
                 root.position.x + slot.character.group.position.x,
@@ -3091,8 +3356,59 @@ export function createCreatureManager(
             // Soft bodies: pushing through a bush is slow (~55% damped), and
             // the bush reacts — a brief localized sway kicked into the
             // scatter's wind path. That sway is the soft-body read.
+            /*
+             * WHAT THIS CREATURE ROLLS STRAIGHT OVER (2026-09-16 ruling).
+             *
+             * A prop inside its own carry limit is not an obstacle: the
+             * resolve skips it (`skipIf` on the step below), the soft
+             * slowdown does not apply to it, and it reports a contact here so
+             * the sticky pass can take it out of the ground and seat it. That
+             * report is the part that would otherwise go missing — a skipped
+             * collider produces no correction, so `resolveHard`'s own
+             * `onContact` never fires for one.
+             *
+             * KATAMARI ONLY, and gated on a `key` because a prop with no
+             * placement key is not something the pile can address.
+             */
+            const limit = carryLimit(bodyR);
+            if (katamari && bodiesOf() !== null) {
+              for (const c of near) {
+                if (!c.hard || c.key === undefined || !(c.r <= limit)) continue;
+                const dx = root.position.x - c.x;
+                const dz = root.position.z - c.z;
+                const d = Math.hypot(dx, dz);
+                if (d > bodyR + c.r + CONTACT_PAD) continue;
+                const nx = d > 1e-9 ? dx / d : 1;
+                const nz = d > 1e-9 ? dz / d : 0;
+                contacts.push({ slot, collider: c, nx, nz, speed: Math.hypot(vx, vz) });
+              }
+            }
+
             const soft = deepestSoftOverlap(root.position.x, root.position.z, bodyR, near);
-            if (soft) {
+            /*
+             * A CARRIABLE BUSH DOES NOT SLOW THE BALL DOWN either — same
+             * ruling, same reason. `SOFT_SPEED_FACTOR` is a bush resisting,
+             * and a bush the creature is about to wear has nothing to resist
+             * with. Above its limit the slowdown is exactly as it was.
+             */
+            if (soft && katamari && soft.r <= limit) {
+              // Reported by the roll-over gather above? No: that pass is hard
+              // colliders only, and a bush is soft. So it reports here, with
+              // the same outward-normal convention, and then nothing else
+              // happens to the velocity.
+              if (soft.key !== undefined && bodiesOf() !== null) {
+                const dx = root.position.x - soft.x;
+                const dz = root.position.z - soft.z;
+                const d = Math.hypot(dx, dz);
+                contacts.push({
+                  slot,
+                  collider: soft,
+                  nx: d > 1e-9 ? dx / d : 1,
+                  nz: d > 1e-9 ? dz / d : 0,
+                  speed: Math.hypot(vx, vz),
+                });
+              }
+            } else if (soft) {
               /*
                * A SOFT PROP REPORTS A CONTACT TOO, and it has to, because the
                * bush is the only soft kind in the world and it is the one
@@ -3276,6 +3592,30 @@ export function createCreatureManager(
         stepCreatures(stepBodies, dt, gatherNear, {
           hardPadFrac: HARD_PAD_FRAC,
           ...(physicsOn ? { skipKind: 'rock' } : {}),
+          /*
+           * `skipIf` — THE CHARACTER HAS PRIORITY (2026-09-16 ruling: *"it
+           * shouldn't impede the character from moving unless the mass isn't
+           * big enough to overtake the object"*).
+           *
+           * A planted prop inside THIS body's carry limit is not in its
+           * collider set at all, so the ball rolls over it and the sticky
+           * pass then takes it out of the ground onto the pile. Per body, so
+           * the same sapling still stops a hatchling and no longer stops the
+           * thing that has eaten a forest.
+           *
+           * Gated on the game AND on physics, like the roll-over gather it
+           * pairs with: a page that cannot pick the prop up must not walk
+           * through it.
+           */
+          ...(katamari && physicsOn
+            ? {
+                skipIf: (collider: Collider, index: number): boolean => {
+                  if (collider.key === undefined) return false;
+                  const entry = aliveScratch[index];
+                  return entry !== undefined && collider.r <= carryLimit(entry.slot.bodyR);
+                },
+              }
+            : {}),
           ...(physicsOn
             ? {
                 onContact: (index, collider, nx, nz): void => {
@@ -3321,7 +3661,7 @@ export function createCreatureManager(
           if (!character) continue;
           // The gait reads the RESOLVED ground speed — walk cycles blend in
           // with actual movement and drift out to the ambient floor.
-          character.setLocomotion(Math.hypot(body.vx, body.vz), entry.heading);
+          character.setLocomotion(locoSpeed(Math.hypot(body.vx, body.vz)), entry.heading);
           if (slot.present) {
             slot.characterShadow?.setPosition(
               body.x + character.group.position.x,
@@ -3559,6 +3899,10 @@ export function createCreatureManager(
 
     pauseAi(paused): void {
       aiPaused = paused;
+    },
+
+    wanderSpeed(): number {
+      return wanderSpeedMult;
     },
 
     setWanderSpeed(mult): void {

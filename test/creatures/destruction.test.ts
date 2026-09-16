@@ -53,8 +53,11 @@ describe('the two new thresholds', () => {
   it('shatters a large prop instead of lifting it whole, and only above breakStrength', () => {
     const props = STICKY.monolith;
     expect(props.shatterStrength).toBeGreaterThan(props.breakStrength);
+    // A monolith BIGGER than the carrier: `decideContact` asks about size
+    // first (2026-09-16 ruling), and a prop inside the carry limit is simply
+    // stuck whatever its thresholds say. This is the ladder above it.
     const ask = (impact: number): string =>
-      decideContact({ itemR: 2, rooted: true, props, impact, carrierR: 5 });
+      decideContact({ itemR: 2, rooted: true, props, impact, carrierR: 1.5 });
     expect(ask(props.breakStrength - 0.01)).toBe('block');
     expect(ask(props.breakStrength)).toBe('loose');
     expect(ask(props.shatterStrength! - 0.01)).toBe('loose');
@@ -73,7 +76,8 @@ describe('the two new thresholds', () => {
           rooted: true,
           props: STICKY[kind],
           impact: 1e6,
-          carrierR: 40,
+          // Too big to carry, so the question reaches the break ladder at all.
+          carrierR: 0.5,
         }),
       ).not.toBe('break');
     }
@@ -176,6 +180,7 @@ function recordingBodies(): {
         bumped.push({ key, strength });
       },
       itemByCollider: () => undefined,
+      sideByCollider: () => null,
       sync: () => {},
       update: () => {},
       dispose: () => {},

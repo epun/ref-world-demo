@@ -295,6 +295,19 @@ export interface PropBodies {
   registerForeign(handle: number, side: ImpactSide): void;
   unregisterForeign(handle: number): void;
   /**
+   * Name one collider the way `onImpact` would — a loose item, a chunk, a
+   * standing prop, or a foreign collider somebody registered. Null when this
+   * module has never heard of that handle.
+   *
+   * The same lookup the impact seam uses internally, published because the
+   * creature layer has to answer a question BEFORE a contact rather than
+   * after one: the katamari's contact-pair filter needs to know whether the
+   * thing a creature has just touched is a planted prop it is big enough to
+   * roll up, and `itemByCollider` only ever knows about things already out
+   * of the ground (src/creatures/manager.ts `ensureHooks`).
+   */
+  sideByCollider(handle: number): ImpactSide | null;
+  /**
    * Take ownership of a body somebody else built — how a piece of debris
    * becomes collectable (src/world/debris.ts).
    *
@@ -1028,6 +1041,9 @@ export function createPropBodies(opts: PropBodiesOptions): PropBodies {
     itemByCollider(handle: number): LooseItem | undefined {
       const key = byCollider.get(handle);
       return key === undefined ? undefined : rocks.get(key);
+    },
+    sideByCollider(handle: number): ImpactSide | null {
+      return sideOf(handle);
     },
     take(key: string): boolean {
       const item = rocks.get(key);

@@ -49,7 +49,6 @@ import {
   type MarkSample,
 } from '../taste/gates';
 import { WIND_OVERRIDE_MAX } from '../world/environment';
-import { WANDER_SPEED_DEFAULT } from '../creatures/manager';
 import { DEFAULT_KIND_DENSITY, SCATTER_SEED, SCATTER_STEP } from '../world/scatter';
 import { TERRAIN_DEFAULTS, TERRAIN_LIMITS, terrainHeight } from '../world/landscape';
 import type { PaintedWaterField } from '../world/painted-water';
@@ -831,9 +830,14 @@ export async function initDevPanel(
       });
       folder.addSlider('wander speed', {
         min: 0.2,
-        max: 3,
+        // 3 is where a katamari world OPENS (KATAMARI_SPEED_MUL), so the
+        // ceiling has to leave room above it for the tuning the ruling asked
+        // for. On every other world the useful range is unchanged.
+        max: 5,
         step: 0.05,
-        value: WANDER_SPEED_DEFAULT,
+        // What the manager is ACTUALLY running: a katamari world starts at
+        // KATAMARI_SPEED_MUL, not at the shipped walk default.
+        value: creatures.wanderSpeed(),
         id: 'wander-speed',
         onChange: (v) => {
           creatures.setWanderSpeed(v);

@@ -259,12 +259,26 @@ export function stickyFor(kind: PropKind, variant = 0): StickyProps {
 /**
  * [D] Biggest item a carrier can pick up, as a fraction of its own radius.
  *
- * 0.6 is what makes the pile legible: an item over half the carrier's own
- * size reads as two creatures in a heap rather than one creature wearing
- * something. It is also the growth curve's throttle — a carrier can only
- * reach the next tier of props by having eaten the one below it.
+ * ONE, and it was 0.6 until 2026-09-16 (user report: *"I don't see the sticky
+ * katamari effect where the character gathers objects as it touches them"*).
+ * The arithmetic is the whole story: a hatchling measures ~0.9u, so 0.6 put
+ * its ceiling at ~0.54u, and the smallest thing on the map is a ~0.5u stone
+ * with the rest of the scatter running to 1.7u and a loosened bush at ~1u.
+ * There was almost nothing a fresh creature could take, so the growth curve
+ * never bootstrapped and the game read as inert.
+ *
+ * 1.0 is also the reference feel: in Katamari Damacy you roll up things about
+ * your own size, and the ball is visibly made of objects as big as it was a
+ * minute ago. It stays a throttle — the tiers above the carrier are still out
+ * of reach until it has eaten its way up to them — just one whose first rung
+ * exists.
+ *
+ * SAME LIMIT DECIDES A PASSENGER (`carryLimit` in the manager's
+ * creature-onto-creature pass), so two creatures of equal size are now each
+ * eligible to carry the other. That tie is broken by id, deterministically,
+ * because two pages must reach the same pile — see `simulateSticky`.
  */
-export const PICKUP_RATIO = 0.6;
+export const PICKUP_RATIO = 1;
 
 /**
  * [D] How much volume actually becomes size.
@@ -383,16 +397,32 @@ export function debrisLifetimeMs(props: StickyProps): number {
 }
 
 /**
- * The whole game, in four lines.
+ * The whole game, in four lines — and SIZE IS THE FIRST QUESTION.
  *
- * A ROOTED prop either comes out of the ground or stops you dead — it is
- * never picked up directly, because a tree that flew onto a pile while still
- * standing in its hole is the pile going through the world rather than
- * taking it apart.
+ * > User ruling, 2026-09-16: *"The user's character has priority; objects
+ * > should stick to it as it moves or rolls over the object. It shouldn't
+ * > impede the character from moving unless the mass isn't big enough to
+ * > overtake the object."*
  *
- * An UNROOTED item either sticks (small enough, and sticky) or is shoved —
- * and shoved is not a failure, it is the stone rolling away, which the rapier
- * layer does for free.
+ * So the order is: can I carry it? Then it is MINE, rooted or not — a bush,
+ * a sign or a sapling the ball rolls over comes out of the ground and onto
+ * the pile in one step, with no impact threshold to clear and no `loose`
+ * round trip on the way. Uprooting something smaller than you costs nothing;
+ * that is what having priority means.
+ *
+ * Only what is too big to carry can stop you, and only if it is ROOTED:
+ *
+ *  - rooted and too big → `block`, and the old impact ladder decides whether
+ *    the block also breaks it (`shatterStrength` → `break`, `breakStrength`
+ *    → `loose`, a building's `stages` accumulating behind both). That ladder
+ *    is unchanged; it simply lives in this branch now, which is the only
+ *    branch where a prop is still standing in its hole after the contact.
+ *  - unrooted and too big → `shove`. Never a block: a stone you cannot carry
+ *    rolls away, which the rapier layer does for free, and the ruling says a
+ *    creature is not impeded by what it can move.
+ *
+ * `stickiness: 0` still means never, whatever the size — the cloud is scenery
+ * in the sky and a creature tall enough to reach one does not wear it.
  */
 export function decideContact(a: {
   itemR: number;
@@ -401,25 +431,28 @@ export function decideContact(a: {
   impact: number;
   carrierR: number;
 }): Outcome {
-  if (a.rooted) {
-    /*
-     * BREAK TAKES PRECEDENCE over coming out of the ground, and it is asked
-     * first for exactly that reason: `shatterStrength` is above
-     * `breakStrength`, so an impact that reaches it has already passed the
-     * looser test and a prop hit that hard should come apart rather than be
-     * lifted whole onto a pile. It is asked even of a kind whose
-     * `breakStrength` is `Infinity`, because those two thresholds are
-     * independent — though nothing in `STICKY` sets both today.
-     */
-    const shatter = a.props.shatterStrength;
-    if (shatter !== undefined && Number.isFinite(shatter) && a.impact >= shatter) return 'break';
-    // `Infinity` means NEVER, and it has to mean that even when it is asked
-    // about an infinite impact — `Infinity >= Infinity` is true, which would
-    // have handed a building to anyone who managed to overflow a speed.
-    if (!Number.isFinite(a.props.breakStrength)) return 'block';
-    return a.impact >= a.props.breakStrength ? 'loose' : 'block';
-  }
-  return a.itemR <= carryLimit(a.carrierR) && a.props.stickiness > 0 ? 'stick' : 'shove';
+  // SIZE FIRST, and rootedness is not consulted: small enough is stuck.
+  if (a.itemR <= carryLimit(a.carrierR) && a.props.stickiness > 0) return 'stick';
+  // Too big, and loose: it gets out of the way rather than standing in it.
+  if (!a.rooted) return 'shove';
+  /*
+   * Too big AND planted — the only thing in the world that says no.
+   *
+   * BREAK TAKES PRECEDENCE over coming out of the ground, and it is asked
+   * first for exactly that reason: `shatterStrength` is above
+   * `breakStrength`, so an impact that reaches it has already passed the
+   * looser test and a prop hit that hard should come apart rather than be
+   * lifted whole onto a pile. It is asked even of a kind whose
+   * `breakStrength` is `Infinity`, because those two thresholds are
+   * independent — though nothing in `STICKY` sets both today.
+   */
+  const shatter = a.props.shatterStrength;
+  if (shatter !== undefined && Number.isFinite(shatter) && a.impact >= shatter) return 'break';
+  // `Infinity` means NEVER, and it has to mean that even when it is asked
+  // about an infinite impact — `Infinity >= Infinity` is true, which would
+  // have handed a building to anyone who managed to overflow a speed.
+  if (!Number.isFinite(a.props.breakStrength)) return 'block';
+  return a.impact >= a.props.breakStrength ? 'loose' : 'block';
 }
 
 /**
