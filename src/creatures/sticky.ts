@@ -402,6 +402,49 @@ export function passLimit(carrierR: number): number {
  * treats as a movement anybody perceives. */
 export const DROP_MIN_GAP_MS = MOTION.tertiaryMs;
 
+/**
+ * [D] Items on the pile at which a creature stops walking and starts rolling.
+ *
+ * > User ask, 2026-09-16: *"let's have them start walking at first and once
+ * > they hit a few objects they begin to roll because they have mass."*
+ *
+ * THREE, because three is the smallest number that reads as "a few" and as a
+ * pile: one stone stuck to a creature is a creature carrying a stone, and two
+ * is a coincidence. Three is a lump with a shape of its own, and at a typical
+ * hatchling it is also about where `growth` first makes the silhouette
+ * obviously bigger than the drawing.
+ */
+export const ROLL_MASS_ITEMS = 3;
+
+/**
+ * [D] …or this much bigger than it started, whichever comes first.
+ *
+ * Mass, not count: one thing its own size is more mass than three pebbles,
+ * and a creature that has swallowed a tree should roll whether or not it has
+ * collected two more. 1.08 is an eighth of the way to `growth`'s first
+ * doubling and is about one body-sized item — visible as a bulge, and past
+ * anything a rounding error in a measured radius could produce.
+ */
+export const ROLL_GROWTH = 1.08;
+
+/**
+ * Should this creature be ROLLING? — the pure half of the walk/roll blend.
+ *
+ * A target, not a state: the manager retargets a ζ ≥ 1 spring at it over
+ * `MOTION.primaryMs`, so the change of locomotion is a slide and never a cut
+ * (TASTE §2.1, confidence 1.00). Either threshold is enough, and the answer
+ * falls back to 0 when a pile is shed — a creature that has been robbed walks
+ * again.
+ *
+ * Derived from the CLUMP alone (item count and growth), which is why it can
+ * live here: every page holds the same clump state, off the same `stick` and
+ * `drop` events, so every page reaches the same blend without a byte on the
+ * wire about it.
+ */
+export function rollTarget(items: number, growth: number): 0 | 1 {
+  return items >= ROLL_MASS_ITEMS || growth >= ROLL_GROWTH ? 1 : 0;
+}
+
 /** The biggest item radius this carrier can take on. */
 export function carryLimit(carrierR: number): number {
   return PICKUP_RATIO * carrierR;

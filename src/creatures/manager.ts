@@ -43,6 +43,7 @@ import { createEgg, EGG_RADIUS, type Egg } from '../egg/egg';
 import { startHatch, type HatchHandle } from '../egg/hatch';
 import type { EmoteName } from '../net/protocol';
 import type { StrokeList } from '../shape/types';
+import { Spring } from '../motion/spring';
 import { MOTION } from '../taste/tokens';
 import { FOLLOW_TAU_MS, followFraction, shortestAngle } from '../net/worldsync';
 import type { WorldHandles } from '../world/scene';
@@ -55,6 +56,7 @@ import { createClump, type Clump, type StuckItem } from './clump';
 import {
   carryLimit,
   passLimit,
+  rollTarget,
   clumpLocalOffset,
   clumpLocalRotation,
   creatureCarryLimit,
@@ -626,6 +628,25 @@ interface Slot {
   carriedBy: string | null;
   /** Ids of the creatures riding on THIS one. Set down free if it leaves. */
   passengers: Set<string>;
+  /**
+   * WALKING OR ROLLING, in [0, 1] — the katamari's locomotion blend
+   * (docs/PLAN.md §7.6).
+   *
+   * 0 is a creature on its legs and 1 is a ball. Written every frame by
+   * `growPass` from `rollSpring`, read by the gait amplitude, by how much of
+   * the travel turns into roll, and by the drive ceiling. Always 0 in a world
+   * without the game, where there is no clump to carry anything.
+   */
+  roll: number;
+  /**
+   * The ζ ≥ 1 spring `roll` comes off, over `MOTION.primaryMs`. Null until
+   * the creature is alive, and in every world but the katamari.
+   *
+   * Never on the wire: its target is `rollTarget(clump items, growth)`, and
+   * every page holds the same clump off the same `stick`/`drop` events — so
+   * each one derives the same blend rather than being told it.
+   */
+  rollSpring: Spring | null;
   /** When this carrier last shed something, on the loop's clock. Null until
    * it has. The `DROP_MIN_GAP_MS` gate, so a pile does not unravel in one
    * frame against a tree. */
@@ -1055,6 +1076,26 @@ export interface CreatureManager {
   applyShatter(record: ShatterRecord): void;
   /** Live wreck states, for the ghost panel and the tests. */
   wrecks(): { item: string; stage: number; removed: number }[];
+  /**
+   * How much of a BALL this creature is, 0…1 (docs/PLAN.md §7.6).
+   *
+   * A readout, not a control: the blend is derived from the pile on every
+   * page and nothing may set it. It exists so the ghost panel can show what
+   * a creature's locomotion is actually doing and so a test can assert the
+   * slide rather than infer it from a waddle. 0 for an id nobody holds, and 0
+   * for the whole of any world without the game.
+   */
+  rollBlend(id: string): number;
+  /**
+   * Top ground speed this creature would reach under a full push, u/s.
+   *
+   * A readout of `DRIVE_SPEED × driveMult(blend)`: the walk ceiling for a
+   * creature on its legs, the rolling one for a ball, and the same number
+   * either way in a world without the game. The panel shows it and the tests
+   * measure against it rather than re-deriving a multiplier, which is how the
+   * arithmetic stays in one place. 0 for an id nobody holds.
+   */
+  driveCeiling(id: string): number;
 }
 
 export function createCreatureManager(
@@ -1080,7 +1121,34 @@ export function createCreatureManager(
    * the ambient drift floor — which is `character.update`'s, not the gait's —
    * running underneath, as TASTE §3 requires.
    */
-  const locoSpeed = (speed: number): number => (katamari ? 0 : speed);
+  /**
+   * How much of a ball this creature is, 0…1 — and a PASSENGER RIDES ITS
+   * CARRIER'S (2026-09-16 ask: *"a passenger rides its carrier's blend"*).
+   *
+   * A creature sitting on a pile has no locomotion of its own: it is inside
+   * somebody else's ball, so it rolls when that ball rolls and it does not
+   * walk while it is up there. The walk up the carriers is bounded because a
+   * pile cannot be inside itself, and the guard is belt and braces.
+   */
+  const rollOf = (slot: Slot): number => {
+    let at: Slot = slot;
+    for (let hop = 0; hop < 8; hop++) {
+      const carrier = at.carriedBy === null ? null : slots.get(at.carriedBy);
+      if (!carrier) break;
+      at = carrier;
+    }
+    return at.roll;
+  };
+
+  /**
+   * How much of the WALK to show — the other side of the same blend.
+   *
+   * The gait used to be fed a flat zero in a katamari world (a waddle on top
+   * of a roll is two locomotions at once). It is now scaled instead, so a
+   * creature that has picked nothing up walks properly and one that has three
+   * stones on it has stopped waddling by the time it is rolling.
+   */
+  const gaitAmp = (slot: Slot): number => (katamari ? 1 - rollOf(slot) : 1);
   const surface = options.surface ?? ROLLING_SURFACE;
   const slots = new Map<string, Slot>();
   let orderCounter = 0;
@@ -1123,8 +1191,17 @@ export function createCreatureManager(
   const walkMult = (): number =>
     katamari ? KATAMARI_WALK_MUL * speedScale() : wanderSpeedMult;
 
-  /** The ceiling multiplier for a creature under somebody's thumb. */
-  const driveMult = (): number => wanderSpeedMult;
+  /**
+   * The ceiling multiplier for a creature under somebody's thumb.
+   *
+   * On a katamari world it LERPS with the walk/roll blend: a creature on its
+   * legs drives at the walk ceiling and the same creature, three stones
+   * later, drives at the rolling one (docs/PLAN.md §7.6). The blend is a
+   * ζ ≥ 1 spring, so the speed arrives by sliding — there is no frame where
+   * the stick suddenly means something different.
+   */
+  const driveMult = (blend: number): number =>
+    katamari ? walkMult() + (wanderSpeedMult - walkMult()) * blend : wanderSpeedMult;
 
   /** How fast a driven creature turns toward the push — tighter in a
    * katamari world, because it is going more than twice as fast there. */
@@ -1266,6 +1343,8 @@ export function createCreatureManager(
       slot.carriedBy = null;
     }
     removeKinematic(slot);
+    slot.rollSpring?.dispose();
+    slot.rollSpring = null;
     slot.clump?.dispose();
     slot.clump = null;
     slot.agent?.dispose();
@@ -1331,6 +1410,19 @@ export function createCreatureManager(
      * item into.
      */
     if (katamari) {
+      /*
+       * WALK FIRST, ROLL WITH MASS (user ask, 2026-09-16: *"let's have them
+       * start walking at first and once they hit a few objects they begin to
+       * roll because they have mass"*).
+       *
+       * One spring per creature, from rest: a hatchling carrying nothing is
+       * at 0 and walks. `growPass` retargets it at `rollTarget` every frame
+       * and the blend slides over `MOTION.primaryMs` — ζ ≥ 1 by construction,
+       * so a creature becoming a ball can never overshoot into more roll than
+       * a roll (TASTE §2.1, confidence 1.00), and one that sheds its pile
+       * walks again the same way round.
+       */
+      slot.rollSpring = new Spring(0, { settleMs: MOTION.primaryMs });
       slot.clump = createClump(slot.baseR);
       root.add(slot.clump.group);
       /*
@@ -3042,6 +3134,18 @@ export function createCreatureManager(
       const g = clump.growth();
       root.scale.setScalar(g);
       slot.bodyR = slot.baseR * g;
+      /*
+       * AND WHETHER IT IS A BALL YET — here, because this is the pass that
+       * runs on EVERY page (docs/PLAN.md §7.6). The blend is derived from the
+       * clump's own item count and growth, both of which a viewer holds off
+       * the `stick` and `drop` events, so every screen reaches the same
+       * locomotion without a byte on the wire about it.
+       */
+      const spring = slot.rollSpring;
+      if (spring) {
+        spring.retarget(rollTarget(clump.items.size, g));
+        slot.roll = Math.min(1, Math.max(0, spring.update(dt)));
+      }
       if (slot.character) slot.characterShadow?.setRadius?.(slot.character.radius * g);
     }
   }
@@ -3133,6 +3237,8 @@ export function createCreatureManager(
         baseR: 0,
         clump: null,
         carriedBy: null,
+        roll: 0,
+        rollSpring: null,
         passengers: new Set<string>(),
         lastDropMs: null,
         kinematic: null,
@@ -3411,8 +3517,11 @@ export function createCreatureManager(
              * the two-level rig exists to prevent. The agent is stood down
              * the same way a driven one is; the gait sees speed 0 and drifts
              * out to the ambient floor rather than freezing.
+             *
+             * The gait amplitude is its CARRIER's blend (`gaitAmp` →
+             * `rollOf`): a passenger on a rolling ball is not walking either.
              */
-            slot.character.setLocomotion(0, root.rotation.y);
+            slot.character.setLocomotion(0, root.rotation.y, gaitAmp(slot));
           } else if (root && slot.phase === 'alive' && slot.manualHold) {
             // Gizmo-held (dev panel): the dragged root position is the
             // truth. The body still enters the physics pass, motionless, so
@@ -3493,15 +3602,20 @@ export function createCreatureManager(
              * gait reads it: what the viewer sees moving is what should be
              * seen turning.
              */
-            slot.clump?.roll(root.position.x - beforeX, root.position.z - beforeZ);
+            slot.clump?.roll(
+              root.position.x - beforeX,
+              root.position.z - beforeZ,
+              rollOf(slot),
+            );
 
             // The gait reads the speed it is ACTUALLY travelling at, so a
             // followed creature walks for the same reason a simulated one
             // does — because it is moving — rather than being told to.
             const moved = Math.hypot(root.position.x - beforeX, root.position.z - beforeZ);
             slot.character.setLocomotion(
-              locoSpeed(dt > 0 ? (moved / dt) * 1000 : 0),
+              dt > 0 ? (moved / dt) * 1000 : 0,
               root.rotation.y,
+              gaitAmp(slot),
             );
             if (present) {
               slot.characterShadow?.setPosition(
@@ -3558,7 +3672,7 @@ export function createCreatureManager(
             if (driven) slot.drivenAtMs = nowMs;
             const held =
               slot.drivenAtMs !== null && nowMs - slot.drivenAtMs < DRIVE_IDLE_MS;
-            const ceiling = DRIVE_SPEED * driveMult();
+            const ceiling = DRIVE_SPEED * driveMult(rollOf(slot));
             const driveVx = driven ? driven.x * ceiling : 0;
             const driveVz = driven ? driven.z * ceiling : 0;
             // What the hand is asking for, and where the creature is really
@@ -3965,14 +4079,18 @@ export function createCreatureManager(
            * pile that kept turning while its carrier stood still would read
            * as wheels spinning on ice.
            */
-          slot.clump?.roll(body.x - root.position.x, body.z - root.position.z);
+          slot.clump?.roll(body.x - root.position.x, body.z - root.position.z, rollOf(slot));
           root.position.x = body.x;
           root.position.z = body.z;
           const character = slot.character;
           if (!character) continue;
           // The gait reads the RESOLVED ground speed — walk cycles blend in
           // with actual movement and drift out to the ambient floor.
-          character.setLocomotion(locoSpeed(Math.hypot(body.vx, body.vz)), entry.heading);
+          character.setLocomotion(
+            Math.hypot(body.vx, body.vz),
+            entry.heading,
+            gaitAmp(slot),
+          );
           if (slot.present) {
             slot.characterShadow?.setPosition(
               body.x + character.group.position.x,
@@ -4222,6 +4340,16 @@ export function createCreatureManager(
 
     wanderSpeed(): number {
       return wanderSpeedMult;
+    },
+
+    rollBlend(id): number {
+      const slot = slots.get(id);
+      return slot ? rollOf(slot) : 0;
+    },
+
+    driveCeiling(id): number {
+      const slot = slots.get(id);
+      return slot ? DRIVE_SPEED * driveMult(rollOf(slot)) : 0;
     },
 
     setWanderSpeed(mult): void {

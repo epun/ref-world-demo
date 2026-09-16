@@ -86,8 +86,18 @@ export interface GaitController {
    * heading (radians — reserved: the deform layer works in the mesh's local
    * travel frame, which the root's heading rotation already provides).
    * Returns the uniform values for this frame.
+   *
+   * `ampScale` fades the whole walk out without lying about the speed: the
+   * amplitude TARGET is multiplied by it while the step frequency still
+   * follows the real travel, so at 0 the layer reads as nothing and the
+   * phase is still where the creature's own stride would have it. That is
+   * what the katamari's walk→roll blend needs (docs/PLAN.md §7.6): a
+   * creature turning into a ball stops waddling over `MOTION.primaryMs`
+   * rather than being told it has stopped moving, and one that sheds its pile
+   * picks the walk back up mid-stride. Defaults to 1, so every other caller
+   * is the walk it always was.
    */
-  update(dt: number, speed: number, heading: number): GaitState;
+  update(dt: number, speed: number, heading: number, ampScale?: number): GaitState;
   /** Unregister the springs (damping audit hygiene). */
   dispose(): void;
 }
@@ -102,9 +112,10 @@ export function createGait(archetype: Archetype): GaitController {
   let phase = 0;
 
   return {
-    update(dt: number, speed: number, _heading: number): GaitState {
+    update(dt: number, speed: number, _heading: number, ampScale = 1): GaitState {
       const s = Math.abs(speed);
-      ampSpring.retarget(Math.min(1, s / FULL_AMP_SPEED));
+      const scale = Math.min(1, Math.max(0, ampScale));
+      ampSpring.retarget(Math.min(1, s / FULL_AMP_SPEED) * scale);
       freqSpring.retarget(s / profile.stride);
       const amp = ampSpring.update(dt);
       const freq = Math.max(0, freqSpring.update(dt));
