@@ -413,6 +413,122 @@ per-frame updates, simulation in flat arrays). What transferred, and what did no
   per-instance uniform textures is the path if the projection still needs it, and it is a
   rewrite of `src/character/`, not a tweak.
 
+#### the second pass, on the katamari world — *(2026-09-16)*
+
+> User reports: *"at 200 characters right now, the page is glitching out, and it's very slow
+> to load"*, then *"my character can't move now"*, then *"if the web page refreshes, the
+> mobile view doesn't actually work and it gets frozen"*.
+
+Measured with a headless harness (playwright + swiftshader, 200 synthetic drawings through
+the real pure pipeline, thirty of them driven, on `?host=1` at 1280×800 and on a phone-tier
+viewer at 390×844). Swiftshader is not a phone GPU, so the absolute frame times below are
+only good for comparing against each other; the draw calls, the triangle counts and the
+main-thread milliseconds transfer.
+
+**The "glitching" was a crash, not a slow frame.** `stickItem` read the item's live rapier
+transform AFTER `PropBodies.take` had removed its body, and a removed rapier body is a dead
+handle: reading it traps the wasm module (`RuntimeError: unreachable`). That threw out of the
+world's frame callback, so `requestAnimationFrame` was never re-armed and the page sat
+holding the last frame it managed — which from a handset is every creature frozen where it
+stood. Reachable on any population since `PICKUP_RATIO` went 0.6 → 1.0 made pickups happen
+at all; reproduced at 60 creatures within seven seconds of the first one. The pose is
+snapshotted before the take now, and `src/world/scene.ts`'s loop no longer lets one throwing
+frame callback take the loop with it.
+
+**The frame, in the order the profile ranked it:**
+
+- **52% of the JS thread was `gl.getProgramInfoLog`** — three's `checkShaderErrors` calls it
+  the first time each program is drawn, and it BLOCKS until the driver has linked, which also
+  throws away the parallel compile a modern driver would do. 11.2 seconds of a 21.6-second
+  window across the thirty-eight programs a katamari frame needs, all of it landing in the
+  seconds right after the object library arrives: the *"my character can't move now"* report.
+  It is off outside the vite dev server — `import.meta.env.DEV`, deliberately NOT `__IS_DEV__`,
+  which `worlds.json` turns on for whole deployments — and `WorldHandles`' `warmPrograms`
+  calls `renderer.compileAsync` after every rebuild that can introduce a material (the three
+  library tiers, the one style switch) so the links happen together and off the first frame.
+- **The ink chain ran five full-screen passes and needed four.** The overlay pass draws the
+  speech bubbles, which detach themselves when they hide, so nearly every frame in a room was
+  paying a full-screen render's traversal and submission to draw nothing. It now runs only
+  when something is on `OVERLAY_LAYER`, detected in the walk the normal pass was already
+  doing. With `autoClear` off and no background a pass with nothing in it writes nothing, so
+  this is the same picture on every world.
+- **A phone drew the props twice a frame.** `InkPass.setNormalPassSkip` is a caller's list of
+  subtrees hidden for the normal target alone, and the phone tier registers the scatter group
+  on a ghibli world. What the props contribute there is their own hatching and interior
+  creases, neither legible on a 134-triangle prop at phone scale; the contour that reads comes
+  off the DEPTH target, which is the beauty render's and untouched, and the ground behind a
+  skipped prop fills the normal target where it stood so there is no hole to read. The
+  projection registers nothing and draws both passes whole.
+- **`Scatter.hideTaken`** — the incremental half of the taken filter. Every pickup called
+  `setTaken`, which re-lays every InstancedMesh in the world from a filter over every
+  placement plus a terrain sample per instance and per stamp (~250-330ms), and invalidated
+  every `InstanceRef` the physics layer holds. It now blanks the one row and the one stamp,
+  drops the collider cache and bumps `collidersVersion` — and deliberately not
+  `rebuildVersion`, so nothing re-syncs. Monotone only: a key that would come back, or one
+  with no row (a mark, a waterfall placement), falls through to a rebuild.
+- **The prop field is read once per CHANGE, not once per frame**, and answers "nearest" off a
+  spatial hash. `readProps` rebuilt 1,083 objects a frame and every agent then scanned all of
+  them twice for one fact: 0.6ms + 6.1ms a frame at 200 creatures. `AgentPropField` is pinned
+  against the linear scan over 2,000 random queries including exact ties.
+- Two smaller ones, both byte-identical: `syncStuckColliders` returns before it allocates when
+  the carrier holds nothing (four garbage objects per creature per frame), and
+  `stepCreatures`'s pair-separation round re-seats only the bodies it displaced or that a
+  sweep may have left inside something — pinned float-for-float against a reference that
+  re-seats everybody.
+
+| phone viewer, 390×844, library loaded | before | after |
+|---|---|---|
+| frame | 3002ms | 1404ms |
+| draw calls a frame | 453 | 236 |
+| triangles a frame | 2.67M | 1.32M |
+| full-screen passes | 5 | 4 |
+
+(The triangle drop is shared with the meadow going to 40% of its blades in the same pass.)
+
+**The load is a worker now.** 200 creatures rebuilt from their drawings measured **57 seconds
+of main-thread time**, mean 286ms each — the refresh report, and the egg is not the cost
+(grown 260ms against with-egg 239ms). Deterministic does not mean "on this thread": it means
+the same function on the same input. So `src/character/blueprint.ts` is the pure half of
+`createCharacter` as one function — interpret, then inflate — importing `src/shape/` and
+`src/inflate/` only, with every dial an ARGUMENT (`ovoid` included: it is a dev-panel override
+in module state, so a worker reading its own copy would quietly build a different body).
+`blueprint.worker.ts` is a message handler around it and nothing else; `blueprintPool.ts` is
+`hardwareConcurrency − 1` capped at four, round robin, with three fallbacks to the main thread
+(no `Worker`, a factory that throws, a worker that dies or answers nothing) because losing a
+person's drawing to an optimisation is not a trade worth making. `CharacterOptions.blueprint`
+and `SpawnOptions.blueprint` are additive — absent, the pipeline runs inline exactly as
+before, which is what the phone and every live drawing on a quiet world still do.
+
+Measured on the page, sixteen creatures each way: **294.8ms of main thread a creature inline,
+33.7ms with the blueprint already built — 88.6% of it gone**, on a machine the pool sized at
+three workers. At two hundred that is ~59 seconds of blocked main thread down to ~6.7, with
+the pipelines running three-up alongside it. The rest is what a worker cannot take: the
+BufferGeometry upload, the marking canvas, the stalk and the springs.
+
+**And both ingest paths are one queue.** `src/moderation/ingestQueue.ts`: order exact
+(pipelines finish out of order on purpose, the OFFERS do not — the gate's arrival number and
+the session log's event order are what an operator's list, an eviction and a replay are built
+on), nothing lost (an empty pipeline still offers, with no blueprint), and the frame handed
+back on a budget rather than after a fixed count. The store's restore and the feed's own
+arrivals both use it; the feed's mattered as much as the restore's, because the way a
+refreshed projection heals itself is every handset in the room re-publishing at once.
+
+**Two things measured and deliberately NOT done:**
+
+- The remaining draw calls are one InstancedMesh per (kind, variant), and a call is a pair
+  that got at least one placement — so the count is bounded by what is PLACED, not by the
+  catalog. Measured off the pure placement: `ACTIVE_BUDGET` small/medium at 120/80 draws 217
+  scatter calls, at 60/48 it is 170, at 32/24 it is 128, with the same 1,954 placements
+  throughout. Cutting it is two numbers in `src/world/katamari/rules.ts` and a re-run of
+  `scripts/katamari-curate.mjs --all --source <library>`; it needs the library, which is not
+  in the repo.
+- `FIELD_SEGMENTS` 320 → 160 saves 153,600 triangles a pass (~8% of the frame) and eats the
+  steepest terrace creases: the field's steepest slope is 0.843, so a 1.6-unit riser over the
+  middle 60% of its step is ~1.14 units of run, and a 2.5-unit quad is wider than the riser it
+  has to draw. Measured height error against the authored field over 250,000 samples in the
+  camera's core: max 0.155u at 320, 0.348u at 200, 0.443u at 160 — a quarter of a riser at the
+  worst point. 320 stays.
+
 **The minimap absorbs the crowding.** This is where a busy world actually shows, so the
 minimap does the work: **you** are `#080808` with the `#fb5429` ring, always distinct at any
 zoom; everyone else is muted `#8e908d` and clusters into a single softer mark below a
