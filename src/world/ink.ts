@@ -56,6 +56,7 @@ import { CHARACTER, GHIBLI, MOTION, SURFACE, WORLD } from '../taste/tokens';
 import { OVERLAY_LAYER } from './layers';
 import { KEY_DIRECTION } from './lighting';
 import type { WorldStyle } from './style';
+import { CAMERA_DISTANCE, CAMERA_FAR, CAMERA_NEAR } from './camera';
 
 /**
  * Per-frame environment drive (src/world/environment.ts). All values arrive
@@ -77,7 +78,17 @@ export interface InkEnvironment {
 }
 
 export interface InkParams {
-  /** Depth discontinuity (0–1 ortho depth) that starts a contour line. */
+  /**
+   * Depth discontinuity that starts a contour line, in WORLD UNITS.
+   *
+   * The shader compares depth-texture differences, which are normalised
+   * `(z − near) / (far − near)` — so a threshold expressed in that 0–1 space
+   * silently changes meaning whenever the camera's depth range does, and the
+   * range widened by 7.5× when the rig pulled its eye back off the sea disc
+   * (src/world/camera.ts). Kept in world units here and divided by the live
+   * range each render (`setDepthRange`), the line weight is the same line
+   * weight at any range. [D]
+   */
   edgeThreshold: number;
   /** Line width in device pixels (varies ±30% along the line). */
   lineWidth: number;
@@ -87,12 +98,71 @@ export interface InkParams {
   hatchStrength: number;
 }
 
+/**
+ * The ortho depth range the ink pass's depth numbers were calibrated at:
+ * near 0.1, far 480 (the rig's old `CAMERA_DISTANCE * 4`). Only used to
+ * carry those calibrations over into world units, once. [D]
+ */
+const CALIBRATION_RANGE = 480 - 0.1;
+
+/** [D] Contour threshold in world units: the screenshot-landed 0.004 of the
+ * calibration range, ≈1.92 units of depth step across a line's two taps. */
+export const EDGE_WORLD_UNITS = 0.004 * CALIBRATION_RANGE;
+
+/**
+ * [D] Where the fog wash starts, in world units of depth measured from the
+ * LOOK-TARGET plane (negative = in front of it): the calibrated 0.20 sat
+ * 96.08 units from an eye that stood `120` off the target, so the wash began
+ * 23.9 units this side of it and that is what has to be preserved — the eye
+ * distance itself is now free (see `CAMERA_DISTANCE`).
+ */
+const FOG_START_FROM_TARGET = 0.2 * CALIBRATION_RANGE + 0.1 - 120;
+
+/** [D] Depth over which the wash reaches full, world units: the calibrated
+ * 0.12 of the calibration range. */
+const FOG_SPAN_UNITS = 0.12 * CALIBRATION_RANGE;
+
+/** The shader's depth comparisons, in normalised depth. */
+export interface DepthConstants {
+  /** Contour threshold, in normalised depth. */
+  edgeThreshold: number;
+  /** Where the fog wash starts, in normalised depth. */
+  fogStart: number;
+  /** Normalised depth the wash takes to reach full. */
+  fogSpan: number;
+}
+
+/**
+ * The three depth numbers above, normalised out of world units into a
+ * camera's ortho depth range (`(z - near) / (far - near)`).
+ *
+ * Pure, and exported, because this is the whole of the range-independence:
+ * feed it the calibration range and the eye distance of the day and it hands
+ * back exactly the 0.004 / 0.20 / 0.12 the look was landed on; feed it the
+ * rig's live range and the lines and the wash land in the same places.
+ */
+export function depthConstants(
+  near: number,
+  far: number,
+  edgeWorldUnits: number,
+  eyeDistance = CAMERA_DISTANCE,
+): DepthConstants {
+  const range = Math.max(1e-6, far - near);
+  return {
+    edgeThreshold: edgeWorldUnits / range,
+    fogStart: (eyeDistance + FOG_START_FROM_TARGET - near) / range,
+    fogSpan: FOG_SPAN_UNITS / range,
+  };
+}
+
 /** [D] Landed by screenshot iteration against the reference read. */
 const DEFAULTS: InkParams = {
   // 0.0009 produced spurious edge clipping at grazing view angles once the
-  // camera could orbit freely (user report); 0.004 keeps silhouettes inked
-  // without the depth-noise artifacts.
-  edgeThreshold: 0.004,
+  // camera could orbit freely (user report); 0.004 kept silhouettes inked
+  // without the depth-noise artifacts — that 0.004 over the depth range of
+  // the day (0.1 .. 480) is EDGE_WORLD_UNITS, which is the same line at any
+  // range.
+  edgeThreshold: EDGE_WORLD_UNITS,
   lineWidth: 2.1,
   // 3.0 detached lines visibly from small silhouettes (user report);
   // 1.6 keeps the pen roughness with the line still riding the mesh.
@@ -130,6 +200,10 @@ uniform sampler2D uNormal;
 uniform vec2 uResolution;
 uniform float uTime;
 uniform float uEdgeThreshold;
+// Fog band, normalised into the camera's live depth range each render (the
+// world-unit distances are the constants; these are the projection of them).
+uniform float uFogStart;
+uniform float uFogSpan;
 uniform float uLineWidth;
 uniform float uWobble;
 uniform float uHatchStrength;
@@ -282,7 +356,7 @@ void main() {
   // bands so it reads as drawn layers, never a smooth atmosphere. Band
   // boundaries wobble with the pen noise. The sky (depth 1) washes fully.
   if (uFogAmt > 0.001) {
-    float fogT = clamp((depth - 0.20) / 0.12, 0.0, 1.0);
+    float fogT = clamp((depth - uFogStart) / uFogSpan, 0.0, 1.0);
     float fogBand = clamp(floor(fogT * 3.0 + 0.5 + (n1 - 0.5) * 0.9), 0.0, 3.0) / 3.0;
     // The wash target is the light token under the frame's exposure, so
     // night fog washes toward dimmed paper instead of fighting the dark.
@@ -436,6 +510,11 @@ export class InkPass {
   private readonly keyDirection = KEY_DIRECTION.clone();
   private readonly normalClear = new Color(0.5, 0.5, 1);
   private readonly params: InkParams = { ...DEFAULTS };
+  /** The camera's live ortho depth range, `far − near`, and its `near` — the
+   * two numbers every depth constant here is expressed against. Defaulted to
+   * the rig's own range so a frame drawn before the first `render` is right. */
+  private depthNear = CAMERA_NEAR;
+  private depthRange = CAMERA_FAR - CAMERA_NEAR;
   /** Which look this pass composites for (src/world/style.ts). */
   private style: WorldStyle = 'ink';
   /**
@@ -464,7 +543,9 @@ export class InkPass {
         uNormal: { value: this.normalTarget.texture },
         uResolution: { value: this.resolution },
         uTime: { value: 0 },
-        uEdgeThreshold: { value: this.params.edgeThreshold },
+        uEdgeThreshold: { value: 0 },
+        uFogStart: { value: 0 },
+        uFogSpan: { value: 1 },
         uLineWidth: { value: this.params.lineWidth },
         uWobble: { value: this.params.wobble },
         uHatchStrength: { value: this.params.hatchStrength },
@@ -500,6 +581,7 @@ export class InkPass {
     const quad = new Mesh(geometry, this.material);
     quad.frustumCulled = false;
     this.quadScene.add(quad);
+    this.applyDepthConstants();
   }
 
   setSize(width: number, height: number, pixelRatio: number): void {
@@ -521,10 +603,35 @@ export class InkPass {
     this.material.uniforms.uHatchPeriod!.value = period;
   }
 
+  /**
+   * Tell the pass the camera's ortho depth range. Every depth number in the
+   * shader is authored in WORLD UNITS and normalised here, so the contour
+   * threshold and the fog bands land in the same places on screen whatever
+   * near/far the rig is running (`render` calls this each frame).
+   */
+  setDepthRange(near: number, far: number): void {
+    this.depthNear = near;
+    this.depthRange = Math.max(1e-6, far - near);
+    this.applyDepthConstants();
+  }
+
+  /** Project the world-unit depth constants into the live range. */
+  private applyDepthConstants(): void {
+    const u = this.material.uniforms;
+    const d = depthConstants(
+      this.depthNear,
+      this.depthNear + this.depthRange,
+      this.params.edgeThreshold,
+    );
+    u.uEdgeThreshold!.value = d.edgeThreshold;
+    u.uFogStart!.value = d.fogStart;
+    u.uFogSpan!.value = d.fogSpan;
+  }
+
   setParams(next: Partial<InkParams>): void {
     Object.assign(this.params, next);
     const u = this.material.uniforms;
-    u.uEdgeThreshold!.value = this.params.edgeThreshold;
+    this.applyDepthConstants();
     u.uLineWidth!.value = this.params.lineWidth;
     u.uWobble!.value = this.params.wobble;
     u.uHatchStrength!.value = this.params.hatchStrength;
@@ -639,6 +746,10 @@ export class InkPass {
     this.material.uniforms.uTime!.value = t * 0.05;
     // Before the composite, because the composite is what draws them.
     this.projectCracks(camera);
+    // Depth constants are world-unit authored; re-normalise against whatever
+    // range this camera is running (src/world/camera.ts moved it once).
+    const depth = camera as { near?: number; far?: number };
+    this.setDepthRange(depth.near ?? CAMERA_NEAR, depth.far ?? CAMERA_FAR);
     // Streak clock in seconds — slow, measured drift for rain/snow. Wrapped
     // on the same long period as the other clocks so precision holds.
     this.material.uniforms.uEnvTime!.value = (nowMs % (MOTION.ambientMs * 4096)) / 1000;
