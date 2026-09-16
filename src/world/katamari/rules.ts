@@ -295,9 +295,22 @@ export const ROOTED_NAME_PATTERN =
  * densities are unchanged, so the same number of things stand in the field —
  * they just repeat far less.
  */
+/**
+ * The share of a kind's active budget reserved for BEACH rows (`beach: true`)
+ * before the seeded shuffle fills the rest [D]. At 120 small variants the
+ * shuffle always carried a few shells; at 32 (2026-09-16, the phone's draw
+ * calls) it carried none, and a beach with nothing on it is not a beach.
+ */
+export const BEACH_RESERVE = 0.25;
+
 export const ACTIVE_BUDGET: Readonly<Record<string, number>> = {
-  small: 120,
-  medium: 80,
+  // 120 / 80 until 2026-09-16: a draw call is one (kind, variant) pair that
+  // got a placement, so at 120 the world placed 96 small variants = 96 calls a
+  // pass, on a phone that could not hold the frame. 32 / 24 places every one
+  // of them (−89 calls a pass, −41%) and is still four times the variety the
+  // authored world had. Two numbers to reverse.
+  small: 32,
+  medium: 24,
   large: 40,
   building: 24,
   // Every other replacement kind: a dozen is already three times what the

@@ -43,7 +43,9 @@ describe('katamari catalog', () => {
     // The ACTIVE set (ACTIVE_BUDGET in rules.ts): enough variety that a field
     // does not read as one model stamped everywhere, few enough that the
     // scatter's one InstancedMesh per (kind, variant) stays a sane frame.
-    expect(KATAMARI_CATALOG.length).toBeGreaterThanOrEqual(200);
+    // 2026-09-16: small 120 → 32 and medium 80 → 24 for the phone's draw
+    // calls (rules.ts ACTIVE_BUDGET), so "a few hundred" is now 150-odd.
+    expect(KATAMARI_CATALOG.length).toBeGreaterThanOrEqual(150);
     expect(KATAMARI_CATALOG.length).toBeLessThanOrEqual(400);
     const ids = KATAMARI_CATALOG.map((e) => e.id);
     expect(new Set(ids).size).toBe(ids.length);
