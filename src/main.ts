@@ -1797,10 +1797,10 @@ function main(): void {
         prepare: (drawing) =>
           blueprints.build(drawing.strokes, currentDials(1, identitySeedOf(drawing.id))),
         offer: (drawing, blueprint) => {
-          const entry = gate.offer({
-            ...drawing,
-            ...(blueprint ? { blueprint } : {}),
-          });
+          const offered: WorldDrawing = { ...drawing, ...(blueprint ? { blueprint } : {}) };
+          const entry = gate.offer(offered);
+          // Off the drawing again — see the feed's own offer above.
+          delete offered.blueprint;
           if (entry.disposition === 'admitted') ids.push(drawing.id);
         },
         has: (id) => creatures.has(id),
@@ -2518,10 +2518,20 @@ function main(): void {
     prepare: (drawing) =>
       blueprints.build(drawing.strokes, currentDials(1, identitySeedOf(drawing.id))),
     offer: (drawing, blueprint) => {
-      const entry = gate.offer({
-        ...drawing,
-        ...(blueprint ? { blueprint } : {}),
-      });
+      const offered: WorldDrawing = { ...drawing, ...(blueprint ? { blueprint } : {}) };
+      const entry = gate.offer(offered);
+      /*
+       * AND OFF THE DRAWING AGAIN, the moment the gate has had it.
+       *
+       * The gate KEEPS what it was offered — its decision log, its
+       * `admittedById` map, its hold queue — and a blueprint is two
+       * `ShapeAnalysis` objects: a 512² mask and a 512² float distance field
+       * each, about 2.6 MB. Left attached that is half a gigabyte retained at
+       * two hundred creatures, for a value `spawn` has already consumed. What
+       * the creature needs of it is on the Character (its own `analysis`),
+       * exactly as it was before the pool existed.
+       */
+      delete offered.blueprint;
       // (the autosave runs on the gate's own observer — every ingest path is
       // covered by it, so there is nothing to do here)
       // Tell the drawer, on their own handset, when their drawing will never

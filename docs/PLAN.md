@@ -526,8 +526,13 @@ refreshed projection heals itself is every handset in the room re-publishing at 
   steepest terrace creases: the field's steepest slope is 0.843, so a 1.6-unit riser over the
   middle 60% of its step is ~1.14 units of run, and a 2.5-unit quad is wider than the riser it
   has to draw. Measured height error against the authored field over 250,000 samples in the
-  camera's core: max 0.155u at 320, 0.348u at 200, 0.443u at 160 — a quarter of a riser at the
-  worst point. 320 stays.
+  camera's core: max 0.155u at 320, 0.348u at 200, **0.443u at 160** — a quarter of a riser at
+  the worst point. Rendered both ways at 1280×800 (the camera's drift put the two frames within
+  0.1 world units of each other, so they compare): at 160 the ground's own terrace mark reads
+  as a WASH rather than a drawn line, and the dirt path's edge loses its definition. The pixel
+  diff is dominated by the grain and the blade field's own per-frame noise — a flat control
+  crop differs nearly as much as the contour crop (mean 5.78 against 6.04 per channel) — so the
+  picture is what decides it, and the picture says no. **320 stays.**
 
 **The minimap absorbs the crowding.** This is where a busy world actually shows, so the
 minimap does the work: **you** are `#080808` with the `#fb5429` ring, always distinct at any
