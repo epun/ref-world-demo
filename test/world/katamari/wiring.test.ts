@@ -62,9 +62,11 @@ import {
 
 const MODELS = join(process.cwd(), 'public', 'katamari', 'models');
 
-/** One single-mesh prop and one multipart one — both part routes. */
+/** One single-mesh prop and one multipart one — both part routes. The
+ * catalog is generated now, so these are ids that survived the curation:
+ * `03a9` is a rock, `0136` is the bus (three meshes). */
 const ROCK = KATAMARI_CATALOG.find((e) => e.id === '03a9')!;
-const CAR = KATAMARI_CATALOG.find((e) => e.id === '0091')!;
+const CAR = KATAMARI_CATALOG.find((e) => e.id === '0136')!;
 
 function arrayBufferOf(file: string): ArrayBuffer {
   const buffer = readFileSync(join(MODELS, file));
@@ -161,10 +163,17 @@ describe('the katamari prop source', () => {
     // the one that loaded — the INDEX never shifts, which is what keeps a
     // placement's variant meaning the same thing on every device.
     const rockModel = library.byId.get(ROCK.id)!;
-    expect(rocks[0]!.geometry).toBe(rockModel.geometry);
+    const at = katamariVariantsOf('rock').findIndex((row) => row.id === ROCK.id);
+    expect(at).toBeGreaterThanOrEqual(0);
+    expect(rocks[at]!.geometry).toBe(rockModel.geometry);
     for (const variant of rocks) expect(variant.geometry).toBe(rockModel.geometry);
-    expect(rocks[0]!.height).toBe(ROCK.heightUnits);
-    expect(rocks[0]!.meta!.id).toBe(ROCK.id);
+    expect(rocks[at]!.height).toBe(ROCK.heightUnits);
+    // Every ROW keeps its index; the rows whose model did not load here wear
+    // the one that did, so the variant index means the same on every device.
+    expect(rocks[at]!.meta!.id).toBe(ROCK.id);
+    expect(rocks.map((v) => v.meta!.id)).toEqual(
+      katamariVariantsOf('rock').map((row) => row.id),
+    );
     // A kind the library has nothing for falls back on the AUTHORED variants
     // (2026-09-16): the mountain and the cloud always, and here — with only
     // two glbs parsed — every other kind as well. A stock variant carries no
@@ -179,28 +188,25 @@ describe('the katamari prop source', () => {
     source.draw?.dispose();
   });
 
-  it('keeps the mountain authored — the library’s islands are not a range', () => {
-    // The game's island masses are floating hexagonal slabs; a range built of
-    // them read as platforms hovering over the meadow (2026-09-16, off a
-    // frame). They are `large` beach props now, and no row names `mountain`.
+  it('keeps the mountain authored — the library has no range in it', () => {
+    // The game's island masses are floating hexagonal slabs a hundred metres
+    // tall; a range built of them read as platforms hovering over the meadow
+    // (2026-09-16, off a frame). They are level geometry, the auto-curation
+    // drops everything over `MAX_SOURCE_HEIGHT_M`, and `mountain` is not a
+    // replacement kind at all — so a katamari mountain is the authored
+    // inflated lump, drawn from the mixed source.
     expect(KATAMARI_REPLACED_KINDS).not.toContain('mountain');
     expect(KATAMARI_CATALOG.some((e) => e.kind === 'mountain')).toBe(false);
     expect(katamariPlacementSource().counts.mountain).toBe(PROP_VARIANT_COUNTS.mountain);
-    for (const id of ['056e', '039e']) {
-      const row = KATAMARI_CATALOG.find((e) => e.id === id)!;
-      expect(row.kind).toBe('large');
-      expect(row.tier).toBe('large');
-      expect(row.beach).toBe(true);
-    }
+    expect(katamariPlacementSource().meta.get('mountain' as PropKind)).toBeUndefined();
   });
 
-  it('keeps the outcrops’ footprint under six units', () => {
-    // Why they could move down a tier at all: at these heights the widest
-    // horizontal span is well inside a prop's business, not a landmark's.
-    for (const id of ['056e', '039e']) {
-      const model = library.byId.get(id);
-      if (!model) continue; // only the two parsed models are loaded here
-      expect(model.radius * 2).toBeLessThan(6);
+  it('holds every row inside a prop’s size', () => {
+    // What the level geometry was dropped FOR: a prop is something a creature
+    // walks around, and the whole admitted set is normalised into a band.
+    for (const entry of KATAMARI_CATALOG) {
+      expect(entry.heightUnits, `${entry.id} ${entry.name}`).toBeLessThanOrEqual(12);
+      expect(entry.heightUnits, `${entry.id} ${entry.name}`).toBeGreaterThan(0);
     }
   });
 
@@ -261,8 +267,8 @@ describe('the per-variant region filter', () => {
     setActivePropSource(katamariPlacementSource());
     setScatterSeed(7);
     const rows = katamariVariantsOf('rock');
-    // The stones that carry `inland: true` beside `beach: true` — the beach
-    // wants shingle and the same stone belongs in a field (2026-09-16).
+    // The stones carry `inland: true` beside `beach: true` — the beach wants
+    // shingle and the same stone belongs in a field (2026-09-16).
     const both = rows
       .map((row, i) => ({ row, i }))
       .filter(({ row }) => row.beach === true && row.inland === true);
@@ -273,18 +279,39 @@ describe('the per-variant region filter', () => {
     const used = new Set(placements.map((p) => p.variant));
     // Every both-region stone is placed somewhere…
     for (const { i } of both) expect(used, `rock variant ${i}`).toContain(i);
-    // …and the inland-only one is inland. Not "never on sand": a cluster's
-    // region is decided at its SEAT and its neighbours are thrown 0.6–1.6
-    // steps around it, so a cell that straddles the tideline can put one
-    // stone of a field's scree over the line. That is the grove staying one
-    // species, which is the rule the cluster is for — what must not happen is
-    // the sand growing its own inland set.
-    const inlandOnly = rows.findIndex((row) => row.beach !== true);
-    expect(inlandOnly).toBeGreaterThanOrEqual(0);
-    const of = placements.filter((p) => p.variant === inlandOnly);
-    const onSand = of.filter((p) => sampleLandscape(p.x, p.z).region === 'beach');
-    expect(of.length).toBeGreaterThan(20);
-    expect(onSand.length / of.length).toBeLessThan(0.05);
+    // …and a beach-ONLY row of another kind stays off the field. Not "never
+    // inland": a cluster's region is decided at its SEAT and its neighbours
+    // are thrown 0.6–1.6 steps around it, so a cell that straddles the
+    // tideline can put one prop of a sand set over the line. That is the
+    // grove staying one species, which is the rule the cluster is for — what
+    // must not happen is the field growing its own sand set.
+    const sandRows = katamariVariantsOf('medium')
+      .map((row, i) => ({ row, i }))
+      .filter(({ row }) => row.beach === true && row.inland !== true);
+    expect(sandRows.length).toBeGreaterThan(0);
+    const mediums = computePlacements({ kindDensity: { medium: 1 } }).filter(
+      (p) => p.kind === 'medium',
+    );
+    expect(mediums.length).toBeGreaterThan(20);
+    const sandOnly = new Set(sandRows.map(({ i }) => i));
+    const placedSand = mediums.filter((p) => sandOnly.has(p.variant));
+    expect(placedSand.length).toBeGreaterThan(0);
+    // The field is not colonised by the sand set: of everything standing
+    // inland, next to nothing is a beach-only row. (Measured this way round
+    // on purpose — a cluster seated one step inland of the tideline throws a
+    // neighbour or two over the line, which is the grove staying one species
+    // and would make the other ratio look alarming for two props.)
+    const inland = mediums.filter((p) => sampleLandscape(p.x, p.z).region !== 'beach');
+    const inlandSand = inland.filter((p) => sandOnly.has(p.variant));
+    expect(inland.length).toBeGreaterThan(20);
+    expect(inlandSand.length / inland.length).toBeLessThan(0.05);
+    // …and what IS on the sand is the sand set: a beach-only row reaches the
+    // beach far more often than its share of the kind's variants.
+    const onSand = mediums.filter((p) => sampleLandscape(p.x, p.z).region === 'beach');
+    if (onSand.length > 0) {
+      const share = onSand.filter((p) => sandOnly.has(p.variant)).length / onSand.length;
+      expect(share).toBeGreaterThan(sandRows.length / katamariVariantsOf('medium').length);
+    }
   });
 
   it('rolls the same picks twice from the same seed', () => {
@@ -390,17 +417,35 @@ describe('the loader gate', () => {
       calls++;
       return library;
     };
-    expect(await startKatamariWorld('none', load)).toBeNull();
+    expect(await startKatamariWorld('none', { load })).toBeNull();
     expect(calls).toBe(0);
+    // …and not a tier of it either.
+    let tiers = 0;
+    expect(
+      await startKatamariWorld('none', { load, onTier: () => tiers++ }),
+    ).toBeNull();
+    expect(tiers).toBe(0);
   });
 
   it('loads on a katamari world', async () => {
     let calls = 0;
-    const load = async (): Promise<KatamariLibrary> => {
+    const tiers: string[] = [];
+    const load = async (
+      onTier?: (lib: KatamariLibrary, tier: string, done: boolean) => void,
+    ): Promise<KatamariLibrary> => {
       calls++;
+      // What `loadKatamariModels` does: one call per tier, the last one
+      // flagged done (the caller attaches that one itself).
+      onTier?.(library, 'small', false);
+      onTier?.(library, 'building', true);
       return library;
     };
-    const ready = await startKatamariWorld('katamari', load);
+    const ready = await startKatamariWorld('katamari', {
+      load,
+      onTier: (_world, tier) => tiers.push(tier),
+    });
+    // The junk tier arrived on its own rebuild; the final one is the return.
+    expect(tiers).toEqual(['small']);
     expect(ready?.library).toBe(library);
     expect(ready?.source.variants.size).toBeGreaterThan(0);
     expect(ready?.chunks.size).toBeGreaterThan(0);
@@ -410,6 +455,6 @@ describe('the loader gate', () => {
 
   it('survives a failed load with the world still standing', async () => {
     const load = (): Promise<KatamariLibrary> => Promise.reject(new Error('offline'));
-    expect(await startKatamariWorld('katamari', load)).toBeNull();
+    expect(await startKatamariWorld('katamari', { load })).toBeNull();
   });
 });

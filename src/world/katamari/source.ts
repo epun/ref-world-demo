@@ -132,8 +132,15 @@ export function katamariBeachIds(): string[] {
   return KATAMARI_CATALOG.filter((entry) => entry.beach === true).map((entry) => entry.id);
 }
 
-/** How the library is fetched. Injected so a test can watch it. */
-export type KatamariLoad = () => Promise<KatamariLibrary>;
+/**
+ * How the library is fetched. Injected so a test can watch it.
+ *
+ * The callback is handed on to `loadKatamariModels` and fires once per TIER,
+ * so the world can draw the junk while the buildings are still coming.
+ */
+export type KatamariLoad = (
+  onTier?: (library: KatamariLibrary, tier: string, done: boolean) => void,
+) => Promise<KatamariLibrary>;
 
 /**
  * One model's breakable pieces — `KatamariPart[]`, which is a `Chunk[]` by
@@ -153,8 +160,12 @@ export interface KatamariWorld {
 
 /** The default: a DYNAMIC import, so a world without the game never pulls
  * the loader, `GLTFLoader` or the glbs' url into its first chunk. */
-const defaultLoad: KatamariLoad = () =>
-  import('./models').then((m) => m.loadKatamariModels(`${KATAMARI_BASE_URL}/`));
+const defaultLoad: KatamariLoad = (onTier) =>
+  import('./models').then((m) =>
+    m.loadKatamariModels(`${KATAMARI_BASE_URL}/`, {
+      ...(onTier ? { onTier: (library, tier, done) => onTier(library, tier, done) } : {}),
+    }),
+  );
 
 /**
  * Start loading the library and attach it — on a katamari world, and nowhere
@@ -172,12 +183,25 @@ const defaultLoad: KatamariLoad = () =>
  */
 export async function startKatamariWorld(
   game: WorldGame,
-  load: KatamariLoad = defaultLoad,
+  opts: { load?: KatamariLoad; onTier?: (world: KatamariWorld, tier: string) => void } = {},
 ): Promise<KatamariWorld | null> {
   if (game !== 'katamari') return null;
+  const load = opts.load ?? defaultLoad;
   try {
-    const library = await load();
+    // Before the fetch, so the cel material's chunk is on its way while the
+    // first tier of models downloads.
     const attach = await import('./attach');
+    const library = await load((partial, tier, done) => {
+      if (done || !opts.onTier) return;
+      opts.onTier(
+        {
+          library: partial,
+          source: attach.katamariPropSource(partial, { partial: true }),
+          chunks: attach.katamariChunksByKind(partial),
+        },
+        tier,
+      );
+    });
     return {
       library,
       source: attach.katamariPropSource(library),

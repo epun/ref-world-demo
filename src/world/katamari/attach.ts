@@ -133,7 +133,10 @@ function variantOf(model: KatamariModel, meta: PropVariantMeta): PropVariant {
  * the better of the two frames: an authored mountain range beside library
  * trees is odd, an empty kind is a hole.
  */
-export function katamariPropSource(library: KatamariLibrary): PropSource {
+export function katamariPropSource(
+  library: KatamariLibrary,
+  opts: { partial?: boolean } = {},
+): PropSource {
   const placement = katamariPlacementSource();
   const variants = new Map<PropKind, PropVariant[]>();
   const models = new Map<PropKind, KatamariModel[]>();
@@ -141,9 +144,18 @@ export function katamariPropSource(library: KatamariLibrary): PropSource {
   for (const kind of PROP_KINDS) {
     const list = katamariModelsOf(library, kind);
     if (!list) {
-      // No library row for this kind (or nothing of it loaded): the authored
-      // variants stand, and the catalog's counts already say how many there
-      // are — `katamariPlacementSource` leaves an unfilled kind's stock count
+      // A kind the CATALOG names but whose models are still in flight draws
+      // nothing at all while `partial` is set — the alternative is showing
+      // the authored props for a second and then swapping them, which reads
+      // as the world changing its mind (docs/katamari-props.md §e).
+      const named = placement.meta.get(kind)?.length ?? 0;
+      if (named > 0) {
+        if (!opts.partial) variants.set(kind, []);
+        continue;
+      }
+      // No library row for this kind at all: the authored variants stand, and
+      // the catalog's counts already say how many there are —
+      // `katamariPlacementSource` leaves an unfilled kind's stock count
       // exactly as it was.
       if (placement.counts[kind] > 0) stock.push(kind);
       continue;
@@ -155,8 +167,28 @@ export function katamariPropSource(library: KatamariLibrary): PropSource {
       list.map((model, i) => variantOf(model, meta[i]!)),
     );
   }
-  for (const [kind, built] of buildStockVariants(stock)) variants.set(kind, built);
+  for (const [kind, built] of stockVariants(stock)) variants.set(kind, built);
   return { ...placement, variants, draw: katamariDraw(library, models) };
+}
+
+/**
+ * The authored variants for the mixed kinds, built ONCE per page.
+ *
+ * The source is rebuilt as each tier of models lands, and re-running the
+ * inflate pipeline for the mountain four times over would be the most
+ * expensive thing on the frame. The geometries are shared between the
+ * sources, which is what the scatter wants anyway: a rebuild that hands the
+ * same geometry back draws the same mountain.
+ */
+const stockCache = new Map<PropKind, PropVariant[]>();
+function stockVariants(kinds: readonly PropKind[]): Map<PropKind, PropVariant[]> {
+  const want = kinds.filter((kind) => !stockCache.has(kind));
+  if (want.length > 0) {
+    for (const [kind, built] of buildStockVariants(want)) stockCache.set(kind, built);
+  }
+  const out = new Map<PropKind, PropVariant[]>();
+  for (const kind of kinds) out.set(kind, stockCache.get(kind)!);
+  return out;
 }
 
 /** The kinds this source draws from the AUTHORED props — for the tests and

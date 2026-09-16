@@ -23,20 +23,35 @@ the decisions that were open at the time now closed.
 
 | file | what it is |
 | --- | --- |
-| `src/world/katamari/catalog.ts` | the hand-written table: 82 models, each with the `PropKind` it stands in for (or a new katamari tier kind), its tier, its world height, whether it is rooted, whether it belongs on the beach |
+| `src/world/katamari/rules.ts` | the CURATION RULES (2026-09-16): what is excluded, how a name picks a kind, how metres become units, the height bands, how many variants of each kind ship. Hand-written and documented — this is the file to review |
+| `src/world/katamari/catalog.data.ts` | the ROWS, **generated** from the library's `manifest.json` and those rules by `--all`. 326 of them: the active set |
+| `src/world/katamari/catalog.ts` | the seam that joins the two, plus the lookups (`katamariVariantsOf`, `katamariKinds`). Until 2026-09-16 this was 82 rows written out by hand |
 | `scripts/katamari-curate.mjs` | node, no deps. reads the library's `manifest.json` + the table, copies the chosen glbs into `public/katamari/models/`, writes `public/katamari/catalog.json`, prints the table and the budgets |
 | `src/world/katamari/models.ts` | `loadKatamariModels(baseUrl)` → a `KatamariLibrary`: per model, one normalised geometry, its radius, its texture, its alpha mode and a list of breakable `parts` |
 | `src/world/katamari/material.ts` | `createKatamariMaterial` / `createKatamariMaterialSet` — the posterised cel look |
 | `public/katamari/` | the curated glbs, the catalog, and the provenance note |
 | `test/world/katamari/` | table integrity, normalisation, part splitting, the material's glsl, one real glb through `GLTFLoader`, and the script's idempotency |
 
-**Curation:** 82 models, 11,074 triangles, 1.43 mb copied (budgets: 150k
-triangles, 4 mb). Re-derive with
+**Curation (2026-09-16, auto):** 1,703 exported → **1,510 admitted** (208
+excluded: 46 characters, 15 `no_model`, 91 map-sized pieces, 56 with no
+measurable box) → **326 active variants**, 43,766 triangles, 6.13 mb copied
+(budgets: 300k triangles, 7 mb). Re-derive with
 
 ```
-node scripts/katamari-curate.mjs --source <unpacked-library-dir>
+node scripts/katamari-curate.mjs --all --source <unpacked-library-dir>   # measure, classify, publish
+node scripts/katamari-curate.mjs --catalog     # rewrite catalog.json from the table, no library
 node scripts/katamari-curate.mjs --verify      # no library needed; what the tests run
 ```
+
+The first pass was 82 rows written out by hand with an eyeballed height on
+each. `--all` measures instead: it reads every glb's own json chunk for the
+POSITION accessors' min/max, composes the node transforms, and gets the real
+box in metres — then one `WORLD_SCALE` (0.94, which puts a 1.7 m adult at the
+1.6 units the hand-curated car already sat at) turns that into a height, the
+tier bands turn it into `small`/`medium`/`large`/`building`, and the name
+rules pull the tree family, the stones and the shops back into the kinds they
+replace. Deterministic: same library + same rules → same bytes, and
+`--verify` after a run exits 0.
 
 **Provenance:** the library is a personal-use extraction from a retail ntsc-u
 ps2 copy of *Katamari Damacy* (`SLUS-21008`); the assets remain Namco's.
@@ -242,6 +257,29 @@ Because the swap is a rebuild and not a second draw path, nothing needs a
 transition: props slide into place on the existing rebuild, and no entrance
 pops (TASTE §2.1).
 
+## g. all of it, minus the characters — *(2026-09-16)*
+
+> *"bring as many katamari objects in from the library as possible, minus the
+> main characters. I do like the animals in there."*
+
+| the ask | what landed |
+| --- | --- |
+| as many as possible | 1,510 of the 1,703 exported models are ADMITTED and classified. The catalog that ships is an ACTIVE SET of 326 (`ACTIVE_BUDGET`) because the scatter draws one `InstancedMesh` per (kind, variant) and 1,500 of those is 1,500 draw calls before the ink pass doubles them. The pick is a seeded shuffle per kind (`ACTIVE_SEED`), materialised into `catalog.data.ts` — a pure function of the manifest and the rules, so every device draws the identical world with no shuffle at runtime. |
+| minus the main characters | every cousin is `OUJI<n>` internally (`OUJI02_D` is Lalala), so one internal-name prefix takes all 46 poses; the King and the Queen are not in the object archive at all and are listed anyway. A display-name net sits under it. The catalog test pins that nothing matching either got through. |
+| the animals stay | they do — cows, bears, penguins, crabs, the ox. So do the people-objects, the food, the vehicles and the shops: a katamari is made of everything. |
+| tier by size | the glb's own bounds, not a hand-written guess: `< 0.6 m` → `small`, `< 2.2` → `medium`, `< 6` → `large`, above that the `building` kind. Name rules overrule the size where the size cannot know (a Cherry Tree and a Traffic Light are both four metres and only one is a tree), and every height is clamped into its kind's band (`KIND_HEIGHT_BANDS`, read by the generator AND the test). |
+| flags by name | `beach` for boats, shells, sea life, parasols; `inland: true` beside it for the handful that are honestly both (stones, a brick, a shell). `rooted` is the kind's, plus a name rule for the things that are planted although their kind is not — a lamp post, a vending machine — and never for a `small` thing, which is junk on the ground by definition. |
+| budgets | 326 variants, 43.8k triangles (budget 300k), 6.13 mb (budget 7 mb), both enforced by the script. Measured on the frame: **472 draw calls, 2.9 M triangles per frame** at a wheel-out on the projection — up from 174 with the 82-model set, which is the cost of the variety and is the number to watch if the budgets grow again. |
+| tier-ordered loading | `TIER_LOAD_ORDER` — small, medium, large, building. `loadKatamariModels` loads a tier, hands back everything so far (`onTier`) and goes on; each call is one `scatter.setPropSource` and one rebuild, so the field fills with cups and cans first and the skyline arrives last. A tier that has not landed draws NOTHING rather than the authored props (`katamariPropSource(library, { partial: true })`), for the reason §e gives: a world that shows one prop set and swaps it reads as changing its mind. |
+| the islands | dropped, not re-tiered. Coral Island and Top Shell Island are 100 m and 157 m of level geometry; the size rules exclude everything over `MAX_SOURCE_HEIGHT_M` (30 m) because a country normalised into a prop's height is a flat slab twenty units wide. The hand rows that briefly made them `large` outcrops went with them. |
+
+**Not done.** The brief asked for the PHONE tier to halve each budget; it does
+not, and it should not as written — a phone that re-rolls a thinner active set
+would place different variants at the same cells, and the placement key
+(`kind:variant:x:z`) is what a host and a viewer agree a prop IS. A phone-side
+cut has to be a DRAW-time cut of the same active set (skip the meshes above a
+per-kind index, keep every key), which is a separate change.
+
 ## f. what landed, and the decisions that closed
 
 | plan | landed as |
@@ -262,9 +300,13 @@ pops (TASTE §2.1).
 
 ## what is still open
 
-- **`heightUnits` is eyeballed [D]**, one row at a time, and the footprint cap only stops the
-  worst of it. The bands are pinned loosely by the catalog test; the numbers are a starting
-  point to tune against a frame, exactly as TASTE §2.1 says of its own 1823 ms.
+- **`heightUnits` is measured now**, not eyeballed (§g) — but `WORLD_SCALE` and the tier
+  bands are still **[D]**, and the footprint cap is what stops a flat thing from reading as a
+  wide one. The numbers are a starting point to tune against a frame, exactly as TASTE §2.1
+  says of its own 1823 ms.
+- **472 draw calls per frame** with the active set, against 174 with the 82-model one. The
+  ceiling is the number of (kind, variant) pairs with at least one placement, so it grows with
+  the budgets and not with the world's density.
 - **The junk tiers' densities are a first pass [D]** — a katamari town could be denser still
   near the buildings, which would want a `town` region rather than a number.
 - **No cactus.** The library has none, so on a katamari world the `cactus` kind stands in as

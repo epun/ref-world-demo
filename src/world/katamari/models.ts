@@ -59,9 +59,11 @@ import {
   KATAMARI_BASE_URL,
   KATAMARI_CATALOG_FILE,
   KATAMARI_MODELS_DIR,
+  TIER_LOAD_ORDER,
   type KatamariEntry,
   type KatamariKind,
 } from './catalog';
+import type { Tier } from '../../creatures/sticky';
 
 /** How many glbs are in flight at once. [D] — small enough not to starve the
  * first frame's own requests, large enough to finish 82 files promptly. */
@@ -580,8 +582,23 @@ async function mapWithLimit<T, R>(
  * standing (docs/katamari-props.md §e), and a library short one building is a
  * better frame than no frame.
  */
+export interface KatamariLoadOptions {
+  /**
+   * Called as each TIER finishes, with everything loaded so far and whether
+   * that was the last one.
+   *
+   * The tiers load small → medium → large → building (`TIER_LOAD_ORDER`), so
+   * the field fills in with cups and cans within a second or two and the
+   * skyline arrives while the room is already looking at something. The
+   * caller turns each call into a scatter rebuild (docs/katamari-props.md
+   * §e); a caller that does not care simply waits for the promise.
+   */
+  onTier?: (library: KatamariLibrary, tier: Tier, done: boolean) => void;
+}
+
 export async function loadKatamariModels(
   baseUrl: string = KATAMARI_BASE_URL,
+  opts: KatamariLoadOptions = {},
 ): Promise<KatamariLibrary> {
   const root = baseUrl.replace(/\/+$/, '');
   const response = await fetch(`${root}/${KATAMARI_CATALOG_FILE}`);
@@ -590,20 +607,35 @@ export async function loadKatamariModels(
   }
   const catalog = (await response.json()) as KatamariCatalogFile;
   const loader = new GLTFLoader();
-  const loaded = await mapWithLimit(
-    catalog.models,
-    KATAMARI_LOAD_CONCURRENCY,
-    async (entry): Promise<KatamariModel | null> => {
-      try {
-        const gltf = await loader.loadAsync(`${root}/${KATAMARI_MODELS_DIR}/${entry.file}`);
-        return buildKatamariModel(gltf.scene, entry);
-      } catch (error) {
-        console.warn(`katamari model ${entry.id} (${entry.file}) did not load`, error);
-        return null;
-      }
-    },
-  );
-  return assembleLibrary(loaded.filter((m): m is KatamariModel => m !== null));
+  const one = async (entry: KatamariEntry): Promise<KatamariModel | null> => {
+    try {
+      const gltf = await loader.loadAsync(`${root}/${KATAMARI_MODELS_DIR}/${entry.file}`);
+      return buildKatamariModel(gltf.scene, entry);
+    } catch (error) {
+      console.warn(`katamari model ${entry.id} (${entry.file}) did not load`, error);
+      return null;
+    }
+  };
+  // The tiers, in load order, then anything whose tier is not in that list
+  // (nothing today — the guard is so a new tier cannot silently not load).
+  const groups: { tier: Tier; rows: KatamariEntry[] }[] = [];
+  const taken = new Set<KatamariEntry>();
+  for (const tier of TIER_LOAD_ORDER) {
+    const rows = catalog.models.filter((entry) => entry.tier === tier);
+    for (const row of rows) taken.add(row);
+    if (rows.length > 0) groups.push({ tier, rows });
+  }
+  const rest = catalog.models.filter((entry) => !taken.has(entry));
+  if (rest.length > 0) groups.push({ tier: rest[0]!.tier, rows: rest });
+
+  const models: KatamariModel[] = [];
+  for (let g = 0; g < groups.length; g++) {
+    const group = groups[g]!;
+    const loaded = await mapWithLimit(group.rows, KATAMARI_LOAD_CONCURRENCY, one);
+    for (const model of loaded) if (model !== null) models.push(model);
+    opts.onTier?.(assembleLibrary(models), group.tier, g === groups.length - 1);
+  }
+  return assembleLibrary(models);
 }
 
 /** Index a list of models by id and by kind, and give it a `dispose`. */

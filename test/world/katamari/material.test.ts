@@ -225,12 +225,19 @@ describe('katamari sources', () => {
     }
   });
 
-  it('the catalog stays free of three, so the curate script can read it', () => {
-    const source = code(readFileSync(join(dir, 'catalog.ts'), 'utf8'));
-    // Only `import type` is allowed in there — a value import would drag
-    // three.js into a node build script.
-    for (const line of source.split('\n')) {
-      if (/^\s*import\b/.test(line)) expect(line).toContain('import type');
+  it('the catalog and its rules stay free of three, so the curate script can read them', () => {
+    // `scripts/katamari-curate.mjs` loads these through node's own typescript
+    // stripping: a value import of anything with three.js behind it would
+    // drag a renderer into a build script. Relative imports of each other are
+    // fine — the three files are one table split for a reason (rules,
+    // generated rows, and the seam that joins them).
+    for (const file of ['catalog.ts', 'rules.ts', 'catalog.data.ts']) {
+      const source = code(readFileSync(join(dir, file), 'utf8'));
+      for (const line of source.split('\n')) {
+        if (!/^\s*import\b/.test(line)) continue;
+        const local = /from '\.\/(catalog|rules|catalog\.data)'/.test(line);
+        expect(line.includes('import type') || local, line.trim()).toBe(true);
+      }
     }
   });
 });

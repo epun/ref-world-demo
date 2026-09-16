@@ -94,7 +94,9 @@ The traps, in order of how easily they get violated:
   **On a katamari world the props are the vendored object library** — the scatter's variants
   come from `src/world/katamari/` through a prop source, three junk kinds (`small`/`medium`/
   `large`) exist only there, and `public/katamari/` is personal-use material that ships to a
-  katamari deployment and no other (docs/katamari-props.md).
+  katamari deployment and no other (docs/katamari-props.md). The catalog is **generated**:
+  edit `katamari/rules.ts` and re-run `scripts/katamari-curate.mjs --all`, never
+  `catalog.data.ts`. The game's characters are excluded there and stay excluded.
 - **The geography is authored in `src/world/landscape.ts`** and is the single source every
   system samples — placement, colliders, water, minimap. Never re-derive a shoreline
   elsewhere, and the map does not ride the scatter seed. The ground has height: sample it

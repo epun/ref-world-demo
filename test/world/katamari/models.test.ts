@@ -27,9 +27,17 @@ import {
 
 const MODELS = join(process.cwd(), 'public', 'katamari', 'models');
 
-/** A single-mesh prop and a multipart one, so both part routes are exercised. */
+/**
+ * A single-mesh prop and a multipart one, so both part routes are exercised.
+ *
+ * By id, and the ids move: the catalog is generated from the library now
+ * (2026-09-16), so a row is in the ACTIVE set or it is not. `03a9` is a rock
+ * and `0136` is the bus — three meshes, which is what the multipart route
+ * wants. If a re-curation drops either, pick another from the table rather
+ * than loosening the test.
+ */
 const ROCK = KATAMARI_CATALOG.find((e) => e.id === '03a9')!;
-const CAR = KATAMARI_CATALOG.find((e) => e.id === '0091')!;
+const CAR = KATAMARI_CATALOG.find((e) => e.id === '0136')!;
 
 function arrayBufferOf(file: string): ArrayBuffer {
   const buffer = readFileSync(join(MODELS, file));

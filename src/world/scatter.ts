@@ -3273,6 +3273,11 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
     },
     materialFor,
     setPropSource(next: PropSource): void {
+      if (next === source) return;
+      // The source we are replacing owns its materials, and a katamari world
+      // replaces one per arriving tier — so the old set goes, after the
+      // rebuild below has re-materialled every standing mesh off the new one.
+      const previous = source;
       source = next;
       setActivePropSource(next);
       // The counts came off the catalog and not the download, so the
@@ -3283,6 +3288,7 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
       // them has to learn why (docs/katamari-props.md §e.3).
       bakeWindHeights();
       rebuild();
+      if (previous.draw && previous.draw !== next.draw) previous.draw.dispose();
     },
     propSource(): PropSource {
       return source;

@@ -977,7 +977,14 @@ props, which is every other world — or `katamariPropSource(library)`, and `com
 reads its variant counts from the active source rather than from a frozen table. **Eleven**
 kinds have their VARIANTS replaced; `mountain` and `cloud` keep the AUTHORED ones — the game's
 island masses read as floating slabs, not as a range, so the source MIXES per kind and the
-chunk map does too; three new `PropKind`s — `small`,
+chunk map does too. The catalog itself is GENERATED (2026-09-16, user ask: *"bring as many
+katamari objects in from the library as possible, minus the main characters"*):
+`scripts/katamari-curate.mjs --all` measures every glb's own bounds out of its json chunk,
+classifies 1,510 of the library's 1,703 models by size and name through the rules in
+`src/world/katamari/rules.ts`, excludes the characters by their `OUJI` internal prefix, and
+publishes an ACTIVE SET of 326 variants (a seeded shuffle per kind, materialised so every
+device draws the same world) which load tier by tier — junk first, skyline last, one rebuild
+each. Three new `PropKind`s — `small`,
 `medium`, `large` — are the junk tiers, with an empty stock variant list and a shipped density
 of 0, so no other world can place one. Counts and the per-variant region flags come off the
 in-bundle catalog and never off the download, so the placement stays pure: a katamari world

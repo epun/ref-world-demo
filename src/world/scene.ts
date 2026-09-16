@@ -34,6 +34,7 @@ import { applyGhibliPost } from './ghibli/post';
 import { createLighting } from './lighting';
 import { createScatter, type Scatter } from './scatter';
 import { katamariPendingSource, startKatamariWorld } from './katamari/source';
+import type { PropSource } from './props';
 import type { KatamariLibrary } from './katamari/models';
 import type { Chunk } from './chunks';
 import { FlatShadows } from './shadows';
@@ -416,14 +417,22 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
    * a glb. A failure is warned about and dropped: the ground, the water and
    * the marks are a frame (docs/katamari-props.md §e.4).
    */
-  void startKatamariWorld(game).then((ready) => {
-    if (!ready) return;
+  /** One arriving set of models — a tier, or the whole library. */
+  const takeKatamari = (ready: { library: KatamariLibrary; source: PropSource; chunks: Map<string, Chunk[][]> }): void => {
     katamariLibrary = ready.library;
-    katamariChunks = ready.chunks as Map<string, Chunk[][]>;
+    katamariChunks = ready.chunks;
     // A rebuild, not a second draw path: the props slide into place on the
     // same rebuild a density change causes, and every consumer that keys off
     // `rebuildVersion()` re-reads without knowing why (TASTE §2.1).
     scatter.setPropSource(ready.source);
+  };
+  void startKatamariWorld(game, {
+    // Tier by tier: the junk lands first and the buildings last, each on its
+    // own rebuild (docs/katamari-props.md §e).
+    onTier: (partial) => takeKatamari({ ...partial, chunks: partial.chunks as Map<string, Chunk[][]> }),
+  }).then((ready) => {
+    if (!ready) return;
+    takeKatamari({ ...ready, chunks: ready.chunks as Map<string, Chunk[][]> });
   });
   const lighting = createLighting();
 
