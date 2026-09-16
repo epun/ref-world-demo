@@ -1483,6 +1483,97 @@ describe('setTaken', () => {
   });
 });
 
+describe('hideTaken', () => {
+  /**
+   * The incremental half of the taken filter (src/world/scatter.ts): what it
+   * draws has to match what `setTaken` draws, and it must NOT bump
+   * `rebuildVersion` — the whole point is that nothing re-syncs off it.
+   */
+  it('hides a placement everywhere setTaken does, without a rebuild', () => {
+    const scatter = createScatter();
+    try {
+      const refs = scatter.instanceRefs('rock');
+      const victim = refs[0]!;
+      const key = victim.key;
+      const at = { x: victim.placement.x, z: victim.placement.z };
+      const here = <T extends { x: number; z: number }>(list: T[]): T[] =>
+        list.filter((c) => c.x === at.x && c.z === at.z);
+      const row = victim.index;
+      const mesh = victim.mesh;
+
+      const version = scatter.rebuildVersion();
+      const colliderVersion = scatter.collidersVersion();
+      scatter.hideTaken(new Set([key]));
+
+      // No rebuild: every ref the physics layer holds is still its ref.
+      expect(scatter.rebuildVersion()).toBe(version);
+      // …but the collider set moved, so consumers re-query.
+      expect(scatter.collidersVersion()).toBeGreaterThan(colliderVersion);
+
+      expect(scatter.instanceRefs('rock').filter((r) => r.key === key).length).toBe(0);
+      expect(here(scatter.positions()).length).toBe(0);
+      expect(here(scatter.colliders()).length).toBe(0);
+
+      // The row is still there (an instance row cannot be removed) and draws
+      // nothing: zero scale.
+      const m = new Matrix4();
+      mesh.getMatrixAt(row, m);
+      const scale = new Vector3();
+      m.decompose(new Vector3(), new Quaternion(), scale);
+      expect(scale.x).toBe(0);
+      expect(scale.y).toBe(0);
+      expect(scale.z).toBe(0);
+    } finally {
+      scatter.dispose();
+    }
+  });
+
+  it('is additive, and every other placement keeps its row', () => {
+    const scatter = createScatter();
+    try {
+      const refs = scatter.instanceRefs('rock');
+      const a = refs[0]!;
+      const b = refs[1]!;
+      const before = scatter.positions().length;
+      scatter.hideTaken(new Set([a.key]));
+      expect(scatter.positions().length).toBe(before - 1);
+      scatter.hideTaken(new Set([a.key, b.key]));
+      expect(scatter.positions().length).toBe(before - 2);
+      // Repeating a set is a no-op, not a second removal.
+      scatter.hideTaken(new Set([a.key, b.key]));
+      expect(scatter.positions().length).toBe(before - 2);
+    } finally {
+      scatter.dispose();
+    }
+  });
+
+  it('falls back to a rebuild when a key would have to come BACK', () => {
+    const scatter = createScatter();
+    try {
+      const key = scatter.instanceRefs('rock')[0]!.key;
+      scatter.hideTaken(new Set([key]));
+      const version = scatter.rebuildVersion();
+      // Un-taking is not something the incremental path can do.
+      scatter.hideTaken(new Set());
+      expect(scatter.rebuildVersion()).toBeGreaterThan(version);
+      expect(scatter.instanceRefs('rock').filter((r) => r.key === key).length).toBe(1);
+    } finally {
+      scatter.dispose();
+    }
+  });
+
+  it('falls back to a rebuild for a key with no row to hide', () => {
+    const scatter = createScatter();
+    try {
+      const version = scatter.rebuildVersion();
+      scatter.hideTaken(new Set(['rock:0:999.00:999.00']));
+      expect(scatter.rebuildVersion()).toBeGreaterThan(version);
+    } finally {
+      scatter.dispose();
+    }
+  });
+});
+
 describe('windField', () => {
   it('reports the live wind as the gust-front field wants it', () => {
     const scatter = createScatter();

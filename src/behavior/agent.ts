@@ -76,6 +76,43 @@ export interface AgentProp extends Vec2 {
 }
 
 /**
+ * The prop set, with a NEAREST QUERY of its own — a plain `AgentProp[]` is
+ * still accepted and still scanned linearly.
+ *
+ * Why it exists: an agent asks two questions of the props each tick, and both
+ * of them are "which is the closest one". A linear scan is the whole set, per
+ * creature, per frame — at 200 creatures over a katamari island's 1,083 props
+ * that measured **6.1 ms a frame** on its own (swiftshader; a third of that on
+ * a real GPU, and still a third of the frame). The caller can answer the same
+ * question off a spatial index instead (`src/physics/spatial.ts`), so it is
+ * allowed to.
+ *
+ * `nearest` must answer EXACTLY what `nearest(self, items)` here answers,
+ * ties included — the state machine's `propNear` gate and `observe`'s heading
+ * both read it, so a different answer is a different world. A hashed
+ * expanding-ring search over an index that returns candidates in insertion
+ * order does: everything outside the found radius is farther than the winner,
+ * and scanning the candidates in index order with `<=` keeps the same one of a
+ * tie. `test/behavior/agent.test.ts` pins the two against each other.
+ */
+export interface AgentPropField {
+  /** Every prop, in placement order — what a linear scan would walk. */
+  readonly items: readonly AgentProp[];
+  /** The nearest prop to (x, z), or null when there are none. */
+  nearest(x: number, z: number): AgentProp | null;
+}
+
+/** What the manager hands in: the array, the indexed field, or nothing. */
+export type AgentProps = readonly AgentProp[] | AgentPropField | null;
+
+/** The nearest prop, through the field's own index where there is one. */
+function nearestProp(props: AgentProps, self: Vec2): AgentProp | null {
+  if (props === null) return null;
+  if (Array.isArray(props)) return nearest(self, props);
+  return (props as AgentPropField).nearest(self.x, self.z);
+}
+
+/**
  * A hand is on this creature right now — the stick, not the agent
  * (src/world/joystick.ts, `DRIVE_IDLE_MS` in src/creatures/manager.ts).
  *
@@ -157,7 +194,7 @@ export class BehaviorAgent {
     _nowMs: number,
     self: Vec2,
     peers: readonly AgentPeer[],
-    props: readonly AgentProp[] | null,
+    props: AgentProps,
     colliders: ColliderGrid | null = null,
     hold: AgentHold | null = null,
   ): AgentTick {
@@ -231,7 +268,7 @@ export class BehaviorAgent {
       }
 
       case 'observe': {
-        const prop = nearest(self, props ?? []);
+        const prop = nearestProp(props, self);
         if (prop) desiredHeading = headingTo(self, prop);
         break;
       }
@@ -342,10 +379,10 @@ export class BehaviorAgent {
   private contextOf(
     self: Vec2,
     peers: readonly AgentPeer[],
-    props: readonly AgentProp[] | null,
+    props: AgentProps,
   ): BehaviorContext {
     const peer = nearest(self, peers);
-    const prop = props ? nearest(self, props) : null;
+    const prop = nearestProp(props, self);
     return {
       nearestCreatureDist: peer
         ? Math.hypot(peer.x - self.x, peer.z - self.z)

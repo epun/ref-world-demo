@@ -2160,6 +2160,9 @@ export const SHADOW_SUN_EPS = Math.PI / 180;
 
 /** A prop's stamp, seated on the ground it stands on. */
 interface ShadowSpot {
+  /** The placement this stamp belongs to, so `hideTaken` can find its row
+   * without a rebuild. Absent for a stamp with no placement key. */
+  key?: string;
   x: number;
   z: number;
   r: number;
@@ -2306,6 +2309,30 @@ export interface Scatter {
    * anywhere: taken is taken.
    */
   setTaken(keys: ReadonlySet<string>): void;
+  /**
+   * The SAME filter as `setTaken`, applied WITHOUT a rebuild — the katamari
+   * path (docs/PLAN.md §7.6).
+   *
+   * `setTaken` re-lays the whole scatter, which on a library world is 326
+   * InstancedMeshes rebuilt from a filter over every placement plus a
+   * terrain sample per instance and per stamp. That is the right answer for
+   * a density change and the wrong one for a pickup: two hundred creatures
+   * rolling up props fire this several times a second, and the rebuild —
+   * measured at 250-330ms — is what a room sees as the world glitching.
+   *
+   * So a newly taken placement has its instance row and its shadow stamp
+   * written to a ZERO matrix, the collider cache is dropped and
+   * `collidersVersion` bumped, and `rebuildVersion` is deliberately NOT:
+   * every `InstanceRef` this scatter has handed out stays valid, so the
+   * physics layer has nothing to re-sync. What is drawn is identical to what
+   * a rebuild would have drawn — one row fewer, in the same place.
+   *
+   * Monotone only, which is all `src/world/rocks.ts` ever asks for (its
+   * `takenKeys` is add-only): a key that would have to come BACK, or one
+   * with no instance row to hide (a mark, a waterfall placement), falls
+   * through to `setTaken` rather than guessing.
+   */
+  hideTaken(keys: ReadonlySet<string>): void;
   /**
    * Physics colliders for the currently visible props: hard bodies block,
    * soft bodies (bush) damp + sway; the ink marks have none. The
@@ -2886,6 +2913,72 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
   let colliderCache: Collider[] | null = null;
   let colliderVersion = 0;
 
+  /**
+   * Placement key → the row it is drawn in, and the stamp under it. Built
+   * lazily on the first `hideTaken` after a rebuild and dropped by
+   * `clearMeshes` — a world nobody picks anything up in never builds either.
+   */
+  let refByKey: Map<string, InstanceRef> | null = null;
+  let stampByKey: Map<string, number> | null = null;
+
+  /** Zero scale: the row is still there (an instance row cannot be removed)
+   * and draws nothing. The same picture a rebuild without it would give. */
+  const HIDDEN_MATRIX = /* @__PURE__ */ new Matrix4().makeScale(0, 0, 0);
+
+  function keyIndices(): { refs: Map<string, InstanceRef>; stamps: Map<string, number> } {
+    if (!refByKey || !stampByKey) {
+      const refs = new Map<string, InstanceRef>();
+      for (const list of instanceRefsByKind.values()) {
+        for (const ref of list) refs.set(ref.key, ref);
+      }
+      const stamps = new Map<string, number>();
+      for (let i = 0; i < shadowSpots.length; i++) {
+        const key = shadowSpots[i]!.key;
+        if (key !== undefined) stamps.set(key, i);
+      }
+      refByKey = refs;
+      stampByKey = stamps;
+    }
+    return { refs: refByKey, stamps: stampByKey };
+  }
+
+  /** Blank one placement's row and its stamp. False when there is no row to
+   * blank, which is the caller's cue to fall back on a rebuild. */
+  function hideRow(key: string): boolean {
+    const { refs, stamps } = keyIndices();
+    const ref = refs.get(key);
+    if (!ref) return false;
+    ref.mesh.setMatrixAt(ref.index, HIDDEN_MATRIX);
+    ref.mesh.instanceMatrix.needsUpdate = true;
+    /*
+     * And out of `instanceRefs` with it, exactly as a rebuild would have left
+     * it: that list is what `placementDrawn` measures a prop by
+     * (src/creatures/manager.ts), and a prop the scatter has stopped drawing
+     * has to measure as gone on this path too or the two paths disagree about
+     * a crack's radius. Swap-remove — nothing reads the order, and `index` is
+     * the mesh row, not a position in this list.
+     */
+    refs.delete(key);
+    const list = instanceRefsByKind.get(ref.placement.kind as PropKind);
+    if (list) {
+      const at = list.indexOf(ref);
+      if (at >= 0) {
+        const last = list.pop();
+        if (last !== undefined && at < list.length) list[at] = last;
+      }
+    }
+    const at = stamps.get(key);
+    if (at !== undefined && shadowMesh) {
+      const spot = shadowSpots[at];
+      // `layShadows` scales each stamp by its own `r`, so zeroing the radius
+      // keeps it blank through every sun re-lay without a second rule.
+      if (spot) spot.r = 0;
+      shadowMesh.setMatrixAt(at, HIDDEN_MATRIX);
+      shadowMesh.instanceMatrix.needsUpdate = true;
+    }
+    return true;
+  }
+
   const scaleOf = (kind: ScatterKind): number => Math.max(0, kindScale[kind] ?? 1);
 
   /** The comb at a point, as `combLean` wants it. One object per read; the
@@ -2917,6 +3010,8 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
     meshes = [];
     shadowMesh = null;
     shadowSpots = [];
+    refByKey = null;
+    stampByKey = null;
   }
 
   /** Write every shadow-disc instance matrix from the current sun ellipse:
@@ -3114,6 +3209,7 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
     // the one thing in that loop that never changes.
     const spots: ShadowSpot[] = shadowed
       .map((p) => ({
+        key: placementKey(p),
         x: p.x,
         z: p.z,
         r:
@@ -3300,6 +3396,32 @@ export function createScatter(opts: ScatterOptions = {}): Scatter {
     setTaken(keys: ReadonlySet<string>): void {
       taken = keys;
       rebuild();
+    },
+    hideTaken(keys: ReadonlySet<string>): void {
+      // Nothing may LEAVE the taken set through this path (see the interface).
+      for (const key of taken) {
+        if (!keys.has(key)) {
+          taken = keys;
+          rebuild();
+          return;
+        }
+      }
+      const added: string[] = [];
+      for (const key of keys) if (!taken.has(key)) added.push(key);
+      taken = keys;
+      if (added.length === 0) return;
+      for (const key of added) {
+        if (hideRow(key)) continue;
+        // No row to blank — a mark, a waterfall placement, or something
+        // already gone. The filter is authoritative, so re-lay everything
+        // rather than let the picture and `standing()` disagree.
+        rebuild();
+        return;
+      }
+      // The collider set changed and the drawn set did not move: exactly the
+      // half of a rebuild's bookkeeping that still applies.
+      colliderCache = null;
+      colliderVersion++;
     },
     nudge(x: number, z: number, strength: number): void {
       const s = Math.min(1.5, Math.max(0, strength));

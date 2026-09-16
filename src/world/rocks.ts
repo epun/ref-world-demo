@@ -887,10 +887,12 @@ export function createPropBodies(opts: PropBodiesOptions): PropBodies {
     // The scatter stops drawing the standing version — the SAME filter a
     // pickup uses, so there is one way for a prop to stop being scenery.
     takenKeys.add(key);
-    scatter.setTaken(new Set(takenKeys));
-    // `setTaken` rebuilds, which invalidates every ref this module holds.
-    // The loop calls `sync` on the next version bump; until then the refs
-    // for the survivors are stale, and this key is not among them.
+    // `hideTaken`, not `setTaken`: the incremental half of the same filter.
+    // A rebuild here re-lays every InstancedMesh in the world, which at 200
+    // creatures uprooting things is the page's whole frame budget — and it
+    // invalidated every ref this module holds for no change in the picture
+    // (docs/PLAN.md §7.6).
+    scatter.hideTaken(new Set(takenKeys));
     return item;
   };
 
@@ -1080,8 +1082,8 @@ export function createPropBodies(opts: PropBodiesOptions): PropBodies {
       }
       takenKeys.add(key);
       // The scatter stops drawing it AND stops reporting it as a collider or
-      // a position — one filter, no second path.
-      scatter.setTaken(new Set(takenKeys));
+      // a position — one filter, no second path. Incrementally: see `loosen`.
+      scatter.hideTaken(new Set(takenKeys));
       for (const cb of takeListeners) cb(key);
       return true;
     },
@@ -1133,7 +1135,7 @@ export function createPropBodies(opts: PropBodiesOptions): PropBodies {
       // from here, which is the one path that works on a page with no
       // physics in it at all.
       takenKeys.add(seed.key);
-      scatter.setTaken(new Set(takenKeys));
+      scatter.hideTaken(new Set(takenKeys));
       return item;
     },
     onSettle(cb): void {

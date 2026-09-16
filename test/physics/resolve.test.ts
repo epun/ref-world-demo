@@ -13,13 +13,16 @@
 
 import { describe, expect, it } from 'vitest';
 import { makeRand } from '../../src/behavior/states';
-import type { Collider } from '../../src/physics/colliders';
+import { buildColliderGrid, type Collider } from '../../src/physics/colliders';
 import {
   deepestSoftOverlap,
   MAX_STEP_TRAVEL,
+  MAX_SUBSTEPS,
+  RESOLVE_PASSES,
   RESOLVE_SKIN,
   resolveHard,
   separateCreatures,
+  SEPARATION_PASSES,
   SOFT_SPEED_FACTOR,
   stepCreatures,
   type CreatureBody,
@@ -527,5 +530,153 @@ describe('stepCreatures — skipIf', () => {
       stepCreatures([body], 16, near);
     }
     expect(body.x).toBeLessThan(prop.x - prop.r);
+  });
+});
+
+/**
+ * THE BACKSTOP'S SKIP (src/physics/resolve.ts `stepCreatures`).
+ *
+ * The pair-separation round used to re-seat EVERY body out of the hard props
+ * afterwards — two hundred spatial queries and resolves a round, three rounds
+ * a substep, whether or not the round had moved anybody. It now re-seats only
+ * the bodies the round displaced, on the argument that a body nothing touched
+ * is still exactly where its own resolve left it, and that position was
+ * already penetration-free.
+ *
+ * These tests are the pin on that argument: the same scenarios stepped
+ * against a reference implementation that re-seats everybody, expecting
+ * IDENTICAL float positions, and a check that nothing ends up inside a prop.
+ */
+describe('stepCreatures — the backstop re-seats only what moved', () => {
+  /** `stepCreatures`, with the pre-optimisation backstop: everybody, always. */
+  const stepReference = (
+    bodies: readonly CreatureBody[],
+    dt: number,
+    near: (x: number, z: number, r: number) => readonly Collider[],
+    pad: number,
+  ): void => {
+    const scratch = { x: 0, z: 0, vx: 0, vz: 0 };
+    let vMax = 0;
+    for (const b of bodies) {
+      const v = Math.hypot(b.vx, b.vz);
+      if (v > vMax) vMax = v;
+    }
+    const steps = Math.min(
+      MAX_SUBSTEPS,
+      Math.max(1, Math.ceil((vMax * dt) / 1000 / MAX_STEP_TRAVEL)),
+    );
+    const subDt = dt / steps;
+    for (let s = 0; s < steps; s++) {
+      for (let i = 0; i < bodies.length; i++) {
+        const b = bodies[i]!;
+        b.x += (b.vx * subDt) / 1000;
+        b.z += (b.vz * subDt) / 1000;
+        resolveHard(b, b.r, near(b.x, b.z, b.r), RESOLVE_PASSES, pad);
+      }
+      for (let k = 0; k < SEPARATION_PASSES; k++) {
+        if (!separateCreatures(bodies, 1)) break;
+        for (let i = 0; i < bodies.length; i++) {
+          const b = bodies[i]!;
+          scratch.x = b.x;
+          scratch.z = b.z;
+          scratch.vx = 0;
+          scratch.vz = 0;
+          if (resolveHard(scratch, b.r, near(b.x, b.z, b.r), RESOLVE_PASSES, pad)) {
+            b.x = scratch.x;
+            b.z = scratch.z;
+          }
+        }
+      }
+    }
+  };
+
+  const scenario = (
+    seed: number,
+    count: number,
+    spread: number,
+  ): { bodies: CreatureBody[]; colliders: Collider[] } => {
+    const rand = makeRand(seed);
+    const bodies: CreatureBody[] = [];
+    for (let i = 0; i < count; i++) {
+      const speed = 0.4 + rand() * 3.2;
+      const angle = rand() * Math.PI * 2;
+      bodies.push({
+        x: (rand() * 2 - 1) * spread,
+        z: (rand() * 2 - 1) * spread,
+        vx: Math.cos(angle) * speed,
+        vz: Math.sin(angle) * speed,
+        r: 0.4 + rand() * 1.6,
+      });
+    }
+    const colliders: Collider[] = [];
+    for (let i = 0; i < 90; i++) {
+      colliders.push({
+        x: (rand() * 2 - 1) * spread,
+        z: (rand() * 2 - 1) * spread,
+        r: 0.3 + rand() * 1.4,
+        hard: rand() > 0.25,
+        key: `prop-${i}`,
+      });
+    }
+    return { bodies, colliders };
+  };
+
+  const clone = (bodies: readonly CreatureBody[]): CreatureBody[] =>
+    bodies.map((b) => ({ ...b }));
+
+  it('lands on the same floats as re-seating every body', () => {
+    for (const [seed, count, spread] of [
+      [0xc0ffee, 40, 14],
+      [0xbeef, 120, 20],
+      [0xfeed, 200, 9],
+      [0x5eed, 12, 3],
+    ] as const) {
+      const { bodies, colliders } = scenario(seed, count, spread);
+      const grid = buildColliderGrid(colliders);
+      const near = (x: number, z: number, r: number): readonly Collider[] =>
+        grid.queryCircle(x, z, r + 1.5);
+      const mine = clone(bodies);
+      const reference = clone(bodies);
+      for (let frame = 0; frame < 40; frame++) {
+        stepCreatures(mine, 16.7, near, { hardPadFrac: 0.11 });
+        stepReference(reference, 16.7, near, 0.11);
+        for (let i = 0; i < mine.length; i++) {
+          expect(mine[i]!.x).toBe(reference[i]!.x);
+          expect(mine[i]!.z).toBe(reference[i]!.z);
+          expect(mine[i]!.vx).toBe(reference[i]!.vx);
+          expect(mine[i]!.vz).toBe(reference[i]!.vz);
+        }
+      }
+    }
+  });
+
+  it('keeps a body out of a prop it has room to clear', () => {
+    // Sparse enough that a clear spot always exists within local corrections
+    // — which is the case the sweep guarantees, jammed pockets aside.
+    const { bodies, colliders } = scenario(0xd15c, 30, 60);
+    const grid = buildColliderGrid(colliders);
+    const near = (x: number, z: number, r: number): readonly Collider[] =>
+      grid.queryCircle(x, z, r + 1.5);
+    for (let frame = 0; frame < 60; frame++) stepCreatures(bodies, 16.7, near, { hardPadFrac: 0 });
+    for (const b of bodies) {
+      for (const c of colliders) {
+        if (!c.hard) continue;
+        const d = Math.hypot(b.x - c.x, b.z - c.z);
+        expect(d).toBeGreaterThanOrEqual(b.r + c.r - 1e-6);
+      }
+    }
+  });
+
+  it('writes a flag for every body a separation pass displaced, and no other', () => {
+    const bodies: CreatureBody[] = [
+      { x: 0, z: 0, vx: 0, vz: 0, r: 1 },
+      { x: 0.5, z: 0, vx: 0, vz: 0, r: 1 },
+      { x: 60, z: 60, vx: 0, vz: 0, r: 1 },
+    ];
+    const moved = new Uint8Array(3);
+    expect(separateCreatures(bodies, 1, moved)).toBe(true);
+    expect(moved[0]).toBe(1);
+    expect(moved[1]).toBe(1);
+    expect(moved[2]).toBe(0);
   });
 });
