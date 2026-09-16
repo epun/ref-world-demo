@@ -830,10 +830,12 @@ export async function initDevPanel(
       });
       folder.addSlider('wander speed', {
         min: 0.2,
-        // 3 is where a katamari world OPENS (KATAMARI_SPEED_MUL), so the
-        // ceiling has to leave room above it for the tuning the ruling asked
-        // for. On every other world the useful range is unchanged.
-        max: 5,
+        // 6 is where a katamari world OPENS (KATAMARI_SPEED_MUL, raised from
+        // 3 on the 2026-09-16 *"up the speed by a lot"*), so the ceiling has
+        // to leave room above it for the next guess. The slider moves the
+        // whole range there — the walk ceiling is a fraction of it — and on
+        // every other world it is the one multiplier it always was.
+        max: 8,
         step: 0.05,
         // What the manager is ACTUALLY running: a katamari world starts at
         // KATAMARI_SPEED_MUL, not at the shipped walk default.
