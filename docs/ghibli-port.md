@@ -8,12 +8,22 @@ toon shader style"*, and: a tropical island, ghibli meets scavengers reign). It 
 `ghibli` style only, a recorded USER OVERRIDE and not a change to the taste
 ([`docs/TASTE.md`](TASTE.md) §9).
 
-**Every module in the folder is inert until something calls it.** Nothing here is imported
-by `scene.ts`, `scatter.ts`, `ground.ts` or `water.ts` yet — those files belong to other
-delegates and the wiring happens at merge. This page is the merge instruction: for each
-module, the exact call site, what has to be passed, and what is deferred. Until those calls
-land, the `ink` style renders byte-identically (the modules tree-shake out of the demo
-build entirely — `npm run build` confirms it).
+**WIRED, 2026-09-15/16.** This page was written as the merge instruction — for each
+module, the exact call site, what to pass, what is deferred — and it is kept because the
+call sites are still the map of how the style is assembled. Four things it says are now
+WRONG, and each is corrected in place below: the `aShore` bake (§6), the `seaLevel()` the
+ground never needed (§7), the heights-from-a-callback (§1), and the tree-shaking claim
+here.
+
+**The modules no longer tree-shake out.** They did while nothing imported them. Now
+`scene.ts`, `scatter.ts`, `ground.ts` and `water.ts` all do, and they must: `?style=ghibli`
+switches the look on ANY deployment at runtime (`readWorldStyle`, src/world/style.ts), so
+the code has to be in every bundle. What `ink` still pays is NOTHING AT RUNTIME, which is
+the property that actually matters and the one to keep: every ghibli material, field and
+bake is constructed on the FIRST switch to the style and never before it, so an ink world
+compiles no extra program, allocates no extra geometry and bakes no texture. Measured on
+the public world, before the wiring against after: identical program (14), geometry (46)
+and texture (5) counts, and the same frame to within one draw call of ambient drift.
 
 **The two files outside the folder that did change**, and all that changed in them:
 
@@ -31,8 +41,22 @@ build entirely — `npm run build` confirms it).
 
 ## 1. `grass.ts` — the blade field
 
-`createGrassField({ count, heightAt, region, layers, baseDensity })` →
-`{ mesh, material, setLayers, setRegion, setBaseDensity, rebuild, setCount, count, setWind, setZoom, dispose }`
+`createGrassField({ count, span, layout, height, region, layers, baseDensity, bladeWidth, minBladePx })` →
+`{ mesh, material, setLayers, setRegion, setBaseDensity, setHeight, setCenter, center, setCount, count, setWind, setZoom, setPixelScale, dispose }`
+
+**CORRECTION (2026-09-16): the height is a TEXTURE, not a callback.** This section's
+`heightAt` was baked into an `aGround` attribute per blade, and re-baking it whenever the
+field moved cost **651ms for 150 000 blades** — measured, a dropped frame every few units of
+camera travel. The `Surface` seam is now sampled once per terrain rebuild into an R32F
+texture (`src/world/ghibli/height.ts`, 256² over the painted map) and the vertex shader taps
+it with its own bilinear; `src/world/ground.ts` owns the bake and re-runs it in place beside
+the region and shore bakes. It is still the seam and nothing but the seam — a cache of its
+answers, exactly as the region bake is.
+
+**And the field is two layers with a radial LOD**, not one constant-density window: a BASE
+field over the island's bounding box (600k blades on a projection) plus the NEAR field
+around the look-target whose density follows an inverse-square curve out to 70 units. The
+window slides every frame as one uniform write, quantised to the layout's own spacing.
 
 **Where it goes:** `src/world/scene.ts`, beside the scatter.
 
@@ -150,21 +174,27 @@ profile, smooth-noise driven on purpose (not the gust front) — see the module 
 marks stay exactly as they are (they are ink marks, and on this style they already take
 `GHIBLI.foam`).
 
-**One thing the caller must bake: `aShore`.** Per fill vertex, the distance in world units
-from that vertex to the body's own outline — the outline `createWater` already holds, and
-already cut the fill from:
+**CORRECTION (2026-09-16): `aShore` was wrong and is gone.** This section asked the caller
+to bake the shore distance per FILL VERTEX. That cannot be made robust, and the way it fails
+is the whole body: earcut's fill has every vertex ON the outline it was cut from, so a
+triangle spanning the interior reads zero at all three corners and paints its span as foam.
+The first attempt refined the triangles inside an 8-unit band, which fixed the ponds and
+left the lake with **huge white wedges** — its big interior triangles, whose centroids sit
+outside the band — and that is what a user saw on the live build.
 
-```ts
-// where the fill geometry is built from `outlines[index]`
-const shore = new Float32Array(vertexCount);
-for (let i = 0; i < vertexCount; i++) shore[i] = distanceToPolygon(x[i], z[i], outline);
-geometry.setAttribute('aShore', new BufferAttribute(shore, 1));
-```
+The shore distance is a TEXTURE now (`src/world/ghibli/shore.ts`): one exact Euclidean
+distance transform (Felzenszwalb & Huttenlocher, `distanceTransform` exported from
+`src/world/painted-water.ts` — not a chamfer, whose diagonal error is wider than the foam
+rim) over a presence mask sampled from `isWater`, which answers for the authored bodies, the
+sea and every painted body at once. R32F at 512² over the 400-unit field: 0.78 units a
+texel against a rim of one and a half to three. `setShoreTexture(material, tex)` hands it
+over; the fragment reads it by world xz. The fills are the plain earcut sheets again — no
+refinement, no second geometry — which is also what the ink pass draws, and they leave the
+ink pass's normal target because a flat sheet coplanar with the ground has no crease in it
+(see `src/world/water.ts`'s note on the lifts for the measurement that settled that).
 
-Without the attribute every vertex reads 0 and the whole body renders as foam — so bake it
-in the same pass as the fill, both for the authored bodies and for the painted ones
-(`addPaintedShore`'s sibling). The sea material is for the island's surrounding water when
-that lands; the two differ only in palette and drift.
+The sea material is the island's surrounding water; the two differ in palette and drift, and
+the sea alone carries the long swell.
 
 ## 7. `ground.ts` — `createGroundMaterial()`
 
@@ -193,6 +223,20 @@ swapped material gets them too:
 
 `setInk` is already called on this style with `GHIBLI.dirtEdge`; the ghibli material
 defaults to the same value, so an un-rewired `setInk` is still correct.
+
+**CORRECTION (2026-09-16): the ground needs no `seaLevel()`.** The wiring notes asked for
+the sea level to be passed in for the wet-sand band. It is not a parameter of anything: the
+band is a threshold on the REGION texture's water-proximity channel, which
+`src/world/ghibli/region.ts` bakes from `sampleLandscape().water` — so the shoreline the
+ground damps against is the same one every other element reads, and no height enters into
+it. `createGroundMaterial` takes `{ region, snowHeight }` and nothing else.
+
+**And there are THREE bakes now, not one.** `ground.rebuild()` re-runs the region, the
+height (§1) and the shore (§6) in place — one pass, three textures, and every element that
+reads a shoreline or a ground height sees the new map without being handed anything. The
+ghibli ground also carries the blade field's window (`setFieldWindow`) so it can tint the
+meadow to the field's own colour exactly where the field is drawn, and its own blade
+STIPPLE so the ground reads as grass everywhere the blades are not.
 
 **Do not let the marks go.** The ghibli ground replicates `ground.ts`'s terrace-lip line,
 riser hatching, painted-trail rim/stipple and scorch, constant for constant, with a `gg`
@@ -241,5 +285,20 @@ ride the terrain dials (only the shoreline matters to it, and a dial moves heigh
 - **Ink-mask alpha.** envpaint writes an alpha channel that tells its post pass "outline
   this, do not hatch it", and the grass writes 0 so a meadow is not outlined blade by
   blade. This world's ink pass keys off depth and normal targets and has no such mask, so
-  every ghibli material writes alpha 1. If blade-by-blade contours read badly on screen,
-  the fix is a mask in `src/world/ink.ts`, not a change here.
+  every ghibli material writes alpha 1. **Solved another way, 2026-09-15:** the blade and
+  bloom fields (and, since the shore bake, the water fills) are hidden for the normal pass
+  through `userData.ghibliNormalPassSkip`, and that pass is where the contour and the hatch
+  both come from — so a blade is never outlined blade by blade and no mask was needed.
+
+## Still open
+
+- **Reflections and light shafts.** The water reference (the Tiny Delivery clip, §6) has
+  soft reflections of the geometry above the surface and broad light shafts across it.
+  Neither is in this port: both want a second pass, and the surface is one flat unlit sheet
+  by design.
+- **The foam's tonality.** The reference's foam carries blue-white variation and feathers
+  into the shallows; ours is a chalkier white with an eroded inner edge. Closer would mean
+  a second foam tone and a wider feather, both in `ghibli/water.ts`'s FRAGMENT.
+- **The shallows over sand.** The bed showing through reads slightly greyer than the
+  reference's bright aqua. `uBed` is `sand` lerped 0.62 toward `waterBed`; the lerp and the
+  token are the two knobs.
