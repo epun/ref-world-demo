@@ -11,6 +11,14 @@
  * opens on a flat plain (src/world/landscape.ts `LandscapeMode`) and the
  * geography is revealed live. So the drawn tests run with the map on, and the
  * last one runs with it off and pins the empty paper.
+ *
+ * THE PAINTED BODY (2026-09-16). The bottom half of this file covers the
+ * `ghibli` style's coloured map body: the pure region read (`bodyKindAt`,
+ * derived from the coast's own signed field so it follows an island that
+ * moves or grows), the sampled grid and its raster, the cache — one repaint
+ * per map revision, one blit per frame — and both map sizes. And then the
+ * other half of that bargain: a GOLDEN op sequence for the `ink` map, which
+ * is the public world's and has to stay exactly the map that shipped.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -23,18 +31,31 @@ import {
   type MapFrame,
 } from '../../src/phone/minimap';
 import {
+  BODY_CELL_PX,
+  BODY_COLORS,
+  BODY_GRID_MIN,
+  bodyGridRes,
+  bodyGridRgba,
+  bodyKindAt,
   groundLookTarget,
   installWorldMinimap,
+  mapPalette,
   mapToWorld,
   partitionInhabitants,
+  sampleBodyGrid,
+  SEA_MID_RUN,
+  SEA_SHALLOW_RUN,
   selfMark,
   subsample,
   WORLD_MAP_EXTENT,
+  type BodyKind,
   type Inhabitant,
 } from '../../src/ui/minimap';
-import { CHARACTER, SURFACE, WORLD } from '../../src/taste/tokens';
+import { CHARACTER, GHIBLI, SURFACE, WORLD } from '../../src/taste/tokens';
 import {
+  BEACH_WIDTH,
   WATER_BODIES,
+  coastInland,
   coastOutline,
   islandOutline,
   setIslandMode,
@@ -215,21 +236,66 @@ interface StrokeCall {
   points: [number, number][];
 }
 
+/** One painted-body blit onto the map canvas. */
+interface ImageCall {
+  res: number;
+  w: number;
+  h: number;
+  smoothing: boolean;
+}
+
+/** One repaint of the offscreen body raster — the thing the cache exists to
+ * make rare. */
+interface RasterCall {
+  res: number;
+  data: Uint8ClampedArray;
+}
+
+interface Draws {
+  fills: FillCall[];
+  strokes: StrokeCall[];
+  images: ImageCall[];
+  rasters: RasterCall[];
+  /** The op sequence, for the ink golden: `fill:<style>` / `stroke:<style>` /
+   * `image`, in the order the map asked for them. */
+  ops: string[];
+  /** How many canvases the map created — one is the map itself; a second is
+   * the offscreen body. */
+  canvases: number;
+}
+
+function emptyDraws(): Draws {
+  return { fills: [], strokes: [], images: [], rasters: [], ops: [], canvases: 0 };
+}
+
 /** A 2d context that records the paths it is asked to fill, in the
  * coordinates they were handed in (no transform is applied — the map's only
  * transform is its ambient drift, which is a translate). */
-function recordingCtx(fills: FillCall[], strokes: StrokeCall[]): CanvasRenderingContext2D {
+function recordingCtx(draws: Draws): CanvasRenderingContext2D {
+  const fills = draws.fills;
+  const strokes = draws.strokes;
   let path: [number, number][] = [];
   const ctx = {
     fillStyle: '',
     strokeStyle: '',
     lineWidth: 0,
+    lineJoin: '',
+    imageSmoothingEnabled: true,
     setTransform(): void {},
     clearRect(): void {},
     translate(): void {},
     save(): void {},
     restore(): void {},
     clip(): void {},
+    drawImage(source: { width: number }, _x: number, _y: number, w: number, h: number): void {
+      draws.images.push({
+        res: source.width,
+        w,
+        h,
+        smoothing: Boolean(ctx.imageSmoothingEnabled),
+      });
+      draws.ops.push('image');
+    },
     beginPath(): void {
       path = [];
     },
@@ -251,6 +317,7 @@ function recordingCtx(fills: FillCall[], strokes: StrokeCall[]): CanvasRendering
     closePath(): void {},
     fill(): void {
       fills.push({ style: String(ctx.fillStyle), points: [...path] });
+      draws.ops.push(`fill:${String(ctx.fillStyle)}`);
     },
     stroke(): void {
       strokes.push({
@@ -258,17 +325,36 @@ function recordingCtx(fills: FillCall[], strokes: StrokeCall[]): CanvasRendering
         width: Number(ctx.lineWidth),
         points: [...path],
       });
+      draws.ops.push(`stroke:${String(ctx.strokeStyle)}`);
     },
   };
   return ctx as unknown as CanvasRenderingContext2D;
 }
 
-/** Enough DOM for installWorldMinimap: one canvas, a head to hang a style
- * off, a visibility flag, and a rAF that fires exactly once. */
+/** The OFFSCREEN canvas the painted body is rastered into: it only ever gets
+ * `createImageData` + `putImageData`, and every call is one repaint. */
+function stubOffscreen(draws: Draws): Record<string, unknown> {
+  const surface: Record<string, unknown> = { width: 0, height: 0 };
+  surface.getContext = (): Record<string, unknown> => ({
+    createImageData: (w: number, h: number) => ({
+      width: w,
+      height: h,
+      data: new Uint8ClampedArray(w * h * 4),
+    }),
+    putImageData: (image: { width: number; data: Uint8ClampedArray }): void => {
+      draws.rasters.push({ res: image.width, data: image.data.slice() });
+    },
+  });
+  return surface;
+}
+
+/** Enough DOM for installWorldMinimap: the map canvas, an offscreen canvas
+ * for the painted body, a head to hang a style off, a visibility flag, and a
+ * rAF that fires exactly once per driven frame. */
 function stubDom(
-  fills: FillCall[],
-  strokes: StrokeCall[],
-): { draw: () => void; restore: () => void } {
+  draws: Draws,
+  size = 200,
+): { draw: (now?: number) => void; restore: () => void } {
   const canvas = {
     className: '',
     width: 0,
@@ -278,10 +364,10 @@ function stubDom(
     addEventListener(): void {},
     removeEventListener(): void {},
     remove(): void {},
-    getBoundingClientRect: () => ({ width: 200, height: 200, left: 0, top: 0 }),
-    getContext: () => recordingCtx(fills, strokes),
+    getBoundingClientRect: () => ({ width: size, height: size, left: 0, top: 0 }),
+    getContext: () => recordingCtx(draws),
   };
-  const frames: FrameRequestCallback[] = [];
+  let frame: FrameRequestCallback | null = null;
   const globals = globalThis as Record<string, unknown>;
   const before = {
     document: globals.document,
@@ -293,21 +379,27 @@ function stubDom(
     hidden: false,
     head: { appendChild(): void {} },
     getElementById: () => null,
-    createElement: (tag: string) =>
-      tag === 'canvas' ? canvas : { id: '', textContent: '', style: {} },
+    createElement: (tag: string) => {
+      if (tag !== 'canvas') return { id: '', textContent: '', style: {} };
+      draws.canvases += 1;
+      // The FIRST canvas is the map; anything after it is the body raster.
+      return draws.canvases === 1 ? canvas : stubOffscreen(draws);
+    },
     addEventListener(): void {},
     removeEventListener(): void {},
   };
   globals.window = { devicePixelRatio: 1 };
   globals.requestAnimationFrame = (cb: FrameRequestCallback): number => {
-    if (frames.length === 0) frames.push(cb);
+    frame = cb;
     return 1;
   };
   globals.cancelAnimationFrame = (): void => {};
   return {
     // Drive one frame, past the throttle.
-    draw: (): void => {
-      frames[0]?.(1000);
+    draw: (now = 1000): void => {
+      const cb = frame;
+      frame = null;
+      cb?.(now);
     },
     restore: (): void => {
       globals.document = before.document;
@@ -318,13 +410,26 @@ function stubDom(
   };
 }
 
-/** One frame of the real map against the recording context. */
-function drawOnce(
-  opts: { positions?: Inhabitant[]; self?: () => { x: number; z: number } | null } = {},
-): { fills: FillCall[]; strokes: StrokeCall[] } {
-  const fills: FillCall[] = [];
-  const strokes: StrokeCall[] = [];
-  const dom = stubDom(fills, strokes);
+interface DrawOpts {
+  positions?: Inhabitant[];
+  self?: () => { x: number; z: number } | null;
+  /** The LOOK. Absent is `ink` — the shipped map. */
+  style?: () => 'ink' | 'ghibli';
+  /** The map's own inset size in CSS px (phone vs projection). */
+  size?: number;
+  /** How many throttled frames to drive. */
+  frames?: number;
+  /** The scatter handle, for the body cache's revision. */
+  scatter?: {
+    positions(): { x: number; z: number }[];
+    rebuildVersion?(): number;
+  };
+}
+
+/** N frames of the real map against the recording context. */
+function drawFrames(opts: DrawOpts = {}): Draws {
+  const draws = emptyDraws();
+  const dom = stubDom(draws, opts.size ?? 200);
   const handle = installWorldMinimap({
     manager: { positions: () => opts.positions ?? [] },
     cameraRig: {
@@ -337,11 +442,20 @@ function drawOnce(
     },
     mount: { appendChild: (): void => {} } as unknown as HTMLElement,
     ...(opts.self ? { self: opts.self } : {}),
+    ...(opts.style ? { style: opts.style } : {}),
+    ...(opts.scatter ? { scatter: opts.scatter } : {}),
   });
-  dom.draw();
+  const count = Math.max(1, opts.frames ?? 1);
+  for (let i = 0; i < count; i++) dom.draw(1000 * (i + 1));
   handle.dispose();
   dom.restore();
-  return { fills, strokes };
+  return draws;
+}
+
+/** One frame — the shape the drawn tests below were written against. */
+function drawOnce(opts: DrawOpts = {}): { fills: FillCall[]; strokes: StrokeCall[] } {
+  const draws = drawFrames(opts);
+  return { fills: draws.fills, strokes: draws.strokes };
 }
 
 describe('the map draws an island in a lake', () => {
@@ -584,5 +698,330 @@ describe('the map draws where YOU are', () => {
     const inkStrokes = strokes.filter((s) => s.style === WORLD.ink);
     expect(ringIndex).toBeGreaterThan(strokes.indexOf(inkStrokes[0]!));
     expect(strokes.indexOf(inkStrokes[inkStrokes.length - 1]!)).toBeGreaterThan(ringIndex);
+  });
+});
+
+// ── the painted body, on the ghibli style only ───────────────────────────────
+
+/**
+ * Where the coast is, along one bearing, by bisection on the island's OWN
+ * signed field (`coastInland`).
+ *
+ * Derived rather than written down on purpose: another change is doubling the
+ * island's radius, and a test that knew where the shore was would be a test of
+ * the old map. This one follows whatever the coast is.
+ */
+function coastRadiusAt(theta: number): number {
+  let lo = 0;
+  let hi = 4000;
+  for (let i = 0; i < 80; i++) {
+    const mid = (lo + hi) / 2;
+    if (coastInland(Math.cos(theta) * mid, Math.sin(theta) * mid) >= 0) lo = mid;
+    else hi = mid;
+  }
+  return lo;
+}
+
+/** `d` units past the waterline along `theta` — negative is inland. */
+function offCoast(theta: number, d: number): { x: number; z: number } {
+  const r = coastRadiusAt(theta) + d;
+  return { x: Math.cos(theta) * r, z: Math.sin(theta) * r };
+}
+
+describe('bodyKindAt reads the landscape', () => {
+  it('paints the sea in three bands off the coast', () => {
+    for (const theta of [0, Math.PI / 2, Math.PI, -Math.PI / 2]) {
+      const shallow = offCoast(theta, 3);
+      const mid = offCoast(theta, (SEA_SHALLOW_RUN + SEA_MID_RUN) / 2);
+      const deep = offCoast(theta, SEA_MID_RUN + 10);
+      // Sanity: these really are outside the coast, by the map's own query.
+      expect(coastInland(shallow.x, shallow.z)).toBeLessThan(0);
+      expect(bodyKindAt(shallow.x, shallow.z)).toBe('seaShallow');
+      expect(bodyKindAt(mid.x, mid.z)).toBe('seaMid');
+      expect(bodyKindAt(deep.x, deep.z)).toBe('deep');
+    }
+  });
+
+  it('rings the coast in sand, outside the meadow', () => {
+    for (const theta of [0, Math.PI / 2]) {
+      const beach = offCoast(theta, -3);
+      const inland = offCoast(theta, -30);
+      // The landscape's own beach label reaches half of BEACH_WIDTH inland,
+      // so 3 units in is sand and 30 is not.
+      expect(coastInland(beach.x, beach.z)).toBeLessThan(BEACH_WIDTH);
+      expect(bodyKindAt(beach.x, beach.z)).toBe('sand');
+      expect(bodyKindAt(inland.x, inland.z)).toBe('meadow');
+    }
+  });
+
+  it('takes the forest and the range from the map, not from a new threshold', () => {
+    // Two bearings the authored layout puts a wood and a range on — read off
+    // `sampleLandscape().region`, which is the only thing that decides it.
+    const wood = offCoast(Math.PI, -30);
+    expect(bodyKindAt(wood.x, wood.z)).toBe('forest');
+    const range = offCoast(-Math.PI / 2, -30);
+    expect(bodyKindAt(range.x, range.z)).toBe('mountain');
+  });
+
+  it('paints a pond in the water value, and the lake island back in meadow', () => {
+    const pond = WATER_BODIES.find((b) => b.kind === 'pond')!;
+    expect(bodyKindAt(pond.x, pond.z)).toBe('water');
+    // The lake has an island standing in it and the map has always shown it:
+    // its centre is land, so it is green.
+    const lake = WATER_BODIES.find((b) => b.kind === 'lake' && b.island)!;
+    expect(bodyKindAt(lake.island!.x, lake.island!.z)).toBe('meadow');
+  });
+
+  it('has no sea at all with the island off', () => {
+    // The island is the katamari world's (src/world/game.ts). Every other
+    // world's map has lakes and no ocean, and the body has to say so.
+    const outside = offCoast(0, 40);
+    setIslandMode(false);
+    try {
+      expect(bodyKindAt(outside.x, outside.z)).toBe('meadow');
+      expect(bodyKindAt(0, 0)).toBe('meadow');
+    } finally {
+      setIslandMode(true);
+    }
+  });
+
+  it('draws only GHIBLI tokens — no colour was invented for the map', () => {
+    const tokens = new Set<unknown>(Object.values(GHIBLI));
+    for (const [kind, hex] of Object.entries(BODY_COLORS)) {
+      expect(tokens.has(hex), `${kind} is not a GHIBLI token`).toBe(true);
+    }
+  });
+});
+
+describe('the body grid', () => {
+  const gridFrame: MapFrame = { w: 264, h: 264, inset: 14 };
+
+  it('scales to the map and floors at one cell a pixel on a handset', () => {
+    // The projection's biggest inset and the phone's smallest.
+    expect(bodyGridRes(264)).toBe(Math.round(264 / BODY_CELL_PX));
+    expect(bodyGridRes(96)).toBe(BODY_GRID_MIN);
+    expect(bodyGridRes(0)).toBe(BODY_GRID_MIN);
+  });
+
+  it('samples every cell and puts the sea at the corners', () => {
+    const res = bodyGridRes(264);
+    const kinds = sampleBodyGrid(res, gridFrame, WORLD_MAP_EXTENT);
+    expect(kinds).toHaveLength(res * res);
+    // The map is a map of an island: the corners are open water.
+    for (const [i, j] of [
+      [0, 0],
+      [res - 1, 0],
+      [0, res - 1],
+      [res - 1, res - 1],
+    ] as const) {
+      expect(kinds[j * res + i]).toBe('deep');
+    }
+    // …and the middle of it is land.
+    const mid = Math.floor(res / 2);
+    expect(kinds[mid * res + mid]).toBe('meadow');
+  });
+
+  it('puts a pond where the landscape puts one, with a pale rim round it', () => {
+    const res = bodyGridRes(264);
+    const kinds = sampleBodyGrid(res, gridFrame, WORLD_MAP_EXTENT);
+    const pond = WATER_BODIES.find((b) => b.kind === 'pond')!;
+    const at = worldToMap(pond.x, pond.z, WORLD_MAP_EXTENT, gridFrame);
+    const i = Math.floor((at.px / gridFrame.w) * res);
+    const j = Math.floor((at.py / gridFrame.h) * res);
+    const kind = kinds[j * res + i]!;
+    expect(['water', 'waterRim']).toContain(kind);
+    expect([BODY_COLORS.water, BODY_COLORS.waterRim]).toContain(BODY_COLORS[kind]);
+    // The rim exists: a still body's cells that touch dry land are promoted.
+    expect(kinds.filter((k) => k === 'waterRim').length).toBeGreaterThan(0);
+    // …and the open sea is still out there, unrimmed: its own light band off
+    // the coast is the shore mark, so the rim never appears at sea.
+    expect(kinds.filter((k) => k === 'deep').length).toBeGreaterThan(0);
+  });
+
+  it('rasters one opaque RGBA cell per kind, off the token', () => {
+    const kinds: BodyKind[] = ['deep', 'sand', 'meadow'];
+    const data = bodyGridRgba(kinds);
+    expect(data).toHaveLength(kinds.length * 4);
+    kinds.forEach((kind, i) => {
+      const hex = BODY_COLORS[kind];
+      expect(data[i * 4]).toBe(parseInt(hex.slice(1, 3), 16));
+      expect(data[i * 4 + 1]).toBe(parseInt(hex.slice(3, 5), 16));
+      expect(data[i * 4 + 2]).toBe(parseInt(hex.slice(5, 7), 16));
+      expect(data[i * 4 + 3]).toBe(255);
+    });
+  });
+});
+
+describe('the ghibli map draws the painted body', () => {
+  const ghibliStyle = (): 'ghibli' => 'ghibli';
+
+  it('blits one cached raster per frame, quantised, over the whole field', () => {
+    const draws = drawFrames({ style: ghibliStyle, size: 264, frames: 3 });
+    // One blit a frame…
+    expect(draws.images).toHaveLength(3);
+    for (const image of draws.images) {
+      expect(image.res).toBe(bodyGridRes(264));
+      expect(image.w).toBe(264);
+      expect(image.h).toBe(264);
+      // Nearest-neighbour: a cell is a flat fill, never a gradient.
+      expect(image.smoothing).toBe(false);
+    }
+    // …off ONE repaint. The landscape sample is the expensive thing here and
+    // it must not run 30 times a second.
+    expect(draws.rasters).toHaveLength(1);
+    expect(draws.rasters[0]!.res).toBe(bodyGridRes(264));
+    // One canvas for the map, one offscreen for the body.
+    expect(draws.canvases).toBe(2);
+  });
+
+  it('repaints when the map changes and not otherwise', () => {
+    let version = 7;
+    const scatter = {
+      positions: (): { x: number; z: number }[] => [],
+      rebuildVersion: (): number => version,
+    };
+    const draws = emptyDraws();
+    const dom = stubDom(draws, 200);
+    const handle = installWorldMinimap({
+      manager: { positions: (): Inhabitant[] => [] },
+      cameraRig: {
+        azimuth: 0,
+        frameAt: (): void => {},
+        camera: {
+          position: { x: 0, y: 40, z: 40 },
+          getWorldDirection: (t: Vector3): Vector3 => t.set(0, -1, -1).normalize(),
+        },
+      },
+      mount: { appendChild: (): void => {} } as unknown as HTMLElement,
+      style: ghibliStyle,
+      scatter,
+    });
+    dom.draw(1000);
+    dom.draw(2000);
+    expect(draws.rasters).toHaveLength(1);
+    // A painted pond, a terrain dial and the landscape switch all end on a
+    // scatter rebuild (src/dev/paint.ts, src/world/scene.ts), so the bump is
+    // the map moving — and the body follows it.
+    version = 8;
+    dom.draw(3000);
+    expect(draws.rasters).toHaveLength(2);
+    // Island mode is the other switch, and it is not the scatter's.
+    setIslandMode(false);
+    try {
+      dom.draw(4000);
+    } finally {
+      setIslandMode(true);
+    }
+    expect(draws.rasters).toHaveLength(3);
+    // …and it really painted a different picture: no ocean this time.
+    expect(draws.rasters[2]!.data).not.toEqual(draws.rasters[1]!.data);
+    handle.dispose();
+    dom.restore();
+  });
+
+  it('paints at the handset size too, at its own grid', () => {
+    const phone = drawFrames({ style: ghibliStyle, size: 96 });
+    expect(phone.images).toHaveLength(1);
+    expect(phone.images[0]!.res).toBe(bodyGridRes(96));
+    expect(phone.images[0]!.w).toBe(96);
+    expect(phone.rasters).toHaveLength(1);
+    expect(phone.rasters[0]!.data).toHaveLength(bodyGridRes(96) ** 2 * 4);
+  });
+
+  it('keeps the marks, in the style own ink, and drops the grey sea', () => {
+    const draws = drawFrames({
+      style: ghibliStyle,
+      positions: [{ x: 0, z: 0, r: 1, kind: 'character' }],
+    });
+    // The grey paper sea and the grey lake fills are what the body replaced.
+    expect(draws.fills.filter((f) => f.style === WORLD.neutralMid)).toHaveLength(0);
+    // The coast keeps its hairline — in the style's own contour violet, over
+    // a coloured body (TASTE §4: the mark set does not change, its value does).
+    const scale = mapMarkScale(200);
+    const mapFrame: MapFrame = { w: 200, h: 200, inset: mapBorderInset(scale) + 5 * scale };
+    const coast = coastOutline().map(([x, z]) => {
+      const at = worldToMap(x, z, WORLD_MAP_EXTENT, mapFrame);
+      return [at.px, at.py] as [number, number];
+    });
+    expect(
+      draws.strokes.some(
+        (st) =>
+          st.style === GHIBLI.ink &&
+          st.points.length === coast.length &&
+          st.points.every(
+            ([x, y], i) => Math.abs(x - coast[i]![0]) < 1e-6 && Math.abs(y - coast[i]![1]) < 1e-6,
+          ),
+      ),
+      'the coast lost its ink hairline',
+    ).toBe(true);
+    // Every still body keeps its drawn shore, and the lake's island keeps its
+    // own — at least as many hairlines as the ink map draws.
+    const shores = draws.strokes.filter((st) => st.style === GHIBLI.ink);
+    expect(shores.length).toBeGreaterThanOrEqual(WATER_BODIES.length + 1);
+    // The creature dots are untouched: near-black on the painted body.
+    expect(draws.fills.some((f) => f.style === CHARACTER.body)).toBe(true);
+    // The border takes the light value instead, because the paper under it is
+    // a dark sea now (see the module header's measured contrast).
+    const border = draws.strokes[draws.strokes.length - 1]!;
+    expect(border.style).toBe(GHIBLI.foam);
+    expect(border.width).toBeCloseTo(1.25, 6);
+    expect(draws.strokes.filter((st) => st.style === WORLD.ink)).toHaveLength(0);
+  });
+});
+
+// ── the ink map is the one that shipped ──────────────────────────────────────
+
+describe('the ink map is byte-identical', () => {
+  it('draws exactly the calls it always did, in the same order', () => {
+    // The golden. Every one of these is the shipped map: the paper, the grey
+    // sea, the island back over it, the lakes and their shores, the egg, the
+    // creature dots, the camera wedge and diamond, you, and the frame.
+    const draws = drawFrames({
+      positions: [
+        { x: 20, z: 20, r: 1, kind: 'character' },
+        { x: -40, z: 12, r: 1, kind: 'egg' },
+      ],
+      self: () => ({ x: 20, z: 20 }),
+    });
+    expect(draws.ops).toEqual([
+      `fill:${SURFACE.ground}`,
+      `fill:${WORLD.neutralMid}`,
+      `fill:${SURFACE.ground}`,
+      `stroke:${WORLD.ink}`,
+      `fill:${WORLD.neutralMid}`,
+      `stroke:${WORLD.ink}`,
+      `fill:${WORLD.neutralMid}`,
+      `stroke:${WORLD.ink}`,
+      `fill:${WORLD.neutralMid}`,
+      `stroke:${WORLD.ink}`,
+      `fill:${WORLD.neutralMid}`,
+      `stroke:${WORLD.ink}`,
+      `fill:${WORLD.neutralMid}`,
+      `stroke:${WORLD.ink}`,
+      `fill:${SURFACE.ground}`,
+      `stroke:${WORLD.ink}`,
+      `fill:${WORLD.light}`,
+      `stroke:${WORLD.ink}`,
+      `fill:${CHARACTER.body}`,
+      `stroke:${WORLD.ink}`,
+      `stroke:${WORLD.ink}`,
+      `fill:${CHARACTER.body}`,
+      `stroke:${WORLD.light}`,
+      `stroke:${WORLD.ink}`,
+    ]);
+  });
+
+  it('paints no body: no second canvas, no blit, no raster', () => {
+    const draws = drawFrames({ frames: 3 });
+    expect(draws.images).toHaveLength(0);
+    expect(draws.rasters).toHaveLength(0);
+    // One canvas, the map's own. The offscreen body is never allocated on a
+    // world that does not paint one.
+    expect(draws.canvases).toBe(1);
+  });
+
+  it('draws every mark in WORLD.ink, border included', () => {
+    expect(mapPalette('ink')).toEqual({ ink: WORLD.ink, border: WORLD.ink });
+    expect(mapPalette('ghibli')).toEqual({ ink: GHIBLI.ink, border: GHIBLI.foam });
   });
 });

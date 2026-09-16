@@ -379,3 +379,32 @@ nothing any of them measure.
 byte-identical (`test/worlds/build.test.ts`). `?style=ink|ghibli` overrides it on the address
 and the ghost panel's *shader style* folder switches it live, so the two frames can be put
 side by side rather than argued about.
+
+### 9a. The minimap's painted body — user override *(2026-09-16)* **[D]**
+
+**User decision, recorded as one:** *"The mini map should update to be in the more colored
+style."* On the `ghibli` style the world minimap's FIELD is painted from the landscape's own
+region query in the world's own colours — the sea in three flat bands off the coast, a sand
+ring on the beach, the meadow green, the forest in the canopy's shade green, the range in
+rock, the ponds and the lake in the water value with a pale rim, a painted trail in dirt.
+Flat fills on a quantised grid, off `GHIBLI` tokens only; nothing is interpolated, so a
+shoreline stays a cut edge and never becomes a gradient.
+
+**It relaxes nothing new.** The colour is §9's palette relaxation, already granted for this
+one deployment; the map body takes the same tokens the ground and the water shaders take, so
+the map cannot hold a colour the world does not. On `ink` — the public world and `meridian`
+— the map is byte-identical, and a golden draw-call sequence in `test/ui/minimap.test.ts`
+pins that.
+
+**The mark set is untouched (§4).** The border, the coast and shore hairlines, the prop dots,
+the eggs, the creature dots, you, and the camera diamond and wedge are the same marks in the
+same order. Only their VALUE moves, and only as far as legibility forces: the interior marks
+take `GHIBLI.ink`, and the BORDER takes `GHIBLI.foam`, because the paper under it is now a
+dark sea rather than a light field — ink on the deep sea measures 1.2:1 and foam on it 12:1.
+That is the same argument §4 already accepts for the self ring: a value is only a mark where
+there is range under it.
+
+**Where it lives.** `src/ui/minimap.ts` — `bodyKindAt` is the region read (pure, from
+`sampleLandscape` and `coastInland`, so it follows a coast that moves), `sampleBodyGrid` the
+raster, and `mapPalette` the two mark values. The body repaints once per map revision (the
+scatter's `rebuildVersion`, plus the landscape and island switches) and blits per frame.

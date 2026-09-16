@@ -2132,6 +2132,15 @@ function main(): void {
     manager: creatures,
     cameraRig: world.cameraRig,
     scatter: world.scatter,
+    /*
+     * The LOOK (user ask, 2026-09-16: *"the mini map should update to be in
+     * the more colored style"*).
+     *
+     * A function, not the value `start` was handed: the dev panel can switch
+     * styles while the map is on screen, and the painted body repaints off
+     * this read. On `ink` the map is exactly the one that shipped.
+     */
+    style: () => world.style(),
     // A tap on the map is "show me over there". Let go of the creature
     // until they ask for it back by walking.
     onFocus: () => follow.suspend(),

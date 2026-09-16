@@ -50,19 +50,49 @@
  * cameraRig.frameAt (a t.primary reframe — never a snap). The whole canvas
  * micro-sways on the ambient drift floor: nothing fully arrests (TASTE §3).
  *
- * Pure helpers (mapping, partitioning, subsampling) live at module top with
- * no DOM use so test/ui can cover them in node; the border loop and
- * world→map projection are REUSED from src/phone/minimap.ts (also pure).
+ * ── THE PAINTED BODY, on the `ghibli` style only (2026-09-16, user ask:
+ * *"the mini map should update to be in the more colored style"*).
+ *
+ * On `valiocon` the world renders in the envpaint cel look (docs/TASTE.md §9)
+ * and the grey paper-and-ink sketch above stopped being a map OF it. So on
+ * that style — and on that style alone — the FIELD is painted from the
+ * landscape's own region query, in the world's own colours: the sea in three
+ * flat bands off the coast, the beach ring in sand, the meadow green, the
+ * forest darker, the range in rock, the ponds and the lake in the water value
+ * with a pale rim, and a painted trail in dirt. Flat fills off `GHIBLI`
+ * tokens, quantised on a grid — a painted map, never a gradient.
+ *
+ * THE MARKS DO NOT CHANGE. The coast and the still-water shores keep their
+ * hairlines, the props keep their dots, the creatures, the eggs, you and the
+ * camera are the same marks in the same order (TASTE §4 — icon + ruleLine +
+ * border, and the body is a fill on the paper exactly as the lake always
+ * was). Only their VALUE moves, and only as far as it must to stay legible on
+ * a coloured body: the interior marks take `GHIBLI.ink` (the style's own
+ * violet-blue contour) and the BORDER takes `GHIBLI.foam`, because the paper
+ * under it is now a dark sea rather than a light field — the same argument
+ * the self ring already makes in this file, that a value is only a mark where
+ * there is range under it. Measured: ink on sand is 10.6:1 and ink on the
+ * deep sea is 1.2:1, foam on the deep sea is 12:1.
+ *
+ * On `ink` — the public world and every other one — nothing here runs and
+ * the map is byte-identical (test/ui/minimap.test.ts pins the draw calls).
+ *
+ * Pure helpers (mapping, partitioning, subsampling, the body grid) live at
+ * module top with no DOM use so test/ui can cover them in node; the border
+ * loop and world→map projection are REUSED from src/phone/minimap.ts (also
+ * pure).
  */
 
 import { Vector3 } from 'three';
 import { sampleDrift } from '../motion/ambient';
 import {
   WATER_BODIES,
+  coastInland,
   coastOutline,
   islandMode,
   islandOutline,
   landscapeMode,
+  sampleLandscape,
   waterOutline,
 } from '../world/landscape';
 import {
@@ -73,7 +103,8 @@ import {
   type BorderPoint,
   type MapFrame,
 } from '../phone/minimap';
-import { CHARACTER, SURFACE, WORLD } from '../taste/tokens';
+import { CHARACTER, GHIBLI, SURFACE, WORLD } from '../taste/tokens';
+import type { WorldStyle } from '../world/style';
 
 // ── pure helpers ─────────────────────────────────────────────────────────────
 
@@ -164,6 +195,242 @@ export function groundLookTarget(
   const t = -position.y / direction.y;
   if (t < 0) return null;
   return { x: position.x + direction.x * t, z: position.z + direction.z * t };
+}
+
+// ── the painted body (the `ghibli` style only) ───────────────────────────────
+
+/**
+ * What ONE cell of the painted map body is.
+ *
+ * Every one of these is a region the landscape itself already answers for —
+ * `sampleLandscape().region` for the land and the water bodies, `coastInland`
+ * for how far out to sea a wet cell is, and the painted `path` weight for a
+ * trail somebody laid. Nothing here re-derives a shoreline (CLAUDE.md: the
+ * geography is authored in one place and every system samples it), and
+ * nothing here knows how big the island is — so a coast that moves takes the
+ * map with it.
+ */
+export type BodyKind =
+  | 'deep'
+  | 'seaMid'
+  | 'seaShallow'
+  | 'water'
+  | 'waterRim'
+  | 'sand'
+  | 'meadow'
+  | 'forest'
+  | 'mountain'
+  | 'path'
+  | 'pathEdge';
+
+/**
+ * The body's palette — `GHIBLI` tokens only, and the SAME ones the world
+ * renders those regions with, so the map is a small painting of the thing
+ * rather than a second opinion about its colour:
+ *
+ * - the sea's three bands are `createSeaSurfaceMaterial`'s own deep / mid /
+ *   shallow (src/world/ghibli/water.ts);
+ * - a still body takes the lake shader's mid, and its rim the lake's own
+ *   shallow — which is what "a pale rim" is on this palette;
+ * - the land values are the ground shader's (src/world/ghibli/ground.ts):
+ *   `sand` for the beach, `meadow`, `rock` on the range, `dirt`/`dirtEdge`
+ *   for a trail and its edge band;
+ * - the forest takes the canopy's SHADE green — the darker green the trees
+ *   standing there are drawn in, not a fourth green invented for the map.
+ *
+ * No token is added: every colour the ask named already existed.
+ */
+export const BODY_COLORS: Readonly<Record<BodyKind, string>> = {
+  deep: GHIBLI.waterTealDeep,
+  seaMid: GHIBLI.waterTeal,
+  seaShallow: GHIBLI.seaShallow,
+  water: GHIBLI.waterTeal,
+  waterRim: GHIBLI.waterShallow,
+  sand: GHIBLI.sand,
+  meadow: GHIBLI.meadow,
+  forest: GHIBLI.canopyShade,
+  mountain: GHIBLI.rock,
+  path: GHIBLI.dirt,
+  pathEdge: GHIBLI.dirtEdge,
+};
+
+/** Which kinds are wet — the rim pass below needs to know where water stops
+ * being water, and the sea bands are water too. */
+const WET_KINDS: ReadonlySet<BodyKind> = new Set<BodyKind>([
+  'deep',
+  'seaMid',
+  'seaShallow',
+  'water',
+  'waterRim',
+]);
+
+/**
+ * [D] How far out from the coast the sea's light band and its middle band
+ * reach, world units.
+ *
+ * Read against the map's own scale rather than picked: the biggest inset is
+ * 264px across 2·`WORLD_MAP_EXTENT` units, so a unit is about 0.64px there
+ * and about 0.22px on the smallest phone map. 8 and 22 put the light band at
+ * 5px and the middle at 9px on a projection, and at 1.8px and 3px on a
+ * handset — three bands that still read as three at the size the map is
+ * actually looked at.
+ */
+export const SEA_SHALLOW_RUN = 8;
+export const SEA_MID_RUN = 22;
+
+/**
+ * Where a painted trail's core and its darker edge band start.
+ *
+ * Verbatim from the ghibli ground's own quantize (`pathEdge`/`pathCore` in
+ * src/world/ghibli/ground.ts): the map cuts the trail at the same two weights
+ * the ground does, so a path is the same width on both.
+ */
+const PATH_CORE_IN = 0.45;
+const PATH_EDGE_IN = 0.15;
+
+/**
+ * The body kind at a world point.
+ *
+ * Order matters and it is the ground shader's, not a new one: water first
+ * (nothing grows on it), then a painted trail over whatever it crosses, then
+ * the landscape's own dominant `region` label. Using `region` rather than
+ * re-thresholding the soft weights is deliberate — the map then says beach,
+ * forest and mountain exactly where the world does.
+ */
+export function bodyKindAt(x: number, z: number): BodyKind {
+  const s = sampleLandscape(x, z);
+  if (s.region === 'water') {
+    // Sea or a still body? The island's own signed field answers it: negative
+    // is outside the coast, which is the one place the sea can be. With the
+    // island off there is no sea at all, so every wet cell is a body.
+    const inland = islandMode() ? coastInland(x, z) : Number.POSITIVE_INFINITY;
+    if (inland >= 0) return 'water';
+    if (inland > -SEA_SHALLOW_RUN) return 'seaShallow';
+    if (inland > -SEA_MID_RUN) return 'seaMid';
+    return 'deep';
+  }
+  const path = s.planting.path;
+  if (path >= PATH_CORE_IN) return 'path';
+  if (path >= PATH_EDGE_IN) return 'pathEdge';
+  switch (s.region) {
+    case 'beach':
+      return 'sand';
+    case 'forest':
+      return 'forest';
+    case 'mountain':
+      return 'mountain';
+    // 'plain' and 'island' are both plain land: the meadow, and the green
+    // island standing in the lake.
+    default:
+      return 'meadow';
+  }
+}
+
+/**
+ * [D] Body grid: CSS px a cell, and the floor and ceiling on the grid itself.
+ *
+ * A cell is the unit of a FLAT FILL — the body is quantised by construction,
+ * which is what keeps it a painted map instead of a photograph. Two px a cell
+ * is the coarsest that still draws the beach ring (about 7 world units, so 4px
+ * at the largest inset) as a band rather than a dotted line, and the floor of
+ * 96 cells takes the phone map down to one cell a pixel, where two would have
+ * left the ring a cell and a half wide. The ceiling is a cost guard, not a
+ * look: the sample is `sampleLandscape` per cell and 192² of them is about a
+ * third of a second.
+ */
+export const BODY_CELL_PX = 2;
+export const BODY_GRID_MIN = 96;
+export const BODY_GRID_MAX = 192;
+
+export function bodyGridRes(px: number): number {
+  const asked = Math.round(Math.max(0, px) / BODY_CELL_PX);
+  return Math.max(BODY_GRID_MIN, Math.min(BODY_GRID_MAX, asked));
+}
+
+/**
+ * Sample the landscape onto a `res`×`res` grid over the map's own frame —
+ * row-major, `res * res` cells, each read at its cell CENTRE through the same
+ * `mapToWorld` a click uses, so the body and the marks on it cannot disagree
+ * about where a point is.
+ *
+ * Then the pale rim: a still body's cell that touches dry land is promoted to
+ * `waterRim`. A neighbour test rather than a distance field, because at one
+ * or two px a cell that IS the shoreline — and it costs one pass over a grid
+ * that is already in memory. The sea gets no rim: its light band off the
+ * coast is the same mark, and the coast keeps its own hairline besides.
+ */
+export function sampleBodyGrid(res: number, frame: MapFrame, extent: number): BodyKind[] {
+  const n = Math.max(1, Math.floor(res));
+  const kinds: BodyKind[] = new Array<BodyKind>(n * n);
+  for (let j = 0; j < n; j++) {
+    const py = ((j + 0.5) / n) * frame.h;
+    for (let i = 0; i < n; i++) {
+      const px = ((i + 0.5) / n) * frame.w;
+      const at = mapToWorld(px, py, extent, frame);
+      kinds[j * n + i] = bodyKindAt(at.x, at.z);
+    }
+  }
+  const out = kinds.slice();
+  for (let j = 0; j < n; j++) {
+    for (let i = 0; i < n; i++) {
+      const k = j * n + i;
+      if (kinds[k] !== 'water') continue;
+      const dry =
+        (i > 0 && !WET_KINDS.has(kinds[k - 1]!)) ||
+        (i + 1 < n && !WET_KINDS.has(kinds[k + 1]!)) ||
+        (j > 0 && !WET_KINDS.has(kinds[k - n]!)) ||
+        (j + 1 < n && !WET_KINDS.has(kinds[k + n]!));
+      if (dry) out[k] = 'waterRim';
+    }
+  }
+  return out;
+}
+
+/** `#rrggbb` → the three bytes, for the raster below. */
+function bodyRgb(hex: string): [number, number, number] {
+  const v = parseInt(hex.slice(1), 16);
+  return [(v >> 16) & 0xff, (v >> 8) & 0xff, v & 0xff];
+}
+
+/** One RGBA byte per channel per cell, opaque — ready for `putImageData`. */
+export function bodyGridRgba(kinds: readonly BodyKind[]): Uint8ClampedArray {
+  const data = new Uint8ClampedArray(kinds.length * 4);
+  const cache = new Map<BodyKind, [number, number, number]>();
+  for (let i = 0; i < kinds.length; i++) {
+    const kind = kinds[i]!;
+    let rgb = cache.get(kind);
+    if (!rgb) {
+      rgb = bodyRgb(BODY_COLORS[kind]);
+      cache.set(kind, rgb);
+    }
+    data[i * 4] = rgb[0];
+    data[i * 4 + 1] = rgb[1];
+    data[i * 4 + 2] = rgb[2];
+    data[i * 4 + 3] = 255;
+  }
+  return data;
+}
+
+/**
+ * The two values the MARKS take, per style.
+ *
+ * `ink` returns `WORLD.ink` for both, which is what the map has always drawn
+ * every mark in — so the shipped map's draw calls are unchanged, byte for
+ * byte. On `ghibli` the interior marks take the style's own contour violet
+ * and the border takes foam: see the header for the measured reason the two
+ * differ.
+ */
+export interface MapPalette {
+  /** Hairlines, dots and the camera indicator, inside the field. */
+  ink: string;
+  /** The frame itself, drawn over the field's edge. */
+  border: string;
+}
+
+export function mapPalette(style: WorldStyle): MapPalette {
+  return style === 'ghibli'
+    ? { ink: GHIBLI.ink, border: GHIBLI.foam }
+    : { ink: WORLD.ink, border: WORLD.ink };
 }
 
 // ── canvas inset ─────────────────────────────────────────────────────────────
@@ -280,7 +547,25 @@ export interface WorldMinimapOptions {
   };
   scatter?: {
     positions(): { x: number; z: number }[];
+    /**
+     * Bumps on every scatter rebuild — and every path that MOVES THE MAP goes
+     * through one: `WorldHandles.setLandscape`, `setTerrain`, and a painted
+     * pond or trail (which end on `scatter.refreshLandscape()`, see
+     * src/dev/paint.ts). So this is the revision the painted body caches
+     * against, and it is already on the handle the map is handed.
+     *
+     * Optional: a caller without it simply paints the body once per frame
+     * size, which is the shipped scatter-less test harness.
+     */
+    rebuildVersion?(): number;
   };
+  /**
+   * The LOOK this page renders in (src/world/style.ts) — read per draw, like
+   * the landscape mode beside it, because the dev panel can switch styles
+   * live (`WorldHandles.setStyle`) and the body has to repaint when it does.
+   * Absent is `ink`: the shipped map, unchanged.
+   */
+  style?(): WorldStyle;
   /**
    * Somebody asked to look somewhere else.
    *
@@ -369,6 +654,42 @@ export function installWorldMinimap(opts: WorldMinimapOptions): WorldMinimapHand
     inset: inset + 5 * scale,
   });
 
+  // ── the painted body, cached (the `ghibli` style only) ────────────────────
+  //
+  // One offscreen raster, repainted only when the MAP or the frame changes —
+  // the landscape mode, the island, the scatter's rebuild version (which is
+  // what a painted pond, a painted trail and a terrain dial all end on) and
+  // the style. The dots, the eggs, you and the camera draw over it per frame
+  // exactly as they always did: the expensive thing here is `sampleLandscape`
+  // once a cell, and it must not happen 30 times a second.
+  let bodyCanvas: HTMLCanvasElement | null = null;
+  let bodyKey = '';
+  const bodyFor = (frame: MapFrame, px: number, style: WorldStyle): HTMLCanvasElement | null => {
+    const res = bodyGridRes(px);
+    const key = [
+      style,
+      res,
+      frame.w,
+      frame.h,
+      frame.inset,
+      landscapeMode(),
+      islandMode() ? 1 : 0,
+      opts.scatter?.rebuildVersion?.() ?? 0,
+    ].join('|');
+    if (bodyCanvas && key === bodyKey) return bodyCanvas;
+    const surface = bodyCanvas ?? document.createElement('canvas');
+    surface.width = res;
+    surface.height = res;
+    const bodyCtx = surface.getContext('2d');
+    if (!bodyCtx) return null;
+    const image = bodyCtx.createImageData(res, res);
+    image.data.set(bodyGridRgba(sampleBodyGrid(res, frame, WORLD_MAP_EXTENT)));
+    bodyCtx.putImageData(image, 0, 0);
+    bodyCanvas = surface;
+    bodyKey = key;
+    return bodyCanvas;
+  };
+
   const draw = (now: number): void => {
     if (!ctx) return;
     const rect = canvas.getBoundingClientRect();
@@ -387,6 +708,10 @@ export function installWorldMinimap(opts: WorldMinimapOptions): WorldMinimapHand
 
     const scale = mapMarkScale(Math.min(w, h));
     const inset = mapBorderInset(scale);
+    // The LOOK, read live beside the landscape mode and for the same reason:
+    // the dev panel switches it while the map is on screen.
+    const style = opts.style?.() ?? 'ink';
+    const palette = mapPalette(style);
 
     // The ambient floor: the whole map drifts imperceptibly, forever.
     const drift = sampleDrift(now, MAP_SEED, 140 * scale);
@@ -416,18 +741,42 @@ export function installWorldMinimap(opts: WorldMinimapOptions): WorldMinimapHand
     const mapped = landscapeMode() === 'landscape';
     waterMarks(frame);
     ctx.lineWidth = 1;
-    ctx.strokeStyle = WORLD.ink;
-    const ring = (poly: { px: number; py: number }[], fill: string): void => {
-      if (poly.length < 3) return;
-      ctx.fillStyle = fill;
+    ctx.strokeStyle = palette.ink;
+    const trace = (poly: { px: number; py: number }[]): boolean => {
+      if (poly.length < 3) return false;
       ctx.beginPath();
       ctx.moveTo(poly[0]!.px, poly[0]!.py);
       for (let i = 1; i < poly.length; i++) ctx.lineTo(poly[i]!.px, poly[i]!.py);
       ctx.closePath();
+      return true;
+    };
+    const ring = (poly: { px: number; py: number }[], fill: string): void => {
+      if (!trace(poly)) return;
+      ctx.fillStyle = fill;
       ctx.fill();
       ctx.stroke();
     };
-    if (mapped) {
+    if (style === 'ghibli') {
+      // ── the painted body ──────────────────────────────────────────────────
+      // The whole field in the world's own colours, off the cached raster.
+      // Nearest-neighbour on purpose: a cell is a FLAT FILL, and letting the
+      // browser interpolate between two regions would turn a shoreline into
+      // a gradient (docs/TASTE.md §9 relaxes the palette, not the flatness).
+      const body = bodyFor(frame, Math.min(w, h), style);
+      if (body) {
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(body, 0, 0, w, h);
+      }
+      // …and the hairlines the body does NOT replace: the coast, and the
+      // drawn shore of every still body and its island. Same marks, same
+      // order, same one-px pen as the ink map — a fill is what the raster
+      // took over, not a line (TASTE §4).
+      if (mapped) {
+        if (islandMode() && trace(coastCache)) ctx.stroke();
+        for (const poly of waterCache) if (trace(poly)) ctx.stroke();
+        for (const poly of islandCache) if (trace(poly)) ctx.stroke();
+      }
+    } else if (mapped) {
       // The sea first, over the whole field: the map is a map of an island, so
       // water is the default and land is the shape drawn on it. The border loop
       // is the field, and the clip above is already it, so filling the loop in
@@ -464,7 +813,7 @@ export function installWorldMinimap(opts: WorldMinimapOptions): WorldMinimapHand
 
     // Eggs: light shell circles with an ink hairline.
     ctx.fillStyle = WORLD.light;
-    ctx.strokeStyle = WORLD.ink;
+    ctx.strokeStyle = palette.ink;
     ctx.lineWidth = 1;
     for (const egg of eggs) {
       const at = worldToMap(egg.x, egg.z, WORLD_MAP_EXTENT, frame);
@@ -496,7 +845,7 @@ export function installWorldMinimap(opts: WorldMinimapOptions): WorldMinimapHand
       // (-sin az, -cos az) in world x/z; map is north-up (x→px, z→py).
       const va = Math.atan2(-Math.cos(az), -Math.sin(az));
 
-      ctx.strokeStyle = WORLD.ink;
+      ctx.strokeStyle = palette.ink;
       ctx.lineWidth = 1;
       ctx.lineJoin = 'round';
 
@@ -541,7 +890,7 @@ export function installWorldMinimap(opts: WorldMinimapOptions): WorldMinimapHand
         // would say the creature had already hatched.
         ctx.fillStyle = WORLD.light;
         ctx.fill();
-        ctx.strokeStyle = WORLD.ink;
+        ctx.strokeStyle = palette.ink;
         ctx.lineWidth = 1;
         ctx.stroke();
       } else {
@@ -563,7 +912,7 @@ export function installWorldMinimap(opts: WorldMinimapOptions): WorldMinimapHand
 
     // The hairline border itself, over the clipped field.
     traceLoop(ctx, border);
-    ctx.strokeStyle = WORLD.ink;
+    ctx.strokeStyle = palette.border;
     ctx.lineWidth = 1.25;
     ctx.stroke();
   };
