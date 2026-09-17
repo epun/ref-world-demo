@@ -23,6 +23,14 @@ import { coastRadius, islandMode, mapScale } from './landscape';
 /** True isometric elevation: atan(1/√2). */
 const ELEVATION = Math.atan(1 / Math.SQRT2);
 const AZIMUTH = Math.PI / 4;
+/**
+ * The same pair, exported — the ONE definition of which way this world is
+ * looked at, for anything that has to aim a second camera the same way (the
+ * corner portrait, src/world/portrait.ts). The rig's own live angles orbit
+ * away from these; these are where it opens and what "isometric" means here.
+ */
+export const ISO_ELEVATION = ELEVATION;
+export const ISO_AZIMUTH = AZIMUTH;
 
 /** World units visible top-to-bottom. Width follows the viewport aspect. */
 export const FRUSTUM_HEIGHT = 40;

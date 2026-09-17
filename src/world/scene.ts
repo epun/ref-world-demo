@@ -11,6 +11,7 @@ import { GHIBLI, MOTION, SURFACE, WORLD } from '../taste/tokens';
 import { CameraRig } from './camera';
 import { createEnvironment, type Environment } from './environment';
 import { GrainPass } from './grain';
+import { createPortraitPass, type PortraitPass, type PortraitSource } from './portrait';
 import { createGround, fieldSize } from './ground';
 import { createPhysicsWorld, type PhysicsWorld } from '../physics/world';
 import {
@@ -146,6 +147,22 @@ export interface WorldHandles {
    * until it hatches.
    */
   setLandscape(on: boolean): void;
+  /**
+   * A LIVE VIEW OF ONE CREATURE, in a corner of the frame (user ask,
+   * 2026-09-17: *"in the top left hand corner we should show a live view of
+   * the character and the objects it collects"*).
+   *
+   * Hands the frame a subtree to draw again after it has composed, inside a
+   * scissor on the rect the caller names (src/world/portrait.ts). Null clears
+   * it. The pass is BUILT ON THE FIRST CALL, so a page that never asks for a
+   * portrait — every projection, every world without the game — pays nothing
+   * at all for it, not even a camera.
+   *
+   * `paper` is the colour the inset is cleared to, and the caller's to name:
+   * it is the chrome's `paper` role (src/ui/theme.ts), which is a UI palette
+   * and not one of this module's world tokens.
+   */
+  setPortrait(source: PortraitSource | null, paper?: string): void;
   /**
    * TURN THE MAP'S GRAVITY OFF, OR BACK ON (user ask, 2026-09-17: *"i want a
    * zero gravity mode where i can hit g on the keyboard and it turns off
@@ -685,6 +702,9 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
    * the room downloaded the wasm and stepped a simulation it was then told
    * to ignore. `deviceTier` says most of the audience is on one.
    */
+  /** The corner portrait's pass, built on the first `setPortrait` and never
+   * before it (see the interface). */
+  let portrait: PortraitPass | null = null;
   let physics: PhysicsWorld | null = null;
   let bodies: PropBodies | null = null;
   /**
@@ -1196,6 +1216,16 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
     const composed = ink.render(renderer, scene, cameraRig.camera, nowMs);
     grain.compose(renderer, composed, nowMs);
     /*
+     * …AND THE CORNER PORTRAIT, on top of the composed frame (2026-09-17).
+     *
+     * After grain, deliberately: the inset is one raw cel pass over one
+     * creature's rig and takes no ink outline and no grain of its own, which
+     * is what keeps it at one pass. It scissors itself to the readout's rect
+     * and puts the renderer back exactly as it found it
+     * (src/world/portrait.ts). Null on every page that never asked for one.
+     */
+    portrait?.render(dt);
+    /*
      * THE FIRST FRAME, ON THE PERFORMANCE TIMELINE (2026-09-16).
      *
      * > User ask: *"we need to be able to run this on a slow network on
@@ -1332,6 +1362,16 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
     setGravity: (on: boolean): void => {
       gravityOn = on;
       physics?.setGravity(on);
+    },
+    setPortrait: (source: PortraitSource | null, paper?: string): void => {
+      if (!source) {
+        portrait?.setSource(null);
+        return;
+      }
+      if (!portrait) {
+        portrait = createPortraitPass({ renderer, paper: paper ?? SURFACE.ground });
+      }
+      portrait.setSource(source);
     },
     refreshScatter: (): void => {
       scatter.refreshLandscape();
