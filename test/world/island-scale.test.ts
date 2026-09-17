@@ -202,11 +202,16 @@ describe('the scaled island — the geography', () => {
         [80, -90, 20],
       ],
     );
-    // The lake scales whole too, its own island with it — the ring of water
-    // between them is a measured pair.
+    // The lake scales whole too — centre and radius together.
     const lake = WATER_BODIES[0]!;
     closeTriples([[lake.x, lake.z, lake.r]], [[80, 70, 42]]);
-    closeTriples([[lake.island!.x, lake.island!.z, lake.island!.r]], [[72, 62, 14]]);
+    // …and it has NO ISLET to scale with it (2026-09-17, user ask —
+    // src/world/landscape.ts `LAKE_ISLET_ON_ISLAND`): the islet used to scale
+    // with its lake, because the ring of water between them is a measured
+    // pair, and the island map simply has no islet in its lake now. The
+    // AUTHORED one is untouched — the parity block at the bottom of this file
+    // reads it back, centre, radius and seed.
+    expect(lake.island).toBeUndefined();
     // …and a POND only moves: it is a physical thing you stand beside, not a
     // proportion of the map. Its RADIUS is the authored one at every scale,
     // which is why it is not run through `K` here.

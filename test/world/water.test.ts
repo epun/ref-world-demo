@@ -35,6 +35,7 @@ import {
   waterLevel,
   waterOutline,
   wobbledRadius,
+  type Blob,
   type WaterBody,
 } from '../../src/world/landscape';
 import {
@@ -54,7 +55,7 @@ beforeAll(() => {
   setLandscapeMode('landscape');
   setIslandMode(true);
   LAKE = WATER_BODIES[0]!;
-  ISLAND = LAKE.island!;
+  ISLET = LAKE.island ?? null;
 });
 afterAll(() => {
   setLandscapeMode('plain');
@@ -74,8 +75,17 @@ const POND_MARGIN = 1.0;
  * meshes below were built from the doubled one.
  */
 let LAKE: WaterBody = WATER_BODIES[0]!;
-/** The lake's island — its own centre, not the lake's. */
-let ISLAND = LAKE.island!;
+/**
+ * The lake's islet on the map being read — its own centre, not the lake's —
+ * or null.
+ *
+ * NULL ON THE ISLAND MAP since 2026-09-17 (user ask, src/world/landscape.ts
+ * `LAKE_ISLET_ON_ISLAND`): the katamari world's lake is one continuous sheet
+ * of water, so the pass builds no hole in its fill and no second ribbon. The
+ * islet's own block at the bottom of this file switches the island OFF and
+ * measures the authored lake's two rings there.
+ */
+let ISLET: Blob | null = LAKE.island ?? null;
 /** The ribbon's sampling multiple over each outline's default budget
  * (water.ts SHORE_SUBDIVISION) — the density both rings are built at. */
 const SUBDIVISION = 4;
@@ -126,6 +136,33 @@ function totalRippleSpots(): number {
   return n;
 }
 
+/** Worst distance from a ribbon's centerline to the nearest point of a
+ * polygon: the two paired vertices of every quad edge should straddle one
+ * polygon point exactly. */
+const ribbonOffPolygon = (mesh: Mesh, poly: readonly [number, number][]): number => {
+  const attr = mesh.geometry.getAttribute('position') as BufferAttribute;
+  let worst = 0;
+  let checked = 0;
+  for (let q = 0; q < attr.count; q += 6) {
+    for (const [a, b] of [
+      [0, 1],
+      [2, 4],
+    ] as const) {
+      const mx = (attr.getX(q + a) + attr.getX(q + b)) / 2;
+      const mz = (attr.getZ(q + a) + attr.getZ(q + b)) / 2;
+      let nearest = Infinity;
+      for (const [x, z] of poly) {
+        const d = Math.hypot(x - mx, z - mz);
+        if (d < nearest) nearest = d;
+      }
+      if (nearest > worst) worst = nearest;
+      checked++;
+    }
+  }
+  expect(checked, mesh.name).toBeGreaterThan(100);
+  return worst;
+};
+
 describe('water — what gets built', () => {
   it('is one named group holding a fill per body, a shore per shoreline, one mark sheet', () => {
     const water = createWater();
@@ -138,7 +175,9 @@ describe('water — what gets built', () => {
       'water-pond-3',
       'water-pond-4',
       'shore-lake-0',
-      'shore-island-0',
+      // …and NO `shore-island-0`: the island map's lake has no islet to line
+      // (2026-09-17 — src/world/landscape.ts `LAKE_ISLET_ON_ISLAND`). The
+      // authored lake's second ribbon is in the islet's own block below.
       'shore-pond-1',
       'shore-pond-2',
       'shore-pond-3',
@@ -152,11 +191,25 @@ describe('water — what gets built', () => {
       'sea-shore',
       'sea-foam',
     ]);
-    // One fill per body — the lake's has its island punched out as a hole —
-    // and one ribbon per SHORELINE, which is two for the lake: its outer
-    // shore and its island's. Plus one ripple sheet: twelve draws.
+    // One fill per body and one ribbon per SHORELINE — which is ONE per body
+    // on the island map, whose lake has no islet in it (2026-09-17). With an
+    // islet the lake carries two, its outer shore and the islet's, and the
+    // block at the bottom of this file measures that map.
     expect(names.filter((n) => n.startsWith('water-'))).toHaveLength(WATER_BODIES.length);
-    expect(names.filter((n) => n.startsWith('shore-'))).toHaveLength(WATER_BODIES.length + 1);
+    expect(names.filter((n) => n.startsWith('shore-'))).toHaveLength(WATER_BODIES.length);
+    expect(names.filter((n) => n.startsWith('shore-island'))).toHaveLength(0);
+    expect(createWater().group.getObjectByName('shore-island-0')).toBeUndefined();
+  });
+
+  it('punches no hole in the lake fill — its sheet is the outer ring alone', () => {
+    // Earcut invents no points and a hole adds exactly its own, so "no hole"
+    // is a vertex count: the fill is its outline and nothing else
+    // (2026-09-17 — `LAKE_ISLET_ON_ISLAND`).
+    const water = createWater();
+    const fill = water.group.getObjectByName('water-lake-0') as Mesh;
+    const outer = water.fills()[0]!;
+    expect(islandOutline(LAKE)).toBeNull();
+    expect((fill.geometry.getAttribute('position') as BufferAttribute).count).toBe(outer.length);
   });
 
   it('gives every mark two arcs of six quads, in one buffer', () => {
@@ -236,13 +289,8 @@ describe('water — what gets built', () => {
           );
         }
       });
-    // …and the same on the island's shoreline, where the bank starts: the
-    // hole in the sheet is cut exactly where the ground leaves the water.
-    for (const [x, z] of islandOutline(LAKE, islandOutlinePoints() * SUBDIVISION)!) {
-      expect(terrainHeight(x, z), `island shore at ${x},${z}`).toBeLessThanOrEqual(
-        waterLevel(LAKE) + 1e-6,
-      );
-    }
+    // (The island map's lake has no islet shoreline to check — the authored
+    // map's is measured in the islet's own block below.)
   });
 
   it('faces every surface up, exactly like the paper under it', () => {
@@ -307,26 +355,6 @@ describe('water — everything drawn is over water', () => {
     }
   });
 
-  it('draws the island shore on the island, all the way round it', () => {
-    // Every vertex of the island's ribbon sits within half a mitered pen
-    // width of the island's own wobbled edge: the stroke is ON the shore, not
-    // adrift in the lake, and it straddles the line the way a pen does.
-    const sectors = new Set<number>();
-    const vertices = points(named('shore-island-0'));
-    expect(vertices.length).toBeGreaterThan(600);
-    for (const [x, z] of vertices) {
-      const theta = Math.atan2(z - ISLAND.z, x - ISLAND.x);
-      const d = Math.hypot(x - ISLAND.x, z - ISLAND.z);
-      expect(Math.abs(d - wobbledRadius(ISLAND, theta)), `island shore at ${x},${z}`).toBeLessThan(
-        0.25,
-      );
-      sectors.add(Math.floor(((theta + Math.PI * 2) % (Math.PI * 2)) / (Math.PI / 6)));
-    }
-    // …in all twelve 30° sectors: the causeway that used to break this stroke
-    // (and tie the island to the mainland) is gone.
-    expect(sectors.size).toBe(12);
-  });
-
   it('keeps the outer shore on the outer shore, with nothing crossing the lake', () => {
     for (const [x, z] of points(named('shore-lake-0'))) {
       const theta = Math.atan2(z - LAKE.z, x - LAKE.x);
@@ -355,43 +383,12 @@ describe('water — everything drawn is over water', () => {
     const quads = points(named('shore-pond-1')).length / 6;
     expect(quads).toBeLessThan(outlinePoints() * SUBDIVISION);
     expect(quads).toBeGreaterThan(outlinePoints() * SUBDIVISION * 0.8);
-    // …and the island's own stroke breaks in its own places: the two rings
-    // of the lake are seeded apart, so the pen does not lift twice at the
-    // same bearing.
-    const island = points(named('shore-island-0')).length / 6;
-    expect(island).toBeLessThan(islandOutlinePoints() * SUBDIVISION);
-    expect(island).toBeGreaterThan(islandOutlinePoints() * SUBDIVISION * 0.8);
+    // (The islet's own stroke, seeded apart from its lake's, is measured in
+    // the islet's block below — the island map has no islet, 2026-09-17.)
   });
 });
 
 describe('water — the fill edge and the pen line are one line', () => {
-  /** Worst distance from a ribbon's centerline to the nearest point of a
-   * polygon: the two paired vertices of every quad edge should straddle one
-   * polygon point exactly. */
-  const ribbonOffPolygon = (mesh: Mesh, poly: readonly [number, number][]): number => {
-    const attr = mesh.geometry.getAttribute('position') as BufferAttribute;
-    let worst = 0;
-    let checked = 0;
-    for (let q = 0; q < attr.count; q += 6) {
-      for (const [a, b] of [
-        [0, 1],
-        [2, 4],
-      ] as const) {
-        const mx = (attr.getX(q + a) + attr.getX(q + b)) / 2;
-        const mz = (attr.getZ(q + a) + attr.getZ(q + b)) / 2;
-        let nearest = Infinity;
-        for (const [x, z] of poly) {
-          const d = Math.hypot(x - mx, z - mz);
-          if (d < nearest) nearest = d;
-        }
-        if (nearest > worst) worst = nearest;
-        checked++;
-      }
-    }
-    expect(checked, mesh.name).toBeGreaterThan(100);
-    return worst;
-  };
-
   it('builds both from a single polygon per ring, so no paper shows between them', () => {
     // A coarsely sampled fill and a finely sampled ribbon sit a chord's
     // sagitta apart on every wobble, which shows as a hair of bare paper
@@ -417,18 +414,13 @@ describe('water — the fill edge and the pen line are one line', () => {
     });
   });
 
-  it('rides the island ring the same way, so its hole and its pen line agree', () => {
-    const island = islandOutline(LAKE, islandOutlinePoints() * SUBDIVISION)!;
-    expect(ribbonOffPolygon(named('shore-island-0'), island)).toBeLessThan(1e-4);
-  });
-
   it('samples every ring finely enough that no segment can gape', () => {
     // Half a segment is the worst a fill vertex and a pen vertex could ever be
     // apart if they drifted; the stroke is wider than that everywhere.
-    const rings = [
-      ...createWater().fills(),
-      islandOutline(LAKE, islandOutlinePoints() * SUBDIVISION)!,
-    ];
+    // Every ring the pass holds: the bodies' outer ones, and the lake's islet
+    // where the map has one (the island map does not since 2026-09-17).
+    const islet = islandOutline(LAKE, islandOutlinePoints() * SUBDIVISION);
+    const rings = [...createWater().fills(), ...(islet ? [islet] : [])];
     for (const poly of rings) {
       let longest = 0;
       for (let i = 0; i < poly.length; i++) {
@@ -1104,5 +1096,89 @@ describe('water — painted water answers to neither switch', () => {
     expect(water.group.children).toHaveLength(0);
     expect(water.paintedGroup.children).toHaveLength(0);
     expect(released).toBe(painted);
+  });
+});
+
+/**
+ * THE AUTHORED LAKE'S ISLET — its hole, its second ribbon, its own pen.
+ *
+ * 2026-09-17 user ask: *"let's remove the small island within the island."*
+ * The island map's lake has no islet (src/world/landscape.ts
+ * `LAKE_ISLET_ON_ISLAND`), so these are statements about the map the PUBLIC
+ * world and meridian read. Measured with the island off, which is that map;
+ * the sea's three sheets are still built there and simply hidden, so the pass
+ * this block builds is otherwise the same one.
+ */
+describe('water — the authored lake islet', () => {
+  beforeAll(() => {
+    setIslandMode(false);
+    LAKE = WATER_BODIES[0]!;
+    ISLET = LAKE.island ?? null;
+  });
+  afterAll(() => {
+    setIslandMode(true);
+    LAKE = WATER_BODIES[0]!;
+    ISLET = LAKE.island ?? null;
+  });
+
+  it('gives the lake a second shoreline, and its fill a hole', () => {
+    expect(ISLET).not.toBeNull();
+    const water = createWater();
+    const names = water.group.children.map((child) => child.name);
+    expect(names).toContain('shore-island-0');
+    expect(names.filter((n) => n.startsWith('shore-'))).toHaveLength(WATER_BODIES.length + 1);
+    // Earcut adds exactly the hole's own points, so the fill's count is the
+    // two rings' together.
+    const fill = water.group.getObjectByName('water-lake-0') as Mesh;
+    const outer = water.fills()[0]!;
+    const hole = islandOutline(LAKE, islandOutlinePoints() * SUBDIVISION)!;
+    expect((fill.geometry.getAttribute('position') as BufferAttribute).count).toBe(
+      outer.length + hole.length,
+    );
+  });
+
+  it('draws the island shore on the island, all the way round it', () => {
+    const isl = ISLET!;
+    // Every vertex of the island's ribbon sits within half a mitered pen
+    // width of the island's own wobbled edge: the stroke is ON the shore, not
+    // adrift in the lake, and it straddles the line the way a pen does.
+    const sectors = new Set<number>();
+    const vertices = points(named('shore-island-0'));
+    expect(vertices.length).toBeGreaterThan(600);
+    for (const [x, z] of vertices) {
+      const theta = Math.atan2(z - isl.z, x - isl.x);
+      const d = Math.hypot(x - isl.x, z - isl.z);
+      expect(Math.abs(d - wobbledRadius(isl, theta)), `island shore at ${x},${z}`).toBeLessThan(
+        0.25,
+      );
+      sectors.add(Math.floor(((theta + Math.PI * 2) % (Math.PI * 2)) / (Math.PI / 6)));
+    }
+    // …in all twelve 30° sectors: the causeway that used to break this stroke
+    // (and tie the island to the mainland) is gone.
+    expect(sectors.size).toBe(12);
+  });
+
+  it('rides the island ring the same way, so its hole and its pen line agree', () => {
+    const island = islandOutline(LAKE, islandOutlinePoints() * SUBDIVISION)!;
+    expect(ribbonOffPolygon(named('shore-island-0'), island)).toBeLessThan(1e-4);
+  });
+
+  it('cuts the hole exactly where the ground leaves the water', () => {
+    // The islet's shoreline is where its bank starts: every vertex of it has
+    // to be at or under the lake's own level, or the sheet would poke through
+    // the ground it sits in.
+    for (const [x, z] of islandOutline(LAKE, islandOutlinePoints() * SUBDIVISION)!) {
+      expect(terrainHeight(x, z), `islet shore at ${x},${z}`).toBeLessThanOrEqual(
+        waterLevel(LAKE) + 1e-6,
+      );
+    }
+  });
+
+  it('breaks the islet stroke in its own places', () => {
+    // The two rings of the lake are seeded apart, so the pen does not lift
+    // twice at the same bearing.
+    const quads = points(named('shore-island-0')).length / 6;
+    expect(quads).toBeLessThan(islandOutlinePoints() * SUBDIVISION);
+    expect(quads).toBeGreaterThan(islandOutlinePoints() * SUBDIVISION * 0.8);
   });
 });

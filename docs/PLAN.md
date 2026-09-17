@@ -282,7 +282,8 @@ so the marker never jitters or snaps.
   0.74`. **Not cream, not white** — see TASTE §2.2.
 - **Landscape**: the geography is **authored** in `src/world/landscape.ts` and is the single
   source every system samples — placement, colliders, water, minimap, height. A forest to the
-  west, a range along the north, one lake with an island in it, four ponds, and since
+  west, a range along the north, one lake with an island in it (the AUTHORED map's islet —
+  see "no islet on the island map" below), four ponds, and since
   2026-09-15 **the map is an island** (user ask: *"I want this map to be an island instead of
   a large flat plane … it should feel like Studio Ghibli meets Scavengers Reign on a tropical
   island"*). The coast is `ISLAND_LOBES`: the union of four wobbled discs — a 150-radius main
@@ -362,11 +363,30 @@ so the marker never jitters or snaps.
   steeper than 1.1. So the run is **1.906 u** at 1.32 against the 1.25118 u quad. An
   unmeasured scale falls back on `0.843/√scale`, which understates the run and so tightens
   the bound rather than loosening it.
+  **NO ISLET ON THE ISLAND MAP** *(2026-09-17, user ask: "let's remove the small island
+  within the island.")* The lake's 14-unit island read as the same idea as the map itself at a
+  tenth of the size, so the katamari world's lake is one continuous sheet of water:
+  `LAKE_ISLET_ON_ISLAND` in `src/world/landscape.ts`, ships `false`, and the seam is
+  `scaleWaterBody` — which is reached only from `applyMapScale`'s scaled branch, i.e. only
+  with the island on. `WATER_BODIES_AUTHORED` keeps its islet byte for byte, so the public
+  world and meridian read the lake they always did, and every consumer simply asks the body
+  for its islet (`WaterBody.island`, `islandBlob`, `islandOutline`): with the field absent the
+  terrain leaves the basin flat, `sampleLandscape` never answers `island`, the water pass
+  builds no hole and no `shore-island-*` ribbon, the minimap paints none and the scatter has
+  nothing to plant on. Nothing was re-measured: the steepest slope is still **0.5037 at
+  (80.4, −164.6)** with the islet exemption doing nothing (what it used to cover is flat lake
+  basin now), so `STEEPEST_SLOPE` and `riserRun` are untouched; the only number that moved is
+  the ripple margin that empties the lake — 24 with an islet in it, **44** without, because
+  the widest open water it held was the crossing past the islet and is now the lake's own
+  inscribed radius. The islet's own measurements (its ring of open water, its two drawn
+  shores, its reeds, its bank and its crown) live on in `test/world/landscape.test.ts` and
+  `test/world/water.test.ts` in blocks that switch the island OFF.
   **What scales** is anything that says WHERE something is: the coast's lobes; the forest and
   the range, centre *and* radius (a region has to stay one readable mass — at their authored
   radii the four mountain masses would have stopped overlapping and the range would have come
-  apart into four hills); the lake, whole, its own island with it (the ring of water round it
-  is a measured pair); the ponds' centres; `TERRAIN.islandRamp`, which is read as a fraction
+  apart into four hills); the lake, whole — it has no islet to carry on the island map (above),
+  and on the authored map the islet scales with it, because the ring of water between them is
+  a measured pair; the ponds' centres; `TERRAIN.islandRamp`, which is read as a fraction
   of a lake island's own radius; the far-field gate (`farFieldStart` / `farFieldEnd`, 198 /
   244.2 at 1.32) which is where the land settles onto the flat outer disc and so has to stay
   outside the coast; and every ring's vertex count, so a longer coastline keeps its ~4.9-unit

@@ -465,8 +465,8 @@ function drawOnce(opts: DrawOpts = {}): { fills: FillCall[]; strokes: StrokeCall
   return { fills: draws.fills, strokes: draws.strokes };
 }
 
-describe('the map draws an island in a lake', () => {
-  it('fills the lake in the water value and the island back over it in ground', () => {
+describe('the map draws the water and the coast', () => {
+  it('fills the lake in the water value, with nothing standing in it', () => {
     const { fills } = drawOnce();
 
     const scale = mapMarkScale(200);
@@ -493,14 +493,16 @@ describe('the map draws an island in a lake', () => {
     expect(water).toHaveLength(WATER_BODIES.length + 1);
     expect(matches(water[1]!, waterOutline(lake))).toBe(true);
 
-    // …and the island is drawn back over it in the ground value, so the map
-    // shows an island in a lake rather than a plain grey disc.
-    const island = fills.filter(
-      (f) => f.style === SURFACE.ground && matches(f, islandOutline(lake)!),
-    );
-    expect(island).toHaveLength(1);
-    // Drawn AFTER the water it stands in.
-    expect(fills.indexOf(island[0]!)).toBeGreaterThan(fills.indexOf(water[1]!));
+    // …and NOTHING is drawn back over it: the lake on the island map has no
+    // islet in it (2026-09-17, user ask — src/world/landscape.ts
+    // `LAKE_ISLET_ON_ISLAND`), so the only ground fill on the map is the
+    // island's own coast. The authored map's islet is painted in the block at
+    // the bottom of this file.
+    expect(islandOutline(lake)).toBeNull();
+    const ground = fills.filter((f) => f.style === SURFACE.ground);
+    // The paper, and the coast back over the sea. No third.
+    expect(ground).toHaveLength(2);
+    expect(matches(ground[1]!, coastOutline())).toBe(true);
   });
 
   it('draws the sea over the whole field with the island back over it', () => {
@@ -568,10 +570,14 @@ describe('the map of the plain world has no water on it', () => {
     // the SEA included: the plain mode has no coast, so the map of it is not
     // a map of an island.
     expect(fills.filter((f) => f.style === WORLD.neutralMid)).toHaveLength(0);
+    // …and no body's outline slipped onto it either. The islet's ring is the
+    // one that is null on this map (2026-09-17 — `LAKE_ISLET_ON_ISLAND`), so
+    // the shape to look for is the lake's own.
     const lake = WATER_BODIES[0]!;
-    const island = islandOutline(lake)!;
+    expect(islandOutline(lake)).toBeNull();
+    const outer = waterOutline(lake);
     for (const f of fills) {
-      expect(f.points.length, 'an outline slipped onto the plain map').not.toBe(island.length);
+      expect(f.points.length, 'an outline slipped onto the plain map').not.toBe(outer.length);
     }
     // …and it really is the same map otherwise: the field is still drawn.
     expect(fills.some((f) => f.style === SURFACE.ground)).toBe(true);
@@ -776,13 +782,32 @@ describe('bodyKindAt reads the landscape', () => {
     expect(bodyKindAt(range.x, range.z)).toBe('mountain');
   });
 
-  it('paints a pond in the water value, and the lake island back in meadow', () => {
+  it('paints a pond in the water value, and the lake all the way across', () => {
     const pond = WATER_BODIES.find((b) => b.kind === 'pond')!;
     expect(bodyKindAt(pond.x, pond.z)).toBe('water');
-    // The lake has an island standing in it and the map has always shown it:
-    // its centre is land, so it is green.
-    const lake = WATER_BODIES.find((b) => b.kind === 'lake' && b.island)!;
-    expect(bodyKindAt(lake.island!.x, lake.island!.z)).toBe('meadow');
+    // THE LAKE HAS NO ISLAND IN IT on this map (2026-09-17, user ask —
+    // src/world/landscape.ts `LAKE_ISLET_ON_ISLAND`), so its centre is water
+    // like the rest of it, and so is the spot the authored islet stood on.
+    const lake = WATER_BODIES.find((b) => b.kind === 'lake')!;
+    expect(lake.island).toBeUndefined();
+    expect(bodyKindAt(lake.x, lake.z)).toBe('water');
+    expect(bodyKindAt(72 * mapScale(), 62 * mapScale())).toBe('water');
+  });
+
+  it('paints the authored lake island back in meadow with the island off', () => {
+    // The authored map — the public world's and meridian's — still has the
+    // islet, and the body has always shown it: its centre is land, so green.
+    setIslandMode(false);
+    try {
+      const lake = WATER_BODIES.find((b) => b.kind === 'lake' && b.island)!;
+      expect(bodyKindAt(lake.island!.x, lake.island!.z)).toBe('meadow');
+      // …with water round it. (Not the lake's own centre: the authored islet
+      // stands 11.3 units off it, inside its own 14-unit radius, so the
+      // centre of that lake is the islet.)
+      expect(bodyKindAt(lake.x + lake.r * 0.6, lake.z)).toBe('water');
+    } finally {
+      setIslandMode(true);
+    }
   });
 
   it('has no sea at all with the island off', () => {
@@ -989,6 +1014,11 @@ describe('the ink map is byte-identical', () => {
     // The golden. Every one of these is the shipped map: the paper, the grey
     // sea, the island back over it, the lakes and their shores, the egg, the
     // creature dots, the camera wedge and diamond, you, and the frame.
+    //
+    // NO ISLET PAIR since 2026-09-17 (user ask — src/world/landscape.ts
+    // `LAKE_ISLET_ON_ISLAND`): the lake on the island map has no island in it,
+    // so the ground fill and hairline that used to be drawn back over its
+    // water are gone and nothing else moved.
     const draws = drawFrames({
       positions: [
         { x: 20, z: 20, r: 1, kind: 'character' },
@@ -1010,8 +1040,6 @@ describe('the ink map is byte-identical', () => {
       `fill:${WORLD.neutralMid}`,
       `stroke:${WORLD.ink}`,
       `fill:${WORLD.neutralMid}`,
-      `stroke:${WORLD.ink}`,
-      `fill:${SURFACE.ground}`,
       `stroke:${WORLD.ink}`,
       `fill:${WORLD.light}`,
       `stroke:${WORLD.ink}`,

@@ -233,6 +233,17 @@ The traps, in order of how easily they get violated:
   carries an **`islandNudge` of (+5, +5)** — world units added after the scale, island mode
   only, the nearest offset that reads clear (0.8175), measured over a grid around the scaled
   centre. The authored centre (15, −55) that the public world reads is untouched.
+  **And the lake on the island map has NO ISLET in it (user ask 2026-09-17: *"let's remove the
+  small island within the island."*)** — one named constant, `LAKE_ISLET_ON_ISLAND` in
+  `src/world/landscape.ts`, applied in `scaleWaterBody`, which is reached only from the scaled
+  (island-mode) branch; `WATER_BODIES_AUTHORED` keeps its islet byte for byte, so the public
+  world and meridian read the lake they always did. Every consumer asks the body for its islet,
+  so with the field absent the basin stays flat, no sample is ever `island`, there is no
+  `shore-island-*` ribbon and no hole in the fill, the minimap paints none and the scatter
+  plants nothing there. The islet's own measurements are facts about the AUTHORED map now and
+  run with the island OFF. Nothing was re-measured — the steepest slope is still 0.5037 at
+  (80.4, −164.6) — except the ripple margin that empties the lake (24 → 44, because the widest
+  open water it held was the crossing past the islet).
   Don't capture the exported layout (`ISLAND`, `ISLAND_LOBES`, `WATER_BODIES`, `FOREST_BLOBS`,
   `MOUNTAIN_BLOBS`) into a module-scope const — they are live bindings `setIslandMode`
   re-points, so read them after the flag is set. PLAN §7 has the full list.

@@ -897,6 +897,11 @@ export function installWorldMinimap(opts: WorldMinimapOptions): WorldMinimapHand
   // path: these polygons are the same on every device forever. Mapping them to
   // canvas px is the only per-size work, so it is cached against the frame.
   const waterFills: [number, number][][] = WATER_BODIES.map((body) => waterOutline(body));
+  // …and an islet ring per body that has one, which is none on the ISLAND map
+  // (2026-09-17, user ask — src/world/landscape.ts `LAKE_ISLET_ON_ISLAND`):
+  // `islandOutline` answers null there and this list comes out empty, so the
+  // map paints no islet and nothing else here needs to know. The authored
+  // map — the public world's and meridian's — still hands over the lake's.
   const islandFills: [number, number][][] = WATER_BODIES.map((body) =>
     islandOutline(body),
   ).filter((poly): poly is [number, number][] => poly !== null);

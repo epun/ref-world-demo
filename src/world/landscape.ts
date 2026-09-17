@@ -4,7 +4,9 @@
  *
  * The world used to be one uniform field of scattered props. This module is
  * the map underneath it: a forest, a mountain backdrop, a handful of small
- * ponds, and one lake with an island standing in open water off its middle.
+ * ponds, and one lake with an island standing in open water off its middle
+ * (the AUTHORED map's islet — the island map drops it, 2026-09-17:
+ * `LAKE_ISLET_ON_ISLAND`).
  * Every other system reads its geography from here — scatter (which kinds
  * grow where, and nothing at all in water), physics (water blocks
  * creatures), the water renderer (fills, shorelines, ripples, reeds), and
@@ -128,6 +130,11 @@ export interface WaterBody {
    * coordinates — not a concentric core. Water runs all the way round it,
    * and nothing joins it to the shore: an island is a place you look at,
    * not a place the creatures walk to.
+   *
+   * AUTHORED ONLY SINCE 2026-09-17: the ISLAND map's lake has no islet at
+   * all (`LAKE_ISLET_ON_ISLAND`, user ask), so this field is absent on every
+   * body the katamari world reads, and every consumer that asks for it gets
+   * nothing. Optional the whole way down for that reason.
    */
   island?: Blob;
   /**
@@ -326,6 +333,12 @@ const LAKE_Z = 70;
  *     pinch the ring shut.
  *
  * (Its HEIGHT is the fourth thing — see TERRAIN.islandRise.)
+ *
+ * …and the ISLAND MAP HAS NO ISLET SINCE 2026-09-17 (user ask — *"let's
+ * remove the small island within the island."*): everything measured above is
+ * a fact about THIS list, which the public world and meridian read, and the
+ * lake the katamari world reads is one continuous sheet of water with no
+ * islet, no bank and no second shore in it (`LAKE_ISLET_ON_ISLAND`).
  *
  * WHAT `MAP_SCALE` DOES TO THIS LIST (2026-09-16). The lake scales WHOLE —
  * centre, radius and its own island with it — so the ring above keeps its
@@ -551,11 +564,40 @@ function scaleBlob(b: Blob, k: number): Blob {
 }
 
 /**
+ * [D] IS THE LAKE'S ISLET PART OF THE ISLAND MAP? (2026-09-17, user ask —
+ * *"let's remove the small island within the island."*) No: the katamari
+ * world's map is itself an island, and a second little island standing in the
+ * lake on it read as a repetition of the same idea at a tenth of the size.
+ *
+ * ISLAND MODE ONLY, and that is the whole point of putting it here rather
+ * than in the authored list: `scaleWaterBody` is reached from one place —
+ * `applyMapScale`'s scaled branch — which is the map `setIslandMode(true)`
+ * points the exported layout at. `WATER_BODIES_AUTHORED` keeps its islet
+ * byte for byte, so the public world and meridian read the lake they always
+ * did, islet and all, and every measurement of it (the ring of open water,
+ * the bank, the crown, the two drawn shores) is still a fact about that map —
+ * the tests that pin them switch the island OFF to read it.
+ *
+ * Nothing else knows: every consumer asks the body for its islet
+ * (`WaterBody.island`, `islandBlob`, `islandOutline`), so with the field
+ * absent the terrain leaves the basin flat, the region sampler never says
+ * `island`, the water pass builds no `shore-island-*` ribbon and no hole,
+ * the minimap paints none and the scatter has nothing to plant on. Flip this
+ * to `true` and the islet comes back on the island map exactly as authored,
+ * scaled with its lake.
+ *
+ * Documented like `WaterBody.islandNudge`: a property of the map a SCALE is
+ * read at, never a second geography.
+ */
+const LAKE_ISLET_ON_ISLAND: boolean = false;
+
+/**
  * One water body scaled about the origin.
  *
- * A LAKE scales whole, its island with it (see `MAP_SCALE`). A POND keeps its
- * authored radius and only moves — which only ever widens the clearances the
- * layout asks for, never narrows them.
+ * A LAKE scales whole, its island with it (see `MAP_SCALE`) — when the island
+ * map has one at all: `LAKE_ISLET_ON_ISLAND` above is what decides that, and
+ * it ships off. A POND keeps its own authored radius and only moves — which
+ * only ever widens the clearances the layout asks for, never narrows them.
  *
  * …and then `islandNudge`, if the entry carries one: a few units added AFTER
  * the scale, in world units, to step one body off a terrace riser the scale
@@ -571,7 +613,9 @@ function scaleWaterBody(b: WaterBody, k: number): WaterBody {
     r: b.kind === 'lake' ? b.r * k : b.r,
     seed: b.seed,
   };
-  if (b.island) out.island = scaleBlob(b.island, k);
+  // …and the islet, if the island map carries one at all (see
+  // `LAKE_ISLET_ON_ISLAND`). The authored body keeps its own either way.
+  if (b.island && LAKE_ISLET_ON_ISLAND) out.island = scaleBlob(b.island, k);
   return out;
 }
 
@@ -856,7 +900,9 @@ export function isWater(x: number, z: number, pad = 0): boolean {
 }
 
 /** True on land that sits inside a lake's outer shore — which, with the
- * causeway gone, is the island and nothing else. */
+ * causeway gone, is the islet and nothing else, and is NOTHING AT ALL on the
+ * island map: no body there carries an islet (`LAKE_ISLET_ON_ISLAND`), so
+ * this answers false everywhere and `sampleLandscape` never says `island`. */
 function isIslandLand(x: number, z: number): boolean {
   for (const body of activeWaterBodies()) {
     if (!body.island) continue;
@@ -1724,7 +1770,11 @@ export function coastOutlinePoints(): number {
 export const ISLAND_OUTLINE_POINTS = 64;
 /** …and the count it is walked at, through `mapScale` — the lake's island
  * scales with the lake, so its chords stay the length they were. ROUNDED,
- * because `MAP_SCALE` is not an integer: 84 at 1.32. */
+ * because `MAP_SCALE` is not an integer: 84 at 1.32.
+ *
+ * It still answers on the island map, where no body has an islet to walk
+ * (`LAKE_ISLET_ON_ISLAND`): a point budget is arithmetic, and `islandOutline`
+ * is the one that returns null. */
 export function islandOutlinePoints(): number {
   return Math.round(ISLAND_OUTLINE_POINTS * mapScale());
 }

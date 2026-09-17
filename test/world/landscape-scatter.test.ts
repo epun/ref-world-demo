@@ -25,6 +25,7 @@ import {
   setIslandMode,
   setLandscapeMode,
   WATER_BODIES,
+  wobbledRadius,
   WOBBLE_MAX,
 } from '../../src/world/landscape';
 import { MOUNTAIN_FOOTPRINT, PROP_VARIANT_COUNTS } from '../../src/world/props';
@@ -312,19 +313,41 @@ describe('the mountain range', () => {
 describe('the island', () => {
   const onIsland = (p: Placement): boolean => sampleLandscape(p.x, p.z).island;
 
-  it('grows its own flora and nothing built', () => {
-    const island = shipped().filter(onIsland);
-    // Flora from the island's own table, not a palm count: which of the
-    // island's cells rolls a palm rather than a tree is not a guarantee this
-    // module makes. It is a 14-unit hill off the middle of a 42-unit lake now
-    // (2026-09-03) — no causeway, so nothing walks there and nothing built
-    // stands there either.
-    const flora = island.filter((p) =>
-      (['palm', 'tree', 'rock', 'bush'] as const).some((k) => k === p.kind),
-    );
-    expect(flora.length).toBeGreaterThanOrEqual(2);
-    for (const kind of ['building', 'waterTower', 'cactus', 'picnicTable'] as const) {
-      expect(island.filter((p) => p.kind === kind), `${kind} on the island`).toHaveLength(0);
+  it('plants nothing inside the lake — the island map has no islet', () => {
+    // 2026-09-17, user ask — src/world/landscape.ts `LAKE_ISLET_ON_ISLAND`.
+    // There is no `island` ground anywhere on this map, so the island's own
+    // flora table (scatter's ISLAND_SEED, ISLAND_CLUSTER_SPREAD) is simply
+    // never reached and the lake is water edge to edge.
+    expect(shipped().filter(onIsland)).toHaveLength(0);
+    const lake = WATER_BODIES[0]!;
+    for (const p of shipped()) {
+      const d = Math.hypot(p.x - lake.x, p.z - lake.z);
+      expect(
+        d,
+        `${p.kind} at ${p.x.toFixed(1)},${p.z.toFixed(1)} is inside the lake`,
+      ).toBeGreaterThan(wobbledRadius(lake, Math.atan2(p.z - lake.z, p.x - lake.x)));
+    }
+  });
+
+  it('grows its own flora and nothing built on the AUTHORED map', () => {
+    // The authored lake — the public world's and meridian's — still has its
+    // islet, and it is the island's own table that dresses it. Flora from
+    // that table, not a palm count: which of the islet's cells rolls a palm
+    // rather than a tree is not a guarantee this module makes. It is a
+    // 14-unit hill off the middle of a 42-unit lake (2026-09-03) — no
+    // causeway, so nothing walks there and nothing built stands there either.
+    setIslandMode(false);
+    try {
+      const island = shipped().filter(onIsland);
+      const flora = island.filter((p) =>
+        (['palm', 'tree', 'rock', 'bush'] as const).some((k) => k === p.kind),
+      );
+      expect(flora.length).toBeGreaterThanOrEqual(2);
+      for (const kind of ['building', 'waterTower', 'cactus', 'picnicTable'] as const) {
+        expect(island.filter((p) => p.kind === kind), `${kind} on the island`).toHaveLength(0);
+      }
+    } finally {
+      setIslandMode(true);
     }
   });
 });
