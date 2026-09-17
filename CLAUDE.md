@@ -47,6 +47,26 @@ The traps, in order of how easily they get violated:
   other world, the public one first, renders exactly as before. Documented in
   [`docs/TASTE.md`](docs/TASTE.md) §9; the code seams are `src/world/style.ts` and
   `src/world/toon.ts` (chain `onBeforeCompile`, never clobber it).
+  **And since 2026-09-17 the HANDSET'S CHROME takes that world's palette too** (user ask:
+  *"can we style the device on mobile in the new style of the world so it's not just black
+  and white"*, TASTE §9b). `src/ui/theme.ts` names the six roles every flat surface uses —
+  `paper`, `ink`, `muted`, `light`, `pad`, `accent` — and resolves them from `WorldStyle`,
+  the way `mapPalette` already resolves the map's two. On `ink` every role IS the token the
+  surface used before, so the public handset is byte-identical; on `ghibli` every role is a
+  `GHIBLI` token, `GHIBLI.paper` being the one new `[D]` value (a UI paper — nothing
+  environmental takes it). Surfaces say `var(--rw-ink, ${WORLD.ink})` and the FALLBACK is
+  the shipped token, so a module is correct with no theme installed (a unit test, or
+  `/draw/`, which cannot import from `src/`); `installUiTheme` is called once at boot in
+  `src/main.ts` and `src/phone/main.ts` and nowhere else. `phone.html` learns its style from
+  a `refworld:style` meta that `applyStyleToPhoneHtml` (scripts/world-build.mjs) injects only
+  when it is not `ink`.
+  ⚠️ **Nothing inside the device's bezel is themed.** The well is `public/device/shell.svg`,
+  a static asset shared with `/draw/` and the tray, and its screen is `SURFACE.ground` — a
+  key face, the stage paper, the pad's ground or the egg's clear colour in the theme's paper
+  draws a LIT RECTANGLE inside the bezel, which is the enclosure DEVICE §3 forbids and a
+  rectilinear form. The case is a physical object with its own colour; the theme paints the
+  page it lies on, the keys' rings, the type and the frames. The keepsake image is the one
+  exception — it is not in the bezel.
 - **Grain is a full-frame post-process, never a material.** It must not vary across a
   character's fill or the silhouette stops reading as one solid shape.
 - **UI is `icon` + `ruleLine` + `border` only.** No filled panels, no cards, no shadows under

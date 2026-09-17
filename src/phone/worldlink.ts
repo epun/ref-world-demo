@@ -28,7 +28,7 @@ const BORDER_SEED = 41.7;
 const BORDER_INSET = 2.5;
 
 /** Are we the companion inside the world's panel, rather than a page? */
-function framed(): boolean {
+export function framed(): boolean {
   try {
     return window.parent !== window;
   } catch {
@@ -62,6 +62,42 @@ export function worldHref(room: string, world: string): string {
   // back to the drawing pad.
   params.set('view', 'world');
   return `/?${params.toString()}`;
+}
+
+/**
+ * GO TO THE WORLD — the one exit, whoever asked for it.
+ *
+ * Three things ask now: the `view world` button below, the onboarding's
+ * `start` (src/phone/main.ts — a handset that has just drawn into a katamari
+ * world belongs in the world, not in a case), and a swipe down from the top
+ * of the device view. They must all leave the same way, because there is only
+ * one seam here and it is a physical one: the case slides DOWN out of the
+ * frame on the settle curve, and only then does the page navigate, so the
+ * last frame of this document and the first frame of the world's are both
+ * bare paper (PHONE-STAGE §4). Three copies of that would be three seams.
+ *
+ * Inside the world's PANEL there is nothing to navigate to: the world behind
+ * the frame is still standing exactly as it was left, so the panel slides and
+ * the page stays. `restore` is how the caller puts its own control back
+ * afterwards — the frame is kept alive between opens, so a control left in
+ * its going-away state would still be there the next time the panel came up.
+ *
+ * Returns which of the two happened, so a caller can tell whether its
+ * document is about to go away.
+ */
+export function leaveForWorld(options: WorldLinkOptions & { restore?: () => void }): 'panel' | 'page' {
+  if (framed()) {
+    window.parent.postMessage(CLOSE_MESSAGE, window.location.origin);
+    if (options.restore) window.setTimeout(options.restore, MOTION.secondaryMs);
+    return 'panel';
+  }
+  const go = options.navigate ?? ((to: string) => { window.location.href = to; });
+  const href = worldHref(options.room, options.world);
+  options.device?.classList.add('leaving');
+  // The case is mid-slide; navigating now would cut it. Waiting for the move
+  // it is already making is the whole seam.
+  window.setTimeout(() => go(href), MOTION.secondaryMs);
+  return 'page';
 }
 
 /**
@@ -126,8 +162,6 @@ export function mountWorldLink(
     outline.setAttribute('d', wavyBorderPath(wavyBorderPoints(w, h, BORDER_INSET, BORDER_SEED)));
   };
 
-  const go = options.navigate ?? ((to: string) => { window.location.href = to; });
-
   el.addEventListener('click', (event) => {
     // Let a long-press / open-in-new-tab behave normally; only the plain
     // tap gets the choreography.
@@ -139,31 +173,21 @@ export function mountWorldLink(
     el.classList.remove('in');
     el.classList.add('out');
 
-    if (framed()) {
-      // Inside the world's panel: the PANEL slides, and the world behind it
-      // is still standing exactly as it was left — nothing to navigate to
-      // and nothing to rebuild. Sliding the case as well would be two
-      // objects leaving at once for one gesture.
-      window.parent.postMessage(CLOSE_MESSAGE, window.location.origin);
-      // AND PUT IT BACK. The frame is kept alive between opens (that is
-      // the whole point of the panel), so this document is not reloaded —
-      // which means the faded-out, already-going state would still be
-      // here the next time the panel slid up, and the only way out of the
-      // device would be invisible and dead (user report, 2026-08-25).
-      // Restored after the panel has finished leaving, so the fade is
-      // still seen on the way out.
-      window.setTimeout(() => {
+    leaveForWorld({
+      ...options,
+      // PUT THE CONTROL BACK, on the panel path. The frame is kept alive
+      // between opens (that is the whole point of the panel), so this
+      // document is not reloaded — which means the faded-out, already-going
+      // state would still be here the next time the panel slid up, and the
+      // only way out of the device would be invisible and dead (user report,
+      // 2026-08-25). Restored after the panel has finished leaving, so the
+      // fade is still seen on the way out.
+      restore: () => {
         delete el.dataset['going'];
         el.classList.remove('out');
         el.classList.add('in');
-      }, MOTION.secondaryMs);
-      return;
-    }
-
-    options.device?.classList.add('leaving');
-    // The case is mid-slide; navigating now would cut it. Waiting for the
-    // move it is already making is the whole seam.
-    window.setTimeout(() => go(href), MOTION.secondaryMs);
+      },
+    });
   });
 
   root.appendChild(el);

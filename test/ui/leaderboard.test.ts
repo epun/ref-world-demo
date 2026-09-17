@@ -42,6 +42,7 @@ import {
   BOARD_W_PX,
   LEADERBOARD_ROWS,
   LEADERBOARD_TITLE,
+  LIST_GAP_PX,
   RERANK_MS,
   ROW_PX,
   TITLE_BLOCK_PX,
@@ -417,8 +418,11 @@ describe('the board mounts, ranks, and leaves cleanly', () => {
     expect([...sheet.matchAll(/border-bottom/g)].length).toBe(1);
     // …the paper, which is the recorded override: the JOIN CODE's own value,
     // and drawn as a fill on the wavering path rather than a css box.
-    expect(sheet).toContain(`fill: ${WORLD.light}`);
-    expect(sheet).toContain(`stroke: ${WORLD.ink}`);
+    // …now through the chrome palette (src/ui/theme.ts), which resolves to
+    // exactly these tokens on the shipped look — the fallback in each `var`
+    // IS the value, so this sheet paints them with no theme installed.
+    expect(sheet).toContain(`fill: var(--rw-light, ${WORLD.light})`);
+    expect(sheet).toContain(`stroke: var(--rw-ink, ${WORLD.ink})`);
     expect(sheet).toContain('stroke-width: 1.25');
     // …and the marks that are still not in this taste's vocabulary.
     expect(sheet).not.toMatch(/\bbackground\b/);
@@ -503,6 +507,27 @@ describe('the board mounts, ranks, and leaves cleanly', () => {
     );
     expect(boardHeight(40)).toBe(boardHeight(LEADERBOARD_ROWS));
     expect(boardHeight(0)).toBeLessThan(boardHeight(1));
+    handle.dispose();
+    dom.restore();
+  });
+
+  it('keeps 16px of paper between the rule and the top of the list (user ask, 2026-09-17)', () => {
+    const dom = stubDom();
+    const handle = installLeaderboard({
+      entries: () => [{ id: 'a', diameter: 1 }],
+      mount: dom.mount as unknown as HTMLElement,
+    });
+    const sheet = dom.head.children[0]!.textContent;
+    expect(LIST_GAP_PX).toBe(16);
+    // The gap is the rows block's top margin, not a margin on the first row,
+    // so a rank change never moves it…
+    const rowsRule = /\.world-leaderboard-rows\s*\{[^}]*\}/.exec(sheet)?.[0] ?? '';
+    expect(rowsRule).toContain(`margin-top: ${LIST_GAP_PX}px`);
+    expect(/\.world-leaderboard-row\s*\{[^}]*\}/.exec(sheet)?.[0] ?? '').not.toMatch(/margin-top/);
+    // …and the paper counts it: the title block covers the 14px/1.4 line, the
+    // rule's 0.45em of room, the rule itself and the gap.
+    expect(TITLE_BLOCK_PX).toBeGreaterThanOrEqual(19.6 + 6.3 + 1 + LIST_GAP_PX);
+    expect(TITLE_BLOCK_PX).toBeLessThan(19.6 + 6.3 + 1 + LIST_GAP_PX + 1);
     handle.dispose();
     dom.restore();
   });

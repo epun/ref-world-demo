@@ -14,6 +14,8 @@ import { feedDrawingToStrokes, feedStrokeToStroke } from '../net/drawFeed';
 import { createPhoneLink } from '../net/phoneLink';
 import type { StrokeList } from '../shape/types';
 import { MOTION, SURFACE, WORLD } from '../taste/tokens';
+import { installUiTheme } from '../ui/theme';
+import { readWorldStyle } from '../world/style';
 import { mountAliveScreen, type AliveScreenHandle } from './screens/alive';
 import { mountDraw } from './screens/draw';
 import { mountWaitScreen, type WaitScreenHandle } from './screens/wait';
@@ -29,7 +31,8 @@ import {
 } from './identity';
 import { createSession } from './session';
 import { healStore } from './heal';
-import { mountWorldLink } from './worldlink';
+import { framed, leaveForWorld, mountWorldLink } from './worldlink';
+import { readWorldGame } from '../world/game';
 import { readKeepId } from './keeplink';
 import { FAILED_MESSAGE } from '../world/companionpanel';
 import { readSessionLog } from '../session/events';
@@ -41,13 +44,38 @@ import {
   type ScreenMount,
 } from './states';
 
+/**
+ * WHICH LOOK DOES THIS HANDSET PAINT IN? (2026-09-17 user ask — *"can we
+ * style the device on mobile in the new style of the world so it's not just
+ * black and white"*.)
+ *
+ * The same two sources the world page reads, in the same order and through
+ * the same pure function: `?style=` on the address, then
+ * `<meta name="refworld:style">`, which scripts/world-build.mjs injects into
+ * this document for a world that opted out of the shipped look. Neither
+ * present is `ink`, so the public handset is unchanged.
+ *
+ * Read and installed HERE, at module top, before any screen mounts: the five
+ * chrome variables (src/ui/theme.ts) have to exist before the first
+ * stylesheet that says `var(--rw-paper, …)` is appended, or the first frame
+ * is painted in the other style's paper and then corrected — the one cut
+ * PHONE-STAGE §4.1 exists to prevent.
+ */
+const PHONE_STYLE = readWorldStyle(
+  window.location.search,
+  document.querySelector<HTMLMetaElement>('meta[name="refworld:style"]')?.content ?? null,
+);
+const PHONE_THEME = installUiTheme(PHONE_STYLE);
+
 document.documentElement.style.height = '100%';
 document.body.style.height = '100%';
 document.body.style.margin = '0';
 // One paper for the whole mobile flow (PHONE-STAGE §2) — the same value
 // phone.html paints inline before any script, and the same value /draw/
-// paints, so the navigation between them has nothing to flash to.
-document.body.style.background = SURFACE.ground;
+// paints, so the navigation between them has nothing to flash to. On the
+// ghibli style the theme's paper is that one paper instead, and this is the
+// line that repaints the document phone.html painted in SURFACE.ground.
+document.body.style.background = PHONE_THEME.paper;
 
 /**
  * The guideline notice — shown on the drawer's OWN handset when the world
@@ -81,8 +109,12 @@ function showGuidelineNotice(onDrawAgain: () => void): void {
   gap: 5cqw;
   padding: 8cqw;
   text-align: center;
+  /* The well's own value, not the theme's: this sheet slides up INSIDE the
+     device's screen (DEVICE §3), and a lit rectangle in the bezel is the one
+     thing the screen must not draw — src/phone/screens/alive.ts carries the
+     measurement. Its type and its border are still the theme's. */
   background: ${SURFACE.ground};
-  color: ${WORLD.ink};
+  color: var(--rw-ink, ${WORLD.ink});
   font-family: "helvetica neue", helvetica, arial, sans-serif;
   transform: translateY(103%);
   transition: transform ${MOTION.secondaryMs}ms ${MOTION.settleCurve};
@@ -96,16 +128,16 @@ function showGuidelineNotice(onDrawAgain: () => void): void {
 }
 .guideline-notice .sub {
   font-size: clamp(10px, 5.1cqw, 14px);
-  color: ${WORLD.neutral};
+  color: var(--rw-muted, ${WORLD.neutral});
 }
 .guideline-notice button {
   font: inherit;
   font-size: clamp(11px, 5.8cqw, 16px);
   padding: 4cqw 7cqw;
   border-radius: 13px;
-  border: 1px solid ${WORLD.ink};
+  border: 1px solid var(--rw-ink, ${WORLD.ink});
   background: transparent;
-  color: ${WORLD.ink};
+  color: var(--rw-ink, ${WORLD.ink});
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
   transition: transform ${MOTION.tertiaryMs}ms ${MOTION.settleCurve};
@@ -387,6 +419,34 @@ async function boot(): Promise<void> {
     .replace(/[^a-z0-9-]/g, '')
     .slice(0, 24);
 
+  /**
+   * WHICH GAME this handset is a handset for (src/world/game.ts).
+   *
+   * > User report, 2026-09-17: *"on mobile I'm not seeing the loading
+   * > screen"*, and *"the mobile experience is really bad."*
+   *
+   * The phone never reached the world view. A handset opening the world link
+   * is redirected to the pad (src/main.ts), the pad sends it here when the
+   * drawing is submitted, and NOTHING on this page went on to the world
+   * unless the person found the `view world` button under the case. So on a
+   * katamari world every person who drew stayed in a case holding a picture
+   * of the creature they could have been rolling.
+   *
+   * Two sources, `?game=` then `<meta name="refworld:game">` — the identical
+   * read the world page does, off a tag `scripts/world-build.mjs` now injects
+   * into phone.html as well (`applyGameToPhoneHtml`, gated exactly as
+   * index.html's is). The world itself still travels in the url; a game is a
+   * property of the world's configuration and cannot.
+   *
+   * `none` is every other deployment, and there this whole seam is absent:
+   * the flow that shipped is the flow — draw, wait, watch it hatch in your
+   * hand, tap through to the world if you want to.
+   */
+  const worldGame = readWorldGame(
+    location.search,
+    document.querySelector<HTMLMetaElement>('meta[name="refworld:game"]')?.content ?? null,
+  );
+
   const mounts: Record<PhoneState, ScreenMount> = {
     draw: (slots) =>
       mountDraw(slots, {
@@ -394,6 +454,10 @@ async function boot(): Promise<void> {
           strokes = done;
           session.sendDrawing(done);
           machine.goTo('wait');
+          // …and on a katamari world, on to the world itself (see
+          // `onToTheWorld`). The egg is already on its way over mqtt; what
+          // this person needs now is the stick.
+          onToTheWorld();
         },
       }),
     wait: (slots) => {
@@ -479,11 +543,81 @@ async function boot(): Promise<void> {
   // 2026-08-25). The well is the container, and the foot of the screen is
   // just below the creature.
   const wellForLink = document.querySelector<HTMLElement>('.device-well');
+  const deviceEl = document.querySelector<HTMLElement>('.device');
   mountWorldLink(wellForLink ?? document.body, {
     room,
     world: publicWorld,
-    device: document.querySelector<HTMLElement>('.device'),
+    device: deviceEl,
   });
+
+  /*
+   * ── ON A KATAMARI WORLD, THE WORLD IS WHERE YOU LAND ────────────────────
+   *
+   * > User report, 2026-09-17: *"the mobile experience is really bad."* And
+   * > the ask behind it: *"we should give the user a tutorial on how to
+   * > control their character using the joystick and the goal to roll over
+   * > things and grow your mass."*
+   *
+   * The game is played in the world view — that is where the stick, the ball
+   * readout, the minimap and the loading line are — and until now nothing
+   * took a person there. The pad redirects here, and here is a case. So on a
+   * katamari world a FRESH SUBMISSION goes on to the world by itself, through
+   * the onboarding screens the first time (src/ui/onboard.ts) and straight
+   * through on every visit after that.
+   *
+   * Four conditions, and each one is somebody who must NOT be moved:
+   *
+   * - the KATAMARI world and nowhere else. Every other deployment keeps the
+   *   flow that shipped, where the egg hatching in your hand is the point;
+   * - a PUBLIC world, or there is no shared place to go (an installation
+   *   handset's world is a projection in the same room);
+   * - not INSIDE the world's own panel (`framed()`): that person is already
+   *   in the world and opened the case on purpose — navigating would throw
+   *   away the loaded world behind the frame;
+   * - a FRESH SUBMISSION only. A handset reopening this page keeps the case
+   *   it asked for; it still has the `view world` button and the swipe down.
+   *
+   * The screens are reached through a DYNAMIC import behind the flag, the
+   * same discipline the world page's mount is under, so no other deployment
+   * carries the chunk. Any failure to load them still goes to the world: a
+   * person who cannot be taught must not be stranded.
+   */
+  let goingToWorld = false;
+  const intoTheWorld = (): void => {
+    if (goingToWorld) return;
+    goingToWorld = true;
+    leaveForWorld({ room, world: publicWorld, device: deviceEl });
+  };
+  let offeredOnboarding = false;
+  const onToTheWorld = (): void => {
+    if (offeredOnboarding) return;
+    if (worldGame !== 'katamari' || publicWorld.length === 0 || framed()) return;
+    offeredOnboarding = true;
+    void import('../ui/onboard').then(
+      (m) => {
+        if (!m.shouldOnboard(location.search, m.deviceStore())) {
+          intoTheWorld();
+          return;
+        }
+        m.installOnboarding({
+          mount: document.body,
+          // Both ways through are ways ON: `skip` skips the reading, not the
+          // game, and a tutorial that ended by leaving somebody in a case
+          // would be the bug this exists to fix.
+          onDone: () => intoTheWorld(),
+        });
+      },
+      () => intoTheWorld(),
+    );
+  };
+
+  /*
+   * The pad hands a fresh drawing over with `?handoff=1` and a one-shot
+   * stash (`readHandoff`), which is exactly "this person has just submitted"
+   * — so that is the visit that goes on. A reload cannot replay it, because
+   * the stash is consumed; a restore from storage does not set it at all.
+   */
+  if (handedOff) onToTheWorld();
 
   // The stage is mounted; feed the session whatever the flow opened with,
   // so the egg timer and the local echo agree with what is on screen. The

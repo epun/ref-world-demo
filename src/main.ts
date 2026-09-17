@@ -111,6 +111,7 @@ import { storeNote } from './world/storeline';
 import { start } from './world/scene';
 import { opensOnLandscape, readWorldGame } from './world/game';
 import { readWorldStyle } from './world/style';
+import { installUiTheme } from './ui/theme';
 import { createTour } from './world/tour';
 
 /** Hatch timer — dev pacing; a live demo wants ~90s (PLAN §13). */
@@ -186,7 +187,7 @@ function ensureOverlayStyle(): void {
   position: fixed;
   inset: 0;
   z-index: 10;
-  background: ${SURFACE.canvas};
+  background: var(--rw-pad, ${SURFACE.canvas});
   transform: translateY(103%);
   transition: transform ${MOTION.secondaryMs}ms ${MOTION.settleCurve};
 }
@@ -199,7 +200,7 @@ function ensureOverlayStyle(): void {
   right: 0;
   bottom: 5vmin;
   text-align: center;
-  color: ${WORLD.ink};
+  color: var(--rw-ink, ${WORLD.ink});
   font: 400 14px/1.4 ui-sans-serif, system-ui, sans-serif;
   opacity: 0;
   transform: translateY(6px);
@@ -227,8 +228,8 @@ function ensureOverlayStyle(): void {
   z-index: 20;
   transform: translate(-50%, 8px);
   padding-top: 0.6em;
-  border-top: 1px solid ${WORLD.ink};
-  color: ${WORLD.ink};
+  border-top: 1px solid var(--rw-ink, ${WORLD.ink});
+  color: var(--rw-ink, ${WORLD.ink});
   font: 400 14px/1.4 ui-sans-serif, system-ui, sans-serif;
   text-align: center;
   opacity: 0;
@@ -264,6 +265,16 @@ function main(): void {
     location.search,
     document.querySelector<HTMLMetaElement>('meta[name="refworld:style"]')?.content ?? null,
   );
+  /*
+   * …and published to the FLAT surfaces at once (src/ui/theme.ts), before a
+   * single stylesheet has been appended: the stick, the tray, the readouts,
+   * the loading and onboarding screens, the join code and the draw overlay
+   * all paint from six custom properties whose values this decides. On `ink`
+   * they are the shipped tokens, so every other deployment's chrome is
+   * unchanged (2026-09-17 user ask — the handset's pages in the world's own
+   * palette, and the world view's own chrome with them).
+   */
+  installUiTheme(worldStyle);
 
   /**
    * The GAME this page runs (src/world/game.ts) — read here, beside the look

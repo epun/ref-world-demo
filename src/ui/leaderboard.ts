@@ -203,12 +203,20 @@ export const BOARD_W_PX = 264;
  */
 export const BOARD_PAD_PX = 18;
 /**
- * The title's block, css px. **[D]** Its 14px/1.4 line (19.6), the hairline
- * rule's own 0.45em of breathing room (6.3), and seven more between the rule
- * and the first row. The gap is counted HERE rather than left to a margin on
- * the rows, so `boardHeight` is the whole truth about how tall the paper is.
+ * Clear paper between the hairline rule and the top of the list, css px.
+ * **[D]** — a user ask (2026-09-17, *"16px of padding between the divider
+ * and the top of the list"*); before it the first row sat flush on the rule.
+ * Applied as the rows block's top margin and counted in `TITLE_BLOCK_PX`.
  */
-export const TITLE_BLOCK_PX = 33;
+export const LIST_GAP_PX = 16;
+/**
+ * The title's block, css px. **[D]** Its 14px/1.4 line (19.6), the hairline
+ * rule's own 0.45em of breathing room (6.3), the rule itself (1) and
+ * `LIST_GAP_PX` between the rule and the first row, rounded up. The gap is
+ * counted HERE rather than left to the rows, so `boardHeight` is the whole
+ * truth about how tall the paper is.
+ */
+export const TITLE_BLOCK_PX = Math.ceil(19.6 + 6.3 + 1 + LIST_GAP_PX);
 
 /**
  * How tall the box is for a field of `rows`, css px.
@@ -270,7 +278,7 @@ function ensureStyle(): void {
   top: calc(env(safe-area-inset-top, 0px) + 4vw);
   z-index: 5;
   width: ${BOARD_W_PX}px;
-  color: ${WORLD.ink};
+  color: var(--rw-ink, ${WORLD.ink});
   font: 400 14px/1.4 ui-sans-serif, system-ui, sans-serif;
   pointer-events: none;
 }
@@ -312,8 +320,8 @@ function ensureStyle(): void {
   overflow: visible;
 }
 .world-leaderboard-paper {
-  fill: ${WORLD.light};
-  stroke: ${WORLD.ink};
+  fill: var(--rw-light, ${WORLD.light});
+  stroke: var(--rw-ink, ${WORLD.ink});
   stroke-width: 1.25;
   stroke-linejoin: round;
 }
@@ -321,12 +329,13 @@ function ensureStyle(): void {
 .world-leaderboard-head {
   position: relative;
   padding-bottom: 0.45em;
-  border-bottom: 1px solid ${WORLD.ink};
+  border-bottom: 1px solid var(--rw-ink, ${WORLD.ink});
 }
 /* The rows are laid out by transform inside a block whose height is written
    per frame, so a rank change slides and never reflows. */
 .world-leaderboard-rows {
   position: relative;
+  margin-top: ${LIST_GAP_PX}px;
   height: 0;
   overflow: hidden;
 }

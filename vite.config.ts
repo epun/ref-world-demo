@@ -3,6 +3,8 @@ import { defineConfig, type Plugin } from 'vite';
 import { rmSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
 import {
+  applyGameToPhoneHtml,
+  applyStyleToPhoneHtml,
   applyWorldToHtml,
   readWorlds,
   resolveWorld,
@@ -23,8 +25,16 @@ import {
  * The public deployment is not in the map, resolves to null, and its
  * index.html comes out byte-identical — test/worlds/build.test.ts pins that.
  *
- * index.html only. phone.html is the companion handset's page; it belongs
- * to whatever world its projection is in and has no card of its own.
+ * index.html gets the world and the card. phone.html belongs to whatever
+ * world its projection is in and has no card of its own — but it does get the
+ * two tags that describe the DEPLOYMENT rather than the room, neither of which
+ * could travel in the url: the GAME (2026-09-17), because the handset lands on
+ * the companion after drawing and never on the world page, so the page that
+ * has to know a katamari is being played is that one; and the STYLE
+ * (2026-09-17), which decides what palette its chrome paints in
+ * (src/ui/theme.ts). Both only when they are not the default, so the public
+ * world's phone.html is byte-identical too. See `applyGameToPhoneHtml` and
+ * `applyStyleToPhoneHtml`.
  */
 /** The world this build is for, or null for the public deployment — read
  * once, because the html transform and the `__IS_DEV__` define both need it. */
@@ -41,8 +51,16 @@ function worldIdentity(world: ReturnType<typeof resolveWorld>): Plugin {
     transformIndexHtml: {
       order: 'pre',
       handler(html, ctx) {
-        if (!world || basename(ctx.filename) !== 'index.html') return html;
-        return applyWorldToHtml(html, world);
+        if (!world) return html;
+        const page = basename(ctx.filename);
+        if (page === 'index.html') return applyWorldToHtml(html, world);
+        // The companion's page takes those two tags and nothing else. Each
+        // transform is gated on its own default, so a world that asked for
+        // neither gets the file back unchanged.
+        if (page === 'phone.html') {
+          return applyStyleToPhoneHtml(applyGameToPhoneHtml(html, world), world);
+        }
+        return html;
       },
     },
   };

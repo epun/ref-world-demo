@@ -58,7 +58,7 @@ function ensureStyle(): void {
   display: grid;
   justify-items: center;
   gap: 1.1em;
-  color: ${WORLD.ink};
+  color: var(--rw-ink, ${WORLD.ink});
   font: 400 14px/1.4 ui-sans-serif, system-ui, sans-serif;
   text-align: center;
 }
@@ -75,10 +75,10 @@ function ensureStyle(): void {
 }
 .world-empty.in .world-empty-drift { opacity: 1; }
 .world-empty-link {
-  color: ${WORLD.ink};
+  color: var(--rw-ink, ${WORLD.ink});
   text-decoration: none;
   padding-bottom: 0.3em;
-  border-bottom: 1px solid ${WORLD.ink};
+  border-bottom: 1px solid var(--rw-ink, ${WORLD.ink});
 }
 `;
   document.head.appendChild(style);

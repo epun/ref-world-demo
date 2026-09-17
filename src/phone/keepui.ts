@@ -193,7 +193,7 @@ function ensureStyle(): void {
   border: 0;
   padding: 0;
   background: none;
-  color: ${WORLD.ink};
+  color: var(--rw-ink, ${WORLD.ink});
   -webkit-tap-highlight-color: transparent;
   cursor: pointer;
   /* It arrives with the rest of the screen: slides down into the corner,
@@ -209,7 +209,7 @@ function ensureStyle(): void {
 .keep-mark svg { display: block; width: 100%; height: 100%; overflow: visible; }
 .keep-mark path {
   fill: none;
-  stroke: ${WORLD.ink};
+  stroke: var(--rw-ink, ${WORLD.ink});
   stroke-width: 1.6;
   stroke-linecap: round;
   stroke-linejoin: round;
@@ -217,7 +217,7 @@ function ensureStyle(): void {
 }
 /* The label window, the one paper-light shape on the icon — the same
    value the device shell's own body is filled with. */
-.keep-mark path[data-fill='paper'] { fill: ${WORLD.light}; }
+.keep-mark path[data-fill='paper'] { fill: var(--rw-light, ${WORLD.light}); }
 
 /*
  * The popover. Paper inside a wavering hairline, right-aligned under the
@@ -242,7 +242,7 @@ function ensureStyle(): void {
   padding: 3vw 4vw;
   /* No background here — see the note above. The paper is the path's fill. */
   background: transparent;
-  color: ${WORLD.ink};
+  color: var(--rw-ink, ${WORLD.ink});
   font-family: "helvetica neue", helvetica, arial, sans-serif;
   font-weight: 400;
   opacity: 0;
@@ -271,8 +271,8 @@ function ensureStyle(): void {
 .keep-menu-border path {
   /* Fill AND stroke, on one path: the paper can then not reach past the
      line that bounds it, at any size, on any handset. */
-  fill: ${SURFACE.ground};
-  stroke: ${WORLD.ink};
+  fill: var(--rw-paper, ${SURFACE.ground});
+  stroke: var(--rw-ink, ${WORLD.ink});
   stroke-width: 1.25;
   stroke-linejoin: round;
   vector-effect: non-scaling-stroke;
@@ -280,8 +280,8 @@ function ensureStyle(): void {
 .keep-title {
   position: relative;
   padding-bottom: 2vw;
-  border-bottom: 1px solid ${WORLD.ink};
-  color: ${WORLD.neutral};
+  border-bottom: 1px solid var(--rw-ink, ${WORLD.ink});
+  color: var(--rw-muted, ${WORLD.neutral});
   font-size: clamp(10px, 3.1vw, 13px);
   letter-spacing: 0.02em;
 }
@@ -290,10 +290,10 @@ function ensureStyle(): void {
   display: block;
   width: 100%;
   border: 0;
-  border-top: 1px solid ${WORLD.ink};
+  border-top: 1px solid var(--rw-ink, ${WORLD.ink});
   padding: 3vw 0;
   background: none;
-  color: ${WORLD.ink};
+  color: var(--rw-ink, ${WORLD.ink});
   font: inherit;
   font-size: clamp(12px, 3.8vw, 15px);
   letter-spacing: 0.01em;

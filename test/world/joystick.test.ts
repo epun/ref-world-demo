@@ -216,12 +216,14 @@ describe('the stick as a mark', () => {
     // WORLD.light — so the token is the same one, never a second literal
     // that happens to match today (the static gate bans the literal here
     // anyway, which is the point of the token).
-    expect(src()).toMatch(/\.stick-knob \{ fill: \$\{WORLD\.light\};/);
+    expect(src()).toMatch(/\.stick-knob \{ fill: var\(--rw-light, \$\{WORLD\.light\}\);/);
     expect(WORLD.light).toBe(SURFACE.canvas);
     // ...and it keeps its ink outline. Light shape, dark wobbly line: the
     // rule every form in this world is drawn to, and what stops a filled
     // knob reading as a panel (TASTE §4).
-    expect(src()).toMatch(/\.stick-ring,\s*\n\.stick-knob \{\s*\n\s*stroke: \$\{WORLD\.ink\}/);
+    expect(src()).toMatch(
+      /\.stick-ring,\s*\n\.stick-knob \{\s*\n\s*stroke: var\(--rw-ink, \$\{WORLD\.ink\}\)/,
+    );
     expect(src()).toMatch(/\.stick-knob \{ fill: [^;]*; stroke-width: 1\.75/);
   });
 
