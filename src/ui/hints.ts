@@ -341,7 +341,7 @@ function ensureStyle(): void {
 .world-hint {
   position: fixed;
   z-index: 31;
-  color: ${WORLD.ink};
+  color: var(--rw-ink, ${WORLD.ink});
   font: 400 14px/1.4 ui-sans-serif, system-ui, sans-serif;
   pointer-events: none;
 }
@@ -391,7 +391,7 @@ function ensureStyle(): void {
   align-items: center;
   gap: 7px;
   padding-bottom: 0.45em;
-  border-bottom: 1px solid ${WORLD.ink};
+  border-bottom: 1px solid var(--rw-ink, ${WORLD.ink});
   opacity: 0;
 }
 .world-hint-icon {
@@ -403,7 +403,7 @@ function ensureStyle(): void {
 }
 .world-hint-mark {
   fill: none;
-  stroke: ${WORLD.ink};
+  stroke: var(--rw-ink, ${WORLD.ink});
   stroke-linejoin: round;
 }
 .world-hint-line { display: block; }
@@ -413,7 +413,7 @@ function ensureStyle(): void {
   align-self: center;
   flex: none;
   margin-left: 6px;
-  color: ${WORLD.ink};
+  color: var(--rw-muted, ${WORLD.neutral});
   text-decoration: none;
   opacity: 0.6;
   pointer-events: auto;

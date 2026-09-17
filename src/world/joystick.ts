@@ -291,7 +291,7 @@ function ensureStyle(): void {
 }
 .stick-ring,
 .stick-knob {
-  stroke: ${WORLD.ink};
+  stroke: var(--rw-ink, ${WORLD.ink});
   stroke-linejoin: round;
   stroke-linecap: round;
   vector-effect: non-scaling-stroke;
@@ -310,7 +310,7 @@ function ensureStyle(): void {
  * of chrome. Near-black is still nowhere near it: that belongs to the
  * creature this thing steers.
  */
-.stick-knob { fill: ${WORLD.light}; stroke-width: 1.75; }
+.stick-knob { fill: var(--rw-light, ${WORLD.light}); stroke-width: 1.75; }
 /* The knob follows the thumb directly while held — a transition here would
    put the control behind the finger, which reads as lag rather than as
    easing. It eases only on the way back to the middle, which IS a motion

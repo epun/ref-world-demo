@@ -278,7 +278,7 @@ function ensureStyle(): void {
   top: calc(env(safe-area-inset-top, 0px) + 4vw);
   z-index: 5;
   width: ${BOARD_W_PX}px;
-  color: ${WORLD.ink};
+  color: var(--rw-ink, ${WORLD.ink});
   font: 400 14px/1.4 ui-sans-serif, system-ui, sans-serif;
   pointer-events: none;
 }
@@ -320,8 +320,8 @@ function ensureStyle(): void {
   overflow: visible;
 }
 .world-leaderboard-paper {
-  fill: ${WORLD.light};
-  stroke: ${WORLD.ink};
+  fill: var(--rw-light, ${WORLD.light});
+  stroke: var(--rw-ink, ${WORLD.ink});
   stroke-width: 1.25;
   stroke-linejoin: round;
 }
@@ -329,7 +329,7 @@ function ensureStyle(): void {
 .world-leaderboard-head {
   position: relative;
   padding-bottom: 0.45em;
-  border-bottom: 1px solid ${WORLD.ink};
+  border-bottom: 1px solid var(--rw-ink, ${WORLD.ink});
 }
 /* The rows are laid out by transform inside a block whose height is written
    per frame, so a rank change slides and never reflows. */

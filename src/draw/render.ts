@@ -5,6 +5,14 @@
  * SURFACE.canvas ground, CHARACTER.body ink — the phone canvas is the one
  * place the near-black mark and the light ground meet directly.
  *
+ * The GROUND is an argument, defaulting to that token, because the draw pad
+ * inside the device case has never wanted it (src/draw/ui.ts: the pad IS the
+ * screen, so it lays the page's own paper) and since 2026-09-17 a world on
+ * the ghibli style lays a third value again (src/ui/theme.ts). The MARK is
+ * not an argument and is not tinted: it stays `CHARACTER.body`, and the
+ * creature's colourway is read off the drawing's motifs rather than its
+ * pixels (src/character/palette.ts), so no caller here can move a hue.
+ *
  * Width along a stroke is w * widthScale, interpolated per segment; round
  * caps and joins let adjacent segments of different widths fuse into one
  * continuous, hand-carved edge rather than reading as stacked rectangles.
@@ -21,8 +29,9 @@ export function renderStrokes(
   ctx: CanvasRenderingContext2D,
   strokes: StrokeList,
   sizePx: number,
+  paper: string = SURFACE.canvas,
 ): void {
-  renderStrokesPartial(ctx, strokes, sizePx, 1);
+  renderStrokesPartial(ctx, strokes, sizePx, 1, paper);
 }
 
 /**
@@ -35,9 +44,10 @@ export function renderStrokesPartial(
   strokes: StrokeList,
   sizePx: number,
   t: number,
+  paper: string = SURFACE.canvas,
 ): void {
   ctx.save();
-  ctx.fillStyle = SURFACE.canvas;
+  ctx.fillStyle = paper;
   ctx.fillRect(0, 0, sizePx, sizePx);
 
   const total = strokes.reduce((n, s) => n + s.pts.length, 0);

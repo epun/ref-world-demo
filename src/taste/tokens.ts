@@ -179,6 +179,24 @@ export const GHIBLI = {
   /** Scene background — envpaint's skyTop. */
   background: '#bfe0ff',
   fog: '#e9f0f6',
+  /**
+   * [D] THE PAPER of this world's flat surfaces — the handset's pages and the
+   * world's own chrome (2026-09-17, user ask: *"can we style the device on
+   * mobile in the new style of the world so it's not just black and white"*).
+   *
+   * Not a measured value and not envpaint's: the cel style has albedos for
+   * ground, water and foliage and no paper at all, because nothing in it is
+   * a sheet. So this is derived — `SURFACE.ground`'s own luma (~0.87) carried
+   * into the meadow's hue at a fraction of its chroma, which is what a sheet
+   * of paper lying in this world would be: a light, warm green-tinted white
+   * that the style's `ink` reads on at 11.6:1 and that never competes with
+   * `meadow` for being the ground.
+   *
+   * It is a UI paper only. Nothing environmental takes it, and the `ink`
+   * style never sees it (src/ui/theme.ts reaches it through
+   * src/world/style.ts, like every other value in this block).
+   */
+  paper: '#e8efdc',
   /** Contour/ink colour: a violet-blue, never black. */
   ink: '#2a2340',
   // terrain albedos

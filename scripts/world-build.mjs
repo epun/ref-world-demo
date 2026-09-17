@@ -267,6 +267,39 @@ export function applyWorldToHtml(html, world) {
 }
 
 /**
+ * Tell the COMPANION HANDSET which LOOK its chrome paints in.
+ *
+ * phone.html has no card and no world tag — the world it belongs to travels in
+ * the url, which is how a handset can be handed a room by a link rather than
+ * by a build. The STYLE cannot travel that way for the same reason the game
+ * cannot (see `applyGameToPhoneHtml` below): it is a property of the world's
+ * own configuration and not of the address.
+ *
+ * So one tag (2026-09-17 user ask — the draw pad, the device view and the
+ * world view's own chrome in the world's palette, src/ui/theme.ts). It is
+ * already a meta tag on index.html, in this exact form, and src/phone/main.ts
+ * reads it back through the same `readWorldStyle` the world page uses rather
+ * than a second copy of the rule.
+ *
+ * Gated IDENTICALLY to index.html's: written only for a world that opted out
+ * of the shipped look, so every other deployment's phone.html — the public
+ * one first — comes out byte-identical and does not mention a setting it does
+ * not have. test/worlds/build.test.ts pins that.
+ */
+export function applyStyleToPhoneHtml(html, world) {
+  if (!world) return html;
+  const styled = sanitizeStyle(world.style);
+  if (styled === 'ink') return html;
+  return html.replace(
+    /([ \t]*)<title>/i,
+    (_m, indent) =>
+      `${indent}<!-- injected at build time by scripts/world-build.mjs — this deployment's look -->\n` +
+      `${indent}<meta name="refworld:style" content="${escapeAttr(styled)}" />\n` +
+      `${indent}<title>`,
+  );
+}
+
+/**
  * Tell the COMPANION HANDSET which game it is a handset for.
  *
  * phone.html has no card and no world tag — the world it belongs to travels

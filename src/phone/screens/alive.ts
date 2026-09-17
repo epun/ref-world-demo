@@ -230,7 +230,7 @@ function ensureStyle(): void {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  color: ${WORLD.ink};
+  color: var(--rw-ink, ${WORLD.ink});
   font-family: "helvetica neue", helvetica, arial, sans-serif;
   font-weight: 400;
   font-size: clamp(11px, 5cqw, 14px);
@@ -411,6 +411,16 @@ export function mountAliveScreen(
     // needs paper behind the subject — the same value the well is already
     // painted (SURFACE.ground), exactly as the wait screen sets it, so the
     // canvas reads as part of the screen and not as a card on it.
+    /*
+     * ON EVERY STYLE, including ghibli (2026-09-17). This canvas sits in the
+     * device's well, and the well is painted by public/device/shell.svg — a
+     * static asset with its own colour. A clear colour in the theme's paper
+     * made the portrait a lit RECTANGLE inside the bezel (measured on the
+     * valiocon build), which is both the enclosure DEVICE §3 says the screen
+     * must not draw and a rectilinear form (TASTE §2.5). The theme paints the
+     * page the case lies on, the keys' rings, the type and the frames
+     * (src/ui/theme.ts); the case is a physical object.
+     */
     scene.background = new Color(SURFACE.ground);
     scene.add(createLighting().group, character.group);
     ink = new InkPass();

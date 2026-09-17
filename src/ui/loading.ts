@@ -208,7 +208,7 @@ function ensureStyle(): void {
   display: grid;
   justify-items: center;
   gap: 0.9em;
-  color: ${WORLD.ink};
+  color: var(--rw-ink, ${WORLD.ink});
   font: 400 14px/1.4 ui-sans-serif, system-ui, sans-serif;
   text-align: center;
   pointer-events: none;
@@ -240,7 +240,7 @@ function ensureStyle(): void {
   position: relative;
   width: ${RULE_PX}px;
   height: 1px;
-  border-top: 1px solid ${WORLD.neutral};
+  border-top: 1px solid var(--rw-muted, ${WORLD.neutral});
 }
 .world-loading-fill {
   position: absolute;
@@ -248,15 +248,17 @@ function ensureStyle(): void {
   top: -1px;
   height: 0;
   width: 0;
-  border-top: 1px solid ${WORLD.ink};
+  /* The earned part of the rule is the theme's one accent — ink on the ink style,
+     so the shipped rule is unchanged (src/ui/theme.ts). */
+  border-top: 1px solid var(--rw-accent, ${WORLD.ink});
 }
 /* The way out of a room that never answered. A rule under a word, and the
    one thing on this line a thumb can reach. */
 .world-loading-retry {
-  color: ${WORLD.ink};
+  color: var(--rw-ink, ${WORLD.ink});
   text-decoration: none;
   padding-bottom: 0.3em;
-  border-bottom: 1px solid ${WORLD.ink};
+  border-bottom: 1px solid var(--rw-ink, ${WORLD.ink});
   opacity: 0;
   transform: translateY(6px);
   transition:
