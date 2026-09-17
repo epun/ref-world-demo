@@ -2157,7 +2157,7 @@ function main(): void {
    */
   const follow = createFollow({ enabled: Boolean(tray?.middle) && myDrawerId.length > 0 });
 
-  installWorldMinimap({
+  const worldMap = installWorldMinimap({
     manager: creatures,
     cameraRig: world.cameraRig,
     scatter: world.scatter,
@@ -2245,12 +2245,28 @@ function main(): void {
    * shell opens, and the corner shows nothing until it is not.
    */
   if (worldGame === 'katamari' && tray?.middle && myDrawerId.length > 0) {
-    void import('./ui/size').then((m) =>
+    void import('./ui/size').then((m) => {
       m.installBallSize({
         diameter: () => creatures.ballDiameter(myDrawerId),
         mount: document.body,
-      }),
-    );
+      });
+      /*
+       * WHICH WAY THE NEAREST OTHER CREATURE IS (user ask, 2026-09-17: *"on
+       * mobile we should show a directional arrow in relation to the closest
+       * user on the minimap."*).
+       *
+       * The same three conditions as the readout above — the katamari, a
+       * handset looking at the world, a creature of its own — so it is
+       * handed over from inside the same dynamic import, which is also where
+       * the metre conversion the label needs already is (`metresOf`). A
+       * projection never calls this and its map draws exactly as before.
+       */
+      worldMap.setNearest({
+        poses: () => creatures.poses(),
+        me: myDrawerId,
+        metres: m.metresOf,
+      });
+    });
   }
 
   /*

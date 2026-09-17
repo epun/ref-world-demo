@@ -210,6 +210,229 @@ export function groundLookTarget(
   return { x: position.x + direction.x * t, z: position.z + direction.z * t };
 }
 
+// ── the nearest other creature, and the arrow that points at it ──────────────
+//
+// > User ask, 2026-09-17: *"on mobile we should show a directional arrow in
+// > relation to the closest user on the minimap."*
+//
+// A phone's map answers "where am I" (the self ring, 2026-09-09). This
+// answers the question a person asks straight after it in a game about
+// rolling into things: "where is somebody else, and how far". PHONE ONLY —
+// the projection is not looking for anybody, and it has no self to point
+// from (`WorldMinimapOptions.nearest`, handed over on the same condition the
+// ball readout is: a handset, with a creature of its own, in the katamari
+// world).
+//
+// The marks stay the two the map already uses: hairlines, and type. An arrow
+// is a line-drawn `icon` mark and the label is the same lowercase type the
+// rest of the chrome is set in (TASTE §4/§5). Nothing filled, nothing new.
+
+/** One live creature on the map, as `CreatureManager.poses()` reports it. */
+export interface NearbyCreature {
+  id: string;
+  x: number;
+  z: number;
+}
+
+/** Who the arrow is pointing at, and how far away they are in world units. */
+export interface NearestTarget extends NearbyCreature {
+  dist: number;
+}
+
+/**
+ * How much closer a challenger has to be before the arrow changes its mind,
+ * as a fraction of the distance to the one it is already pointing at. **[D]**
+ *
+ * Without it, two creatures a hair apart hand the arrow back and forth on
+ * every redraw — thirty times a second, an arrow that means nothing. Twelve
+ * percent is about a metre at the ten the field is usually spread over:
+ * enough that a real overtake still flips it, far more than the jitter of
+ * two wanderers walking.
+ */
+export const NEAREST_MARGIN = 0.12;
+
+/**
+ * The nearest OTHER creature by ground distance, with hysteresis.
+ *
+ * Ground distance, not the distance on the map: the map is a projection of
+ * the world and the question is about the world. `heldId` is whoever the
+ * arrow pointed at last time — they keep it unless somebody else is
+ * `margin` closer than they are, which is what stops the flicker.
+ *
+ * Null when there is nobody else alive, which is every room with one
+ * creature in it — the arrow simply is not drawn.
+ */
+export function pickNearest(
+  self: { x: number; z: number } | null | undefined,
+  others: readonly NearbyCreature[],
+  heldId: string | null = null,
+  margin: number = NEAREST_MARGIN,
+): NearestTarget | null {
+  if (!self || !Number.isFinite(self.x) || !Number.isFinite(self.z)) return null;
+  let best: NearestTarget | null = null;
+  let held: NearestTarget | null = null;
+  for (const other of others) {
+    if (other.id.length === 0) continue;
+    if (!Number.isFinite(other.x) || !Number.isFinite(other.z)) continue;
+    const dx = other.x - self.x;
+    const dz = other.z - self.z;
+    const dist = Math.hypot(dx, dz);
+    const candidate: NearestTarget = { id: other.id, x: other.x, z: other.z, dist };
+    if (!best || dist < best.dist) best = candidate;
+    if (other.id === heldId) held = candidate;
+  }
+  if (!best) return null;
+  if (held && held.id !== best.id) {
+    const clamped = Math.max(0, Math.min(1, margin));
+    // The challenger has to beat the held one by the margin, not merely tie
+    // it: at the boundary the creature already being pointed at wins.
+    if (best.dist > held.dist * (1 - clamped)) return held;
+  }
+  return best;
+}
+
+/**
+ * How far away, the way a glance can read it. **[D]**
+ *
+ * NOT `formatLength` — that is a readout somebody studies (`34cm 5mm`), and
+ * this is a two-character label beside a 14px arrow on a map a couple of
+ * hundred pixels wide. One unit, rounded: `12m`, and centimetres only while
+ * the two are close enough for metres to say `0m`. Lowercase, like every
+ * string in this world (TASTE §5).
+ */
+export function bearingLabel(metres: number): string {
+  const m = Number.isFinite(metres) && metres > 0 ? metres : 0;
+  if (m < 1) return `${Math.round(m * 100)}cm`;
+  return `${Math.round(m)}m`;
+}
+
+/** Where the arrow is drawn, in canvas px. */
+export interface ArrowMark {
+  /** Direction from the self dot to them, canvas radians. */
+  angle: number;
+  /** The point of the arrow. */
+  tipX: number;
+  tipY: number;
+  /** Shaft length back from the tip. */
+  length: number;
+  /** Is the creature it points at on the map at all? */
+  inside: boolean;
+}
+
+/** The shaft, at map scale 1, css px. **[D]** A mark, not a ruler. */
+export const ARROW_LEN_PX = 13;
+/** How far the tip stops short of a dot it is pointing AT. **[D]** */
+export const ARROW_TIP_GAP_PX = 5;
+/** How far inside the border an out-of-window arrow sits. **[D]** */
+export const ARROW_EDGE_INSET_PX = 4;
+/** The two hairlines off the point, at map scale 1, css px. **[D]** */
+export const ARROW_HEAD_PX = 5;
+/** …and how wide they open, radians. **[D]** The camera wedge's own angle
+ * would read as a second wedge; this is tighter, so it reads as a point. */
+export const ARROW_HEAD_ANGLE = 0.55;
+/** The distance label's type size at map scale 1, css px, and how far off
+ * the arrow it is set. **[D]** Small: it is a glance, not a readout. */
+export const ARROW_LABEL_PX = 10;
+export const ARROW_LABEL_GAP_PX = 8;
+
+/**
+ * Place the arrow: it points from the self dot the way the target lies.
+ *
+ * TWO CASES, and they are the same line read to two different lengths:
+ *
+ * - the creature is ON the map — the arrow is SHORT and sits just short of
+ *   their dot, pointing at it. There is nothing to say about a direction you
+ *   can already see, so the mark's job there is only to join the two;
+ * - the creature is off the window — the arrow sits at the BORDER in that
+ *   direction, just inside it, which is the only place on the map that can
+ *   honestly stand for "that way, further than this".
+ *
+ * Null when they are on top of each other: there is no direction between a
+ * point and itself, and an arrow drawn on a zero vector would spin.
+ */
+export function arrowMark(
+  self: { px: number; py: number },
+  target: { px: number; py: number },
+  frame: MapFrame,
+  scale = 1,
+): ArrowMark | null {
+  const dx = target.px - self.px;
+  const dy = target.py - self.py;
+  const dist = Math.hypot(dx, dy);
+  if (!Number.isFinite(dist) || dist < 1e-6) return null;
+  const angle = Math.atan2(dy, dx);
+  const ux = dx / dist;
+  const uy = dy / dist;
+  const left = frame.inset;
+  const right = frame.w - frame.inset;
+  const top = frame.inset;
+  const bottom = frame.h - frame.inset;
+  const inside =
+    target.px >= left && target.px <= right && target.py >= top && target.py <= bottom;
+  const gap = ARROW_TIP_GAP_PX * scale;
+  if (inside) {
+    const reach = Math.max(0, dist - gap);
+    return {
+      angle,
+      tipX: self.px + ux * reach,
+      tipY: self.py + uy * reach,
+      length: Math.min(ARROW_LEN_PX * scale, reach),
+      inside: true,
+    };
+  }
+  // The ray from the self dot to the edge of the field — the first of the
+  // two axes it leaves through, which is what "that way" means on a square
+  // window.
+  let t = Number.POSITIVE_INFINITY;
+  if (ux > 0) t = Math.min(t, (right - self.px) / ux);
+  else if (ux < 0) t = Math.min(t, (left - self.px) / ux);
+  if (uy > 0) t = Math.min(t, (bottom - self.py) / uy);
+  else if (uy < 0) t = Math.min(t, (top - self.py) / uy);
+  if (!Number.isFinite(t)) t = dist;
+  const reach = Math.max(0, t - ARROW_EDGE_INSET_PX * scale);
+  return {
+    angle,
+    tipX: self.px + ux * reach,
+    tipY: self.py + uy * reach,
+    length: ARROW_LEN_PX * scale,
+    inside: false,
+  };
+}
+
+/**
+ * Where the distance is written: BESIDE the arrow, never along it.
+ *
+ * Off the tip at a right angle, on whichever side faces the middle of the
+ * map — which is the only placement that works for both cases. Behind the
+ * tail reads fine for a long arrow at the border and lands straight on top
+ * of your own dot for a short one pointing at somebody a few metres away
+ * (measured on the phone at 96px: the label sat on the self ring).
+ */
+export function labelAnchor(
+  arrow: ArrowMark,
+  frame: MapFrame,
+  scale = 1,
+): { x: number; y: number } {
+  const ux = Math.cos(arrow.angle);
+  const uy = Math.sin(arrow.angle);
+  // The two normals, and the one that points inward.
+  const toCentreX = frame.w / 2 - arrow.tipX;
+  const toCentreY = frame.h / 2 - arrow.tipY;
+  const side = -uy * toCentreX + ux * toCentreY >= 0 ? 1 : -1;
+  /*
+   * The one place the mark scale is FLOORED rather than followed: at the
+   * smallest map the phone clamps to (96px, scale 0.5) a gap of four pixels
+   * put the type back on the shaft it is meant to be beside. A label that
+   * touches the mark it labels is unreadable at any size, so it keeps three
+   * quarters of the gap at worst.
+   */
+  const gap = ARROW_LABEL_GAP_PX * Math.max(0.75, scale);
+  return {
+    x: arrow.tipX - uy * side * gap - (ux * arrow.length) / 2,
+    y: arrow.tipY + ux * side * gap - (uy * arrow.length) / 2,
+  };
+}
+
 // ── the painted body (the `ghibli` style only) ───────────────────────────────
 
 /**
@@ -599,10 +822,44 @@ export interface WorldMinimapOptions {
    * passes nothing and the map is unchanged — a wall has no self.
    */
   self?(): { x: number; z: number } | null;
+  /**
+   * WHO ELSE IS NEAR, and the arrow that points at them (user ask,
+   * 2026-09-17: *"on mobile we should show a directional arrow in relation
+   * to the closest user on the minimap."*).
+   *
+   * Absent is every map that shipped before it, drawn exactly as it was —
+   * and absent is what a PROJECTION passes: it has no self to point from,
+   * and the ask is a phone's. Handed over rather than read off a global so
+   * the katamari flag and the metre conversion both stay where they already
+   * live (src/main.ts, src/ui/size.ts): this file learns no new switch.
+   */
+  nearest?: NearestConfig | null;
   mount: HTMLElement;
 }
 
+/** What the arrow needs to point at somebody: the roster, which of them is
+ * you, and the game's own ruler. */
+export interface NearestConfig {
+  /** Every live creature, by id — `CreatureManager.poses()`. */
+  poses(): readonly NearbyCreature[];
+  /** Which of them belongs to this handset (`myDrawerId` in src/main.ts). */
+  me: string;
+  /** World units → metres. `metresOf` from src/ui/size.ts, never a second
+   * copy of `WORLD_SCALE`: the arrow's label and the ball readout in the
+   * other corner have to be measuring on one ruler. */
+  metres(units: number): number;
+}
+
 export interface WorldMinimapHandle {
+  /**
+   * Turn the nearest-creature arrow on, off, or over to somebody else.
+   *
+   * The map is mounted early, on every page; the arrow's condition — the
+   * katamari, a handset, a creature of this phone's own — is settled in
+   * src/main.ts a few lines later and arrives with the module that carries
+   * the metre conversion. Null takes it off again.
+   */
+  setNearest(config: NearestConfig | null): void;
   dispose(): void;
 }
 
@@ -616,6 +873,11 @@ export function installWorldMinimap(opts: WorldMinimapOptions): WorldMinimapHand
   const ctx = canvas.getContext('2d');
 
   const viewDir = new Vector3();
+
+  /** The arrow's configuration, and who it is currently pointing at. The
+   * held id is the whole of the hysteresis state (see `pickNearest`). */
+  let nearestCfg: NearestConfig | null = opts.nearest ?? null;
+  let heldNearId: string | null = null;
 
   // Prop marks change only on scatter rebuilds; sample per draw is cheap
   // enough (subsampled array build), but cache between frames anyway keyed
@@ -920,6 +1182,59 @@ export function installWorldMinimap(opts: WorldMinimapOptions): WorldMinimapHand
       ctx.beginPath();
       ctx.arc(at.px, at.py, inner * SELF_RING_RADIUS * scale, 0, Math.PI * 2);
       ctx.stroke();
+
+      /*
+       * …and WHICH WAY SOMEBODY ELSE IS, from that same dot.
+       *
+       * Only with a `nearest` config, so this is the phone's map and nothing
+       * else: the projection draws the map it always drew. Recomputed at the
+       * map's own cadence with the last target held (`pickNearest`), so the
+       * arrow does not hand itself back and forth between two creatures the
+       * same distance away.
+       *
+       * Two hairlines and a word — the arrow is a line-drawn icon mark and
+       * the label is the map's own ink (TASTE §4, and `palette.ink` so it
+       * reads on the painted body as well as the sketch one).
+       */
+      const near = nearestCfg;
+      if (near) {
+        const others = near.poses().filter((p) => p.id !== near.me);
+        const target = pickNearest(mine, others, heldNearId);
+        heldNearId = target?.id ?? null;
+        const to = target
+          ? worldToMap(target.x, target.z, worldMapExtent(), frame)
+          : null;
+        const arrow = target && to ? arrowMark(at, to, frame, scale) : null;
+        if (target && arrow) {
+          ctx.strokeStyle = palette.ink;
+          ctx.lineWidth = 1;
+          ctx.lineJoin = 'round';
+          const ux = Math.cos(arrow.angle);
+          const uy = Math.sin(arrow.angle);
+          // The shaft, back from the tip toward you.
+          ctx.beginPath();
+          ctx.moveTo(arrow.tipX - ux * arrow.length, arrow.tipY - uy * arrow.length);
+          ctx.lineTo(arrow.tipX, arrow.tipY);
+          ctx.stroke();
+          // The head: two hairlines off the point, the same hand.
+          const head = ARROW_HEAD_PX * scale;
+          ctx.beginPath();
+          for (const side of [-1, 1]) {
+            const a = arrow.angle + Math.PI + side * ARROW_HEAD_ANGLE;
+            ctx.moveTo(arrow.tipX, arrow.tipY);
+            ctx.lineTo(arrow.tipX + Math.cos(a) * head, arrow.tipY + Math.sin(a) * head);
+          }
+          ctx.stroke();
+          // How far, in metres of the world — beside the arrow, at a right
+          // angle to it on the side that faces into the map.
+          ctx.fillStyle = palette.ink;
+          ctx.font = `${Math.max(8, Math.round(ARROW_LABEL_PX * scale))}px ui-sans-serif, system-ui, sans-serif`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          const where = labelAnchor(arrow, frame, scale);
+          ctx.fillText(bearingLabel(near.metres(target.dist)), where.x, where.y);
+        }
+      }
     }
 
     ctx.restore();
@@ -991,6 +1306,12 @@ export function installWorldMinimap(opts: WorldMinimapOptions): WorldMinimapHand
   canvas.addEventListener('click', onClick);
 
   return {
+    setNearest(config: NearestConfig | null): void {
+      nearestCfg = config;
+      // A new target is chosen from scratch: the held id belonged to the
+      // configuration that just went away.
+      heldNearId = null;
+    },
     dispose(): void {
       stop();
       document.removeEventListener('visibilitychange', onVisibility);
