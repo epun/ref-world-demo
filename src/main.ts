@@ -2701,6 +2701,15 @@ function main(): void {
       void import('./ui/loading').then((m) => {
         loadingLine = m.installWorldLoading({
           mount: document.body,
+          /*
+           * Where to send somebody whose creature never arrives — the pad,
+           * carrying the room and the world, the same address every other hop
+           * in this flow uses. It is the state a handset is in when its
+           * drawing belongs to an older generation of the world (user report
+           * 2026-09-17: a stick that steers nothing, and no hints, because
+           * there is no creature of theirs to steer or to teach about).
+           */
+          padHref: `/draw/?room=${room}${worldParam}`,
           milestones: () => ({
             reached: roomOn,
             built: m.terrainBuilt(),
