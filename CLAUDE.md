@@ -106,7 +106,10 @@ The traps, in order of how easily they get violated:
   `createLooseMeshes`/`createDebris` and the debris frame block, the replay driver's
   `stick`/`drop`/`loose`/`settle`/`crack`/`shatter` (not installed, so those scene events are
   ignored), the creature manager's `simulating()`, clumps, kinematic bodies, growth and all
-  six `apply*`, the ball-diameter readout on the phone's world view (`src/ui/size.ts`,
+  six `apply*`, the `rider` node that keeps the drawn creature its DRAWN size while the pile
+  grows (user ask 2026-09-17, PLAN §7.6 — the growth is still ONE write on the root and the
+  rider divides it back out, so don't put the creature back inside the clump), the
+  ball-diameter readout on the phone's world view (`src/ui/size.ts`,
   `CreatureManager.ballDiameter`), the handset's onboarding, loading and empty states
   (`src/ui/onboard.ts`, `loading.ts`, `empty.ts`), and **the island** — `setIslandMode` in
   `src/world/landscape.ts`, off by default, so the coast, the sea and the beach do not exist

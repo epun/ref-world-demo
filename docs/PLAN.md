@@ -1224,22 +1224,52 @@ Growth is applied to the root's uniform scale, which carries `bodyR`, the resolv
 pickup reach, the shadow stamp and `positions()` — and so the scatter's exclusion radius —
 in one write. **Speed is deliberately unchanged: this is a katamari, bigger is not slower.**
 
-**Rolling — the creature *is* the ball** *(2026-09-16)*. User ask: *"like Katamari Damacy, we
-should have the character ROLL versus walk. Right now, the walking cycle is way too slow."*
-The pile already rolled and the body slid along beside it, which read as a creature *pushing*
-a ball. So in a **`game: 'katamari'`** world the manager reparents `character.group` into
-`clump.group` — the one node that accumulates the no-slip roll — inside a wrapper named
-`ball` at local `(0, -baseR, 0)`. Since the clump already sits at `(0, baseR, 0)` on the root,
-the net local offset is zero: the body stands exactly where it stood and now turns about its
-own middle, with eyes, stalk and topper turning with it. Heading stays on the root, untouched;
+**Rolling — the PILE is the ball** *(2026-09-16, revised 2026-09-17)*. User ask: *"like
+Katamari Damacy, we should have the character ROLL versus walk. Right now, the walking cycle is
+way too slow."* The pile already rolled and the body slid along beside it, which read as a
+creature *pushing* a ball. The first answer put the body INSIDE the pile — `character.group`
+reparented into `clump.group`, the one node that accumulates the no-slip roll, in a wrapper at
+local `(0, -baseR, 0)` — so the drawn creature *was* the ball and turned with it. What that
+also made it was the GROWTH: the root's uniform scale is the pile's growth, so a fifteen-metre
+ball was a fifteen-metre creature wearing a few stones. The creature came back out on
+2026-09-17 (see **The creature does not grow**, below). The pile is the ball now: `clump.group`
+accumulates the roll and nothing else in the rig does. Heading stays on the root, untouched;
 the clump's `inverse(root.quaternion) × worldQ` already composes the two. The **gait is off**
-there (fed 0, so the amplitude spring never leaves rest) — a waddle on top of a roll is two
-locomotions at once — while `character.update`'s ambient drift floor keeps running underneath.
-Roll accumulates from the *resolved* root displacement on the host and from the *eased* follow
-displacement on a viewer, for every alive creature whether or not it carries anything; a
-passenger rolls with its carrier's ball, because a carried creature is out of the movement
-pass entirely. **No roll phase is on the wire** (`poses` carry x/z/heading): roll is arc length
-over radius, so every page derives the same turn from the same travel.
+there (fed `1 − blend`, so a rolling creature's amplitude spring sits at rest) — a waddle on
+top of a roll is two locomotions at once — while `character.update`'s ambient drift floor keeps
+running underneath. Roll accumulates from the *resolved* root displacement on the host and from
+the *eased* follow displacement on a viewer, for every alive creature whether or not it carries
+anything; a passenger rolls with its carrier's ball, because a carried creature is out of the
+movement pass entirely. **No roll phase is on the wire** (`poses` carry x/z/heading): roll is
+arc length over radius, so every page derives the same turn from the same travel — and the
+radius it divides by is `clump.R()` = `baseR × growth`, which is unchanged by any of this, so
+the no-slip rate is the rate it always was.
+
+**The creature does not grow** *(2026-09-17)* **[D]**. User ask: *"we should not scale up the
+characters as they stick to things."* The whole growth is still ONE write on the root — `bodyR`,
+the resolve circle, the pickup reach, the shadow stamp, the ground clearance, `positions()` and
+the `ballDiameter` readout all read that and nothing changed for them — and the one thing that
+must not grow divides it back out, exactly the way `localScaleOf` already divides it back out
+for every stuck stone (src/creatures/clump.ts). The seam is a `Group` named **`rider`**, built
+in `becomeAlive` on the ROOT (`Slot.rider`), holding `character.group`, and written twice per
+frame by `growPass`:
+
+- `scale = 1 / growth`, so the creature's WORLD size is its drawn size at every pile size. The
+  stalk, the topper and the eyes ride that because they are children of the character root;
+- `position.y = 2 · baseR · roll` in root-local units, which is `2R · roll` in the world: the
+  ball's north pole for a creature that is rolling — the root IS the ball's underside, see the
+  clearance below — and the ground for one that is still walking, since `roll` is 0 with an
+  empty pile and the offset is then exactly zero. The ramp between is the roll spring's, ζ ≥ 1,
+  so a creature slides up onto its own pile and never steps.
+
+It hangs on the root and **not** in the clump, so the roll does not turn it: a creature tumbling
+with the mass it is standing on would be upside down half the time, and the topper faces the
+heading instead, which is the root's and always was. The blend it reads is `slot.roll`, its OWN,
+never `rollOf` — a PASSENGER must sit in its seat on somebody else's pile rather than a
+body-length above it. And the same pass no longer writes `root.scale` for a carried slot at all:
+a passenger's root is one of the objects the carrier's clump counters, and the second write put
+the carrier's growth straight back onto it — the same swelling, one level up. `bodyR` and the
+blend are still written for it, because those are numbers about its own pile.
 
 **Walk first, roll with mass** *(2026-09-16)* **[D]**. User ask: *"let's have them start
 walking at first and once they hit a few objects they begin to roll because they have mass."*
@@ -1255,7 +1285,7 @@ move together:
   the real travel, so a creature becoming a ball stops waddling rather than being told it has
   stopped moving, and one that sheds its pile picks the walk up mid-stride;
 - the **roll accumulation** is scaled by it (`Clump.roll(dx, dz, blend)` scales the ANGLE, not
-  the travel, so the axis is unchanged): at 0 the `ball` node stays upright, at 1 it is the
+  the travel, so the axis is unchanged): at 0 the pile stays upright, at 1 it is the
   no-slip roll it always was, and in between the same distance turns it partly — no snap;
 - the **drive ceiling** lerps `MAX_SPEED × KATAMARI_WALK_MUL` → `MAX_SPEED × KATAMARI_SPEED_MUL`
   by it (`driveMult`), so a hatchling drives at 3 u/s and the same creature three stones later

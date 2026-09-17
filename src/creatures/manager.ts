@@ -712,6 +712,20 @@ interface Slot {
    */
   clump: Clump | null;
   /**
+   * The node the drawn creature hangs in — the `rider` group `becomeAlive`
+   * builds, on the ROOT and above the clump.
+   *
+   * Two things live on it and `growPass` writes both every frame (user ask,
+   * 2026-09-17: *"we should not scale up the characters as they stick to
+   * things"*): the COUNTER to the root's growth, which is exactly what
+   * `localScaleOf` already does for every stuck item
+   * (src/creatures/clump.ts), and the HEIGHT that puts the creature on top of
+   * its own pile. It is deliberately NOT inside the clump, so the roll does
+   * not turn it. Null while this is an egg, and in every world but the
+   * katamari.
+   */
+  rider: Group | null;
+  /**
    * The id of the creature CARRYING this one, or null.
    *
    * A carried creature is out of the physics pass, its agent is paused, its
@@ -1664,6 +1678,7 @@ export function createCreatureManager(
     slot.lift = 0;
     slot.clump?.dispose();
     slot.clump = null;
+    slot.rider = null;
     slot.agent?.dispose();
     slot.agent = null;
     if (slot.hatch) slot.hatch.dispose();
@@ -1755,36 +1770,45 @@ export function createCreatureManager(
       slot.clump = createClump(slot.baseR);
       root.add(slot.clump.group);
       /*
-       * AND THE CREATURE ITSELF GOES IN THE BALL (user ask, 2026-09-16:
-       * *"like Katamari Damacy, we should have the character ROLL versus
-       * walk"*).
+       * AND THE CREATURE RIDES ON TOP OF THE BALL (user ask, 2026-09-17:
+       * *"we should not scale up the characters as they stick to things"*).
        *
-       * The pile already rolled; the body slid along beside it, which read as
-       * a creature pushing a ball rather than a creature that IS one. So the
-       * body — and the stalk and topper and eyes parented to it — moves
-       * inside `clump.group`, the one thing in the rig that accumulates the
-       * no-slip roll. Eyes and topper turn with the ball, which is the whole
-       * look.
+       * It used to be INSIDE the pile: the body was reparented into
+       * `clump.group` — the one node that accumulates the no-slip roll — in a
+       * wrapper at `(0, -baseR, 0)`, so the drawn creature was the ball and
+       * turned with it (2026-09-16, *"like Katamari Damacy, we should have
+       * the character ROLL versus walk"*). That made the growth the
+       * creature's: the root's uniform scale IS the pile's growth, so a
+       * fifteen-metre ball was a fifteen-metre creature wearing a few stones.
        *
-       * THE BALL'S CENTRE IS THE ROLL CENTRE. `clump.group` sits at
-       * `(0, baseR, 0)` on the root — the middle of the creature — and the
-       * body mesh rests with its base at its own group's origin, so a wrapper
-       * at `(0, -baseR, 0)` inside the clump puts the body's centre on the
-       * rotation centre and its base back on the ground. Net local offset
-       * zero: the creature stands exactly where it stood, it just turns about
-       * its middle now.
+       * Now the pile is the ball and the creature is the passenger — the
+       * katamari read, a small character and a big mass. Two consequences,
+       * and this node is where both live:
        *
-       * The HEADING stays on the root, untouched. The clump already expresses
-       * its world roll under whatever the root is doing
-       * (`inverse(root.quaternion) × worldQ`), so the two compose without
-       * either knowing about the other.
+       *   - it COUNTERS the root's scale (`growPass`, `1 / growth`), exactly
+       *     the way `localScaleOf` counters it for every stuck item
+       *     (src/creatures/clump.ts). The creature's world size is its drawn
+       *     size, whatever the pile has become, and the stalk, topper and
+       *     eyes ride that because they are children of it;
+       *   - it hangs on the ROOT and not in the clump, so it is not turned by
+       *     the roll. A creature tumbling with the mass it is standing on
+       *     would be upside down half the time; the topper faces the heading
+       *     instead, which is the root's and always was.
+       *
+       * Its HEIGHT is written every frame, not here: `2 · baseR · roll` in
+       * root-local units, which is `2R · roll` in the world — the ball's
+       * north pole once it is rolling, and exactly the ground under its feet
+       * while it is still walking (`roll` is 0 there, so a creature carrying
+       * nothing stands where it always stood, to the float). The ramp between
+       * is the roll spring's, ζ ≥ 1: it slides up onto its pile, it never
+       * steps (TASTE §2.1, confidence 1.00).
        */
-      const ball = new Group();
-      ball.name = 'ball';
-      ball.position.set(0, -slot.baseR, 0);
+      const rider = new Group();
+      rider.name = 'rider';
       // Reparent, not copy: `Object3D.add` detaches from the root first.
-      ball.add(character.group);
-      slot.clump.group.add(ball);
+      rider.add(character.group);
+      root.add(rider);
+      slot.rider = rider;
     }
     world.shadows.removeShadow(`egg-${slot.id}`);
     slot.eggShadow = null;
@@ -3733,7 +3757,21 @@ export function createCreatureManager(
       if (!clump || !root || slot.phase !== 'alive') continue;
       clump.update(dt);
       const g = clump.growth();
-      root.scale.setScalar(g);
+      /*
+       * A CARRIED creature's root scale is its CARRIER'S to write.
+       *
+       * The clump counters the carrier's growth on everything stuck to it
+       * (`localScaleOf`, src/creatures/clump.ts) and a passenger's root IS
+       * one of those objects — so this write, which also ran for a carried
+       * slot, put the carrier's growth straight back onto the passenger and
+       * whichever of the two passes ran last decided how big somebody else's
+       * creature was drawn. That is the 2026-09-17 ask one level up: a
+       * character must not grow because it stuck to something.
+       *
+       * `bodyR` and the blend below are still written for it — they are
+       * numbers about its own pile, not about how it is drawn.
+       */
+      if (!slot.carriedBy) root.scale.setScalar(g);
       slot.bodyR = slot.baseR * g;
       /*
        * AND WHETHER IT IS A BALL YET — here, because this is the pass that
@@ -3746,6 +3784,33 @@ export function createCreatureManager(
       if (spring) {
         spring.retarget(rollTarget(clump.items.size, g));
         slot.roll = Math.min(1, Math.max(0, spring.update(dt)));
+      }
+      /*
+       * AND THE CREATURE ITSELF STAYS ITS DRAWN SIZE, on top of the pile
+       * (user ask, 2026-09-17: *"we should not scale up the characters as
+       * they stick to things"*).
+       *
+       * Two writes on the one node `becomeAlive` built for it, and both are
+       * every frame because both read the growth, which is a spring:
+       *
+       *   - the SCALE is `1 / growth`, which is `localScaleOf`'s arithmetic
+       *     (src/creatures/clump.ts) applied to the creature instead of to a
+       *     stone. The root's scale carries the mass — `bodyR`, the resolve
+       *     circle, the pickup reach, the shadow stamp below, `positions()`
+       *     and the size readout are all still that one write — and this
+       *     divides it back out of the one thing that must not grow;
+       *   - the HEIGHT is `2 · baseR · roll` root-local, so `2R · roll` in
+       *     the world: the ball's north pole for a creature that is rolling
+       *     (the root IS the ball's underside, see `groundClearance`), the
+       *     ground for one that is still walking, and a ζ ≥ 1 slide between.
+       *     `slot.roll` and not `rollOf(slot)`: a PASSENGER reads its own
+       *     pile here, so a creature carried on somebody else's ball sits in
+       *     its seat rather than a body-length above it.
+       */
+      const rider = slot.rider;
+      if (rider) {
+        rider.scale.setScalar(1 / Math.max(1e-6, g));
+        rider.position.y = 2 * slot.baseR * slot.roll;
       }
       if (slot.character) slot.characterShadow?.setRadius?.(slot.character.radius * g);
     }
@@ -3841,6 +3906,7 @@ export function createCreatureManager(
         bodyR: 0,
         baseR: 0,
         clump: null,
+        rider: null,
         carriedBy: null,
         roll: 0,
         rollSpring: null,

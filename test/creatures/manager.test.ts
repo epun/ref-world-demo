@@ -2512,39 +2512,52 @@ describe('the creature rolls — katamari locomotion', () => {
     }
   }
 
-  it('puts the body mesh inside the rolling group, centred on the roll centre', () => {
+  it('puts the drawn creature on the ROOT, beside the pile and never inside it', () => {
+    /*
+     * REVISED 2026-09-17 (*"we should not scale up the characters as they
+     * stick to things"*). The body used to hang INSIDE `clump.group` in a
+     * wrapper named `ball`, so the drawn creature was the ball and grew with
+     * it. It is a `rider` on the root now: the pile is the ball, the creature
+     * is its passenger, and the node divides the root's growth back out of it
+     * (docs/PLAN.md §7.6).
+     */
     const { world, manager } = rolling('katamari');
     const root = rootOf(world);
     const baseR = measureBodyRadius(manager.latestCharacter()!);
 
     const clump = named(root, 'clump');
-    const ball = named(root, 'ball');
+    const rider = named(root, 'rider');
     expect(clump).not.toBeNull();
-    expect(ball).not.toBeNull();
-    // The ball hangs in the pile's rolling group, not beside it.
-    expect(ball!.parent).toBe(clump);
-    // The clump sits at the middle of the creature and the ball offsets the
-    // body back down by the same amount: the body's CENTRE is on the roll
-    // centre, and its base is still on the ground (net local offset zero).
+    expect(rider).not.toBeNull();
+    // Beside the pile's rolling group, not in it.
+    expect(rider!.parent).toBe(root);
+    expect(named(root, 'ball')).toBeNull();
+    // The clump still sits at the middle of the creature — the roll centre is
+    // unchanged, and so is the radius the roll divides by.
     expect(clump!.position.y).toBeCloseTo(baseR, 10);
-    expect(ball!.position.y).toBeCloseTo(-baseR, 10);
-    expect(clump!.position.y + ball!.position.y).toBeCloseTo(0, 12);
+    // Carrying nothing, the creature is exactly where it always stood and
+    // exactly the size it was drawn: `roll` is 0 and `growth` is 1.
+    expect(rider!.position.y).toBeCloseTo(0, 12);
+    expect(rider!.scale.x).toBeCloseTo(1, 12);
 
-    // And the body really moved: the mesh reaches the root only through the
-    // ball now.
+    // And the body really moved: the mesh reaches the root through the rider
+    // and through no part of the pile.
     const mesh = firstMesh(root);
     expect(mesh).not.toBeNull();
     let hop: Object3D | null = mesh;
-    let viaBall = false;
+    let viaRider = false;
+    let viaClump = false;
     while (hop) {
-      if (hop === ball) viaBall = true;
+      if (hop === rider) viaRider = true;
+      if (hop === clump) viaClump = true;
       hop = hop.parent;
     }
-    expect(viaBall).toBe(true);
+    expect(viaRider).toBe(true);
+    expect(viaClump).toBe(false);
     manager.clearAll();
   });
 
-  it('returns the ball — and the mesh with it — to identity over one full roll', () => {
+  it('returns the pile to identity over one full roll, with the creature upright throughout', () => {
     /*
      * ONE FRAME PER HALF, because a FIRST pose is written rather than eased
      * (see the follow branch): those are the only frames whose displacement
@@ -2556,7 +2569,7 @@ describe('the creature rolls — katamari locomotion', () => {
     const { world, manager } = rolling('katamari');
     const root = rootOf(world);
     const clump = named(root, 'clump')!;
-    const ball = named(root, 'ball')!;
+    const rider = named(root, 'rider')!;
     /*
      * A BALL FIRST. The roll is scaled by the walk/roll blend now (a creature
      * carrying nothing walks, and a walking creature's ball stays upright),
@@ -2576,16 +2589,30 @@ describe('the creature rolls — katamari locomotion', () => {
     manager.update(16, 1000);
     // Halfway round: a real turn, not a decal sliding across the field.
     expect(angleOf(clump.quaternion)).toBeCloseTo(Math.PI, 3);
+    /*
+     * …and the CREATURE did not turn with it (2026-09-17). It rides the pile
+     * rather than being it, so a pile that is upside down leaves it standing
+     * up. The heading is the root's and is 0 here, so its world frame is
+     * identity apart from the ambient drift's yaw — which is a yaw, so the
+     * node's own Y axis is still straight up.
+     */
+    root.updateMatrixWorld(true);
+    const upAt = (o: Object3D): number => {
+      const e = o.matrixWorld.elements;
+      return new Vector3(e[4]!, e[5]!, e[6]!).normalize().y;
+    };
+    expect(upAt(rider)).toBeCloseTo(1, 6);
+    expect(upAt(clump)).toBeLessThan(0);
 
     manager.clearFollow();
     manager.followPoses([{ id: 'roller', x: half.x + Math.PI * R, z: half.z, heading: 0 }]);
     manager.update(16, 1016);
     // A full turn: back where it started, with no residue.
     expect(angleOf(clump.quaternion)).toBeCloseTo(0, 3);
-    // And the mesh's own frame came back with it — the whole point of
-    // reparenting the body into the ball.
+    // And the creature is where it has been the whole way round: upright.
     root.updateMatrixWorld(true);
-    expect(angleOf(ball.getWorldQuaternion(new Quaternion()))).toBeCloseTo(0, 3);
+    expect(upAt(rider)).toBeCloseTo(1, 6);
+    expect(upAt(clump)).toBeCloseTo(1, 3);
     manager.clearAll();
   });
 
@@ -2601,7 +2628,7 @@ describe('the creature rolls — katamari locomotion', () => {
    * once: the gait's amplitude, how much of the travel turns into roll, and
    * the drive ceiling.
    */
-  it('walks at spawn: gait running, ball upright, walk ceiling', () => {
+  it('walks at spawn: gait running, pile upright, walk ceiling', () => {
     const { world, manager } = rolling('katamari');
     const root = rootOf(world);
     const clump = named(root, 'clump')!;
@@ -2616,7 +2643,7 @@ describe('the creature rolls — katamari locomotion', () => {
     }
     // Really travelling, and WALKING while it does.
     expect(manager.latestCharacter()!.gaitState!().amp).toBeGreaterThan(0.5);
-    // And the ball is upright: nothing of the travel became roll.
+    // And the pile is upright: nothing of the travel became roll.
     expect(angleOf(clump.quaternion)).toBeCloseTo(0, 6);
     manager.clearAll();
   });
