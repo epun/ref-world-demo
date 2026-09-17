@@ -120,6 +120,57 @@ const DRIFT_SEED = 41.7;
  * is not a literal — it comes from the island (see `zoomMinFor`). */
 const ZOOM_MAX = 2.6;
 
+/**
+ * [D] KATAMARI ONLY — how close the phone's camera gets when the shell opens
+ * on its own creature (user ask, 2026-09-17: *"on hatch for mobile we should
+ * have the cam zoom in to people's character"*).
+ *
+ * 2, which is twice the default framing and a little under `ZOOM_MAX`. The
+ * default zoom frames a stretch of field a hatchling is a speck in; at 2 the
+ * 20-unit frame is ten, which is the creature and the ground it is standing
+ * on. Not `ZOOM_MAX`: the ceiling should still be somewhere the person can go
+ * with their own fingers, and arriving already there makes the pinch feel
+ * broken.
+ *
+ * Nothing on any other world reads it, and nothing on a projection does: a
+ * wall frames the room, and the tour's own `CLOSE_ZOOM` is its answer to the
+ * same question (src/world/tour.ts).
+ */
+export const HATCH_CLOSE_ZOOM = 2;
+
+/**
+ * [D] KATAMARI ONLY — the ball radius `HATCH_CLOSE_ZOOM` is the right framing
+ * FOR (user ask, 2026-09-17: *"we should allow for larger mass sizes than 10
+ * meters"*, and a 20 m ball at the hatch zoom is a wall).
+ *
+ * 2 world units — a little over two hatchlings, which is about where a pile
+ * stops being a creature carrying things and starts being a ball. Below it the
+ * framing is left exactly at `HATCH_CLOSE_ZOOM`, so nothing about a fresh
+ * creature's camera changes; above it the frame widens in proportion to the
+ * radius, so the ball keeps the same share of the screen however big it gets.
+ *
+ * Proportional and not a curve: the frame's world height is
+ * `FRUSTUM_HEIGHT / zoom`, so dividing the zoom by `bodyR / R_REF` makes the
+ * frame's height linear in the diameter, which is the only rule under which a
+ * ball's silhouette is a constant fraction of the screen.
+ */
+export const BALL_ZOOM_REF_R = 2;
+
+/**
+ * The zoom the follow camera wants for a ball of this radius.
+ *
+ * Never CLOSER than `HATCH_CLOSE_ZOOM` and never wider than the arithmetic
+ * asks for; the FLOOR is not applied here — `zoomTo` clamps to the live
+ * island floor, which depends on the viewport and is the rig's to know.
+ *
+ * Pure, so the ladder in the test can read the framing at 10 m, 20 m and 40 m
+ * without a camera (src/world/camera.test.ts). [D]
+ */
+export function followZoomFor(bodyR: number): number {
+  if (!(bodyR > 0)) return HATCH_CLOSE_ZOOM;
+  return HATCH_CLOSE_ZOOM / Math.max(1, bodyR / BALL_ZOOM_REF_R);
+}
+
 /** OrbitControls dampingFactor 0.05 at 60hz ≈ exp decay with this τ. */
 const ORBIT_DAMPING_TAU_MS = 325;
 /** Elevation clamps: the floor keeps the ground filling the frame — at
@@ -329,6 +380,39 @@ export class CameraRig {
     const limit = this.panLimit();
     this.targetX.retarget(Math.min(limit, Math.max(-limit, point.x)));
     this.targetZ.retarget(Math.min(limit, Math.max(-limit, point.z)));
+  }
+
+  /**
+   * Where the zoom is HEADED, which is not where it is.
+   *
+   * A readout, like `lookAtPoint`: the spring is ζ≥1 and takes
+   * `MOTION.secondaryMs` to arrive, so a test that asked `camera.zoom` on the
+   * frame after a retarget would be measuring the slide rather than the
+   * decision. Nothing in the world writes through it.
+   */
+  zoomAim(): number {
+    return this.zoomTarget;
+  }
+
+  /**
+   * CLOSE IN on one point — the phone's own creature, as its shell opens
+   * (user ask, 2026-09-17: *"on hatch for mobile we should have the cam zoom
+   * in to people's character"*).
+   *
+   * `frameAt` and `zoomTo`, and nothing else: both retarget springs that
+   * carry their position and velocity across, so this is one continuous glide
+   * from wherever the frame was — never a cut, and never an arrival that
+   * stops (TASTE §2.1, confidence 1.00). The order matters only in that the
+   * zoom moves first, so the pan bound the target is clamped against is the
+   * one the new framing allows.
+   *
+   * The angle is untouched, like every other reframe here: a pinch or a drag
+   * during the slide is still the person's, and a pinch AFTER it simply
+   * retargets the same spring.
+   */
+  closeOn(point: Vector3, zoom: number = HATCH_CLOSE_ZOOM): void {
+    this.zoomTo(zoom);
+    this.frameAt(point);
   }
 
   update(dt: number, nowMs: number): void {

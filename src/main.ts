@@ -90,7 +90,8 @@ import { MOTION, SURFACE, WORLD } from './taste/tokens';
 import { createPhoneLink } from './net/phoneLink';
 import { epochFor, readSubmission } from './phone/identity';
 import { mountWorldTray } from './world/tray';
-import { createFollow } from './world/follow';
+import { createFollow, shouldCloseOnHatch } from './world/follow';
+import { HATCH_CLOSE_ZOOM, followZoomFor } from './world/camera';
 import { createCompanionPanel } from './world/companionpanel';
 import { feedDrawingToStrokes } from './net/drawFeed';
 import type { StrokeList } from './shape/types';
@@ -295,6 +296,20 @@ function main(): void {
    * page whose person has not drawn.
    */
   let myCreature: { id: string; manager: CreatureManager } | null = null;
+  /**
+   * THE CAMERA CLOSES IN WHEN YOUR OWN SHELL OPENS (user ask, 2026-09-17:
+   * *"on hatch for mobile we should have the cam zoom in to people's
+   * character"*).
+   *
+   * A hole for the same reason `myCreature` is one: the hatch observer is
+   * wired into the world a few lines below, and everything this needs — the
+   * tray, the follow rule, this handset's own id — does not exist until the
+   * page has built the world it is looking at. Filled in beside the stick and
+   * the follow camera (search `shouldCloseOnHatch`); left a no-op on every
+   * page that has nothing of its own to close in on, which is every
+   * projection and every world but the katamari one.
+   */
+  let closeOnMyHatch: (id: string) => void = () => {};
   const world = start(canvas, {
     style: worldStyle,
     game: worldGame,
@@ -801,6 +816,22 @@ function main(): void {
        */
       hatch(id, cause) {
         recorder.hatch(id, cause);
+        /*
+         * …AND THE PHONE'S CAMERA CLOSES IN ON ITS OWN (2026-09-17).
+         *
+         * Here, and not on the four things that can open a shell, for the
+         * same reason the two publishes below are here: this is the one seam
+         * every hatch crosses — the timer, the `h` key, the panel's button,
+         * and a `hatch` arriving from the host over the wire. A viewer's
+         * creature opens through that last one, and a viewer is exactly the
+         * page a handset in a room of phones is, so hanging this anywhere
+         * else would have worked alone and nowhere else.
+         *
+         * The gate is `shouldCloseOnHatch` (src/world/follow.ts): the
+         * katamari world, a page that can follow, and this handset's own
+         * creature. Everything else falls through the no-op.
+         */
+        closeOnMyHatch(id);
         if (isHostNow()) {
           feed?.publishToPhones({ type: 'hatched', to: id, epoch: wireEpoch() });
           publishHatch(id);
@@ -2155,7 +2186,49 @@ function main(): void {
    * — is in src/world/follow.ts, with no scene in it, so it can be argued
    * with in a test rather than in a demo.
    */
-  const follow = createFollow({ enabled: Boolean(tray?.middle) && myDrawerId.length > 0 });
+  const canFollow = Boolean(tray?.middle) && myDrawerId.length > 0;
+  const follow = createFollow({ enabled: canFollow });
+
+  /*
+   * …AND WHEN YOUR SHELL OPENS, THE CAMERA COMES TO YOU (user ask,
+   * 2026-09-17: *"on hatch for mobile we should have the cam zoom in to
+   * people's character"*).
+   *
+   * The hole declared beside `myCreature` is filled here, where the follow
+   * rule and this handset's own id both exist. `closeOn` is two retargets on
+   * the rig's own ζ≥1 springs — the look-target onto the creature and the
+   * zoom to `HATCH_CLOSE_ZOOM` — so the arrival is one continuous glide from
+   * whatever the frame was and never a cut (TASTE §2.1, confidence 1.00).
+   * The frame loop below then carries on retargeting the look-target every
+   * frame, so this is the start of the follow rather than a separate move.
+   *
+   * `follow.resume()` first: somebody who tapped the minimap before the
+   * hatch asked to look elsewhere, and their own creature coming out of its
+   * shell is the one thing worth taking that back for.
+   *
+   * A pinch AFTER this retargets the same zoom spring and wins, which is why
+   * nothing here holds the zoom: the close-in is a moment, not a mode.
+   */
+  /**
+   * The size-tracking zoom this page last ASKED for.
+   *
+   * Starts at `HATCH_CLOSE_ZOOM`, which is what the hatch itself asks for, so
+   * a ball under `BALL_ZOOM_REF_R` never retargets at all and a fresh
+   * creature's camera is exactly the one the hatch left.
+   */
+  let lastFollowZoom = HATCH_CLOSE_ZOOM;
+  closeOnMyHatch = (id: string): void => {
+    if (!shouldCloseOnHatch({ game: worldGame, hatched: id, mine: myDrawerId, canFollow })) {
+      return;
+    }
+    follow.resume();
+    const at = creatures.positionOf(id);
+    // No position yet is not a reason to skip the zoom: the shell is where
+    // the creature is about to stand, and the frame loop retargets the
+    // look-target on the very next frame anyway.
+    if (at) world.cameraRig.closeOn(at);
+    else world.cameraRig.zoomTo(HATCH_CLOSE_ZOOM);
+  };
 
   installWorldMinimap({
     manager: creatures,
@@ -2342,6 +2415,33 @@ function main(): void {
     if (follow.active()) {
       const at = creatures.positionOf(myDrawerId);
       if (at) world.cameraRig.frameAt(at);
+      /*
+       * …AND THE FRAME WIDENS AS THE BALL GROWS (user ask, 2026-09-17: *"we
+       * should allow for larger mass sizes than 10 meters for users"* — and a
+       * 20 m ball at the hatch zoom is a wall, not a ball).
+       *
+       * `followZoomFor` keeps the ball a constant share of the screen: the
+       * frame's world height is `FRUSTUM_HEIGHT / zoom`, so a zoom inversely
+       * proportional to the radius is a frame linear in the diameter. The rig
+       * clamps it at the island's own floor, which is what stops a ball the
+       * size of the island opening a frame wider than the world.
+       *
+       * ONLY WHEN THE ANSWER CHANGES, and that is what keeps the pinch. A
+       * `zoomTo` every frame would undo a two-finger zoom on the frame after
+       * the fingers moved; retargeting only when the ball has actually grown
+       * means the person's own framing stands until their ball is a different
+       * size, and then it slides — on the same ζ≥1 spring as every other
+       * reframe here (TASTE §2.1). The epsilon is a whole percent of a zoom
+       * level: growth is a cube root, so a stone or two is well under it.
+       */
+      const ballR = creatures.ballDiameter(myDrawerId) / 2;
+      if (ballR > 0) {
+        const want = followZoomFor(ballR);
+        if (Math.abs(want - lastFollowZoom) > 0.01) {
+          lastFollowZoom = want;
+          world.cameraRig.zoomTo(want);
+        }
+      }
     }
     tour.update(dt, nowMs);
   });

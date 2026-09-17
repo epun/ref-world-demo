@@ -75,9 +75,13 @@ describe('the follow decision', () => {
 
 describe('where the follow camera is wired', () => {
   it('is armed only for a handset with a creature to follow', () => {
+    // The condition is named now (2026-09-17) because `shouldCloseOnHatch`
+    // asks the same question about the same page — one answer to "can this
+    // page follow at all", read by both, rather than the expression twice.
     expect(mainSrc()).toMatch(
-      /createFollow\(\{ enabled: Boolean\(tray\?\.middle\) && myDrawerId\.length > 0 \}\)/,
+      /const canFollow = Boolean\(tray\?\.middle\) && myDrawerId\.length > 0;/,
     );
+    expect(mainSrc()).toMatch(/createFollow\(\{ enabled: canFollow \}\)/);
   });
 
   it('retargets the frame onto the creature every frame it is following', () => {
@@ -94,10 +98,33 @@ describe('where the follow camera is wired', () => {
 
   it('moves the look target and never the angle', () => {
     // Following and orbiting are two halves of the same camera, not two
-    // modes competing for it. frameAt touches the target springs only;
-    // rotateBy and the zoom are nowhere near this loop.
+    // modes competing for it. frameAt touches the target springs only, and
+    // the ANGLE is never touched here: a one-finger drag keeps orbiting
+    // around the creature for the whole time it is being followed.
     const loop = frameLoop();
-    expect(loop).not.toMatch(/rotateBy|zoomTo|zoomBy|zoomDirect|panBy/);
+    expect(loop).not.toMatch(/rotateBy\(|panBy\(|rotateBy |panBy /);
+  });
+
+  it('widens the frame as the ball grows, and only when it changes', () => {
+    /*
+     * The ZOOM is in this loop since 2026-09-17 (user ask: *"we should allow
+     * for larger mass sizes than 10 meters for users"* — a 20 m ball framed
+     * at the hatch zoom is a wall). It is not the angle: the angle is still
+     * entirely the person's, and this one rule was the reason the loop used
+     * to be pinned zoom-free.
+     *
+     * The guard is what keeps the pinch. Retargeting every frame would undo
+     * a two-finger zoom on the frame after the fingers moved, so the loop
+     * only asks when the answer has actually changed — and then it
+     * RETARGETS, on the rig's own ζ≥1 spring.
+     */
+    const loop = frameLoop();
+    expect(loop).toMatch(/const ballR = creatures\.ballDiameter\(myDrawerId\) \/ 2;/);
+    expect(loop).toMatch(/const want = followZoomFor\(ballR\);/);
+    expect(loop).toMatch(/if \(Math\.abs\(want - lastFollowZoom\) > 0\.01\) \{/);
+    expect(loop).toMatch(/world\.cameraRig\.zoomTo\(want\);/);
+    // Never a direct write: `zoomDirect` resets the spring, which is a cut.
+    expect(loop).not.toMatch(/zoomDirect|zoomBy/);
   });
 
   it('suspends on the minimap tap, and only there', () => {
@@ -123,7 +150,22 @@ describe('where the follow camera is wired', () => {
     // only exists inside the sync block, so a phone that never reached the
     // broker could walk its creature and never get its camera back.
     expect(mainSrc()).toMatch(/if \(v\.mag > 0\) follow\.resume\(\);/);
-    expect(mainSrc().match(/follow\.resume\(\)/g)).toHaveLength(1);
+    // TWO callers now (2026-09-17): the stick, and your own shell opening —
+    // somebody who tapped the map before the hatch asked to look elsewhere,
+    // and their own creature coming out is the one thing worth taking that
+    // back for. Still nothing else.
+    expect(mainSrc().match(/follow\.resume\(\);/g)).toHaveLength(2);
+  });
+
+  it('closes the camera in when this page\u2019s own shell opens', () => {
+    // On the ONE seam every hatch crosses — the observer — because a
+    // viewer's creature opens because the host said so, and a viewer is
+    // what a handset in a room of phones is (src/net/worldsync.ts).
+    expect(mainSrc()).toMatch(/closeOnMyHatch\(id\);/);
+    expect(mainSrc()).toMatch(
+      /shouldCloseOnHatch\(\{ game: worldGame, hatched: id, mine: myDrawerId, canFollow \}\)/,
+    );
+    expect(mainSrc()).toMatch(/world\.cameraRig\.closeOn\(at\)/);
   });
 
   it('asks the manager for its own creature by id, egg or hatched', () => {
