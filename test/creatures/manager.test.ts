@@ -2623,12 +2623,26 @@ describe('the creature rolls — katamari locomotion', () => {
 
   it('rises to a roll over three sticks — monotone, no overshoot, gait to nothing', () => {
     const { manager } = rolling('katamari');
-    // One item is not a pile: still walking.
+    /*
+     * ONE BODY-SIZED ITEM IS ALREADY A PILE — BY MASS (2026-09-17).
+     *
+     * The rule is `ROLL_MASS_ITEMS` items OR `ROLL_GROWTH` bigger, whichever
+     * comes first (src/creatures/sticky.ts), and the snacks `feed` uses are
+     * this creature's own drawing at its own size. Since `GROWTH_K` became 4
+     * one of them makes the roller about 1.6× — well past 1.08 — so mass gets
+     * there on the first pickup rather than on the third. It used to make it
+     * 1.07×, a hair under the line, which is the only reason this read 0.
+     *
+     * The COUNT threshold is what a handful of pebbles reaches instead, and
+     * both halves are pinned on the pure function
+     * (test/creatures/growth-ladder.test.ts `rollTarget`).
+     */
     feed(manager, 'roller', 1, 1000);
-    expect(manager.rollBlend('roller')).toBe(0);
+    // A second is most of the way up a `MOTION.primaryMs` spring, not all of
+    // it: the point is that the target is 1, which it was not before.
+    expect(manager.rollBlend('roller')).toBeGreaterThan(0.5);
 
-    // Three is (ROLL_MASS_ITEMS), and mass gets there anyway (ROLL_GROWTH) —
-    // whichever comes first, which for same-size snacks is the growth.
+    // …and it stays a ball as the pile grows: monotone, never past 1.
     feed(manager, 'roller', 2);
     manager.drive('roller', { x: 0, z: 1, mag: 1 });
     let now = 200_000;
@@ -2725,7 +2739,15 @@ describe('the creature rolls — katamari locomotion', () => {
     manager.pauseAi(true);
     manager.clearFollow();
 
-    const R = manager.positions().find((p) => p.kind === 'character')!.r;
+    /*
+     * THE RADIUS THE ROLL ACTUALLY USES is the pile's — `clump.R()`, which is
+     * `baseR × growth` and is exactly what the phone's own readout measures
+     * (`ballDiameter`). The character radius is a different number (the
+     * drawn silhouette's) and using it here made the expectation out by a
+     * factor of two.
+     */
+    const R = manager.ballDiameter('roller') / 2;
+    expect(R).toBeGreaterThan(0);
     let now = 400_000;
     // One eased frame at a time, walking it a fixed distance.
     const step = 0.2;
@@ -2733,9 +2755,25 @@ describe('the creature rolls — katamari locomotion', () => {
     let travelled = 0;
     let blendSum = 0;
     let frames = 0;
+    /*
+     * The INCREMENTAL turn, `inverse(before) × after`, not the difference of
+     * two absolute angles (2026-09-17). `angleOf` answers in [0, π], so the
+     * absolute form silently folds a ball that has rolled more than half a
+     * turn back toward zero — and since a viewer now leads the host's last
+     * pose by its own derived speed (`followPoses`), a frame here covers
+     * several times what it used to and the fold was reached. The relative
+     * form measures what actually turned, whatever the accumulated attitude.
+     */
+    const prevQ = new Quaternion();
+    const delta = new Quaternion();
+    let expected = 0;
     for (let i = 0; i < 20; i++) {
-      const before = angleOf(clump.quaternion);
+      prevQ.copy(clump.quaternion);
       const from = root.position.x;
+      // The blend the roll will be applied AT: the spring is advanced in
+      // `growPass`, after the frame's roll, so this frame's turn uses the
+      // value standing now.
+      const blendNow = manager.rollBlend('roller');
       manager.followPoses([
         { id: 'roller', x: root.position.x + step, z: root.position.z, heading: 0 },
       ]);
@@ -2743,18 +2781,36 @@ describe('the creature rolls — katamari locomotion', () => {
       manager.update(33, now);
       const moved = root.position.x - from;
       travelled += moved;
-      turned += Math.abs(angleOf(clump.quaternion) - before);
+      turned += angleOf(delta.copy(prevQ).invert().multiply(clump.quaternion));
+      expected += (Math.abs(moved) / R) * blendNow;
       blendSum += manager.rollBlend('roller');
       frames++;
     }
     const noSlip = travelled / R;
     const mean = blendSum / frames;
-    // Part of the way round, in proportion to the blend — and strictly less
-    // than a full no-slip roll, which is what "no snap" means here.
+    // Part of the way round, and strictly less than a full no-slip roll,
+    // which is what "no snap" means here.
     expect(mean).toBeGreaterThan(0.05);
     expect(mean).toBeLessThan(0.95);
-    expect(turned).toBeGreaterThan(noSlip * mean * 0.5);
+    expect(turned).toBeGreaterThan(0);
     expect(turned).toBeLessThan(noSlip);
+    /*
+     * PROPORTIONAL, exactly: each frame turns the ball by that frame's own
+     * travel over the radius, times the blend the pile had when the roll was
+     * applied. Summed frame by frame rather than compared against the MEAN
+     * blend over the window — the mean is only the same thing when travel
+     * and blend are uncorrelated, and they are not: a viewer eases toward a
+     * lead now (`followPoses`, 2026-09-17), so the early frames cover more
+     * ground while the blend is still climbing.
+     *
+     * A BAND rather than an equality: the blend is a spring, and which side
+     * of the frame's own update the roll read it on is an off-by-one this
+     * loop cannot see from outside. Half to one and a half of the prediction
+     * is far tighter than the thing it rules out — a snap would be the whole
+     * no-slip roll, which at this mean blend is several times bigger.
+     */
+    expect(turned).toBeGreaterThan(expected * 0.4);
+    expect(turned).toBeLessThan(expected * 1.6);
     manager.clearAll();
   });
 

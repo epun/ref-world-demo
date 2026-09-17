@@ -39,9 +39,12 @@ import {
   STICKY,
   STUCK_COLLIDERS_MAX,
   carryLimit,
+  ROLL_GROWTH,
+  ROLL_MASS_ITEMS,
   clumpLocalOffset,
   decideContact,
   growth,
+  rollTarget,
 } from '../../src/creatures/sticky';
 import { WORLD_SCALE } from '../../src/world/katamari/rules';
 import { formatLength, metresOf } from '../../src/ui/size';
@@ -278,5 +281,37 @@ describe('the readout still reads at the top of the ladder', () => {
     for (const s of [ten, twenty, formatLength(123), formatLength(0.345)]) {
       expect(s).toBe(s.toLowerCase());
     }
+  });
+});
+
+describe('when a creature stops walking and starts rolling', () => {
+  /*
+   * `rollTarget` had no test of its own — it was only ever exercised through
+   * the manager, where the pace change moved which of its two thresholds
+   * fires first (test/creatures/manager.test.ts). Both halves, pinned here.
+   */
+  it('rolls on the COUNT, whatever the mass', () => {
+    // A handful of pebbles: no real growth, but three is a pile.
+    expect(rollTarget(ROLL_MASS_ITEMS - 1, 1.0001)).toBe(0);
+    expect(rollTarget(ROLL_MASS_ITEMS, 1.0001)).toBe(1);
+  });
+
+  it('rolls on the MASS, whatever the count', () => {
+    // One thing its own size is more mass than three pebbles — and since
+    // GROWTH_K became 4 that is exactly what the first body-sized pickup is.
+    expect(rollTarget(1, ROLL_GROWTH - 0.001)).toBe(0);
+    expect(rollTarget(1, ROLL_GROWTH)).toBe(1);
+    const oneBodySized = growth(BASE_R, [vol(BASE_R)]);
+    expect(oneBodySized).toBeGreaterThan(ROLL_GROWTH);
+    expect(rollTarget(1, oneBodySized)).toBe(1);
+  });
+
+  it('walks again on an empty pile', () => {
+    // Robbed: `growth` is exactly 1 with nothing carried, so both thresholds
+    // fall away together and the creature walks. The two arguments always
+    // arrive from the same clump, which is why this is the only empty case
+    // that is reachable.
+    expect(growth(BASE_R, [])).toBe(1);
+    expect(rollTarget(0, growth(BASE_R, []))).toBe(0);
   });
 });

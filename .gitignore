@@ -16,6 +16,9 @@ __pycache__/
 # screenshots written by the scratch smokes (scratch/*.mjs); the scripts are
 # committed, their output is evidence for one run and not a repo artefact.
 scratch/*.png
+# …and the traffic captures the room smoke writes (scratch/room-drive-smoke.mjs):
+# thousands of mqtt packets from one run, evidence and not a repo artefact.
+scratch/*.json
 
 # agent worktrees the harness checks out under the repo; never a repo artefact.
 .claude/worktrees/

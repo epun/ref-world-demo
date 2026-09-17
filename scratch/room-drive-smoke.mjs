@@ -161,7 +161,11 @@ const browser = await chromium.launch({
   ],
 });
 
-// The kit's WIRE form, which is what a phone stores and publishes.
+/**
+ * The same drawing twice: the kit's WIRE form, which is what a phone stores
+ * (and is what makes `myDrawerId` non-empty, so the tray, the stick and the
+ * follow camera all mount), and the pure `StrokeList` the pipeline wants.
+ */
 const wire = [
   { width: 90, pts: [[0.5, 0.62]] },
   { width: 60, pts: [[0.5, 0.34]] },
@@ -169,8 +173,27 @@ const wire = [
   { width: 14, pts: [[0.58, 0.8], [0.58, 0.95]] },
 ];
 
+const strokes = [
+  { pts: [[0.5, 0.62, 1]], w: 0.4 },
+  { pts: [[0.5, 0.34, 1]], w: 0.26 },
+  { pts: [[0.42, 0.8, 1], [0.42, 0.95, 1]], w: 0.045 },
+  { pts: [[0.58, 0.8, 1], [0.58, 0.95, 1]], w: 0.045 },
+];
+
+/*
+ * `world` AND `game` ON THE ADDRESS, not left to the build.
+ *
+ * `startWorldSync` returns early on a world with no NAME (`isPublic`) —
+ * there is no election in an installation room — so a run against a dist
+ * built for the public site would never define `__refworldSync` and the whole
+ * subject of this file would quietly not exist. `?world=` is the query form
+ * of the meta tag the valiocon build injects and `?game=` the same for the
+ * katamari switch, so the run says what it needs rather than depending on
+ * which `npm run build` happened last.
+ */
 const url = (extra) =>
-  `http://127.0.0.1:${PORT}/?view=world&room=${ROOM}&broker=${encodeURIComponent(BROKER)}${extra}`;
+  `http://127.0.0.1:${PORT}/?view=world&world=valiocon&game=katamari&room=${ROOM}` +
+  `&broker=${encodeURIComponent(BROKER)}${extra}`;
 
 async function openPage(label, { phone, id, extra = '' }) {
   const context = await browser.newContext(
@@ -223,12 +246,15 @@ async function openPage(label, { phone, id, extra = '' }) {
  *
  * Nothing about the test's subject: every page is ACTIVE for every step.
  */
-async function lifecycle(p, state) {
+async function park(p, parked) {
   try {
-    await p.cdp.send('Page.enable');
-    await p.cdp.send('Page.setWebLifecycleState', { state });
+    // CPU throttling on the RENDERER, which is what submits frames: the
+    // software gpu process only works as hard as the pages asking it to.
+    // `Page.setWebLifecycleState` is the obvious tool and is a silent no-op
+    // on a page playwright keeps visible, which is every page here.
+    await p.cdp.send('Emulation.setCPUThrottlingRate', { rate: parked ? 20 : 1 });
   } catch (e) {
-    console.log(`[${p.label}] lifecycle ${state}:`, String(e).slice(0, 120));
+    console.log(`[${p.label}] park ${parked}:`, String(e).slice(0, 120));
   }
 }
 
@@ -242,12 +268,19 @@ async function lifecycle(p, state) {
  */
 const PHONES = Number(process.env['PHONES'] ?? 2);
 
-const host = await openPage('H', { phone: false, extra: '&host=1' });
-await lifecycle(host, 'frozen');
+/*
+ * THE PHONES FIRST, then the projection — which is the order a room fills
+ * anyway, and it is also the cheap order: each page's boot is slowed by
+ * whatever is already drawing, and the projection is the page whose boot
+ * this test can most afford to be slow.
+ */
 const one = await openPage('A', { phone: true, id: A });
-const two = PHONES > 1 ? (await lifecycle(one, 'frozen'), await openPage('B', { phone: true, id: B })) : null;
+await park(one, true);
+const two = PHONES > 1 ? await openPage('B', { phone: true, id: B }) : null;
+if (two) await park(two, true);
+const host = await openPage('H', { phone: false, extra: '&host=1' });
 const pages = [host, one, ...(two ? [two] : [])];
-for (const p of pages) await lifecycle(p, 'active');
+for (const p of pages) await park(p, false);
 // Let the election settle and the first rosters go round with everybody
 // drawing again.
 await new Promise((r) => setTimeout(r, 10_000));
@@ -269,23 +302,45 @@ const roles = async () => {
   return out;
 };
 
-// ── the drawings arrive the way a phone's does ──────────────────────────────
+/*
+ * ── the cast ────────────────────────────────────────────────────────────────
+ *
+ * Spawned DIRECTLY on every page, with the same ids and the same strokes,
+ * rather than published on the feed. The pipeline is pure, so the same ids
+ * and strokes build the identical creatures everywhere — which is the whole
+ * premise this file relies on and the same route scratch/size-readout-smoke.mjs
+ * takes.
+ *
+ * Not the feed, for two reasons: the kit's wire widths are clamped to 0.12 of
+ * the canvas on the way in, so a blob drawn for the local pipeline arrives as
+ * thin strokes and the moderation gate is entitled to refuse it (silently, on
+ * the projection, by design) — and the subject here is the DRIVE path, which
+ * begins after a creature is standing. `grown: true` also skips the shell, so
+ * the run does not wait on the hatch clock.
+ */
 const pub = mqtt.connect(BROKER);
 await new Promise((r) => pub.on('connect', r));
-for (const id of [A, B]) {
-  pub.publish(FEED_TOPIC, JSON.stringify({ id, name: null, strokes: wire, ts: Date.now() }));
-}
-console.log('published two drawings on', FEED_TOPIC);
-
-// The public hatch clock is 7s; the pure pipeline takes a moment on a
-// software renderer. Wait for the creature to be ALIVE on every page.
+const cast = PHONES > 1 ? [A, B] : [A];
 for (const p of pages) {
-  await p.page.waitForFunction(
-    (ids) => ids.every((id) => window.__refworldCreatures.liveIds().includes(id)),
-    [A, B],
-    { timeout: 600_000 },
+  const ok = await p.page.evaluate(
+    ([ids, s]) =>
+      ids.map((id) => window.__refworldCreatures.spawn(id, s, { hatchMs: 50, grown: true })),
+    [cast, strokes],
   );
-  console.log(`[${p.label}] both creatures alive`);
+  console.log(`[${p.label}] spawn ->`, JSON.stringify(ok));
+}
+for (const p of pages) {
+  for (let i = 0; i < 40; i++) {
+    const live = await p.page.evaluate(() => window.__refworldCreatures.liveIds());
+    if (cast.every((id) => live.includes(id))) break;
+    console.log(`[${p.label}] waiting for the cast, live =`, JSON.stringify(live));
+    await new Promise((r) => setTimeout(r, 3000));
+  }
+  const live = await p.page.evaluate(() => window.__refworldCreatures.liveIds());
+  if (!cast.every((id) => live.includes(id))) {
+    throw new Error(`${p.label}: the cast never stood (live = ${JSON.stringify(live)})`);
+  }
+  console.log(`[${p.label}] the cast is standing`);
 }
 
 console.log('roles:', JSON.stringify(await roles()));
@@ -381,13 +436,15 @@ await step('1. projection hosting, phone A drives', async (mark) => {
 
 await step('2. host tab hidden and unfocused, phone A drives', async (mark) => {
   await host.cdp.send('Emulation.setFocusEmulationEnabled', { enabled: false });
-  await lifecycle(host, 'frozen');
+  // A backgrounded phone tab, as the OS gives it: the frame loop all but
+  // stops and the heartbeat timers are throttled with it.
+  await park(host, true);
   const out = await driveAndWatch(mark, A, [one]);
   out.note = 'host backgrounded';
   for (const label of Object.keys(out.moved)) {
     if (!(out.moved[label] > MOVED)) fail.push(`step 2: ${A} did not move on ${label}`);
   }
-  await lifecycle(host, 'active');
+  await park(host, false);
   return out;
 });
 
@@ -418,7 +475,7 @@ await step('4. both phones drive at once', async (mark) => {
     if (p.closed) continue;
     after[p.label] = { [A]: await posesOf(p, A), [B]: await posesOf(p, B) };
     moved[p.label] = {};
-    for (const who of [A, B]) {
+    for (const who of cast) {
       const x = before[p.label][who];
       const y = after[p.label][who];
       moved[p.label][who] = x && y ? +Math.hypot(y.x - x.x, y.z - x.z).toFixed(3) : null;

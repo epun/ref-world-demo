@@ -645,16 +645,12 @@ interface Slot {
    * outright. Null on the host, and on a viewer that has not heard about
    * this creature yet — in which case it simply stands where it spawned
    * rather than guessing.
-   */
-  /**
-   * Where the host says this creature is (src/net/worldsync.ts).
    *
    * `settled` is false until the first frame has been APPLIED. A viewer
    * spawns the whole cast at its deterministic spawn spots and only then
    * hears where the host actually has them — so the first pose is not a
    * movement, it is finding out. See the update loop.
-   */
-  /**
+   *
    * `vx`/`vz` are the host's own SPEED, in world units per millisecond,
    * derived from the two most recent poses — and `ageMs` is how long ago
    * this one landed.
