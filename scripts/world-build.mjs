@@ -267,39 +267,68 @@ export function applyWorldToHtml(html, world) {
 }
 
 /**
- * Make phone.html this world's page — the STYLE, and only the style.
+ * Tell the COMPANION HANDSET which LOOK its chrome paints in.
  *
- * The handset's document has no card: it is not a link anyone shares, it has
- * no og tags to rewrite and its world is whichever projection it joined, not
- * whichever deployment served it. So `refworld:world`, `refworld:residents`
- * and `refworld:hatch` are deliberately NOT written here — the page has never
- * read them, and a tag nobody reads is a second source of truth waiting to
- * drift from the room code in the url.
+ * phone.html has no card and no world tag — the world it belongs to travels in
+ * the url, which is how a handset can be handed a room by a link rather than
+ * by a build. The STYLE cannot travel that way for the same reason the game
+ * cannot (see `applyGameToPhoneHtml` below): it is a property of the world's
+ * own configuration and not of the address.
  *
- * What the page does need is the one that describes the DEPLOYMENT rather
- * than the room: which look its chrome paints in (2026-09-17 user ask — the
- * draw pad, the device view and the world view's own chrome in the world's
- * palette, src/ui/theme.ts). It is already a meta tag on index.html, in this
- * exact form, and src/phone/main.ts reads it back through the same
- * `readWorldStyle` the world page uses rather than a second copy of the rule.
+ * So one tag (2026-09-17 user ask — the draw pad, the device view and the
+ * world view's own chrome in the world's palette, src/ui/theme.ts). It is
+ * already a meta tag on index.html, in this exact form, and src/phone/main.ts
+ * reads it back through the same `readWorldStyle` the world page uses rather
+ * than a second copy of the rule.
  *
- * This is the seam any further per-deployment tag the handset comes to need
- * belongs in — `refworld:game` first among them, for the game's own handset
- * states. Add it to the chain below, not to a second transform.
- *
- * Written ONLY when the value is not the default, exactly like index.html —
- * so the public world's phone.html, and meridian's, come out byte-identical
- * to the file on disk. test/worlds/build.test.ts pins that.
+ * Gated IDENTICALLY to index.html's: written only for a world that opted out
+ * of the shipped look, so every other deployment's phone.html — the public
+ * one first — comes out byte-identical and does not mention a setting it does
+ * not have. test/worlds/build.test.ts pins that.
  */
-export function applyWorldToPhoneHtml(html, world) {
+export function applyStyleToPhoneHtml(html, world) {
   if (!world) return html;
   const styled = sanitizeStyle(world.style);
   if (styled === 'ink') return html;
   return html.replace(
     /([ \t]*)<title>/i,
     (_m, indent) =>
-      `${indent}<!-- injected at build time by scripts/world-build.mjs — this deployment's world -->\n` +
+      `${indent}<!-- injected at build time by scripts/world-build.mjs — this deployment's look -->\n` +
       `${indent}<meta name="refworld:style" content="${escapeAttr(styled)}" />\n` +
+      `${indent}<title>`,
+  );
+}
+
+/**
+ * Tell the COMPANION HANDSET which game it is a handset for.
+ *
+ * phone.html has no card and no world tag — the world it belongs to travels
+ * in the url (`?world=`), which is how a handset can be handed a room by a
+ * link rather than by a build (see vite.config.ts). The GAME cannot travel
+ * that way: it is a property of the world's own configuration, not of the
+ * address, and a handset that guessed it from a query would be a second
+ * source for something `worlds.json` already decides.
+ *
+ * So one tag, and only ever that one (2026-09-17, user report: *"on mobile
+ * I'm not seeing the loading screen"* — the phone lands on the companion
+ * after drawing and never on the world page, so the page that has to know
+ * about the katamari is this one). `src/phone/main.ts` reads it through the
+ * same `readWorldGame` the world page uses, so the tag a build injects and
+ * the app's reading of it can never name two different games.
+ *
+ * Gated IDENTICALLY to index.html's: written only for a world that asked for
+ * a game, so every other deployment's phone.html — the public one first —
+ * comes out byte-identical and does not mention a setting it does not have.
+ */
+export function applyGameToPhoneHtml(html, world) {
+  if (!world) return html;
+  const game = sanitizeGame(world.game);
+  if (game === 'none') return html;
+  return html.replace(
+    /([ \t]*)<title>/i,
+    (_m, indent) =>
+      `${indent}<!-- injected at build time by scripts/world-build.mjs — this deployment's game -->\n` +
+      `${indent}<meta name="refworld:game" content="${escapeAttr(game)}" />\n` +
       `${indent}<title>`,
   );
 }

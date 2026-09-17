@@ -325,8 +325,9 @@ seen.rows.forEach((row, i) => {
 });
 check(seen.board.x < 80, `it is at the left edge (x=${seen.board?.x})`);
 // Ten rows of paper and no more — the module's own `boardHeight(10)`:
-// BOARD_PAD_PX * 2 + TITLE_BLOCK_PX + 10 * ROW_PX.
-const tenRows = 18 * 2 + 33 + 10 * 22;
+// BOARD_PAD_PX * 2 + TITLE_BLOCK_PX + 10 * ROW_PX, the title block being
+// ceil(19.6 + 6.3 + 1 + LIST_GAP_PX 16) = 43 since the 16px list gap.
+const tenRows = 18 * 2 + 43 + 10 * 22;
 check(
   seen.boxHeight === tenRows,
   `the paper is exactly ten rows tall (${seen.boxHeight} vs ${tenRows})`,

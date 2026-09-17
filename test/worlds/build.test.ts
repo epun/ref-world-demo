@@ -24,7 +24,7 @@ import {
   WORLD_GAMES,
   WORLD_STYLES,
   applyWorldToHtml,
-  applyWorldToPhoneHtml,
+  applyStyleToPhoneHtml,
   normalizeHost,
   readWorlds,
   resolveWorld,
@@ -555,7 +555,7 @@ describe('the html transform', () => {
  * a world on the shipped look leaves the file byte-identical, so the public
  * handset and meridian's are the file on disk.
  */
-describe('applyWorldToPhoneHtml — the tag a handset reads', () => {
+describe('applyStyleToPhoneHtml — the look tag a handset reads', () => {
   const valiocon = {
     name: 'valiocon',
     host: 'ref-world-valiocon.vercel.app',
@@ -567,7 +567,7 @@ describe('applyWorldToPhoneHtml — the tag a handset reads', () => {
   };
 
   it('injects the style, in the same form index.html gets it', () => {
-    const out = applyWorldToPhoneHtml(PHONE, valiocon);
+    const out = applyStyleToPhoneHtml(PHONE, valiocon);
     const tag = '<meta name="refworld:style" content="ghibli" />';
     expect(out).toContain(tag);
     // character for character the tag the world page carries, so the two
@@ -579,7 +579,7 @@ describe('applyWorldToPhoneHtml — the tag a handset reads', () => {
   });
 
   it('reads back through the app\'s own function, not a fork', () => {
-    const out = applyWorldToPhoneHtml(PHONE, valiocon);
+    const out = applyStyleToPhoneHtml(PHONE, valiocon);
     const style = /<meta name="refworld:style" content="([^"]*)"/.exec(out)?.[1] ?? null;
     expect(readWorldStyle('', style)).toBe('ghibli');
     // and `?style=` still wins on the handset exactly as it does on the
@@ -591,10 +591,13 @@ describe('applyWorldToPhoneHtml — the tag a handset reads', () => {
   it('says NOTHING about the world, the residents or the hatch mode', () => {
     // three tags this page has never read. A tag nobody reads is a second
     // source of truth waiting to drift from the room code in the url.
-    const out = applyWorldToPhoneHtml(PHONE, valiocon);
+    const out = applyStyleToPhoneHtml(PHONE, valiocon);
     expect(out).not.toContain('refworld:world');
     expect(out).not.toContain('refworld:residents');
     expect(out).not.toContain('refworld:hatch');
+    // and this transform writes ONE tag: the game's is its own, so a world
+    // that asked for a game and the shipped look gets no style tag at all.
+    expect(out).not.toContain('refworld:game');
     // and it is not a card either: no title rewrite, no og anything.
     expect(out).toContain('<title>ref — companion</title>');
     expect(out).not.toContain('og:');
@@ -602,20 +605,23 @@ describe('applyWorldToPhoneHtml — the tag a handset reads', () => {
   });
 
   it('leaves the file byte-identical for the public world and for meridian', () => {
-    expect(applyWorldToPhoneHtml(PHONE, null)).toBe(PHONE);
+    expect(applyStyleToPhoneHtml(PHONE, null)).toBe(PHONE);
     for (const world of [
       { name: 'meridian', host: 'ref-world-meridian.vercel.app', residents: 'none', dev: true },
       { name: 'harbour', host: 'h.example', residents: 'shipped', style: 'ink' },
+      // a world with a GAME and the shipped look: the game tag is the other
+      // transform's, so this one still returns the file untouched.
+      { name: 'harbour', host: 'h.example', style: 'ink', game: 'katamari' },
       // a typo falls back onto the shipped look, so it injects nothing.
       { name: 'harbour', host: 'h.example', style: 'ghibl' },
       { name: 'harbour', host: 'h.example', style: '' },
     ]) {
-      expect(applyWorldToPhoneHtml(PHONE, world)).toBe(PHONE);
+      expect(applyStyleToPhoneHtml(PHONE, world)).toBe(PHONE);
     }
   });
 
   it('is still one html document, structurally', () => {
-    const out = applyWorldToPhoneHtml(PHONE, valiocon);
+    const out = applyStyleToPhoneHtml(PHONE, valiocon);
     expect(out.match(/<title>/g)).toHaveLength(1);
     expect(out).toContain('<script type="module" src="/src/phone/main.ts"></script>');
     expect(out).toContain('<div class="device-well"></div>');
@@ -629,9 +635,12 @@ describe('applyWorldToPhoneHtml — the tag a handset reads', () => {
     // the plugin that injects it. index.html keeps the card, phone.html takes
     // the style tag, and anything else vite hands the hook is passed through.
     const config = readFileSync(join(ROOT, 'vite.config.ts'), 'utf8');
-    expect(config).toContain("if (file === 'index.html') return applyWorldToHtml(html, world);");
+    expect(config).toContain("if (page === 'index.html') return applyWorldToHtml(html, world);");
+    // both of the handset's tags, through the two transforms that each gate
+    // on their own default — the style's, and the game's (which landed the
+    // same day for the companion's loading state).
     expect(config).toContain(
-      "if (file === 'phone.html') return applyWorldToPhoneHtml(html, world);",
+      'applyStyleToPhoneHtml(applyGameToPhoneHtml(html, world), world)',
     );
     // and the handset reads it back through the shared function, not a fork.
     const phone = readFileSync(join(ROOT, 'src', 'phone', 'main.ts'), 'utf8');
