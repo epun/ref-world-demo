@@ -977,7 +977,7 @@ describe('standing on the ground — heights come from the Surface seam', () => 
     manager.clearAll();
   });
 
-  it('a retiring creature sinks below the ground it was standing on', () => {
+  it('a retiring creature sinks below the ground it was standing on', async () => {
     // The population guard is the only thing that retires a creature, so
     // the world has to be full for the sink to run at all. One fixture and
     // grown arrivals keep that as cheap as a full room can be.
@@ -992,6 +992,10 @@ describe('standing on the ground — heights come from the Surface seam', () => 
 
     for (let i = 1; i < MAX_POPULATION + 1; i++) {
       manager.spawn(`filler-${i}`, circleBlob, { hatchMs: 60_000, grown: true });
+      // A full room of grown creatures is a minute of synchronous mesh
+      // building; yield now and then so the vitest worker can still answer
+      // the runner (its RPC times out at 60 s of a blocked event loop).
+      if (i % 16 === 0) await new Promise<void>((r) => setImmediate(r));
     }
 
     // Mid-slide: under the terrain it was standing on — the sink used to be
