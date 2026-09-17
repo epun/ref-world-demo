@@ -263,6 +263,81 @@ export const DRIVE_INTERVAL_MS = 1000 / DRIVE_HZ;
  */
 export const DRIVE_STALE_MS = 600;
 
+/**
+ * How long a held stick actually has to wait between packets.
+ *
+ * HALF the interval, not the interval itself, and that is a fix rather than a
+ * tuning (2026-09-17, *"people can't move on their mobile devices"*).
+ *
+ * The stick is read on a `setInterval` at `DRIVE_INTERVAL_MS`, and the gate
+ * used to be `now - lastSent < DRIVE_INTERVAL_MS`. A browser timer does not
+ * fire on the nanosecond: half of those reads land a millisecond or two EARLY
+ * and every one of them was dropped, so a thumb that was pushing at 12hz got
+ * out at six and the gaps were uneven — which is what a person feels as a
+ * creature that answers sometimes. Pacing at half the interval lets every
+ * scheduled read through and still refuses a caller that reads the stick on
+ * every pointermove.
+ */
+export const DRIVE_PACE_MS = DRIVE_INTERVAL_MS / 2;
+
+/** Precision the wire carries a stick at — thousandths, which at a
+ * magnitude of 1 is finer than any thumb and keeps the packet short. */
+const DRIVE_WIRE_PRECISION = 1000;
+
+/** One steering intent, as it goes on the wire. */
+export interface DriveSample {
+  x: number;
+  z: number;
+  mag: number;
+}
+
+/**
+ * THE THING THAT DECIDES WHETHER THIS SAMPLE GOES OUT.
+ *
+ * Pure, stateful and here rather than inline in src/main.ts, because it is
+ * the whole of the phone's half of the round trip and every one of its rules
+ * is a bug somebody has already had:
+ *
+ *   - a HELD stick repeats, so the host's `DRIVE_STALE_MS` expiry never
+ *     fires under a live thumb;
+ *   - the RELEASE goes out once and then the stick falls silent, because the
+ *     release is what normally ends a drive and repeating it forever would be
+ *     a phone talking about a thumb that is not there;
+ *   - …and it goes out WHATEVER the pacing says. A release dropped by the
+ *     rate cap leaves the creature walking until the host's expiry notices,
+ *     which is up to six hundred milliseconds of a creature going somewhere
+ *     nobody asked;
+ *   - and the numbers are rounded HERE, so the wire's precision is decided in
+ *     one place rather than at the call site.
+ *
+ * `nowMs` is passed in rather than read, so a test can drive it.
+ */
+export interface DriveUplink {
+  /** The sample to publish, or null when this one is not worth a packet. */
+  offer(vec: DriveSample, nowMs: number): DriveSample | null;
+  /** Is a thumb currently believed to be down? A readout, for tests. */
+  holding(): boolean;
+}
+
+export function createDriveUplink(paceMs: number = DRIVE_PACE_MS): DriveUplink {
+  let lastSentMs = Number.NEGATIVE_INFINITY;
+  let wasHolding = false;
+  const round = (v: number): number => Math.round(v * DRIVE_WIRE_PRECISION) / DRIVE_WIRE_PRECISION;
+  return {
+    offer(vec, nowMs) {
+      const holding = vec.mag > 0;
+      // Nothing is happening and nothing was: silence.
+      if (!holding && !wasHolding) return null;
+      // The release is exempt from the pacing — see above.
+      if (holding && nowMs - lastSentMs < paceMs) return null;
+      lastSentMs = nowMs;
+      wasHolding = holding;
+      return { x: round(vec.x), z: round(vec.z), mag: round(vec.mag) };
+    },
+    holding: () => wasHolding,
+  };
+}
+
 /** A creature's place in the world, unpacked. */
 export interface Pose {
   id: string;

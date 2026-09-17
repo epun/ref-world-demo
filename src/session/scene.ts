@@ -435,12 +435,24 @@ function readStickScene(rec: Record<string, unknown>, t: number): SceneEvent | n
     if (scale === null || !(scale > 0)) return null;
     mesh = { kind: kindRaw, variant, scale: Math.min(scale, MAX_OFFSET) };
   }
+  /*
+   * The footprint radius (2026-09-17), read on its OWN and not with the mesh
+   * hints — it is what the pile grows on rather than what the mesh looks
+   * like, and an old sender that has never heard of it must still be read.
+   * Absent leaves the field off entirely, which is the pre-2026-09-17
+   * fallback; a value that is not a positive number is refused rather than
+   * read as zero, because a zero radius is an item that adds nothing.
+   */
+  const rRaw = rec['r'] === undefined ? null : num(rec['r']);
+  if (rec['r'] !== undefined && (rRaw === null || !(rRaw > 0))) return null;
+  const radius = rRaw === null ? {} : { r: Math.min(rRaw, MAX_OFFSET) };
   return {
     k: 'stick',
     t,
     id,
     item: key,
     ...mesh,
+    ...radius,
     ox: clamp(ox, -MAX_OFFSET, MAX_OFFSET),
     oy: clamp(oy, -MAX_OFFSET, MAX_OFFSET),
     oz: clamp(oz, -MAX_OFFSET, MAX_OFFSET),

@@ -334,6 +334,27 @@ export interface StickEvent extends EventBase {
   variant?: number;
   /** Instance scale of that mesh. */
   scale?: number;
+  /**
+   * The item's FOOTPRINT RADIUS, which is the volume it adds to the pile
+   * (2026-09-17, the sticking report).
+   *
+   * Additively added, and it has to travel for the same reason `scale` does
+   * — only worse. Growth is DERIVED on every page (`clump.growth()` off the
+   * radii of what it is carrying), and a viewer reads the radius off the
+   * scatter's own instance row. But the placement was hidden the moment the
+   * host took it, so by the time a phone applies the event that row can be
+   * gone: the radius fell back to the instance SCALE, which is about 1 for
+   * everything, and a tree that added 1.73 to the host's pile added 1.00 to
+   * the phone's. So the two pages drew the same ball at two sizes, the
+   * phone's own size readout under-reported its own ball, and the circle
+   * that picks things up on the phone's screen was not the one the host was
+   * deciding with — which is what *"some users are having issues sticking
+   * to objects"* looks like from the hand holding the phone.
+   *
+   * Optional, so an old log and an old page still read: absent falls back to
+   * exactly what it fell back to before.
+   */
+  r?: number;
   /** Offset in the CLUMP's local frame — where on the pile it sits. */
   ox: number;
   oy: number;

@@ -52,6 +52,7 @@ import {
   POSE_INTERVAL_MS,
   ROLE_SETTLE_MS,
   ROSTER_REPEAT_MS,
+  createDriveUplink,
   eggsOpenedByHost,
   electHost,
   type HostRole,
@@ -449,6 +450,30 @@ function main(): void {
    * a link that has been sitting in somebody's messages for a month still
    * arrives in the right room.
    */
+  /**
+   * Which broker to talk to.
+   *
+   * Overridable because the default is a free public one, and a room that
+   * matters should not depend on it — a self-hosted broker is a url swap,
+   * not a code change. It is also the only way to exercise two clients
+   * against each other in a test, since the public broker is unreachable
+   * from a sandbox.
+   *
+   * Validated to a websocket scheme: this value opens a socket, and an
+   * unchecked one out of the query string is somewhere to point a page at
+   * a host of somebody else's choosing.
+   *
+   * READ HERE, at the top, because EVERY socket this page opens has to take
+   * it (2026-09-17). A handset's world view opens two — the world feed, and
+   * its own emote uplink (`createPhoneLink`) — and the uplink was built
+   * before this line was reached, so it went to the public broker whatever
+   * the address said. On a self-hosted room that meant the emotes still
+   * crossed a free public broker nobody had chosen, and in the sandbox it
+   * meant a page retrying an unreachable socket for the whole run.
+   */
+  const brokerParam = params.get('broker') ?? '';
+  const brokerOverride = /^wss?:\/\//.test(brokerParam) ? brokerParam : '';
+
   const keepLinkId = readKeepId(params);
   if (keepLinkId !== null && isPublic) {
     location.replace(
@@ -2621,7 +2646,9 @@ function main(): void {
    * emotes; this is the one case where it is a sender too, because the
    * person holding it owns one of the creatures on screen.
    */
-  const uplink = myDrawerId ? createPhoneLink(room, myDrawerId) : null;
+  const uplink = myDrawerId
+    ? createPhoneLink(room, myDrawerId, brokerOverride ? { broker: brokerOverride } : {})
+    : null;
   /**
    * Call every handset's drawing back (recovery, 2026-08-20).
    *
@@ -2699,22 +2726,6 @@ function main(): void {
       epoch: wireEpoch(),
     });
   };
-
-  /**
-   * Which broker to talk to.
-   *
-   * Overridable because the default is a free public one, and a room that
-   * matters should not depend on it — a self-hosted broker is a url swap,
-   * not a code change. It is also the only way to exercise two clients
-   * against each other in a test, since the public broker is unreachable
-   * from a sandbox.
-   *
-   * Validated to a websocket scheme: this value opens a socket, and an
-   * unchecked one out of the query string is somewhere to point a page at
-   * a host of somebody else's choosing.
-   */
-  const brokerParam = params.get('broker') ?? '';
-  const brokerOverride = /^wss?:\/\//.test(brokerParam) ? brokerParam : '';
 
   void connectWorldFeed({
     room,
@@ -3129,6 +3140,29 @@ function main(): void {
       // forget the last host's — either stale answer, eased into, drags the
       // whole cast across the field.
       creatures.clearFollow();
+      /*
+       * …AND LET GO OF EVERY STICK (2026-09-17, *"some characters get stuck
+       * when trying to move and glitch on mobile"*).
+       *
+       * Same argument as `clearFollow` above and the same two directions.
+       * `slot.drive` is a hand on a creature and the hands belong to the
+       * page that is SIMULATING — this page's own stick when it is host,
+       * every phone's over the wire when it is a projection. A change of
+       * role means none of them are on anything any more.
+       *
+       * Left standing it was two bugs. `isDriven` stays true while a drive
+       * is set, so those creatures' agents stayed stood down and they stood
+       * there — the report's *"stuck when trying to move"*. And a page that
+       * wins the election back (a phone alone, a projection reopening, any
+       * flap between two phones) applied every one of those stale vectors
+       * at once and the cast set off in directions nobody had asked for —
+       * the *"glitch"*. `driveHeard` below was cleared on the way down but
+       * clearing the bookkeeping is not the same as letting go.
+       *
+       * Nothing is lost by it: a stick that is still held republishes at
+       * DRIVE_HZ, so a real thumb is back within 83ms.
+       */
+      creatures.clearDrives();
       if (hosting) {
         // Taking over. The roster this world publishes is its own, so it
         // starts from a revision no viewer can already be holding — and
@@ -3192,6 +3226,10 @@ function main(): void {
      */
     window.setInterval(() => {
       if (!hosting) {
+        // The bookkeeping only. Letting GO is `settleRole`'s, on the frame
+        // the role changed rather than up to DRIVE_STALE_MS later, and it
+        // goes through the manager because the creatures are what is holding
+        // the stale vectors (see `clearDrives`).
         driveHeard.clear();
         return;
       }
@@ -3219,27 +3257,21 @@ function main(): void {
      * only the backstop for when that packet is lost.
      */
     if (myDrawerId.length > 0) {
-      let lastDriveSent = 0;
-      let lastDriveMag = 0;
+      /*
+       * The RULES are `createDriveUplink`'s (src/net/worldsync.ts) and this
+       * is only the socket. Which of them go out, when the release is
+       * exempt from the pacing, and what precision the numbers carry are
+       * every one of them a bug somebody has already had — so they live in
+       * the pure module beside the message they produce, where a test can
+       * drive the clock (test/net/two-page-room.test.ts).
+       */
+      const uplinkDrive = createDriveUplink();
       publishDrive = (v: WorldVector): void => {
-        const now = Date.now();
-        const holding = v.mag > 0;
-        // Repeat while held, so the host's expiry never fires under a live
-        // thumb; send the release once, then fall silent.
-        if (!holding && lastDriveMag === 0) return;
-        if (holding && now - lastDriveSent < DRIVE_INTERVAL_MS) return;
-        lastDriveSent = now;
-        lastDriveMag = v.mag;
+        const out = uplinkDrive.offer(v, Date.now());
+        if (!out) return;
         client.publish?.(
           syncTopic,
-          JSON.stringify({
-            t: 'drive',
-            id: me,
-            who: myDrawerId,
-            x: Number(v.x.toFixed(3)),
-            z: Number(v.z.toFixed(3)),
-            mag: Number(v.mag.toFixed(3)),
-          }),
+          JSON.stringify({ t: 'drive', id: me, who: myDrawerId, ...out }),
           { qos: 0 },
         );
       };
