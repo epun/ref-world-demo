@@ -169,9 +169,9 @@ void main() {
   // from the projection: "the water is rotating in the scene"). The wind's
   // heading wanders on purpose (windAzimuth, two octaves of slow noise), and
   // every mark below — lanes, sparkle drift, foam streaks, swell — lay along
-  // `dir`; with `dir` following the wind, the whole sea turned with the
+  // dir; with dir following the wind, the whole sea turned with the
   // weather, a few degrees a minute, which on a still camera reads as the
-  // water spinning. So `dir` is the authored flow, or one fixed heading for
+  // water spinning. So dir is the authored flow, or one fixed heading for
   // a body with none ([D], the iso diagonal), and the wind only ADVECTS: it
   // nudges where the marks are, never which way they lie.
   vec2 drift = refWindAt(p, uWindTime * 0.18, uWindDir, uWindStrength, uWindGust);
