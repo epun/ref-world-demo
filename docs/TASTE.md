@@ -508,7 +508,7 @@ the person takes away, and it is laid on the world's paper.
 **How a page knows.** `src/phone/main.ts` reads `?style=` then
 `<meta name="refworld:style">` through the same `readWorldStyle` the world page uses, and
 installs the theme at module top, before any screen mounts. `scripts/world-build.mjs`
-(`applyWorldToPhoneHtml`) injects that tag into `phone.html` only when it is not `ink`, so
+(`applyStyleToPhoneHtml`) injects that tag into `phone.html` only when it is not `ink`, so
 the public world's handset document is byte-identical to the file on disk. Each surface then
 says `var(--rw-ink, ${WORLD.ink})`: the **fallback is the shipped token**, so every module is
 correct with no theme installed at all — a unit test, or `/draw/`, which is plain html in

@@ -58,7 +58,7 @@ The traps, in order of how easily they get violated:
   the shipped token, so a module is correct with no theme installed (a unit test, or
   `/draw/`, which cannot import from `src/`); `installUiTheme` is called once at boot in
   `src/main.ts` and `src/phone/main.ts` and nowhere else. `phone.html` learns its style from
-  a `refworld:style` meta that `applyWorldToPhoneHtml` (scripts/world-build.mjs) injects only
+  a `refworld:style` meta that `applyStyleToPhoneHtml` (scripts/world-build.mjs) injects only
   when it is not `ink`.
   ⚠️ **Nothing inside the device's bezel is themed.** The well is `public/device/shell.svg`,
   a static asset shared with `/draw/` and the tray, and its screen is `SURFACE.ground` — a
