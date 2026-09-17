@@ -46,8 +46,8 @@ export const REGION_SIZE = FIELD_SIZE;
  * …and the two the bake actually uses: both through `mapScale` (2026-09-16,
  * `MAP_SCALE` in src/world/landscape.ts), ROUNDED to a whole texel count, so
  * the TEXEL stays 3.1 world units whatever the island's size — 256² over 800
- * at scale 2, and 141² over 440 at 1.1 (128 * 1.1 = 140.8, a texel of 3.1206
- * against 3.125). NPOT is free here for the same reason it is on the shore
+ * at scale 2, and 169² over 528 at 1.32 (128 * 1.32 = 168.96, a texel of
+ * 3.1243 against 3.125). NPOT is free here for the same reason it is on the shore
  * bake: WebGL2, CLAMP + LINEAR, no mipmaps.
  *
  * The bake spans the GROUND FIELD and the painted layers span the PAINTED

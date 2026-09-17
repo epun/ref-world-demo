@@ -422,12 +422,19 @@ describe('the plain is the world that shipped', () => {
   // the area alone would suggest against the authored 511 for exactly that
   // reason.
   //
+  // Re-taken 2026-09-17 again (was 674 / 6ca0c6ee): AND BACK UP 20%, to
+  // `MAP_SCALE` 1.32 ("map is now too small"). 211 units of half-extent
+  // against 176 at the same 6-unit step is 1.44 times the cells, and the deep
+  // plain inside them grows FASTER than that — 674 → 1143, 1.70× — because the
+  // coast and its 13-unit shore clearance are a fixed width eating a smaller
+  // share of a bigger island, the same asymmetry that made the way down steep.
+  //
   // The expression is untouched at every one of those re-takes, and the way
   // this file KNOWS that is the readable half below: the four ticks in the
   // hatch clearing are a fixed place on the map and have not moved a digit
-  // through any of 1 → 2 → 1.3 → 1.1.
-  const PLAIN_COUNT = 674;
-  const PLAIN_DIGEST = '6ca0c6ee';
+  // through any of 1 → 2 → 1.3 → 1.1 → 1.32.
+  const PLAIN_COUNT = 1143;
+  const PLAIN_DIGEST = '1363ef73';
 
   it('places exactly what it placed before the map existed', () => {
     const plain = shipped().filter(deepPlain).map(key);
@@ -466,19 +473,21 @@ describe('the plain is the world that shipped', () => {
    * predicate calls deep plain. Those spill-overs are the map's, so the plain
    * world does not have them.
    *
-   * Re-taken 2026-09-17 with the fixture above (`MAP_SCALE` 2 → 1.1). */
-  const PLAIN_MODE_COUNT = 666;
-  const PLAIN_MODE_DIGEST = '1f9fc454';
+   * Re-taken 2026-09-17 with the fixture above (`MAP_SCALE` 2 → 1.1, then
+   * 1.1 → 1.32). Ten short of the mapped fixture at this scale. */
+  const PLAIN_MODE_COUNT = 1133;
+  const PLAIN_MODE_DIGEST = '015eeaf7';
 
   /** Deep-plain placements the PLAIN world has and the mapped one does not —
    * located rather than counted below. Two on the doubled island (2026-09-16),
-   * one before it, and NONE at 1.1 (2026-09-17): the traffic runs both ways
-   * only where the beach has claimed the seed cell of a cluster that threw a
-   * neighbour clear, and a small island has few enough of those that at this
-   * scale it has none. Zero is a real measurement here and not a disabled
-   * check — the assertion below still compares the two sets in full, and any
-   * placement the plain world gained would fail it. */
-  const PLAIN_ONLY = 0;
+   * one before it, none at 1.1 and ONE again at 1.32 (2026-09-17, a tick at
+   * 58.1, -197.1): the traffic runs both ways only where the beach has claimed
+   * the seed cell of a cluster that threw a neighbour clear, and how many of
+   * those there are is a property of where the coast falls on the scatter grid
+   * at this scale. The assertion below compares the two sets in full and
+   * locates every one of them, so the count is a measurement and never a
+   * tolerance. */
+  const PLAIN_ONLY = 1;
 
   it('places no mountain and no reed anywhere in the plain mode', () => {
     const plain = inPlain(() => computePlacements());
@@ -540,11 +549,11 @@ describe('the plain is the world that shipped', () => {
     // Seven on the doubled island against four before it (2026-09-16,
     // `MAP_SCALE`): there are four times the cells competing for the same
     // BUILDING_MAX / WATER_TOWER_MAX slots, so the cap bites earlier and the
-    // two modes disagree about more of the boundary. Five at 1.1 (2026-09-17),
-    // between the two, for the same reason read backwards. Still a handful,
-    // and still the cap rather than the map — the bound is left at 8 because
-    // it is the measured worst of the scales this has run at, not a fit to the
-    // current one.
+    // two modes disagree about more of the boundary. Five at 1.1 and five
+    // again at 1.32 (2026-09-17), between the two, for the same reason read
+    // backwards. Still a handful, and still the cap rather than the map — the
+    // bound is left at 8 because it is the measured worst of the scales this
+    // has run at, not a fit to the current one.
     const capped = extra.filter((p) => p.kind === 'building' || p.kind === 'waterTower');
     expect(capped.length, 'cap-boundary structures').toBeLessThanOrEqual(8);
     for (const p of extra.filter((q) => q.kind !== 'building' && q.kind !== 'waterTower')) {

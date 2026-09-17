@@ -18,7 +18,11 @@
  *   3. lowercase everywhere, signed names as signed and a stand-in for the
  *      creatures nobody named;
  *   4. it is at the LEFT EDGE, near the top, and clear of the join code in
- *      the corner below it.
+ *      the corner below it;
+ *   5. the PAPER BOX (user override, docs/TASTE.md §9a): the join code's own
+ *      fill on the shared wavering loop, at the box's own measured size,
+ *      with no css panel, no shadow and no radius behind it;
+ *   6. the title, with its one recorded capital.
  *
  * A screenshot lands next to this file (gitignored — evidence for one run).
  *
@@ -203,14 +207,27 @@ const seen = await page.evaluate(() => {
     }))
     .sort((a, b) => a.y - b.y);
   const head = document.querySelector('.world-leaderboard-head');
+  const boxEl = document.querySelector('.world-leaderboard-box');
+  const paper = document.querySelector('.world-leaderboard-paper');
   const m = window.__refworldCreatures;
   return {
     mounted: Boolean(document.querySelector('.world-leaderboard')),
-    shown: head ? head.classList.contains('in') : null,
-    header: head?.textContent ?? null,
+    shown: boxEl ? boxEl.classList.contains('in') : null,
+    title: head?.textContent ?? null,
     rule: head ? getComputedStyle(head).borderBottomWidth : null,
-    background: head ? getComputedStyle(document.querySelector('.world-leaderboard')).backgroundColor : null,
-    shadow: head ? getComputedStyle(document.querySelector('.world-leaderboard')).boxShadow : null,
+    // The paper is the svg path's FILL (the recorded override, docs §9a) —
+    // the element's own css background stays transparent, which is how the
+    // wavering shape can be paper without a rectangle being drawn.
+    paperFill: paper ? getComputedStyle(paper).fill : null,
+    paperStroke: paper ? getComputedStyle(paper).stroke : null,
+    paperWidth: paper ? getComputedStyle(paper).strokeWidth : null,
+    frameBox: document.querySelector('.world-leaderboard-frame')?.getAttribute('viewBox') ?? null,
+    framePath: (paper?.getAttribute('d') ?? '').slice(0, 24),
+    frameQuads: (paper?.getAttribute('d') ?? '').split('Q').length - 1,
+    boxHeight: boxEl ? Math.round(boxEl.getBoundingClientRect().height) : null,
+    background: boxEl ? getComputedStyle(boxEl).backgroundColor : null,
+    shadow: boxEl ? getComputedStyle(boxEl).boxShadow : null,
+    radius: boxEl ? getComputedStyle(boxEl).borderRadius : null,
     rows,
     board: box(document.querySelector('.world-leaderboard')),
     qr: box(document.querySelector('.join-qr')),
@@ -249,14 +266,27 @@ const format = (units) => {
 };
 
 check(seen.mounted, 'the board mounted');
-check(seen.shown === true, 'the header slid in');
-check(seen.header === 'biggest', 'the header says what it is, in lowercase');
+check(seen.shown === true, 'the box slid in');
+// The title carries the product's one recorded capital (docs/TASTE.md §9a).
+check(seen.title === 'Leaderboard', `the title says Leaderboard (${seen.title})`);
 check(parseFloat(seen.rule) > 0, 'the one hairline rule is drawn');
+// The paper: the join code's own value, on the shared wavering loop.
+check(seen.paperFill === 'rgb(233, 235, 233)', `the paper is WORLD.light (${seen.paperFill})`);
+check(seen.paperStroke === 'rgb(53, 53, 52)', `the hairline is ink (${seen.paperStroke})`);
+check(parseFloat(seen.paperWidth) === 1.25, `the hairline is 1.25 (${seen.paperWidth})`);
+check(/^M [\d.]+ [\d.]+ Q/.test(seen.framePath), `the frame is the drawn loop (${seen.framePath})`);
+check(seen.frameQuads >= 48, `the loop is the shared generator's 48 points (${seen.frameQuads})`);
+check(
+  seen.frameBox === `0 0 264 ${seen.boxHeight}`,
+  `the frame is drawn at the box's own size (${seen.frameBox} vs ${seen.boxHeight})`,
+);
+// …and nothing else came with it: the fill is the path, not a css box.
 check(
   seen.background === 'rgba(0, 0, 0, 0)' || seen.background === 'transparent',
-  `no filled panel (${seen.background})`,
+  `no css panel behind the drawn one (${seen.background})`,
 );
 check(seen.shadow === 'none', `no shadow (${seen.shadow})`);
+check(seen.radius === '0px', `no radius (${seen.radius})`);
 check(seen.rows.length === 10, `ten rows for twelve creatures (got ${seen.rows.length})`);
 check(
   seen.rows.every((r, i) => r.rank === String(i + 1)),
@@ -294,6 +324,13 @@ seen.rows.forEach((row, i) => {
   check(row.opacity > 0.98, `row ${i + 1} has finished sliding in`);
 });
 check(seen.board.x < 80, `it is at the left edge (x=${seen.board?.x})`);
+// Ten rows of paper and no more — the module's own `boardHeight(10)`:
+// BOARD_PAD_PX * 2 + TITLE_BLOCK_PX + 10 * ROW_PX.
+const tenRows = 18 * 2 + 33 + 10 * 22;
+check(
+  seen.boxHeight === tenRows,
+  `the paper is exactly ten rows tall (${seen.boxHeight} vs ${tenRows})`,
+);
 check(seen.board.y < 80, `it is near the top (y=${seen.board?.y})`);
 const clear = (other) =>
   !other ||

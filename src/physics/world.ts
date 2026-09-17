@@ -66,10 +66,10 @@ export const HEIGHTFIELD_SEGMENTS = 256;
 /**
  * …and the count the collider is actually built at: the one above through
  * `mapScale` (2026-09-16), ROUNDED because `MAP_SCALE` is not an integer
- * (1.3 since 2026-09-17) and a segment count has to be, so the CELL stays
+ * (1.32 since 2026-09-17) and a segment count has to be, so the CELL stays
  * 1.56 world units and the reason the number was picked survives a bigger
  * map. 512 at scale 2 (263k samples a rebuild against 66k, which is why
- * `TERRAIN_REBUILD_MIN_MS` exists); 282 at 1.1, a cell of 1.5603 and 80k
+ * `TERRAIN_REBUILD_MIN_MS` exists); 338 at 1.32, a cell of 1.56213 and 115k
  * samples.
  *
  * Physics only ever runs on the simulating page of a katamari world
@@ -86,8 +86,10 @@ export function heightfieldSegments(): number {
   // terrace it should have stopped on — a physics nicety on a page that is
   // usually a VIEWER anyway (physics runs only on the simulating page), and
   // the projection that actually hosts a room keeps the 1.56-unit cell. At
-  // scale 1.1 the handset's cell is 1.56 units rather than 3.12: 440 units
-  // over the 256 kept here is coarser than the projection only above scale 2.
+  // scale 1.32 the handset's cell is 2.06 units rather than 3.12: 528 units
+  // over the 256 kept here, coarser than the projection's 1.56 and a touch
+  // wider than the 1.91-unit riser run (`riserRun`, src/world/field.ts), so
+  // the nicety above still applies on a phone and nowhere else.
   if (isPhoneTier()) return HEIGHTFIELD_SEGMENTS;
   return Math.round(HEIGHTFIELD_SEGMENTS * mapScale());
 }
