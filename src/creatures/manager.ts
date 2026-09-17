@@ -61,7 +61,6 @@ import { isWater, mapScale } from '../world/landscape';
 import { sanitizeGame, type WorldGame } from '../world/game';
 import { resolveName } from './naming';
 import { createClump, type Clump, type StuckItem } from './clump';
-import { createBallBody, type BallBody } from './ball';
 import { FLOAT_SETTLED, floatBob, floatHeight, floatTumble } from './gravity';
 import {
   carryLimit,
@@ -727,23 +726,6 @@ interface Slot {
    * katamari.
    */
   rider: Group | null;
-  /**
-   * THE BALL ITSELF — the sphere the pile is (src/creatures/ball.ts).
-   *
-   * > User report, 2026-09-17: *"currently there is a bug where the characters
-   * > are floating in space."*
-   *
-   * Nothing drew it. The creature used to BE the ball; when it came out onto
-   * the pole (see `rider`) the items were left seated on the surface of a
-   * sphere of radius `bodyR` that no mesh occupied, and a small character
-   * standing on the north pole of nothing is a creature hanging in the air.
-   * This is that mesh: radius 1 in its own space, scaled to `baseR`, hung on
-   * the ROOT so the root's growth carries it to `bodyR` in the same single
-   * write as the resolve circle and the shadow stamp. `growPass` writes its
-   * height and whether it is drawn at all. Null while this is an egg, and in
-   * every world but the katamari.
-   */
-  ball: BallBody | null;
   /**
    * The id of the creature CARRYING this one, or null.
    *
@@ -1812,11 +1794,6 @@ export function createCreatureManager(
     slot.clump?.dispose();
     slot.clump = null;
     slot.rider = null;
-    // The material only: the ball's geometry is shared per seed bucket
-    // (src/creatures/ball.ts) and outlives every creature that used it. The
-    // mesh goes with the root, which is removed from the scene below.
-    slot.ball?.dispose();
-    slot.ball = null;
     slot.agent?.dispose();
     slot.agent = null;
     if (slot.hatch) slot.hatch.dispose();
@@ -1959,40 +1936,6 @@ export function createCreatureManager(
       rider.add(character.group);
       root.add(rider);
       slot.rider = rider;
-      /*
-       * AND THE BALL HAS A BODY (user report, 2026-09-17: *"currently there is
-       * a bug where the characters are floating in space"*).
-       *
-       * The pile is the ball and the items are seated on its SURFACE
-       * (`clumpLocalOffset`, src/creatures/sticky.ts) — `R + itemR × CLUMP_FIT`
-       * out from the clump's origin — and the creature stands on its north
-       * pole (`rider`, below). Nothing drew the sphere in between: at a
-       * `GROWTH_K` of 4 a session's ball is ten to twenty metres across, so
-       * what the room actually saw was a small character hanging in the air
-       * over a thin shell of a dozen props. A missing mesh, not a misplaced
-       * creature.
-       *
-       * Radius 1 in its own space, scaled to `baseR`, ON THE ROOT: the root's
-       * uniform scale is the growth, so the drawn sphere is `bodyR` across
-       * without a second write and `ballDiameter` is a measurement of the
-       * thing on screen again. Its HUE is the creature's own
-       * (src/creatures/ball.ts) — creatures are coloured and the environment
-       * is not, which is untouched by this.
-       *
-       * On the root rather than in the clump for the same reason the rider is:
-       * its height has to be VERTICAL, and the clump's own node is the one
-       * that accumulates the roll. A sphere shows nothing by turning anyway —
-       * what reads as rolling is the props stuck to it.
-       *
-       * ADDED LAST, after the rider, so the creature's own body is still the
-       * first Mesh under the root — the rig's one ordering convention
-       * (src/character/character.ts: *"the body stays the group's first Mesh
-       * child"*), and what a caller walking the root for the drawn creature
-       * finds.
-       */
-      const ball = createBallBody(slot.baseR, character.palette, behaviorSeed(slot.id));
-      root.add(ball.mesh);
-      slot.ball = ball;
     }
     world.shadows.removeShadow(`egg-${slot.id}`);
     slot.eggShadow = null;
@@ -3032,7 +2975,6 @@ export function createCreatureManager(
       physics.world.removeCollider(collider, false);
       handle.stuck.delete(key);
     }
-    const g = clump.growth();
     for (const item of wanted) {
       let collider = handle.stuck.get(item.key);
       if (!collider) {
@@ -3056,9 +2998,21 @@ export function createCreatureManager(
         handle.sides.set(collider.handle, side);
         bodies?.registerForeign(collider.handle, side);
       }
-      // The clump's own rotation, applied to the stored local offset: the
-      // pile rolls, so the bench is somewhere different every frame.
-      scratchVec.set(item.offset.x, item.offset.y, item.offset.z).multiplyScalar(g);
+      /*
+       * The clump's own rotation, applied to the seat: the pile rolls, so the
+       * bench is somewhere different every frame.
+       *
+       * THE SEAT AND THE RADIUS ARE THE DRAWN ONES (2026-09-17, with the
+       * packing). `clump.seats()` is already in world units — the packed
+       * distance from the pile's centre — so there is no growth to multiply
+       * back in, and an item is drawn at its OWN size (`localScaleOf` divides
+       * the root's growth out of it, the 2026-09-16 ruling), so the ball that
+       * stands in for it is `item.r` and not `item.r × growth`. The two used
+       * to disagree: a stuck bench swept a circle `growth` times wider than
+       * the bench anybody could see.
+       */
+      const seat = clump.seatOf(item.key);
+      scratchVec.set(seat?.x ?? 0, seat?.y ?? 0, seat?.z ?? 0);
       scratchVec.applyQuaternion(clump.worldQ);
       // Plus the clump group's own lift off the creature's middle.
       collider.setTranslationWrtParent({
@@ -3066,10 +3020,10 @@ export function createCreatureManager(
         y: scratchVec.y,
         z: scratchVec.z,
       });
-      collider.setRadius(Math.max(0.05, item.r * g));
+      collider.setRadius(Math.max(0.05, item.r));
       const side = handle.sides.get(collider.handle);
       if (side) {
-        side.r = item.r * g;
+        side.r = item.r;
         // The collider's offset is relative to the carrier's body, so the
         // world place is that body's translation plus it.
         const at = handle.body.translation();
@@ -3145,8 +3099,9 @@ export function createCreatureManager(
       centreZ: scratchVec.z,
       headingX: Math.sin(root.rotation.y),
       headingZ: Math.cos(root.rotation.y),
-      R: clump.R(),
+      selfR: carrier.baseR,
       itemR: item.r,
+      seats: clump.seats(),
       clumpWorldQ: clump.worldQ,
       growth: clump.growth(),
     });
@@ -3192,8 +3147,9 @@ export function createCreatureManager(
       centreZ: scratchVec.z,
       headingX: Math.sin(root.rotation.y),
       headingZ: Math.cos(root.rotation.y),
-      R: clump.R(),
+      selfR: carrier.baseR,
       itemR: rider.bodyR,
+      seats: clump.seats(),
       clumpWorldQ: clump.worldQ,
       growth: clump.growth(),
     });
@@ -3353,8 +3309,9 @@ export function createCreatureManager(
       centreZ: scratchVec.z,
       headingX: Math.sin(root.rotation.y),
       headingZ: Math.cos(root.rotation.y),
-      R: clump.R(),
+      selfR: slot.baseR,
       itemR,
+      seats: clump.seats(),
       clumpWorldQ: clump.worldQ,
       growth: clump.growth(),
     });
@@ -4067,17 +4024,17 @@ export function createCreatureManager(
        *     circle, the pickup reach, the shadow stamp below, `positions()`
        *     and the size readout are all still that one write — and this
        *     divides it back out of the one thing that must not grow;
-       *   - the HEIGHT is `baseR · roll` root-local, so `R · roll` in the
-       *     world: the ball's CENTRE for a creature that is rolling (the root
-       *     is the ball's underside and `clump.group` sits at `(0, baseR, 0)`,
-       *     which is the point every seat is measured from), the ground for
-       *     one that is still walking, and a ζ ≥ 1 slide between. It used to
-       *     be `2 · baseR · roll`, the ball's north POLE — which is what the
-       *     report above is about: a creature standing on top of the mass has
-       *     the mass under it and has to be drawn over everything it collects.
-       *     `slot.roll` and not `rollOf(slot)`: a PASSENGER reads its own pile
-       *     here, so a creature carried on somebody else's ball sits in its
-       *     seat rather than inside a ball it is not carrying;
+       *   - the HEIGHT is ZERO, and that is the end of a day's worth of
+       *     revisions: `2 · baseR · roll` put the creature on the ball's north
+       *     pole (*"the objects … sit under the creature"*), `baseR · roll` put
+       *     it at the centre of a sphere of radius `bodyR` — and with the items
+       *     PACKED onto the character instead of seated on that sphere
+       *     (*"the character should be the object that the items stick to"*)
+       *     there is no sphere to be at the centre of. The creature stands on
+       *     the ground at its drawn size and the pile packs around its middle,
+       *     which is where `clump.group` now sits (`baseR` in the world,
+       *     src/creatures/clump.ts). So there is nothing to write: the rider's
+       *     own origin IS the creature's feet on the paper;
        *   - and it stays UPRIGHT. A creature at the centre of the mass is a
        *     creature that any lean of the ROOT would turn with it — and the
        *     root leans in zero gravity (`floatLift`). So the rider carries the
@@ -4090,7 +4047,7 @@ export function createCreatureManager(
       const rider = slot.rider;
       if (rider) {
         rider.scale.setScalar(1 / Math.max(1e-6, g));
-        rider.position.y = slot.baseR * slot.roll;
+        rider.position.y = 0;
         if (root.rotation.x !== 0 || root.rotation.z !== 0) {
           riderEuler.set(0, root.rotation.y, 0);
           riderQ.setFromEuler(riderEuler);
@@ -4098,35 +4055,6 @@ export function createCreatureManager(
         } else if (rider.quaternion.w !== 1) {
           rider.quaternion.identity();
         }
-      }
-      /*
-       * …AND THE MASS THE CREATURE IS INSIDE (2026-09-17, the floating report
-       * and then the centre direction).
-       *
-       * The sphere's CENTRE is `baseR · (2 · roll − 1)` root-local. At `roll`
-       * 1 that is the clump's own origin, `(0, baseR, 0)` — the point every
-       * seat is measured from and, since the centre direction, exactly where
-       * the rider is too: the creature is at the middle of the mass and the
-       * two numbers meet there. At `roll` 0 it is `−baseR`, which puts the
-       * whole sphere under the root and therefore under the ground the root is
-       * standing on, so a WALKING creature shows no ball without anything
-       * being switched off. The ramp between is the roll spring's — the mass
-       * rises out of the ground around the creature as the creature rides up
-       * into it, a slide and never a pop (TASTE §2.1, and never `scale: 0→1`)
-       * — and the creature is inside the shell at every value of it, because
-       * the gap between the two heights is `baseR · (1 − roll)` and the shell's
-       * radius is `baseR`.
-       *
-       * `visible` is belt and braces for the one place the ground cannot
-       * hide it — the very top of a buried sphere is tangent to the paper
-       * under the root, and on a slope that tangent point can clear the
-       * downhill ground. A tenth of a percent of the blend is the whole of
-       * what it hides.
-       */
-      const ball = slot.ball;
-      if (ball) {
-        ball.mesh.position.y = slot.baseR * (2 * slot.roll - 1);
-        ball.mesh.visible = slot.roll > 1e-3;
       }
       if (slot.character) slot.characterShadow?.setRadius?.(slot.character.radius * g);
     }
@@ -4223,7 +4151,6 @@ export function createCreatureManager(
         baseR: 0,
         clump: null,
         rider: null,
-        ball: null,
         carriedBy: null,
         roll: 0,
         rollSpring: null,

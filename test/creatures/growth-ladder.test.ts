@@ -242,19 +242,22 @@ describe('the arithmetic survives the top of the ladder', () => {
           centreZ: 0,
           headingX: 0,
           headingZ: 1,
-          R,
+          selfR: BASE_R,
           itemR,
+          seats: [],
           clumpWorldQ: { x: 0, y: 0, z: 0, w: 1 },
           growth: g,
         });
         for (const v of [offset.x, offset.y, offset.z]) expect(Number.isFinite(v)).toBe(true);
         /*
-         * The seat is the ball's surface plus the item's radius sunk in by
-         * `CLUMP_FIT`, expressed in the clump's own (unscaled) frame — so its
-         * length is `(R + itemR·CLUMP_FIT) / growth`, exactly, whatever the
-         * sizes. That is the number every screen derives for itself.
+         * THE FIRST ITEM sits on the CHARACTER — its own radius plus the
+         * item's sunk in by `CLUMP_FIT`, expressed in the clump's own
+         * (unscaled) frame, so its length is `(baseR + itemR·CLUMP_FIT) /
+         * growth` exactly, whatever the sizes (2026-09-17: there is no shell
+         * to seat on, and everything after the first packs against the seats
+         * already taken — `packSeatDistance`, tested in sticky.test.ts).
          */
-        const want = (R + itemR * CLUMP_FIT) / g;
+        const want = (BASE_R + itemR * CLUMP_FIT) / g;
         expect(Math.hypot(offset.x, offset.y, offset.z)).toBeCloseTo(want, 8);
       }
     }

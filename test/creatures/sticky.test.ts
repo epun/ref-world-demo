@@ -492,21 +492,29 @@ describe('rollAxis / rollDelta', () => {
 });
 
 describe('clumpLocalOffset', () => {
+  /*
+   * `selfR` is the CHARACTER's own radius since 2026-09-17 (*"the character
+   * should be the object that the items stick to"*): there is no shell, so the
+   * first item is seated on the creature and the rest pack outward against
+   * what is already there (`seats`, and `packSeatDistance` below). With an
+   * empty pile the answer is the creature's surface, which is what these ask.
+   */
   const base = {
     centreX: 0,
     centreY: 0,
     centreZ: 0,
     headingX: 0,
     headingZ: 1,
-    R: 2,
+    selfR: 2,
     itemR: 0.5,
+    seats: [] as { x: number; y: number; z: number; r: number }[],
     growth: 1,
     clumpWorldQ: { x: 0, y: 0, z: 0, w: 1 } as Quat,
   };
 
-  it('seats an item on the side it was struck from, at the pile surface', () => {
+  it('seats an item on the side it was struck from, against the creature', () => {
     const o = clumpLocalOffset({ ...base, itemX: 5, itemY: 0, itemZ: 0 });
-    const reach = base.R + base.itemR * CLUMP_FIT;
+    const reach = base.selfR + base.itemR * CLUMP_FIT;
     expect(o.x).toBeCloseTo(reach, 12);
     expect(o.y).toBeCloseTo(0, 12);
     expect(o.z).toBeCloseTo(0, 12);
@@ -520,15 +528,15 @@ describe('clumpLocalOffset', () => {
     expect(near.z).toBeCloseTo(far.z, 12);
   });
 
-  it('sinks the item into the pile rather than perching it tangent', () => {
+  it('sinks the item into the creature rather than perching it tangent', () => {
     const o = clumpLocalOffset({ ...base, itemX: 5, itemY: 0, itemZ: 0 });
-    expect(o.x).toBeLessThan(base.R + base.itemR);
-    expect(o.x).toBeGreaterThan(base.R);
+    expect(o.x).toBeLessThan(base.selfR + base.itemR);
+    expect(o.x).toBeGreaterThan(base.selfR);
   });
 
   it('uses the heading when the hit is exactly at the centre', () => {
     const o = clumpLocalOffset({ ...base, itemX: 0, itemY: 0, itemZ: 0 });
-    const reach = base.R + base.itemR * CLUMP_FIT;
+    const reach = base.selfR + base.itemR * CLUMP_FIT;
     expect(o.x).toBeCloseTo(0, 12);
     expect(o.z).toBeCloseTo(reach, 12);
   });
@@ -545,7 +553,7 @@ describe('clumpLocalOffset', () => {
     const dy = item.itemY - centre.centreY;
     const dz = item.itemZ - centre.centreZ;
     const len = Math.hypot(dx, dy, dz);
-    const reach = base.R + base.itemR * CLUMP_FIT;
+    const reach = base.selfR + base.itemR * CLUMP_FIT;
     // Same direction as the hit, at exactly the seated distance.
     expect(world.x).toBeCloseTo((dx / len) * reach, 10);
     expect(world.y).toBeCloseTo((dy / len) * reach, 10);

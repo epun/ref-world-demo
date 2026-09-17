@@ -7,8 +7,14 @@
  * its group's local transform is rewritten every frame by the gait, and
  * anything parented under it would be squashed and bobbed along with the
  * body. The root is the two-level rig's stable half — it owns the world
- * position and nothing else writes it — so the pile hangs there, at local
- * `(0, baseR, 0)`, which is the middle of the creature.
+ * position and nothing else writes it — so the pile hangs there, at the
+ * middle of the CREATURE: local `(0, baseR / growth, 0)`, which is `baseR`
+ * in the world at every pile size, because the root's uniform scale is the
+ * growth and the creature is drawn at its own size inside it. It was a flat
+ * `baseR` — `bodyR` in the world — while the pile was a sphere of radius
+ * `bodyR` with the root as its underside; with the items packed onto the
+ * character instead (2026-09-17) that put the whole mass a grown radius up in
+ * the air, which is the floating the packing exists to end.
  *
  * WHAT THE CLUMP OWNS: where each stuck thing sits, at what rotation, how
  * far the pile has rolled, and how big the accumulated volume has made its
@@ -22,6 +28,19 @@
  * displacement at the no-slip rate (`rollAxis`/`rollDelta`) — arc length over
  * radius, which means a bigger pile turns more slowly for the same distance,
  * exactly as a bigger ball does.
+ *
+ * THE SEATS ARE HELD IN WORLD UNITS *(2026-09-17, user direction: "the
+ * character should be the object that the items stick to")*. An item's seat
+ * arrives clump-local — that is what the `stick` event carries — but the pile
+ * is PACKED now (`packSeatDistance`, src/creatures/sticky.ts): each thing
+ * rests against the character and against its neighbours, at its own size.
+ * Clump-local offsets ride the root's uniform scale, so holding them would
+ * inflate the packing every time the growth rose and open a gap between every
+ * pair of objects — the pile would loosen into the cloud that the drawn shell
+ * used to hide. So the seat is converted ONCE, on arrival, using the growth
+ * the pile had BEFORE the item joined it (the same number the deciding page
+ * packed against), and the per-frame write divides the live growth back out.
+ * The springs animate in world units for the same reason.
  */
 
 import { Group, Quaternion, Vector3, type Object3D } from 'three';
@@ -58,7 +77,12 @@ export interface StuckItem {
    * for a prop, whose `scale` is the answer.
    */
   worldScale?: () => number;
-  /** Its seat, in CLUMP-LOCAL space (`clumpLocalOffset`). */
+  /**
+   * Its seat, in CLUMP-LOCAL space (`clumpLocalOffset`) — the units the
+   * `stick` event carries, which are world units divided by the growth the
+   * pile had when the item arrived. `add` converts it to world once and the
+   * frame divides the live growth back out (see the module header).
+   */
   offset: { x: number; y: number; z: number };
   /** Its attitude there (`clumpLocalRotation`). A fallen tree keeps lying the
    * way it fell. */
@@ -88,6 +112,10 @@ export interface StuckItem {
 /** A live entry: the item plus the three springs sliding it into its seat. */
 interface Entry {
   item: StuckItem;
+  /** The seat in WORLD units — `offset × the growth on arrival` (see the
+   * module header). What the springs chase, and what the packing of the next
+   * item is measured against. */
+  seat: { x: number; y: number; z: number };
   /**
    * One spring per axis. Three, not one — a slide is a translation in space
    * and the three components settle independently; every one of them is
@@ -124,6 +152,17 @@ export interface Clump {
    * — a caller that has no blend is a pile that simply rolls.
    */
   roll(dx: number, dz: number, blend?: number): void;
+  /**
+   * What is already on the pile, in WORLD units from its centre, with each
+   * thing's own radius — the list `packSeatDistance` packs the next item
+   * against (src/creatures/sticky.ts). A fresh array; the caller is the
+   * deciding page's one pickup, not a frame.
+   */
+  seats(): { x: number; y: number; z: number; r: number }[];
+  /** …and ONE of them, by key: where that thing is sitting in world units
+   * from the pile's centre. What the rigid-body stand-in reads, since the
+   * collider has to be where the item is DRAWN. */
+  seatOf(key: string): { x: number; y: number; z: number } | undefined;
   /** The thing furthest out, which is the one that gets knocked off. */
   outermost(): StuckItem | undefined;
   /** Advance the entrance slides. Not in any spec of the geometry — the
@@ -136,6 +175,8 @@ export interface Clump {
 export function createClump(baseR: number): Clump {
   const group = new Group();
   group.name = 'clump';
+  // The creature's middle, in world units — rewritten every frame by `update`
+  // as the growth moves (see the module header).
   group.position.set(0, baseR, 0);
   const worldQ = new Quaternion();
   const items = new Map<string, StuckItem>();
@@ -187,20 +228,41 @@ export function createClump(baseR: number): Clump {
       previous?.x.dispose();
       previous?.y.dispose();
       previous?.z.dispose();
+      /*
+       * THE GROWTH BEFORE THIS ITEM JOINED, which is the number the seat was
+       * packed against: the deciding page computes the offset and only then
+       * seats the item (src/creatures/manager.ts), so a viewer applying the
+       * event has to read the same pre-arrival growth or the two pages would
+       * place the same three floats a few centimetres apart. Read BEFORE the
+       * insert below, and that ordering is the whole of it.
+       */
+      const arrived = growth();
       items.set(item.key, item);
       const from = item.from ?? item.offset;
       const config = { settleMs: MOTION.secondaryMs };
       const entry: Entry = {
         item,
-        x: new Spring(from.x, config),
-        y: new Spring(from.y, config),
-        z: new Spring(from.z, config),
+        seat: {
+          x: item.offset.x * arrived,
+          y: item.offset.y * arrived,
+          z: item.offset.z * arrived,
+        },
+        x: new Spring(from.x * arrived, config),
+        y: new Spring(from.y * arrived, config),
+        z: new Spring(from.z * arrived, config),
       };
-      entry.x.retarget(item.offset.x);
-      entry.y.retarget(item.offset.y);
-      entry.z.retarget(item.offset.z);
+      entry.x.retarget(entry.seat.x);
+      entry.y.retarget(entry.seat.y);
+      entry.z.retarget(entry.seat.z);
       entries.set(item.key, entry);
-      item.object.position.set(from.x, from.y, from.z);
+      // In world units, divided back out by the growth the pile is at NOW —
+      // which is the one the root is scaled by this frame.
+      const now = Math.max(1e-6, growth());
+      item.object.position.set(
+        (from.x * arrived) / now,
+        (from.y * arrived) / now,
+        (from.z * arrived) / now,
+      );
       item.object.quaternion.set(
         item.rotation.x,
         item.rotation.y,
@@ -248,11 +310,23 @@ export function createClump(baseR: number): Clump {
       }
     },
 
+    seats(): { x: number; y: number; z: number; r: number }[] {
+      const out: { x: number; y: number; z: number; r: number }[] = [];
+      for (const entry of entries.values()) {
+        out.push({ x: entry.seat.x, y: entry.seat.y, z: entry.seat.z, r: entry.item.r });
+      }
+      return out;
+    },
+
+    seatOf(key): { x: number; y: number; z: number } | undefined {
+      return entries.get(key)?.seat;
+    },
+
     outermost(): StuckItem | undefined {
       let best: StuckItem | undefined;
       let bestD = -1;
       for (const item of items.values()) {
-        const o = item.offset;
+        const o = entries.get(item.key)?.seat ?? item.offset;
         const d = o.x * o.x + o.y * o.y + o.z * o.z;
         // Ties broken by insertion order — `Map` iterates in it, and `>`
         // keeps the first. Deterministic, so two pages agree.
@@ -265,13 +339,19 @@ export function createClump(baseR: number): Clump {
     },
 
     update(dtMs): void {
+      // One read a frame for the whole pile: the growth the root is scaled by,
+      // which every seat below is divided by (see the module header).
+      const now = Math.max(1e-6, growth());
+      // …and the pile's own origin with it: the CREATURE's middle, `baseR` in
+      // the world however big the pile has become.
+      group.position.y = baseR / now;
       for (const entry of entries.values()) {
         // Nothing fully arrests (TASTE §3): the springs keep running after
         // they have settled, which is the ambient floor rather than a freeze.
         entry.item.object.position.set(
-          entry.x.update(dtMs),
-          entry.y.update(dtMs),
-          entry.z.update(dtMs),
+          entry.x.update(dtMs) / now,
+          entry.y.update(dtMs) / now,
+          entry.z.update(dtMs) / now,
         );
         // Every frame, not only at the seat: the growth is a spring, so the
         // root's scale is different on each frame of a pickup.

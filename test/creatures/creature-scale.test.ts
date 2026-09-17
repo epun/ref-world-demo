@@ -260,7 +260,7 @@ describe('a creature does not grow with its pile', () => {
     manager.clearAll();
   });
 
-  it('rides at the ball’s centre, un-rotated by the roll', () => {
+  it('stands on the ground at its drawn size, un-rotated by the roll', () => {
     const { scene, manager } = harness();
     manager.spawn('grower', fish, { hatchMs: 60_000, grown: true });
     manager.update(16, 1000);
@@ -277,14 +277,15 @@ describe('a creature does not grow with its pile', () => {
     // The node hangs on the ROOT, above the pile — not inside the clump.
     expect(rider.parent).toBe(root);
     /*
-     * The creature's base is at the ball's CENTRE: `R` above the root, which
-     * is the ball's underside (docs/PLAN.md §7.6). It was `2R`, the pole,
-     * until the user direction of 2026-09-17 — *"they should be at the center
-     * of the sphere of the objects"* — and the pole is what made a creature
-     * look like it was standing on top of everything it had collected.
+     * The creature is ON THE GROUND — its group's origin is the root's, to the
+     * float. It rode the ball's north pole (`2R`) and then the ball's centre
+     * (`R`) earlier on 2026-09-17; with the items packed onto the CHARACTER
+     * there is no sphere to ride and it stands where it always stood
+     * (docs/PLAN.md §7.6).
      */
     const lifted = worldPos(charGroupOf(root)).y - root.position.y;
-    expect(lifted).toBeCloseTo(R * manager.rollBlend('grower'), 4);
+    expect(lifted).toBeCloseTo(0, 9);
+    expect(R).toBeGreaterThan(0);
     expect(manager.rollBlend('grower')).toBeGreaterThan(0.9);
 
     /*

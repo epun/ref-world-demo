@@ -1297,8 +1297,8 @@ frame by `growPass`:
   clearance below, and `clump.group` sits at `(0, baseR, 0)`, which is that centre and the point
   every seat is measured from — and the ground for one that is still walking, since `roll` is 0
   with an empty pile and the offset is then exactly zero. It was `2 · baseR · roll`, the POLE,
-  for a few hours on 2026-09-17; see **And the ball has a BODY** below for why the creature
-  moved to the middle and what that cost the shell. The ramp between is the roll spring's,
+  for a few hours on 2026-09-17; see **The items ARE the mass** below for why the creature
+  moved to the middle of its pile. The ramp between is the roll spring's,
   ζ ≥ 1, so a creature slides up into its own pile and never steps.
 
 It hangs on the root and **not** in the clump, so the roll does not turn it: a creature tumbling
@@ -1312,76 +1312,60 @@ a passenger's root is one of the objects the carrier's clump counters, and the s
 the carrier's growth straight back onto it — the same swelling, one level up. `bodyR` and the
 blend are still written for it, because those are numbers about its own pile.
 
-**And the ball has a BODY** *(2026-09-17)* **[D]**. User report: *"currently there is a bug
-where the characters are floating in space."* It was not a placement bug — it was a missing
-mesh. The creature came out of the pile that morning (above) and what it came out standing on
-was a sphere nothing drew: the items are seated on the SURFACE of a ball of radius `bodyR`
-(`clumpLocalOffset` — `R + itemR × CLUMP_FIT` out from the clump's origin) and the creature
-rode its north pole at `2R`, so with `GROWTH_K` at 4 and a session's ball ten to twenty
-metres across, what the room saw was a small character hanging in the air over a thin shell of
-a dozen props. Reported from a phone that was a VIEWER while the projection hosted, which
-matters only in that the fix has to be on every page: `growPass` runs on all of them.
+**The items ARE the mass — no shell** *(2026-09-17)* **[D]**. Three user directions in one
+day, each undoing the last, and this is where it landed. In order:
 
-**And the creature is at the ball's CENTRE** *(the same day, user direction)*: *"the objects
-that collect around the creatures sit under the creature. I think the creature should be at the
-center, and then it should just be a giant rolling mass. We still have a glitch where the
-creature is sitting on the Z-index above whatever objects they collect. They should be at the
-center of the sphere of the objects."* The pole seat is gone. Three things follow from it and
-they are the interesting part of this whole block:
+1. *"we should not scale up the characters as they stick to things"* — the `rider`, above: the
+   creature keeps its drawn size while the root carries the growth.
+2. *"currently there is a bug where the characters are floating in space."* The items were
+   seated on the SURFACE of a sphere of radius `bodyR` (`R + itemR × CLUMP_FIT` out from the
+   clump's origin) and the creature rode its north pole at `2R` — and nothing drew that sphere,
+   so with `GROWTH_K` at 4 and a session's ball ten to twenty metres across the room saw a
+   small character hanging in the air over a thin shell of a dozen props. Measured on the real
+   build: ground 0.135, root 0.804, `bodyR` 7.125, fifteen items spanning world y −0.279…15.867
+   around a centre at 7.93, and the creature's feet at 14.543. A shell was drawn for it
+   (`src/creatures/ball.ts`, `BackSide` so it never occluded the creature at its centre).
+3. *"the objects that collect around the creatures sit under the creature. I think the creature
+   should be at the center, and then it should just be a giant rolling mass."* The pole seat
+   went; the creature moved to the pile's centre (`baseR · roll`, which is `clump.group`'s own
+   origin — the point every seat is measured from) and the rider took the inverse of the root's
+   lean so the mass tumbles and the thing inside it stays upright.
+4. **And then the shell itself went:** *"the character should be the object that the items
+   stick to."*
 
-- the rider's height is `baseR · roll` rather than `2 · baseR · roll` — the ball's own centre,
-  which is also `clump.group`'s origin and therefore the point every seat is measured from;
-- an opaque sphere at `bodyR` would then swallow the creature, and the two ways out are a depth
-  or render-order hack (which is exactly the *"z-index"* the report is about) or a shell with
-  no near hemisphere. So the ball is drawn **`BackSide`** (`BALL_SIDE`): the far inside of the
-  mass is the fill behind the creature, the silhouette is still the full circle, nothing is
-  drawn in front of the centre, and an item seated on the NEAR side of the pile genuinely
-  occludes the creature — which is what being inside a mass looks like. Every material in the
-  rig keeps `depthTest`, `depthWrite` and `renderOrder` 0, and a test asserts that, because the
-  hack is the thing being avoided;
-- a creature at the centre is a creature that any lean of the ROOT turns with it, and the root
-  leans in zero gravity. So the rider carries the exact inverse of the root's orientation with
-  the heading put back (one quaternion, skipped entirely while the root is level): the mass
-  tumbles, the thing inside it stays upright.
+So there is no sphere and no mesh for the pile at all. **The character, at its drawn size, is
+the body things stick to**, and the visible mass is the items:
 
-**`src/creatures/ball.ts`** is that mesh. One sphere per creature, radius 1 in its own space
-and scaled to `baseR`, hung on the **ROOT** — so the root's uniform scale, which is the
-growth, carries it to `bodyR` and the growth is still ONE write (`bodyR`, the resolve circle,
-the pickup reach, the shadow stamp, `positions()`, `ballDiameter` and now the drawn sphere,
-all off the same number). `growPass` writes two things on it, beside the rider's two:
+- the FIRST item seats on the creature's own radius — `baseR + itemR × CLUMP_FIT`, the same
+  bedding that has always made a pile read as one lump rather than a bristle of separate
+  objects;
+- every one after it PACKS outward along the direction it was struck from: start at the
+  creature's surface, and for each seat already taken, if the new item would be inside it,
+  slide out until it is only bedded into it by the same `CLUMP_FIT`. Repeat, because sliding
+  past one neighbour can bring another into reach (`packSeatDistance`, src/creatures/sticky.ts
+  — pure, greedy, one-dimensional, bounded by `PACK_PASSES`).
 
-- `position.y = baseR · (2 · roll − 1)` root-local — the sphere's CENTRE. At `roll` 1 that is
-  the clump's own origin `(0, baseR, 0)`, which is where every seat is measured from and, since
-  the centre direction, exactly where the rider is too: the creature is at the middle of the
-  mass and the two numbers meet there. At `roll` 0 it is `−baseR`, which puts the whole sphere
-  under the root and therefore under the ground the root is standing on — so a WALKING creature
-  shows no ball with nothing switched off. The ramp between is the roll spring's: the mass rises
-  out of the ground around the creature as the creature rides up into it, ζ ≥ 1, a slide and
-  never a `scale: 0 → 1`. The creature is inside the shell at every value of the blend, because
-  the gap between the two heights is `baseR · (1 − roll)` and the radius is `baseR`.
-- `visible`, off under a thousandth of the blend: the top of a buried sphere is tangent to the
-  paper under the root, and on a slope that one point can clear the downhill ground.
+It is not a packing solver and deliberately not: every item keeps the direction it arrived on,
+so the pile is a record of where the creature has been rather than an arrangement. And it runs
+**once, on the deciding page** — the packed seat travels on the `stick` event, so no two pages
+can pack differently (docs/PLAN.md §7.6's own rule).
 
-The LOOK is the creature's, not the environment's (TASTE §8): `palette.stalk` — the body hue
-pulled toward the brief's dark neutral, a tint of the one hue on the figure rather than a
-second one, and darker than the creature so the character inside it reads against it. Same
-material family as the creature (`createCharacterMaterial`) with `applyToon` chained last, so a
-ball cels with the props and the ground it is rolling over. And it is **not a primitive**: a
-low-frequency radial nudge, the egg shell's own recipe (`shellNoise`), because "no rectilinear
-or engineered geometry" is about form and a CAD sphere is a form. The nudge is INWARD ONLY, so
-the radius never exceeds 1 and every seat is still on or outside the surface; it used to fade
-out over the north pole because the creature stood there, and since the centre direction it
-does not, so the whole mass is lumpy. Geometry is cached per SEED BUCKET (`BALL_SHAPES`, 8) at
-unit radius and shared, because a hundred creatures is a memory number (§7.1); the material is
-per creature and so is the draw call.
+**The seats are held in WORLD units** (`Clump.seats()` / `seatOf`), and that is the load-bearing
+detail. An event's `ox`/`oy`/`oz` are clump-local — world units over the growth the pile had ON
+ARRIVAL — so `add` reads the growth BEFORE inserting the item (which is exactly what the
+deciding page did when it computed the offset) and the per-frame write divides the LIVE growth
+back out. Hold a packed seat in the clump-local frame instead and it rides the root's uniform
+scale: every pickup inflates the packing, a gap opens between every pair of objects, and the
+lump becomes the cloud the shell was invented to hide.
 
-Katamari only, in the same `becomeAlive` guard as the clump and the rider, and added AFTER the
-rider so the creature's own body is still the first Mesh under the root. `test/creatures/`
-pins the creature at the centre and inside the shell across the whole roll ramp, the item seats
-against the drawn radius, the depth state of every material in the rig, an unladen creature
-standing on the ground with its ball hidden, and a world without the game having no such node
-at all; `test/net/two-page-room.test.ts` pins the viewer drawing the same
-ball as the host from the same `stick`.
+**`bodyR` is still the volume's.** `ballDiameter`, the readout, the pickup reach, the resolve
+circle, the ground clearance and the physics stand-in are unchanged — that is the GAME's size
+and the growth is still one write on the root. The packed pile's outer radius is smaller and the
+two drift apart as the pile grows: at fifteen props of drawn radii 0.7–2.9 on a 0.88 u creature
+the packed pile reaches ~4.6 u against a `bodyR` of 7.1. The silhouette is the pile; the number
+is the game. The stand-in colliders now read the DRAWN item too (`clump.seatOf(key)` and
+`item.r`, not `item.r × growth`): a stuck bench used to sweep a circle `growth` times wider
+than the bench anybody could see.
 
 **Walk first, roll with mass** *(2026-09-16)* **[D]**. User ask: *"let's have them start
 walking at first and once they hit a few objects they begin to roll because they have mass."*

@@ -948,23 +948,49 @@ describe('sticking, as the viewer sees it', () => {
   }, 120_000);
 
   /*
-   * ── AND THE VIEWER DRAWS THE BALL, not a creature in the air ───────────
+   * ── AND THE VIEWER DRAWS THE SAME PILE, at the same size ───────────────
    *
    * > User report, 2026-09-17, from a phone in the room while the projection
    * > hosted: *"currently there is a bug where the characters are floating in
-   * > space."*
+   * > space."* Then, off the live room: *"we are rendering a ball and the
+   * > character is growing with the size of the ball."*
    *
-   * The floating was a missing MESH (src/creatures/ball.ts), and the page it
-   * was reported from is a VIEWER — which decides nothing and draws
-   * everything. So the sphere has to be built on the page that ran no
-   * physics, from the same `stick` event, at the same size as the host's:
-   * `growPass` runs on every page for exactly this reason.
+   * The page those came from is a VIEWER, which decides nothing and draws
+   * everything — so what has to be pinned on it is the two numbers a viewer
+   * derives for itself from the `stick` events: the CREATURE's world scale,
+   * which must be its DRAWN size however big the pile is (`growPass` divides
+   * the root's growth back out on the rider), and where the items sit, which
+   * is the packing the host decided and sent.
    *
-   * Revised the same day with the centre direction (*"they should be at the
-   * center of the sphere of the objects"*): what both pages have to agree
-   * about is the creature sitting at the MIDDLE of the mass, not on its pole.
+   * A LATE JOINER is the same claim one step harder: a page that opens after
+   * the ball is grown gets the whole pile in one batch (a restore, or the
+   * stored scene on arrival) rather than one event at a time.
    */
-  it('draws the same ball on the viewer as on the host', () => {
+  function drawn(page: CreatureManager, id: string): {
+    charScale: number;
+    rootScale: number;
+    seats: number[];
+    bodyR: number;
+  } {
+    const root = page.hoverTargets()[0]!.object;
+    root.updateWorldMatrix(true, true);
+    const rider = root.getObjectByName('rider')!;
+    const clump = root.getObjectByName('clump')!;
+    const middle = clump.getWorldPosition(new Vector3());
+    const character = rider.children[0]!;
+    return {
+      // THE NUMBER THE REPORT IS ABOUT: 1 means the creature is drawn at the
+      // size it was drawn at, whatever the pile has become.
+      charScale: character.getWorldScale(new Vector3()).x,
+      rootScale: root.scale.x,
+      seats: clump.children.map((item) =>
+        Number(item.getWorldPosition(new Vector3()).distanceTo(middle).toFixed(4)),
+      ),
+      bodyR: page.ballDiameter(id) / 2,
+    };
+  }
+
+  it('draws the same pile on the viewer, with the creature at its drawn size', () => {
     const tree: Collider = {
       x: 0,
       z: 0,
@@ -975,71 +1001,94 @@ describe('sticking, as the viewer sees it', () => {
     } as Collider;
     const host = pageWithRows([tree], true);
     const viewer = pageWithRows([tree], false);
+    const late = pageWithRows([tree], false);
     for (const m of [host, viewer]) {
       m.spawn('mine', snowman, { hatchMs: 10, grown: true });
       m.update(FRAME_MS, 1000);
     }
     viewer.pauseAi(true);
     const baseR = host.ballDiameter('mine') / 2;
-    // Three of them, so the pile is a ball rather than a creature with a
-    // stone on it (`ROLL_MASS_ITEMS`), seated out on the surface.
-    for (let i = 0; i < 3; i++) {
-      const record = {
+    expect(baseR).toBeGreaterThan(0);
+
+    /*
+     * Six of them, each from a different side, seated the way the deciding
+     * page seats them: the offset is computed against the growth the pile has
+     * BEFORE the item joins and divided by it (src/creatures/sticky.ts
+     * `clumpLocalOffset`), which is what makes the same three floats land in
+     * the same place on every page.
+     */
+    const records = [];
+    for (let i = 0; i < 6; i++) {
+      const th = (i / 6) * Math.PI * 2;
+      const g = Math.cbrt(1 + (4 * i * tree.r ** 3) / baseR ** 3);
+      const local = (baseR + tree.r * 0.7) / g;
+      records.push({
         id: 'mine',
         item: `${tree.key!}:${i}`,
         kind: 'tree' as const,
         variant: 0,
         scale: 1,
         r: tree.r,
-        ox: baseR + i * 0.01,
+        ox: Math.cos(th) * local,
         oy: 0,
-        oz: 0,
+        oz: Math.sin(th) * local,
         qx: 0,
         qy: 0,
         qz: 0,
         qw: 1,
-      };
+      });
+    }
+    for (const record of records) {
       host.applyStick(record);
       viewer.applyStick(record);
     }
-    // Long enough for the roll blend to settle (`MOTION.primaryMs`).
     for (let i = 0; i < 120; i++) {
       host.update(FRAME_MS, 2000 + i * FRAME_MS);
       viewer.update(FRAME_MS, 2000 + i * FRAME_MS);
     }
 
-    for (const [name, page] of [
+    /*
+     * THE LATE JOINER: it opens now, spawns the creature from the drawing it
+     * is told about, and gets the whole pile at once. The `rider` is built in
+     * `becomeAlive` before any of it, and the growth is written every frame by
+     * `growPass` on every page — so the creature must be its drawn size here
+     * too, which is the case where "the rider was created after the root was
+     * scaled" would show up.
+     */
+    late.spawn('mine', snowman, { hatchMs: 10, grown: true });
+    late.update(FRAME_MS, 5000);
+    late.pauseAi(true);
+    for (const record of records) late.applyStick(record);
+    for (let i = 0; i < 120; i++) late.update(FRAME_MS, 5000 + i * FRAME_MS);
+
+    const pages = [
       ['host', host],
       ['viewer', viewer],
-    ] as const) {
-      const root = page.hoverTargets()[0]!.object;
-      const ball = root.getObjectByName('ball');
-      expect(ball, name).toBeDefined();
-      expect(ball!.visible, name).toBe(true);
-      root.updateWorldMatrix(true, true);
-      const bodyR = page.ballDiameter('mine') / 2;
-      expect(bodyR, name).toBeGreaterThan(baseR * 1.5);
-      // The drawn sphere IS the ball the readout reports…
-      expect(ball!.getWorldScale(new Vector3()).x, name).toBeCloseTo(bodyR, 6);
-      // …and the creature is at the MIDDLE of it rather than above nothing.
-      const rider = root.getObjectByName('rider')!;
-      const middle = rider.getWorldPosition(new Vector3());
-      // A tenth of a millimetre: the roll blend is a ζ ≥ 1 spring and at 120
-      // frames it is 0.99999 of the way in, so the gap is
-      // `bodyR × (1 − roll)` and not literally zero (the manager's own pins
-      // assert that relation exactly).
-      expect(
-        middle.distanceTo(ball!.getWorldPosition(new Vector3())),
-        name,
-      ).toBeLessThan(1e-3);
-      // A radius above the root, which is the ball's underside (to the same
-      // tenth of a millimetre, for the same reason).
-      expect(middle.y - root.position.y, name).toBeCloseTo(bodyR, 3);
+      ['late joiner', late],
+    ] as const;
+    const read = pages.map(([name, page]) => [name, drawn(page, 'mine')] as const);
+    for (const [name, seen] of read) {
+      // A real ball: the root carries the growth…
+      expect(seen.rootScale, name).toBeGreaterThan(3);
+      expect(seen.bodyR, name).toBeGreaterThan(baseR * 3);
+      // …and the creature inside it is EXACTLY its drawn size.
+      expect(seen.charScale, name).toBeCloseTo(1, 6);
+      // Six items, each packed on the creature at the same distance.
+      expect(seen.seats.length, name).toBe(6);
+      for (const seat of seen.seats) {
+        expect(seat, name).toBeCloseTo(baseR + tree.r * 0.7, 3);
+      }
     }
-    // ONE ball, ONE size, on both pages — derived, never sent.
-    expect(viewer.ballDiameter('mine')).toBeCloseTo(host.ballDiameter('mine'), 6);
+    // ONE pile, ONE size, on all three pages — derived, never sent.
+    const host0 = read[0]![1];
+    for (const [name, seen] of read.slice(1)) {
+      expect(seen.bodyR, name).toBeCloseTo(host0.bodyR, 6);
+      expect(seen.rootScale, name).toBeCloseTo(host0.rootScale, 6);
+      expect(seen.seats, name).toEqual(host0.seats);
+    }
     host.clearAll();
     viewer.clearAll();
+    late.clearAll();
   }, 120_000);
 });
 

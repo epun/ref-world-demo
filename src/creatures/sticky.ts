@@ -372,6 +372,90 @@ export const GROWTH_K = 4;
 export const CLUMP_FIT = 0.7;
 
 /**
+ * [D] How many times the seat search may be pushed outward before it gives up
+ * and takes where it got to.
+ *
+ * The search is "slide out along the contact direction until nothing is in the
+ * way" (`packSeatDistance`), and each pass can uncover a neighbour the last
+ * push slid past — so it repeats. A pile is a few dozen items and each pass
+ * strictly increases the distance, so it converges in a handful; this is the
+ * bound that keeps a pathological pile from spending a frame on one pickup.
+ */
+export const PACK_PASSES = 8;
+
+/**
+ * WHERE A NEW ITEM SITS ON THE PILE — the distance from the pile's centre
+ * along the contact direction, in WORLD units. PURE.
+ *
+ * > User direction, 2026-09-17: *"the character should be the object that the
+ * > items stick to."*
+ *
+ * Until then the pile was a SPHERE of radius `R` (`baseR × growth`) and every
+ * item was seated on its surface: as the growth rose the shell grew and the
+ * items rode outward on it, which is why the drawn mass needed a body of its
+ * own to not be a cloud of props around nothing, and why the creature ended up
+ * either on top of that body or inside it. There is no shell now. The
+ * CHARACTER is the thing items stick to, at its own drawn radius, and each
+ * item after the first packs against the ones already there:
+ *
+ *   start at the character's own surface (`selfR + itemR × CLUMP_FIT` — the
+ *   same bedding that has always made a pile read as one lump rather than a
+ *   bristle of separate objects), then, for every seat already taken, if the
+ *   new item would be inside it, slide outward along the direction until it is
+ *   only bedded into it by the same `CLUMP_FIT`. Repeat, because sliding past
+ *   one neighbour can bring another into reach.
+ *
+ * So the pile grows OUTWARD from the creature, in the direction each thing was
+ * actually struck from, with no gaps and no invisible sphere. It is a greedy
+ * one-dimensional search and not a packing solver: every item keeps the
+ * direction it arrived on, which is what makes the pile a record of where the
+ * creature has been rather than an arrangement.
+ *
+ * PURE and order-dependent in the seats it is given — which is exactly what
+ * the wire needs: the page that DECIDES runs this once and the offset travels
+ * on the `stick` event (docs/PLAN.md §7.6), so no two pages can pack
+ * differently.
+ */
+export function packSeatDistance(a: {
+  /** Unit direction from the pile's centre toward where the item was struck. */
+  dirX: number;
+  dirY: number;
+  dirZ: number;
+  /** The new item's own radius, world units. */
+  itemR: number;
+  /** The CHARACTER's radius — the body everything sticks to. */
+  selfR: number;
+  /** What is already on the pile: world offsets from the centre, and radii. */
+  seats: readonly { x: number; y: number; z: number; r: number }[];
+}): number {
+  const fit = CLUMP_FIT;
+  // Clear of the character itself, bedded into it by the same fraction a
+  // stone is bedded into the pile.
+  let t = Math.max(0, a.selfR + a.itemR * fit);
+  for (let pass = 0; pass < PACK_PASSES; pass++) {
+    let moved = false;
+    for (const seat of a.seats) {
+      const want = (a.itemR + seat.r) * fit;
+      // The distance along the ray where the new item would just clear this
+      // seat: the far root of |t·d − p|² = want².
+      const along = seat.x * a.dirX + seat.y * a.dirY + seat.z * a.dirZ;
+      const lenSq = seat.x * seat.x + seat.y * seat.y + seat.z * seat.z;
+      const gap = want * want - (lenSq - along * along);
+      // The ray passes outside this seat entirely: nothing to do, whatever t
+      // is — and this is most pairs on a real pile.
+      if (gap <= 0) continue;
+      const far = along + Math.sqrt(gap);
+      if (t < far) {
+        t = far;
+        moved = true;
+      }
+    }
+    if (!moved) break;
+  }
+  return t;
+}
+
+/**
  * [D] How many of a carrier's stuck items get a physics collider.
  *
  * A stuck bench swinging into a tree has to COUNT — that is where the brief's
@@ -856,6 +940,13 @@ function rotate(q: Quat, x: number, y: number, z: number): { x: number; y: numbe
  *
  * A hit exactly at the centre has no direction to keep, so the heading is
  * used — the item lands in front of the creature, which is where it was.
+ *
+ * HOW FAR OUT is `packSeatDistance` (2026-09-17, *"the character should be the
+ * object that the items stick to"*): the character's own surface for the first
+ * thing, and on top of what is already there for everything after. It used to
+ * be `R + itemR × CLUMP_FIT` — the surface of a sphere of radius
+ * `baseR × growth` — which is the shell that had to be drawn for the pile to
+ * make sense, and is gone.
  */
 export function clumpLocalOffset(a: {
   itemX: number;
@@ -866,8 +957,12 @@ export function clumpLocalOffset(a: {
   centreZ: number;
   headingX: number;
   headingZ: number;
-  R: number;
+  /** The CHARACTER's own radius — what the first item sticks to. */
+  selfR: number;
   itemR: number;
+  /** What is already on the pile (world offsets from its centre, and radii),
+   * which is what everything after the first item packs against. */
+  seats: readonly { x: number; y: number; z: number; r: number }[];
   clumpWorldQ: Quat;
   growth: number;
 }): { x: number; y: number; z: number } {
@@ -888,10 +983,20 @@ export function clumpLocalOffset(a: {
       len = 1;
     }
   }
-  const reach = a.R + a.itemR * CLUMP_FIT;
-  const wx = (dx / len) * reach;
-  const wy = (dy / len) * reach;
-  const wz = (dz / len) * reach;
+  const ux = dx / len;
+  const uy = dy / len;
+  const uz = dz / len;
+  const reach = packSeatDistance({
+    dirX: ux,
+    dirY: uy,
+    dirZ: uz,
+    itemR: a.itemR,
+    selfR: a.selfR,
+    seats: a.seats,
+  });
+  const wx = ux * reach;
+  const wy = uy * reach;
+  const wz = uz * reach;
   const local = rotate(conjugate(a.clumpWorldQ), wx, wy, wz);
   const g = a.growth > 1e-6 ? a.growth : 1;
   return { x: local.x / g, y: local.y / g, z: local.z / g };
