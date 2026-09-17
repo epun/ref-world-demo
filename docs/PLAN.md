@@ -618,6 +618,87 @@ zoom; everyone else is muted `#8e908d` and clusters into a single softer mark be
 distance threshold. The map stays legible because it never tries to distinguish other
 players from each other.
 
+#### a hundred creatures is a memory number — *(2026-09-17)*
+
+> User report: *"i spawned 100 people and it crashed."*
+
+**It did not throw and it did not leak. It grew.** Reproduced against the built `valiocon`
+world off `vite preview` in a real chromium (swiftshader), three ways — a hundred
+`__refworldCreatures.spawn(..., {grown:true})` calls with a hundred distinct synthetic
+drawings, the same hundred as eggs hatching on a 100 ms timer, and the ghost panel's own
+`spawn 200 (stress)` through the gate and the ingest queue — on the projection at 1280×800
+and on a phone world view at 390×844, each left running 60-120 s after the last spawn.
+**No `page.crash`, no `pageerror`, no `[refworld] a frame threw`, no context loss, no
+climbing node or listener count, and `renderer.info.programs` settled back to 44 from a
+148 peak.** What moved was the renderer process: **353 MB → 966 MB over a hundred spawns,
+6.13 MB of process per creature.** A phone is killed somewhere around a gigabyte, and the
+panel's stress path was at 847 MB by creature 90 and still climbing toward a
+`MAX_POPULATION` of 256. `JSHeapUsedSize` never left 40 MB the whole time and says nothing
+about any of it — every byte of this is `ArrayBuffer` backing store and canvas, which that
+counter does not see. Sample the process, not the heap.
+
+**Where a creature's bytes are.** Walked from the scene, per creature, before:
+
+| | bytes | what |
+| --- | --- | --- |
+| body index | 934,944 | `Uint32Array`, 233,736 indices |
+| body position + normal | 934,992 | `Float32Array`, 38,958 verts |
+| topper index | 824,256 | `Uint32Array` |
+| topper position + normal | 824,304 | `Float32Array` |
+| stalk | 3,776 | the tube |
+| `Character.analysis` | 1,310,720 | a 512² `Uint8` mask + a 512² `Float32` distance field |
+| **total** | **4.83 MB** | ×100 = 483 MB of typed array |
+
+**Two of those came off, and neither changes a pixel.**
+
+- **`Character.analysis` is narrowed to `CharacterShape`** — the analysis minus its two 512²
+  grids. Every reader of a grid reads it while the creature is being BUILT: `interpretDrawing`
+  and `inflate` make them, `applyEyes` samples `headLobe` and `distance.max` once, `createTopper`
+  inflates `source` through them, `createGait` wants one string off `archetype`. Nothing in
+  `src/` touched `mask` or `distance` again — the comment said "kept for later modules (eyes,
+  gait)" and the later modules had already had it. Same shape of retention as the blueprint
+  leak f5fa81e fixed on the gate, and the fix is the TYPE, so the next line that wants a grid
+  at runtime fails to compile instead of quietly pinning a megabyte per creature. **−1.31 MB
+  a creature.**
+- **The index is narrowed to 16 bits at the Three.js bridge.** `src/inflate/` still emits
+  `Uint32Array` and must — its `MAX_VERTS` is 262,144 and the pure module's output is
+  byte-identical on every device by contract (§6.3). But a real body is ~46k verts and a
+  topper ~34k, both far under 65,536, and the index is the single widest buffer either
+  carries. `toBufferGeometry` hands the renderer the narrow copy: the same integers, the same
+  triangles, the same order, half the bytes on the JS heap and half again on the GPU.
+  **−0.88 MB a creature, twice.**
+
+**Measured after, same harness, same hundred drawings:** typed array per creature
+**3.72 MB → 2.79 MB**, `arrayBuffers` at a hundred **507 MB → 289 MB**, and the phone world
+view's renderer process **966 MB → 631 MB** (2.68 MB of process a creature, a 56% cut). The
+hatch variant peaks at 765 MB and settles at 633 MB with all hundred standing.
+`test/creatures/budget.test.ts` is the ceiling: a hundred through the real manager against
+the stub world, no throw, and a per-creature byte and object budget sitting between the
+before and the after so putting back either half fails on its own.
+
+**Three suspects cleared, with numbers.** The manager's own frame is LINEAR — 0.183 ms at
+25, 0.222 at 50, 0.564 at 100 — so the crowd-engine work above holds and there is no
+O(n²) left in it. The blueprint is not retained anywhere: 507 MB of `arrayBuffers` at a
+hundred accounts for the table above exactly, with the gate's decision log (capped at 40)
+holding stroke lists only. And the frame guard never fired in any variant.
+
+**What is still true and was NOT fixed.** A creature is **134,800 triangles** — body 91,232,
+topper 43,424 — and at a hundred of them the scene holds **16.1M**, of which creatures are
+96.7% (`ball` 9.66M, `topper` 5.93M against the ground field's 460,800). `DEFAULT_GRID_STEP`
+is 6 and stays 6: its own header has the manifold table, and coarser steps hole the thin
+spindly drawings people actually make. The remaining 2.64 MB a creature is the
+position/normal/index copies that three.js keeps on the CPU after upload, and they cannot
+simply be released with `onUpload` because **hover names raycast the creature meshes**
+(`src/creatures/hover.ts`, `intersectObject(root, true)` per named creature per pointermove
+— which is also 13.5M triangle tests a mouse move at a hundred named creatures). Freeing
+them needs hover to raycast a proxy first. And `MAX_POPULATION` 256 is documented as a
+frame-rate guarantee and is still not a MEMORY guarantee: at 2.68 MB of process a creature
+the cap alone is ~690 MB over baseline, which no phone has. A tier-aware cap is the obvious
+lever and is deliberately not taken here — a phone's memory limit deciding who gets retired
+would put a population eviction in a page that is meant to decide nothing (§7.6), and
+"support 100-200 players at one time" is a standing user ask. That is a ruling to ask for,
+not to make in a perf pass.
+
 #### the slow network — *(2026-09-16)*
 
 > User ask: *"we need to be able to run this on a slow network on people's devices."*

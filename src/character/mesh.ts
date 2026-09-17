@@ -16,12 +16,32 @@ import type { DeformFrame } from './deform';
  * Normals are NOT recomputed: the inflater already emits smooth area-weighted
  * normals, and re-deriving them here could only diverge from what the phone
  * renders.
+ *
+ * THE INDEX IS NARROWED WHERE IT FITS (2026-09-17).
+ *
+ * `src/inflate/` emits `Uint32Array` indices and keeps emitting them: the
+ * pure module's output is byte-identical on every device by contract
+ * (PLAN §6.3) and its `MAX_VERTS` is 262,144, which genuinely needs 32 bits.
+ * But a real creature's body is ~46k vertices and its topper ~34k, and at
+ * gridStep 6 the index is the single biggest buffer either of them carries —
+ * 934 kB of the body's 1.87 MB. Two bytes a triangle corner is enough for
+ * anything under 65,536 vertices, so THIS side of the bridge, where the
+ * numbers stop being the pipeline's answer and start being a GPU upload,
+ * hands the renderer the narrow copy.
+ *
+ * It is not a look change and it is not a determinism change: the indices
+ * are the same integers, so the same triangles are drawn in the same order.
+ * It is 0.88 MB per creature off the JS heap and the same again off the
+ * GPU — 176 MB at a hundred of them, measured (see the budget test).
  */
 export function toBufferGeometry(mesh: InflatedMesh): BufferGeometry {
   const geometry = new BufferGeometry();
   geometry.setAttribute('position', new BufferAttribute(mesh.positions, 3));
   geometry.setAttribute('normal', new BufferAttribute(mesh.normals, 3));
-  geometry.setIndex(new BufferAttribute(mesh.indices, 1));
+  const verts = mesh.positions.length / 3;
+  geometry.setIndex(
+    new BufferAttribute(verts <= 0x10000 ? new Uint16Array(mesh.indices) : mesh.indices, 1),
+  );
   geometry.computeBoundingBox();
   return geometry;
 }

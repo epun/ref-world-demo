@@ -67,13 +67,40 @@ export function paletteOverrideName(): PaletteName | null {
   return paletteOverride;
 }
 
+/**
+ * WHAT OF THE ANALYSIS A LIVING CREATURE STILL NEEDS (2026-09-17).
+ *
+ * A `ShapeAnalysis` carries two 512² grids — a `Uint8Array` mask and a
+ * `Float32Array` distance field, **1.31 MB together**. Everything that reads
+ * them reads them while the creature is being BUILT: `interpretDrawing` and
+ * `inflate` produce them, `applyEyes` samples `headLobe` and `distance.max`
+ * once for its placement and its blink seed, `createTopper` inflates
+ * `source` through them, and `createGait` wants one string off `archetype`.
+ * Not one line in `src/` touches `mask` or `distance` again afterwards.
+ *
+ * So a Character that holds the whole analysis holds 1.31 MB of dead grid
+ * for as long as the creature stands — **131 MB at a hundred creatures**,
+ * measured (see `test/creatures/budget.test.ts`). This is the same shape of
+ * retention as the blueprint leak f5fa81e fixed on the gate: a value the
+ * construction has already consumed, kept alive by the thing it built.
+ *
+ * The fix is the type. `analysis` is narrowed to exactly the fields that
+ * outlive construction, so a future line that wants a grid at runtime fails
+ * to compile rather than quietly pinning a megabyte per creature.
+ */
+export type CharacterShape = Omit<ShapeAnalysis, 'mask' | 'distance'>;
+
 export interface Character {
   /** Add to the scene; position/rotation are owned by update(). */
   group: Group;
   /** Footprint radius in world units, for the flat shadow stamp. */
   radius: number;
-  /** The shape analysis, kept for later modules (eyes, gait). */
-  analysis: ShapeAnalysis;
+  /**
+   * The shape analysis MINUS its two 512² grids — see `CharacterShape`.
+   * The archetype, the contour, the ink bounds and the head lobe; nothing
+   * that costs a megabyte.
+   */
+  analysis: CharacterShape;
   /** The creature's colourway (./palette.ts), read off the drawing's own
    * motifs — the brief's *"color itself signals identity"*. Read-only. */
   readonly palette: CreaturePalette;
@@ -366,7 +393,21 @@ export function createCharacter(
     // The BODY's footprint: the shadow stamp and collision are the body's,
     // never the topper's — the stalk casts no ground presence of its own.
     radius,
-    analysis,
+    /*
+     * The analysis WITHOUT its grids — see `CharacterShape`. A field-by-field
+     * copy rather than a `delete` on the pipeline's own object: the blueprint
+     * the caller handed in is not ours to mutate (the phone and the world
+     * build the same one and the blueprint test compares them), and a spread
+     * that dropped two keys by omission would silently pick up any field the
+     * analysis grows next. Naming them is how a new field gets a decision.
+     */
+    analysis: {
+      contour: analysis.contour,
+      features: analysis.features,
+      archetype: analysis.archetype,
+      headLobe: analysis.headLobe,
+      bounds: analysis.bounds,
+    },
     palette,
     setExpression(e: ExpressionName | Expression): void {
       eyes.setExpression(e);
