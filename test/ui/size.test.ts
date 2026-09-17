@@ -615,9 +615,12 @@ describe('the inset — the live view’s frame and its rect', () => {
     // It reads the corner's own number, lowercase.
     expect(path.textContent).toBe(handle.text());
     expect(path.textContent).toBe(path.textContent.toLowerCase());
-    // …and it references the arc this mark generated.
+    // …and it references the arc this mark generated, centred half way along
+    // it so the reading stays on the lower-right diagonal at every length.
     const arc = find(el, 'world-size-arc')!;
     expect(path.attrs['href']).toBe(`#${arc.attrs['id']}`);
+    expect(path.attrs['startOffset']).toBe('50%');
+    expect(dom.head.children[0]!.textContent).toContain('text-anchor: middle');
 
     // THE ARC IS BETWEEN THE TWO EDGES: outside the disc, inside the outline.
     const d = arc.attrs['d'] ?? '';

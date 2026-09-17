@@ -329,6 +329,7 @@ function ensureStyle(): void {
 /* Tabular figures, so a rolling number does not shuffle the letters it is
    curving through. Lowercase, in the world view's own face, on the band. */
 .world-size-value {
+  text-anchor: middle;
   font: 400 ${RING_TEXT_PX}px/1 ui-sans-serif, system-ui, sans-serif;
   font-variant-numeric: tabular-nums;
   fill: var(--rw-ink, ${WORLD.ink});
@@ -481,6 +482,14 @@ export function installBallSize(opts: BallSizeOptions): BallSizeHandle {
   label.setAttribute('class', 'world-size-value');
   const value = document.createElementNS('http://www.w3.org/2000/svg', 'textPath');
   value.setAttribute('href', `#${uid}-arc`);
+  /*
+   * CENTRED ON THE ARC, not started at its end: the mock puts the number on
+   * the lower-RIGHT of the ring, and a string anchored at the path's start
+   * grows away from there as the ball does (`34cm 5mm` → `15m 16cm`). Half
+   * way along the arc with `text-anchor: middle` keeps the reading centred on
+   * that diagonal at every length.
+   */
+  value.setAttribute('startOffset', '50%');
   // `xlink:href` beside it, because Safari still reads that one on textPath.
   value.setAttributeNS('http://www.w3.org/1999/xlink', 'xlink:href', `#${uid}-arc`);
   label.appendChild(value);
