@@ -121,6 +121,21 @@ const DRIFT_SEED = 41.7;
 const ZOOM_MAX = 2.6;
 
 /**
+ * [D] How close the spring has to get before `update` stops rewriting the
+ * camera's zoom — rebuilding the projection matrix is not free and a
+ * difference this small is a hundredth of a pixel on any frame.
+ *
+ * So it is also the accuracy `camera.zoom` can ever be READ at: a parked
+ * camera sits within this of its spring, on either side, and a test that
+ * measures where the zoom came to rest has to allow it. Exported for exactly
+ * that reason (test/world/camera.test.ts) — an assertion tighter than this is
+ * pinning the deadband's own remainder, which at the island's floor is a
+ * different number at every map scale (0.137195 against a 0.137105 floor at
+ * `MAP_SCALE` 1.32).
+ */
+export const ZOOM_WRITE_EPSILON = 1e-4;
+
+/**
  * [D] KATAMARI ONLY — how close the phone's camera gets when the shell opens
  * on its own creature (user ask, 2026-09-17: *"on hatch for mobile we should
  * have the cam zoom in to people's character"*).
@@ -437,7 +452,7 @@ export class CameraRig {
     this.offset
       .set(Math.cos(el) * Math.sin(az), Math.sin(el), Math.cos(el) * Math.cos(az))
       .multiplyScalar(this.eyeDistance);
-    if (Math.abs(this.camera.zoom - zoom) > 1e-4) {
+    if (Math.abs(this.camera.zoom - zoom) > ZOOM_WRITE_EPSILON) {
       this.camera.zoom = zoom;
       this.camera.updateProjectionMatrix();
     }

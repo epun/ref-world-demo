@@ -126,28 +126,30 @@ The traps, in order of how easily they get violated:
   authored coast** — everything outside `ISLAND_LOBES` is water, so nothing else needs to know
   where the edge of the world is (PLAN §7). It is behind `setIslandMode`, off by default: every
   other world's map is the one that shipped before the island landed.
-  **The island is 1.1x the ORIGINAL diameter, and that is ONE number** — `MAP_SCALE` in
+  **The island is 1.32x the ORIGINAL diameter, and that is ONE number** — `MAP_SCALE` in
   `src/world/landscape.ts`, read through `mapScale()` and gated on `islandMode` like the
-  coast itself. It has been 2 (2026-09-16, *"make the island twice as big"*), then 1.3 and
-  then **1.1** on 2026-09-17 — two asks in one day, both *"too big"*, both read as linear
-  (2 x 0.65, then x 0.85). The doubled map was too much ground for a room of 50-80 people.
-  Every extent that has to cover the land rides it (the ground field and its three bakes, the
-  base blade span, the scatter extent, the physics heightfield, the spawn disc, the minimap,
-  the sea disc and the camera's depth range). A number scales when it says WHERE something is
-  and not when it says HOW BIG a physical thing is: a beach, a pond, a shore ramp and the
-  terrain noise are all unchanged.
+  coast itself. It has been 2 (2026-09-16, *"make the island twice as big"*), then 1.3, then
+  1.1, then **1.32** — three asks on 2026-09-17, the first two *"too big"* and the third
+  *"map is now too small, let's increase the size of the island by 20%"*, every one read as
+  linear (2 x 0.65, x 0.85, x 1.2). Every extent that has to cover the land rides it (the
+  ground field and its three bakes, the base blade span, the scatter extent, the physics
+  heightfield, the spawn disc, the minimap, the sea disc and the camera's depth range). A
+  number scales when it says WHERE something is and not when it says HOW BIG a physical thing
+  is: a beach, a pond, a shore ramp and the terrain noise are all unchanged.
   **It is NOT AN INTEGER, so every derived COUNT is rounded where it is derived** — the three
   outline vertex counts, `fieldSegments`, the three bake resolutions and the physics
   heightfield — and the thing held across the scale (a chord, a quad, a texel) is held to
   within half a count instead of exactly. The bakes round to a whole texel count rather than
-  stepping to a power of two (141²/282²/563² over 440 u, every texel inside 0.1% of its
-  authored size); NPOT is free on WebGL2 at CLAMP with no mipmaps. And 1.1 is not an exact
-  binary float, so assert a scaled coordinate against `authored * MAP_SCALE`, never a
-  spelled-out literal. **The riser run is a function of the scale** (`riserRun` in
-  `src/world/field.ts`, `0.6 * terraceStep / steepestSlope`) off a table of MEASURED steepest
-  slopes — 0.843 authored, 0.4570 at 1.1, 0.4814 at 2 — because verticals and noise
-  wavelengths do not scale. Measure the slope and add the entry when the scale moves; the
-  fallback `0.843/sqrt(scale)` only tightens the bound.
+  stepping to a power of two (169²/338²/676² over 528 u, every texel inside 0.03% of its
+  authored size); NPOT is free on WebGL2 at CLAMP with no mipmaps. At 1.32 the ground field
+  rounds too (422.4 -> 422), so the 1.25 u quad is 1.25118 — a test allows half a segment and
+  no more. And 1.32 is not an exact binary float, so assert a scaled coordinate against
+  `authored * MAP_SCALE`, never a spelled-out literal. **The riser run is a function of the
+  scale** (`riserRun` in `src/world/field.ts`, `0.6 * terraceStep / steepestSlope`) off a
+  table of MEASURED steepest slopes — 0.843 authored, 0.4570 at 1.1, **0.5037 at 1.32**,
+  0.4814 at 2 — because verticals and noise wavelengths do not scale, so the number does not
+  even move monotonically with the map. Measure the slope and add the entry when the scale
+  moves; the fallback `0.843/sqrt(scale)` only tightens the bound.
   **EXTENT is the same on every device; RESOLUTION is per tier.** The projection holds every
   texel and the 1.25 u ground quad it had. A HANDSET (`renderTier()` in
   `src/world/device.ts`, published once by `start`) trades four of them back, because four
@@ -157,14 +159,17 @@ The traps, in order of how easily they get violated:
   the 1.99 u riser run, height error 0.112 u), shore bake 512², region bake 128², physics
   heightfield 256. The HEIGHT bake is deliberately NOT traded — it is where every blade
   stands, so its error is geometry and not a soft edge. **The field's 480 is a CEILING and at
-  1.1 it no longer binds**: the projection cuts 352, so `fieldSegments` takes the `min` — a
-  phone never pays MORE than the projection for a map that got smaller. Don't delete it; it
-  binds again above scale 1.5.
+  1.32 it does not bind**: the projection cuts 422, so `fieldSegments` takes the `min` — a
+  phone never pays MORE than the projection for a smaller map. Don't delete it; it binds
+  again above scale 1.5.
   **A body of water is what a change of scale breaks.** A pond's centre scales and the noise
-  does not, so every body lands on different hummocks at every scale — at the 1.3 tried on
-  the way to 1.1 one pond straddled a terrace riser and read as perched (0.517 against the
-  0.6 basin-shoulder bound in `test/world/landscape.test.ts`). The fix is the pond's authored
-  centre, never the bound. At 1.1 all four are healthy and nothing moved.
+  does not, so every body lands on different hummocks at every scale — and the FIRST pond
+  straddles a terrace riser everywhere in the band 1.28–1.35, reading as perched (0.478 at
+  1.32, 0.517 at the 1.3 tried before it, against the 0.6 basin-shoulder bound in
+  `test/world/landscape.test.ts`). The fix is where the pond stands, never the bound: it
+  carries an **`islandNudge` of (+5, +5)** — world units added after the scale, island mode
+  only, the nearest offset that reads clear (0.8175), measured over a grid around the scaled
+  centre. The authored centre (15, −55) that the public world reads is untouched.
   Don't capture the exported layout (`ISLAND`, `ISLAND_LOBES`, `WATER_BODIES`, `FOREST_BLOBS`,
   `MOUNTAIN_BLOBS`) into a module-scope const — they are live bindings `setIslandMode`
   re-points, so read them after the flag is set. PLAN §7 has the full list.

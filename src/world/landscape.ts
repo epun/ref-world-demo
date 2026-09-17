@@ -130,6 +130,27 @@ export interface WaterBody {
    * not a place the creatures walk to.
    */
   island?: Blob;
+  /**
+   * AUTHORED ENTRIES ONLY, and applied only on a SCALED map (`applyMapScale`,
+   * so only with the island on): world units added to this body's centre
+   * AFTER the scale, to step it off a terrace riser the scale walked it onto.
+   *
+   * It exists because a body's centre scales and the terrain NOISE does not,
+   * so every body lands on a different patch of the same hummocks at every
+   * scale — and one of them can land straddling a riser, with the ground on
+   * one side a whole tier below its own water line. That is a defect in the
+   * PLACE the scale put it, not in the bound that catches it
+   * (test/world/landscape.test.ts's basin shoulder, 0.6), so the fix is to
+   * move that one body a few units on the scaled map and leave both the
+   * authored centre and the bound alone.
+   *
+   * It is NOT carried onto the scaled copy the world reads: the offset is a
+   * property of the AUTHORED map at a scale, and what every consumer gets is
+   * a plain body already standing where it belongs. And it is invisible with
+   * the island off — the public world reads the authored list itself, centre
+   * and all (`applyMapScale`'s k === 1 branch).
+   */
+  islandNudge?: { x: number; z: number };
 }
 
 export interface LandscapeSample {
@@ -308,14 +329,15 @@ const LAKE_Z = 70;
  *
  * WHAT `MAP_SCALE` DOES TO THIS LIST (2026-09-16). The lake scales WHOLE —
  * centre, radius and its own island with it — so the ring above keeps its
- * measured proportions exactly and simply scales with it: 8.7 units at the
- * tightest point of a 46.2-unit lake at scale 1.1. The PONDS only move: a
+ * measured proportions exactly and simply scales with it: 10.4 units at the
+ * tightest point of a 55.4-unit lake at scale 1.32. The PONDS only move: a
  * pond is a physical thing you stand beside, not a proportion of the map, so
  * 6 stays 6 and every clearance the layout asks for only widens.
  *
  * …which is also the one thing on this list a change of scale can break, and
- * did: the noise a moved pond lands in is NOT the noise it was authored over
- * (see the first pond). */
+ * did, twice: the noise a moved pond lands in is NOT the noise it was authored
+ * over, and the first pond carries an `islandNudge` for exactly that reason
+ * (see it, and `WaterBody.islandNudge`). */
 const WATER_BODIES_AUTHORED: readonly WaterBody[] = [
   {
     kind: 'lake',
@@ -325,16 +347,30 @@ const WATER_BODIES_AUTHORED: readonly WaterBody[] = [
     seed: 301,
     island: { x: 72, z: 62, r: 14, seed: 302 },
   },
-  // STILL (15, -55) at `MAP_SCALE` 1.1, and the check is not rhetorical: a
-  // pond's centre scales and the terrain NOISE does not, so a body lands on a
-  // different patch of the same hummocks at every scale, and at the 1.3 tried
-  // on the way here (2026-09-17) THIS pond landed straddling a terrace riser
-  // with the ground east of it a whole tier below its own water line — the
-  // basin-shoulder bound in test/world/landscape.test.ts read 0.517 against
-  // 0.6 and would have wanted the centre moved. At 1.1 it reads 1.076, the
-  // healthiest of the four, so nothing here moves and the authored map the
-  // public world reads is untouched. Re-measure this when the scale changes.
-  { kind: 'pond', x: 15, z: -55, r: 6, seed: 401 },
+  // (15, -55) AS AUTHORED, PLUS 5 AND 5 ON THE SCALED MAP (2026-09-17,
+  // `MAP_SCALE` 1.32). The check is not rhetorical: a pond's centre scales and
+  // the terrain NOISE does not, so a body lands on a different patch of the
+  // same hummocks at every scale, and THIS pond is the one that finds a
+  // terrace riser. It straddles one across the whole band 1.28–1.35 — the
+  // ground on one side a tier below its own water line — so the basin-shoulder
+  // bound in test/world/landscape.test.ts reads 0.517 at the 1.3 tried on the
+  // way through and 0.478 at 1.32, against 0.6. (At 1.1 it read 1.076, the
+  // healthiest of the four, and needed nothing.)
+  //
+  // The riser cannot be dodged by a fraction of a unit: the metric was
+  // measured over a ±10-unit grid at half-unit steps around the scaled centre
+  // and the whole neighbourhood inside 7 units is on the riser's shoulder. The
+  // NEAREST offset that clears 0.8 is (+5, +5) — 7.07 units, onto the tread
+  // north-east of the riser — and it reads **0.8175**. The clearances the
+  // layout asks for only widen there: 39.96 units to the nearest other
+  // feature edge (the range's eastern mass) against the 20 the layout wants,
+  // and 114.4 units of dry land to the coast against 12.
+  //
+  // The AUTHORED centre and the 0.6 bound are both untouched, which is the
+  // point of doing it this way: the public world reads (15, -55) exactly as it
+  // always did, and the riser is stepped off only on the map that walked onto
+  // it. Re-measure this when the scale changes.
+  { kind: 'pond', x: 15, z: -55, r: 6, seed: 401, islandNudge: { x: 5, z: 5 } },
   // (-25, 95), not (-35, 80): at 80 the pond's edge came within 7 units of
   // the forest's south-east arm, and the layout's rule is 20 units of open
   // plain between any two environments.
@@ -381,10 +417,10 @@ export let WATER_BODIES: readonly WaterBody[] = WATER_BODIES_AUTHORED;
  * Measured coast radius: 131.7 .. 176.3 at the authored size — inside the
  * displaced ground field (±200) with the whole sea-floor slope to spare.
  *
- * SCALED (`MAP_SCALE`, 1.1 since 2026-09-17; it was 2, then 1.3). The lobes
- * below are the AUTHORED map; what the world reads is them through
- * `mapScale`, so on the katamari world the main mass is 165 across the
- * radius, the coast measures **144.8 .. 193.9** and the ground field is ±220
+ * SCALED (`MAP_SCALE`, 1.32 since 2026-09-17; it was 2, then 1.3, then 1.1).
+ * The lobes below are the AUTHORED map; what the world reads is them through
+ * `mapScale`, so on the katamari world the main mass is 198 across the
+ * radius, the coast measures **173.8 .. 232.7** and the ground field is ±264
  * to hold it. The scale is uniform and about the origin, so every number in
  * this comment and in test/world/island.test.ts comes out multiplied by it —
  * see `MAP_SCALE` for what scales and what does not.
@@ -417,26 +453,27 @@ export let ISLAND_LOBES: readonly Blob[] = ISLAND_LOBES_AUTHORED;
 // ── the map's scale ──────────────────────────────────────────────────────────
 
 /**
- * 1.1x THE AUTHORED ISLAND (2026-09-17). Two user asks on one day, both
- * about the same thing — the map was too big for a room of 50-80 people:
- * *"the map is way too big, let's reduce its size by 35%"* took `MAP_SCALE`
- * from 2 to 1.3, and *"I still think this island is way too big, let's reduce
- * it by another 15%"* took it from 1.3 to **1.1**. Both are read as LINEAR:
- * 2 · 0.65 = 1.3, 1.3 · 0.85 ≈ 1.1. It was 2 from 2026-09-16 (*"make the
- * island twice as big"*).
+ * 1.32x THE AUTHORED ISLAND (2026-09-17). Three user asks on one day, all
+ * about the same thing — how much ground a room of 50-80 people wants. *"The
+ * map is way too big, let's reduce its size by 35%"* took `MAP_SCALE` from 2
+ * to 1.3, *"I still think this island is way too big, let's reduce it by
+ * another 15%"* took it from 1.3 to 1.1, and then *"map is now too small,
+ * let's increase the size of the island by 20%"* took it back up to **1.32**.
+ * Every one is read as LINEAR: 2 · 0.65 = 1.3, 1.3 · 0.85 ≈ 1.1, 1.1 · 1.2 =
+ * 1.32. It was 2 from 2026-09-16 (*"make the island twice as big"*).
  *
  * Read as a multiple of the authored DIAMETER: every horizontal number that is
  * a property of the MAP is multiplied by this about the origin, so the coast's
- * 150-unit main mass becomes 165, the three headlands go with it, and the land
- * area is 1.21 times what it was authored at. It is a scale ABOUT THE ORIGIN
+ * 150-unit main mass becomes 198, the three headlands go with it, and the land
+ * area is 1.74 times what it was authored at. It is a scale ABOUT THE ORIGIN
  * and it is uniform, which is the whole reason this is one number and not a
  * second layout: the wobble phases key off a blob's seed and the polar angle,
  * and both survive a uniform scale, so `coastInland(kx, kz)` is exactly
  * `k · coastInland(x, z)` and every clearance, ring width and bay depth the
  * island's tests measure comes out scaled rather than re-authored. [D]
  *
- * WARNING: IT IS NOT A FRIENDLY FLOAT EITHER. 1.1 is not exact in binary, so
- * `-25 * MAP_SCALE` is -27.500000000000004 and a test that spells a scaled
+ * WARNING: IT IS NOT A FRIENDLY FLOAT EITHER. 1.32 is not exact in binary, so
+ * `-55 * MAP_SCALE` is -72.60000000000001 and a test that spells a scaled
  * coordinate out as a literal fails on the last bit. Assert a scaled position
  * against `authored * MAP_SCALE`, or with `toBeCloseTo`.
  *
@@ -444,8 +481,9 @@ export let ISLAND_LOBES: readonly Blob[] = ISLAND_LOBES_AUTHORED;
  * COUNT — a vertex count, a segment count, a texel count — has to be rounded
  * at the point it is derived, and the thing that was held fixed across the
  * scale (a chord, a quad, a texel) is then held to within half a count rather
- * than exactly. (`FIELD_SEGMENTS * 1.1` = 352 happens to be whole; the three
- * bakes are not.) The places that do it: `outlinePoints`,
+ * than exactly. (At 1.1 `FIELD_SEGMENTS * 1.1` = 352 happened to be whole; at
+ * 1.32 nothing is — the field rounds 422.4 to 422, so the ground quad is
+ * 1.25118 rather than 1.25.) The places that do it: `outlinePoints`,
  * `coastOutlinePoints`, `islandOutlinePoints` below; `fieldSegments` in
  * src/world/field.ts; `regionRes` / `heightRes` / `shoreRes` in
  * src/world/ghibli/; and `heightfieldSegments` in src/physics/world.ts.
@@ -464,7 +502,9 @@ export let ISLAND_LOBES: readonly Blob[] = ISLAND_LOBES_AUTHORED;
  *     a lake island twice as wide keeps the bank profile it was authored
  *     with; and the far-field gate (`farFieldStart` / `farFieldEnd`), which
  *     is where the land settles onto the flat outer disc and therefore has to
- *     stay outside the coast.
+ *     stay outside the coast. A pond may also carry an `islandNudge` — a few
+ *     units added AFTER the scale, which is neither scaled nor authored: it is
+ *     the one body that had to step off a riser the scale walked it onto.
  *   - not scaled: `BEACH_WIDTH`, `TERRAIN.coastRamp`, `TERRAIN.shoreRamp`,
  *     `basinRim`, `basinDrop`, `SEA_LEVEL`, every shelf height and ramp
  *     width, the terrace step, the noise wavelengths and amplitudes, the
@@ -476,9 +516,10 @@ export let ISLAND_LOBES: readonly Blob[] = ISLAND_LOBES_AUTHORED;
  * VERTICALS ARE UNTOUCHED. The island is `MAP_SCALE` times as wide and
  * exactly as high, so every slope on it is shallower than it was authored —
  * which is the one direction the gradient bound can be moved in for free. The
- * steepest gradient on the map measures 0.4570 at 1.1 against 0.4814 at 2
- * and 0.843 as authored (it does NOT fall as 1/scale — the noise does not
- * scale, so which hummock is the steepest changes); `riserRun` in
+ * steepest gradient on the map measures 0.5037 at 1.32 against 0.4570 at 1.1,
+ * 0.4814 at 2 and 0.843 as authored (it does NOT fall as 1/scale — the noise
+ * does not scale, so which hummock is the steepest changes, and a twentieth
+ * more island can be a fifth of a unit steeper); `riserRun` in
  * src/world/field.ts is what reads it.
  *
  * ⚠️ THE EXPORTED LAYOUT IS A LIVE BINDING. `ISLAND`, `ISLAND_LOBES`,
@@ -490,7 +531,7 @@ export let ISLAND_LOBES: readonly Blob[] = ISLAND_LOBES_AUTHORED;
  * `activeSeed` already carry; a test that captures `WATER_BODIES[0]` at import
  * time gets the authored lake and measures a place the water is not.
  */
-export const MAP_SCALE = 1.1;
+export const MAP_SCALE = 1.32;
 
 /**
  * The factor every map extent is read through: `MAP_SCALE` with the island
@@ -515,12 +556,18 @@ function scaleBlob(b: Blob, k: number): Blob {
  * A LAKE scales whole, its island with it (see `MAP_SCALE`). A POND keeps its
  * authored radius and only moves — which only ever widens the clearances the
  * layout asks for, never narrows them.
+ *
+ * …and then `islandNudge`, if the entry carries one: a few units added AFTER
+ * the scale, in world units, to step one body off a terrace riser the scale
+ * walked it onto (see the field on `WaterBody`, and the first pond). It is
+ * added to the centre only — never to the radius, and never carried onto this
+ * copy, which is a plain body standing where it belongs.
  */
 function scaleWaterBody(b: WaterBody, k: number): WaterBody {
   const out: WaterBody = {
     kind: b.kind,
-    x: b.x * k,
-    z: b.z * k,
+    x: b.x * k + (b.islandNudge?.x ?? 0),
+    z: b.z * k + (b.islandNudge?.z ?? 0),
     r: b.kind === 'lake' ? b.r * k : b.r,
     seed: b.seed,
   };
@@ -1654,7 +1701,7 @@ export const OUTLINE_POINTS = 96;
  * LAKE scales with the map (`MAP_SCALE`), so a longer ring keeps the ~2.7
  * units a chord the number above was picked for. A pond does not scale and
  * simply gets a finer ring than it needs, which costs a few vertices.
- * ROUNDED, because `MAP_SCALE` is not an integer: 106 at 1.1. */
+ * ROUNDED, because `MAP_SCALE` is not an integer: 127 at 1.32. */
 export function outlinePoints(): number {
   return Math.round(OUTLINE_POINTS * mapScale());
 }
@@ -1668,7 +1715,7 @@ export const COAST_OUTLINE_POINTS = 192;
  * the number above was picked for (`MAP_SCALE`) instead of drawing the same
  * 192 chords across a wider arc. The collider wall, the drawn ribbon, the
  * surf and the minimap all read it. ROUNDED, because `MAP_SCALE` is not an
- * integer: 211 at 1.1, a 4.90-unit chord. [D]
+ * integer: 253 at 1.32, a 5.78-unit chord at the widest bearing. [D]
  */
 export function coastOutlinePoints(): number {
   return Math.round(COAST_OUTLINE_POINTS * mapScale());
@@ -1677,7 +1724,7 @@ export function coastOutlinePoints(): number {
 export const ISLAND_OUTLINE_POINTS = 64;
 /** …and the count it is walked at, through `mapScale` — the lake's island
  * scales with the lake, so its chords stay the length they were. ROUNDED,
- * because `MAP_SCALE` is not an integer: 70 at 1.1. */
+ * because `MAP_SCALE` is not an integer: 84 at 1.32. */
 export function islandOutlinePoints(): number {
   return Math.round(ISLAND_OUTLINE_POINTS * mapScale());
 }
