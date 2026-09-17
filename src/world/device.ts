@@ -141,3 +141,57 @@ export function physicsExpectedFor(game: string, tier: DeviceTier): boolean {
  * enough (docs/PLAN.md §7.6).
  */
 export const PHONE_RUNS_RAPIER = false;
+
+/**
+ * DOES A HANDSET DRAW BLADES AT ALL (2026-09-17).
+ *
+ * > User report: *"let's remove the grass shader for now, it's glitching"*,
+ * > and *"on mobile when you zoom out the shader glitches out and looks like
+ * > camo"*.
+ *
+ * `false`, so a phone builds NO blade field and NO bloom field — not even the
+ * base field the 2026-09-16 work left it with. The ghibli ground shader
+ * carries the whole meadow on that tier: with no field there is no window,
+ * so `ggFieldDense` reads 0 everywhere and the ground's own blade stipple and
+ * its meadow tint run at full strength over the entire island, which is what
+ * they were tuned to do outside the window in the first place
+ * (src/world/ghibli/ground.ts `STIPPLE_*`, `BLADE_GROUND_MIX`).
+ *
+ * WHY THE FIELD WAS THE GLITCH. At the phone's zoom floor the frame is 1.9
+ * world units a pixel (measured, scratch/phone-zoom-camo.mjs), and a base
+ * blade's width is `max(bladeWidth, minBladePx · unitsPerPx)` — so the pixel
+ * floor took it to 4.3 world units wide against a height of 0.8. Forty
+ * thousand horizontal dashes, each independently tinted by its own `aRand`,
+ * its dry-patch noise and its tip dab, is not a meadow: it is the camo the
+ * report names, and no dial on the field fixes it because the floor is what
+ * keeps the field legible at every zoom short of the last one.
+ *
+ * `true` restores the 2026-09-16 behaviour exactly — the base field alone on
+ * a handset, at `GRASS_BASE_PHONE` — and is the whole of the decision: the
+ * plan below is the only place the tier is asked.
+ */
+export const PHONE_DRAWS_GRASS = false;
+
+/**
+ * WHICH ELEMENT FIELDS THIS PAGE LAYS OUT, by tier — one pure answer, so the
+ * decision is testable without a canvas and is made in exactly one place.
+ *
+ * `near` is the dense window field that follows the look-target, `base` the
+ * map-fixed field over the whole island, `flowers` the bloom field. A
+ * projection lays all three; a handset lays none (see `PHONE_DRAWS_GRASS`).
+ *
+ * Every field is a ghibli-style element — a world on `ink` builds none of
+ * them whatever this says (src/world/scene.ts `applyStyle`).
+ */
+export interface FieldPlan {
+  near: boolean;
+  base: boolean;
+  flowers: boolean;
+}
+
+export function fieldPlanFor(tier: DeviceTier): FieldPlan {
+  if (tier !== 'phone') return { near: true, base: true, flowers: true };
+  // The handset's own 2026-09-16 shape, kept behind the flag: the base field
+  // only, never the window field or the blooms.
+  return { near: false, base: PHONE_DRAWS_GRASS, flowers: false };
+}

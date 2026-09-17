@@ -65,10 +65,21 @@ export const toonUniforms = {
   uRim: { value: GHIBLI.rim as number },
   /** Albedo a steep slope takes under `TOON_SLOPE_ROCK` (the ground only). */
   uToonSlope: { value: new Color(GHIBLI.rock) },
+  /**
+   * WORLD UNITS A SCREEN PIXEL at this framing — the band limit every
+   * world-space noise term in the chain rides (`toonBandLimit` below),
+   * written once a frame by `setToonPixelScale` from the camera rig's own
+   * frustum over the viewport height.
+   *
+   * Defaulted to the default view's 0.05, so a frame drawn before the first
+   * write — and every unit test — sees the framing the look was tuned at,
+   * where nothing is band-limited at all.
+   */
+  uToonUnitsPerPx: { value: 0.05 },
 };
 
 /** Cache-key suffix. Bump with the glsl below, never with a uniform value. */
-const TOON_CACHE_SUFFIX = '+toon-v1';
+const TOON_CACHE_SUFFIX = '+toon-v2';
 
 /** userData flag — a second `applyToon` on one material is a no-op, so a
  * caller that cannot tell whether a material has been through here (the
@@ -84,6 +95,38 @@ const TOON_FLAG = 'toonApplied';
  * octave count like envpaint's `fbm` so the ported lines read unchanged.
  */
 export const TOON_NOISE_GLSL = /* glsl */ `
+/*
+ * HOW MUCH OF A WORLD-SPACE NOISE TERM SURVIVES AT THIS FRAMING [D]
+ * (2026-09-17).
+ *
+ * > User report: "on mobile when you zoom out the shader glitches out and
+ * > looks like camo".
+ *
+ * A term that cycles N times a world unit gets 1 / (N * uToonUnitsPerPx)
+ * PIXELS a cycle. Under two -- nyquist -- the sample lands somewhere
+ * arbitrary in every cycle, so a smooth wobble stops being detail and becomes
+ * a hard per-pixel pattern that crawls when the camera moves. At the phone's
+ * zoom floor the frame is 1.9 world units a pixel (measured,
+ * scratch/phone-zoom-camo.mjs), which leaves the cel terminator's wobble 0.26
+ * pixels a cycle and the shadow tint's break-up 0.09 -- a two-tone ramp
+ * dithering per pixel, which is the camo.
+ *
+ * So each term fades out across nyquist: full at two and a half pixels a
+ * cycle, gone by one and a half. The framing this look was tuned at is 0.05
+ * world units a pixel, where the FINEST of these terms still has 2.9 pixels a
+ * cycle -- so nothing the world has ever shown at its default view changes,
+ * and the fade only takes effect on the way out to the floor.
+ *
+ * The argument is the BASE frequency of an fbm, not its top octave: the
+ * second octave is 2.02x that at a quarter of the amplitude, so it crosses
+ * nyquist half an octave earlier -- inside this fade rather than before it,
+ * and a smooth fade has no cliff for that to fall off.
+ */
+float toonBandLimit(float cyclesPerUnit) {
+  float pxPerCycle = 1.0 / max(cyclesPerUnit * uToonUnitsPerPx, 1e-6);
+  return smoothstep(1.5, 2.5, pxPerCycle);
+}
+
 float toonHash21(vec2 p) {
   vec3 p3 = fract(vec3(p.xyx) * 0.1031);
   p3 += dot(p3, p3.yzx + 33.33);
@@ -115,6 +158,22 @@ float toonFbm(vec2 p, int octaves) {
 /** The ported lighting model. `fbm` → `toonFbm`, `vWorldPos` → `vToonWorldPos`,
  * grain removed (see the header). Signatures match envpaint's exactly. */
 export const TOON_LIGHTING_GLSL = /* glsl */ `
+/*
+ * HIGHP, SAID RATHER THAN ASSUMED (2026-09-17, the iOS Safari audit).
+ *
+ * three's own fragment prefix declares this while the driver reports highp
+ * support, and it does on every iOS device this world has been asked to run
+ * on -- but every noise term in this block is driven by a WORLD position,
+ * which reaches +/-372 units on the doubled island and x6 inside the shadow
+ * tint, and an iOS GPU runs a mediump float at 16 bits, where 2232 has a
+ * spacing of two and every fract below would return the same number over
+ * whole stretches of the map. Saying it here covers this block and every
+ * shader that pastes it: the cel props, the creatures, the blades, the blooms
+ * and the water. src/world/ghibli/ground.ts has the full note, and
+ * src/world/capability.ts reports what the driver actually offers.
+ */
+precision highp float;
+
 varying vec3 vToonWorldPos;
 varying vec3 vToonNormal;
 
@@ -128,6 +187,7 @@ uniform float uBandSoft;
 uniform float uHalfTone;
 uniform float uRim;
 uniform vec3 uToonSlope;
+uniform float uToonUnitsPerPx;
 ${TOON_NOISE_GLSL}
 
 // How lit the last toonLight() found the surface. Kept from the port so the
@@ -150,7 +210,10 @@ vec3 toonShadowColor(vec3 albedo, vec3 n) {
   float l = dot(s, vec3(0.2126, 0.7152, 0.0722));
   s = mix(vec3(l), s, 1.08);
   s += uSkyColor * 0.06 * clamp(n.y, 0.0, 1.0);
-  s *= 1.0 + 0.07 * (toonFbm(vToonWorldPos.xz * 6.0, 2) - 0.5);
+  // Band-limited (toonBandLimit): 6 cycles a world unit is 0.09 pixels a
+  // cycle at the zoom floor, and a +/-3.5% value break-up sampled that far
+  // past nyquist is a per-pixel dither over the whole shadow side.
+  s *= 1.0 + 0.07 * toonBandLimit(6.0) * (toonFbm(vToonWorldPos.xz * 6.0, 2) - 0.5);
   return s;
 }
 
@@ -158,7 +221,11 @@ vec3 toonShadowColor(vec3 albedo, vec3 n) {
 vec3 toonLight(vec3 albedo, vec3 n, float shadow, float bands) {
   float ndl = dot(n, uSunDir);
   // Painted terminator: the band edge follows the brush a little.
-  ndl += (toonFbm(vToonWorldPos.xz * 2.0 + vToonWorldPos.y, 2) - 0.5) * 0.12;
+  // Band-limited for the same reason, and this is the one that shows: the
+  // wobble moves the BAND EDGE, so past nyquist neighbouring pixels land on
+  // opposite sides of a hard two-tone step and the terminator becomes noise.
+  ndl += (toonFbm(vToonWorldPos.xz * 2.0 + vToonWorldPos.y, 2) - 0.5)
+    * 0.12 * toonBandLimit(2.0);
   float lit = toonRamp(ndl, bands, uBandSoft) * shadow;
   gToonLit = lit;
 
@@ -217,7 +284,8 @@ if (uToonOn > 0.5) {
   vec3 toonAlbedo = diffuseColor.rgb;
   #ifdef TOON_SLOPE_ROCK
     float toonN = normalize(vToonNormal).y;
-    float rockEdge = 0.55 + (toonFbm(vToonWorldPos.xz * 0.3, 2) - 0.5) * 0.15;
+    float rockEdge = 0.55
+      + (toonFbm(vToonWorldPos.xz * 0.3, 2) - 0.5) * 0.15 * toonBandLimit(0.3);
     toonAlbedo = mix(toonAlbedo, uToonSlope, (1.0 - step(rockEdge, toonN)) * 0.85);
   #endif
   outgoingLight = toonLight(toonAlbedo, normalize(vToonNormal), 1.0, 3.0);
@@ -291,4 +359,19 @@ export function setToonSun(dir: Vector3, color: Color, sky: Color): void {
   toonUniforms.uSunDir.value.copy(dir).normalize();
   toonUniforms.uSunColor.value.copy(color);
   toonUniforms.uSkyColor.value.copy(sky);
+}
+
+/**
+ * How many world units a screen pixel covers at this framing — the band limit
+ * every world-space noise term in the cel chain rides (`toonBandLimit`), and
+ * the one the ghibli ground's blade stipple rides too, since that shader
+ * pastes this block and spreads these uniforms.
+ *
+ * ONE value write for the whole frame, because every toon-injected material
+ * shares `toonUniforms` by reference. scene.ts calls it beside the blade
+ * field's own `setPixelScale`, from the same number: the camera rig's frustum
+ * height over the viewport height.
+ */
+export function setToonPixelScale(unitsPerPx: number): void {
+  toonUniforms.uToonUnitsPerPx.value = Math.max(1e-4, unitsPerPx);
 }

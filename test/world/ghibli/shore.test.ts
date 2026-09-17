@@ -8,14 +8,22 @@
  * user saw the white wedges on the live build). So what matters here is that
  * the field is a real distance INSIDE the water, zero on land, and re-baked in
  * place.
+ *
+ * The buffer is R16F since 2026-09-17 — a 32-bit float texture is not
+ * texture-filterable in core WebGL 2 and this is the one bake that wants
+ * LINEAR, so on iOS Safari the sampler made it incomplete and every band read
+ * zero, which is foam (see the module header). So every read here goes
+ * through `fromHalfFloat`: the buffer holds the gpu's own sixteen bits.
  */
 
-import type { DataTexture } from 'three';
+import { DataUtils, type DataTexture } from 'three';
 import { describe, expect, it } from 'vitest';
 import { SHORE_SIZE, bakeShoreTexture, rebakeShore } from '../../../src/world/ghibli/shore';
 
 const at = (texture: DataTexture, tx: number, tz: number): number =>
-  (texture.image.data as Float32Array)[tz * texture.image.width + tx]!;
+  DataUtils.fromHalfFloat(
+    (texture.image.data as Uint16Array)[tz * texture.image.width + tx]!,
+  );
 
 /** A disc of water of radius `r` about the origin. */
 const disc =
@@ -70,7 +78,7 @@ describe('bakeShoreTexture', () => {
 
   it('re-bakes IN PLACE: same texture, same buffer, one upload', () => {
     const texture = bakeShoreTexture(disc(30), 64);
-    const buffer = texture.image.data as Float32Array;
+    const buffer = texture.image.data as Uint16Array;
     const before = texture.version;
     const centre = 32;
     const wide = at(texture, centre, centre);
@@ -85,7 +93,7 @@ describe('bakeShoreTexture', () => {
   it('holds a dry world at zero rather than at nonsense', () => {
     const texture = bakeShoreTexture(() => false, 32);
     for (let i = 0; i < 32 * 32; i++) {
-      expect((texture.image.data as Float32Array)[i]).toBe(0);
+      expect(DataUtils.fromHalfFloat((texture.image.data as Uint16Array)[i]!)).toBe(0);
     }
     texture.dispose();
   });

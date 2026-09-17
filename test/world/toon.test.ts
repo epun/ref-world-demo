@@ -78,13 +78,13 @@ describe('applyToon — chains, never clobbers', () => {
     const material = new MeshStandardMaterial();
     material.customProgramCacheKey = (): string => 'previous-key';
     applyToon(material);
-    expect(material.customProgramCacheKey()).toBe('previous-key+toon-v1');
+    expect(material.customProgramCacheKey()).toBe('previous-key+toon-v2');
   });
 
   it('gives a stock material a key of its own', () => {
     const material = new MeshBasicMaterial();
     applyToon(material);
-    expect(material.customProgramCacheKey()).toContain('+toon-v1');
+    expect(material.customProgramCacheKey()).toContain('+toon-v2');
   });
 
   it('keeps the slope-rock ground on its own program', () => {
@@ -141,7 +141,7 @@ describe('applyToon — what it writes into the shader', () => {
       expect(twice.fragmentShader).toBe(once.fragmentShader);
       expect(twice.vertexShader).toBe(once.vertexShader);
       expect(count(twice.fragmentShader, 'uniform float uToonOn;')).toBe(1);
-      expect(count(material.customProgramCacheKey(), '+toon-v1')).toBe(1);
+      expect(count(material.customProgramCacheKey(), '+toon-v2')).toBe(1);
     }
   });
 });

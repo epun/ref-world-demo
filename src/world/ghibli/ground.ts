@@ -140,6 +140,25 @@ void main() {
  * (src/world/scene.ts). Same note as the blade field's `vertexSource`.
  */
 const fragmentSource = (): string => /* glsl */ `
+/*
+ * HIGHP, SAID RATHER THAN ASSUMED (2026-09-17, the iOS Safari audit).
+ *
+ * three's fragment prefix already declares precision highp float while the
+ * driver reports highp support, and src/world/ink.ts and src/world/grain.ts
+ * both say it in their own source as well. It matters more here than in
+ * either: every noise term below is driven by the world position's xz, which
+ * reaches +/-372 world units on the doubled island and x6 inside the cel
+ * shadow tint -- and an iOS GPU runs a mediump float at 16 bits, where a
+ * value of 2232 has a spacing of two, so every fract in the chain would
+ * return the same number over whole stretches of the map and the meadow
+ * would lose its texture in bands. At highp the worst of these inputs still
+ * leaves fifteen bits under the fract, which is why they are not reduced
+ * modulo a period as well: a wrap is a repetition the meadow would show, and
+ * this is the cheaper guarantee. src/world/capability.ts reports the driver's
+ * actual fragment precision on a handset.
+ */
+precision highp float;
+
 const float GG_SIZE = ${ggFloat(PAINTED_SIZE)};
 /** The ground field's square, which the region bake spans — 800 units on the
  * doubled island where a painted layer is still 400 (see region.ts). */
@@ -248,9 +267,29 @@ void main() {
     float blades = ggGroundNoise(sp) - 0.5;
     float speck = ggGroundHash(floor(vToonWorldPos.xz * ${ggFloat(STIPPLE_SPECK_CYCLES)}));
     float tips = step(0.93, speck) - step(speck, 0.07);
-    float amount = (1.0 - dense) * pow(grass, 0.7);
+    /*
+     * THE STIPPLE FADES OUT AS IT CROSSES NYQUIST [D] (2026-09-17 -- the
+     * derivation is in toonBandLimit, src/world/toon.ts).
+     *
+     * These strokes are the finest thing the ground draws: 3.5 cycles a world
+     * unit across them, and a single-texel scatter at 7. At the framing they
+     * were tuned at -- 0.05 world units a pixel -- that is 5.7 and 2.9 pixels
+     * a cycle, which is a blade and a tip. At the phone's zoom floor it is
+     * 0.15 and 0.07 of a pixel a cycle: the same two terms sampled thirteen
+     * and twenty-six times past nyquist, which is a hard mottle that changes
+     * with every pan. Literally camo, and the whole island wears it.
+     *
+     * With the blade field gone from the handset (PHONE_DRAWS_GRASS in
+     * src/world/device.ts) this stipple IS the meadow there, at full strength
+     * -- dense is 0 with no window -- so band-limiting it is the other half
+     * of that change rather than an extra. The speck takes its own limit
+     * because it is twice the frequency and goes first.
+     */
+    float amount = (1.0 - dense) * pow(grass, 0.7)
+      * toonBandLimit(${ggFloat(STIPPLE_CYCLES)});
+    float speckAmount = amount * toonBandLimit(${ggFloat(STIPPLE_SPECK_CYCLES)});
     albedo *= 1.0 + blades * ${ggFloat(STIPPLE_VALUE)} * amount;
-    albedo *= 1.0 + tips * ${ggFloat(STIPPLE_SPECK)} * amount;
+    albedo *= 1.0 + tips * ${ggFloat(STIPPLE_SPECK)} * speckAmount;
     albedo = mix(
       albedo,
       uBladeTip,
@@ -338,8 +377,12 @@ void main() {
       float broken = smoothstep(${ggFloat(PATH_BREAK_IN[0])}, ${ggFloat(PATH_BREAK_IN[1])},
         ggGroundNoise(vToonWorldPos.xz * 1.35 + 7.1
           + uGroundTime * ${ggFloat(GROUND_DRIFT_PER_S)}));
-      pathInk = max(rim * broken * ${ggFloat(PATH_RIM_INK)},
-        tread * ${ggFloat(PATH_SPECK_INK)});
+      // Both frequencies fade across nyquist, same rule as the stipple: at
+      // the zoom floor a tread speck at 2.9 cycles a unit and a broken rim at
+      // 1.35 are ink dots a fifth of a pixel wide.
+      pathInk = max(
+        rim * broken * ${ggFloat(PATH_RIM_INK)} * toonBandLimit(1.35),
+        tread * ${ggFloat(PATH_SPECK_INK)} * toonBandLimit(${ggFloat(PATH_SPECK_SCALE)}));
     }
 
     float scorchInk = 0.0;
@@ -350,7 +393,8 @@ void main() {
         + uGroundTime * ${ggFloat(GROUND_DRIFT_PER_S)});
       scorchInk = burnt
         * smoothstep(${ggFloat(SCORCH_SPECK_IN[0])}, ${ggFloat(SCORCH_SPECK_IN[1])}, ash)
-        * ${ggFloat(SCORCH_INK)};
+        * ${ggFloat(SCORCH_INK)}
+        * toonBandLimit(${ggFloat(SCORCH_SPECK_SCALE)});
     }
 
     float ink = clamp(hatchInk + lip + pathInk + scorchInk, 0.0, 1.0);

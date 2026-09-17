@@ -157,6 +157,34 @@ The traps, in order of how easily they get violated:
   Don't capture the exported layout (`ISLAND`, `ISLAND_LOBES`, `WATER_BODIES`, `FOREST_BLOBS`,
   `MOUNTAIN_BLOBS`) into a module-scope const — they are live bindings `setIslandMode`
   re-points, so read them after the flag is set. PLAN §7 has the full list.
+- **A HANDSET DRAWS NO GRASS (user report, 2026-09-17: *"let's remove the grass shader for
+  now, it's glitching"* / *"on mobile when you zoom out the shader glitches out and looks
+  like camo"*).** No blade field and no bloom field on `renderTier() === 'phone'` — not even
+  the base field the 2026-09-16 work left it with. The ghibli ground shader carries the whole
+  meadow there: with no field there is no window, so `ggFieldDense` reads 0 and the stipple
+  and the meadow tint run at full strength, which is what they were tuned to do outside the
+  window anyway. One pure answer decides it — `fieldPlanFor` in `src/world/device.ts`, built
+  by `buildFields` in `src/world/ghibli/fields.ts` — and one flag reverses it:
+  `PHONE_DRAWS_GRASS`. The projection lays all three, base field first, unchanged.
+  Measured on the phone frame: 172 → 171 draw calls, 2 983 505 → 2 663 505 triangles
+  (40 000 blades × 8), 40 → 38 programs, 133 → 129 textures.
+- **Every world-space noise frequency in the cel chain fades out as it crosses nyquist** —
+  `toonBandLimit` in `src/world/toon.ts`, off the units-per-pixel `setToonPixelScale` writes
+  once a frame. That was the OTHER half of the camo: at the phone's zoom floor the frame is
+  1.9 world units a pixel, which put the cel terminator's wobble at 0.26 pixels a cycle and
+  the ground's blade stipple at 0.15 — ten times past nyquist, so a two-tone ramp dithered
+  per pixel. Full at two and a half pixels a cycle, gone by one and a half; the default view
+  is 0.05 u/px, where the finest term still has 2.9, so nothing at the default framing
+  changes. **A new world-space noise dial takes a `toonBandLimit` of its own base frequency**
+  (`test/world/ghibli/band-limit.test.ts` pins the ones that exist).
+- **No `FloatType` texture is ever `LinearFilter`ed.** 32-bit float is not
+  texture-filterable in core WebGL 2 — that is `OES_texture_float_linear`, which iOS Safari
+  does not expose — and a `LINEAR` sampler on one makes the texture INCOMPLETE, so it samples
+  black. The shore bake is therefore **R16F** (`src/world/ghibli/shore.ts`; zero there means
+  "on land", which reads as foam, so on an iPhone the whole sea rendered as surf). The height
+  bake stays R32F because it is `NEAREST` and taps its own bilinear in the shader. The ghibli
+  fragment shaders say `precision highp float` themselves, and a dev deployment logs what the
+  driver actually offers on the phone tier (`src/world/capability.ts`).
 
 ## Running the room
 

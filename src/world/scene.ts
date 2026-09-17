@@ -7,7 +7,7 @@
  */
 
 import { Color, Scene, Vector3, WebGLRenderer, type Texture } from 'three';
-import { GHIBLI, SURFACE, WORLD } from '../taste/tokens';
+import { GHIBLI, MOTION, SURFACE, WORLD } from '../taste/tokens';
 import { CameraRig } from './camera';
 import { createEnvironment, type Environment } from './environment';
 import { GrainPass } from './grain';
@@ -22,26 +22,12 @@ import {
 } from './device';
 import { createPropBodies, type PropBodies } from './rocks';
 import { INK_DEFAULTS, InkPass } from './ink';
-import {
-  createFlowerField,
-  FLOWER_COUNT_PHONE,
-  FLOWER_COUNT_PROJECTION,
-  FLOWER_SPAN_PHONE,
-  FLOWER_SPAN_PROJECTION,
-} from './ghibli/flowers';
-import {
-  createGrassField,
-  GRASS_BASE_PHONE,
-  GRASS_BASE_PROJECTION,
-  grassBaseBladeWidth,
-  grassBaseMinBladePx,
-  grassBaseSpan,
-  GRASS_COUNT_PHONE,
-  GRASS_COUNT_PROJECTION,
-  GRASS_SPAN_PHONE,
-  GRASS_SPAN_PROJECTION,
-} from './ghibli/grass';
+import { buildFields } from './ghibli/fields';
+import type { FlowerField } from './ghibli/flowers';
+import type { GrassField } from './ghibli/grass';
+import { GRASS_SPAN_PHONE, GRASS_SPAN_PROJECTION } from './ghibli/grass';
 import { applyGhibliPost } from './ghibli/post';
+import { logCapabilities, probeCapabilities, type ProbeContext } from './capability';
 import { createLighting } from './lighting';
 import { createScatter, type Scatter } from './scatter';
 import { katamariPendingSource, startKatamariWorld } from './katamari/source';
@@ -60,7 +46,7 @@ import {
 import { sanitizeGame, type WorldGame } from './game';
 import { sanitizeStyle, type WorldStyle } from './style';
 import { ROLLING_SURFACE, type Surface } from './surface';
-import { setToonEnabled, setToonSun } from './toon';
+import { setToonEnabled, setToonPixelScale, setToonSun } from './toon';
 import { createWater, type Water } from './water';
 
 export type FrameCallback = (dt: number, nowMs: number) => void;
@@ -482,6 +468,30 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
   setRenderTier(tier);
   const pixelRatio = Math.min(window.devicePixelRatio, tier === 'phone' ? 1.5 : 2);
   renderer.setPixelRatio(pixelRatio);
+  /*
+   * WHAT THIS HANDSET ACTUALLY OFFERS, said once (2026-09-17).
+   *
+   * > User ask: *"let's make sure it's optimized on Safari."*
+   *
+   * An iPhone is the main handset this world is watched from and the one
+   * device nobody working on it can attach a profiler to, so the page says
+   * what it found: the float-texture extensions the bakes depend on, the
+   * sampler and texture-size limits the materials sit under, and the driver's
+   * real highp fragment precision, which is the one that would not announce
+   * itself (src/world/capability.ts). The PHONE tier only, because that is
+   * the question, and printed only on a dev deployment — but a dev
+   * deployment, not the vite dev server, so it can be read off Safari on the
+   * deployed valiocon link.
+   */
+  if (tier === 'phone') {
+    const gl = renderer.getContext();
+    logCapabilities(
+      probeCapabilities(
+        gl as unknown as ProbeContext,
+        typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext,
+      ),
+    );
+  }
 
   const scene = new Scene();
   // Beyond the ground the frame is still the ground value — one field.
@@ -870,16 +880,23 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
    * mesh costs nothing per frame and the ink frame stays identical, while a
    * switch back to ghibli is instant rather than another quarter-million
    * blades' worth of layout.
+   *
+   * All three stay NULL on the phone tier (2026-09-17 — `PHONE_DRAWS_GRASS`
+   * in src/world/device.ts, and `ensureFields` below): a handset draws no
+   * blades at all, and the ghibli ground shader is the meadow there.
    */
-  let grass: ReturnType<typeof createGrassField> | null = null;
+  let grass: GrassField | null = null;
   /**
    * The BASE blade field: every meadow texel of the island, at a uniform
    * density, with the whole base budget in it (2026-09-16, user direction:
    * grass over the entire map). `grass` above is the dense NEAR field that
    * draws on top of it around the look-target.
    */
-  let baseGrass: ReturnType<typeof createGrassField> | null = null;
-  let flowers: ReturnType<typeof createFlowerField> | null = null;
+  let baseGrass: GrassField | null = null;
+  let flowers: FlowerField | null = null;
+  /** Whether `ensureFields` has run. A tier that lays NO field still has to
+   * remember that it decided so, or every style switch asks again. */
+  let fieldsBuilt = false;
   /** The painted planting layers handed over so far (`setPaintedLayers`) —
    * remembered, so a field built after the brush mounted still gets them. */
   const paintedLayers: {
@@ -892,85 +909,35 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
     comb: null,
   };
   const fieldSpan = tier === 'phone' ? GRASS_SPAN_PHONE : GRASS_SPAN_PROJECTION;
+  /**
+   * Lay out this tier's fields, once, on the first switch to the ghibli
+   * style. WHICH fields that is comes from `fieldPlanFor`
+   * (src/world/device.ts) and the construction from `buildFields`
+   * (src/world/ghibli/fields.ts) — so "does a handset draw blades" is one
+   * pure answer a unit test can read, and not a branch buried in here.
+   *
+   * A HANDSET LAYS NONE OF THEM (2026-09-17, user report: *"let's remove the
+   * grass shader for now, it's glitching"* / *"on mobile when you zoom out
+   * the shader glitches out and looks like camo"*). `buildFields` returns an
+   * empty list on that tier, so this adds nothing, `followFields` writes no
+   * window, and the ghibli ground shader carries the whole meadow at full
+   * stipple and full tint — which is exactly what it does outside the window
+   * on a projection. `PHONE_DRAWS_GRASS` in src/world/device.ts brings the
+   * base field back.
+   */
   const ensureFields = (): void => {
-    const phone = tier === 'phone';
-    /*
-     * A HANDSET DRAWS THE BASE FIELD ONLY (2026-09-16, user report: "in the
-     * mobile view it looks like the grass shader is being projected into the
-     * camera view and is constantly around the character"). The dense near
-     * field and the blooms are a WINDOW that follows the look-target, and on
-     * a phone the look-target IS the person's own creature — so the window's
-     * edge travelled with them and read as a patch of lawn stuck to the
-     * camera. The base field is map-fixed and covers the whole island, and
-     * at a handset's blade budget the near field added little a thumb could
-     * see; dropping it is also ~20% of the phone's remaining triangles. The
-     * ground keeps no window either (`setFieldWindow` span 0 is "no window"),
-     * so its stipple is uniform under the base field. The projection is
-     * unchanged: its window is wider than its frame at default zoom.
-     */
-    if (phone) {
-      if (baseGrass) return;
-      baseGrass = createGrassField({
-        count: GRASS_BASE_PHONE,
-        layout: 'box',
-        span: grassBaseSpan(),
-        height: ground.heightTexture(),
-        region: ground.region(),
-        baseDensity: 1,
-        bladeWidth: grassBaseBladeWidth(),
-        minBladePx: grassBaseMinBladePx(),
-        layers: { grass: paintedLayers.grass, comb: paintedLayers.comb },
-      });
-      scene.add(baseGrass.mesh);
-      return;
-    }
-    if (grass && flowers) return;
-    grass ??= createGrassField({
-      count: phone ? GRASS_COUNT_PHONE : GRASS_COUNT_PROJECTION,
-      span: fieldSpan,
-      // The ground the blades stand on is a BAKE of the Surface seam, owned by
-      // `ground` and re-run there on every rebuild — so sliding the window
-      // costs one uniform write instead of 651ms of seam sampling, which is
-      // what it cost when every blade carried its own height
-      // (src/world/ghibli/height.ts).
+    if (fieldsBuilt) return;
+    fieldsBuilt = true;
+    const set = buildFields(tier, {
       height: ground.heightTexture(),
       region: ground.region(),
-      // FULL by default (2026-09-15, user direction): the ghibli meadow is
-      // envpaint's `fillMeadow` — grass everywhere the map says meadow,
-      // thinning on the beach and the mountain and none in the sea — rather
-      // than only where somebody has painted.
-      baseDensity: 1,
-      layers: { grass: paintedLayers.grass, comb: paintedLayers.comb },
+      nearSpan: fieldSpan,
+      layers: paintedLayers,
     });
-    flowers ??= createFlowerField({
-      count: phone ? FLOWER_COUNT_PHONE : FLOWER_COUNT_PROJECTION,
-      // The blade field's own window: blooms belong in the grass.
-      span: phone ? FLOWER_SPAN_PHONE : FLOWER_SPAN_PROJECTION,
-      height: ground.heightTexture(),
-      region: ground.region(),
-      // A bloom wants meadow under it (`uNeedGrass`), so it reads the grass
-      // weight as well as its own.
-      layers: { flowers: paintedLayers.flowers, grass: paintedLayers.grass },
-    });
-    baseGrass ??= createGrassField({
-      count: phone ? GRASS_BASE_PHONE : GRASS_BASE_PROJECTION,
-      layout: 'box',
-      // The island's own bounding box, through `mapScale` — 720 on the doubled
-      // island (src/world/ghibli/grass.ts).
-      span: grassBaseSpan(),
-      height: ground.heightTexture(),
-      region: ground.region(),
-      baseDensity: 1,
-      // A base blade stands much farther from its neighbour than a near one,
-      // so it is wider and keeps a floor in PIXELS as the camera pulls back —
-      // and both numbers go up again on the doubled island, where the same
-      // budget covers four times the area (src/world/ghibli/grass.ts).
-      bladeWidth: grassBaseBladeWidth(),
-      minBladePx: grassBaseMinBladePx(),
-      layers: { grass: paintedLayers.grass, comb: paintedLayers.comb },
-    });
-    // The base field FIRST, so the dense near field draws over it.
-    scene.add(baseGrass.mesh, grass.mesh, flowers.mesh);
+    grass = set.near;
+    baseGrass = set.base;
+    flowers = set.flowers;
+    if (set.meshes.length > 0) scene.add(...set.meshes);
   };
   /**
    * Slide the window onto the look-target — three uniform writes, so this runs
@@ -1160,6 +1127,17 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
       const unitsPerPx = (halfHeight * 2) / Math.max(1, window.innerHeight);
       grass?.setPixelScale(unitsPerPx);
       baseGrass?.setPixelScale(unitsPerPx);
+      /*
+       * …and the SAME number into the cel chain, which is where the camo the
+       * 2026-09-17 report named actually came from: every world-space noise
+       * term in `src/world/toon.ts` and the ghibli ground's blade stipple
+       * fades out as it crosses nyquist, and this is the only thing that
+       * tells them how big a pixel is. One value write for the whole frame —
+       * every toon-injected material shares `toonUniforms` by reference — and
+       * it runs whether or not this tier laid a blade, because a handset with
+       * no field is exactly the page whose ground carries the whole meadow.
+       */
+      setToonPixelScale(unitsPerPx);
       // …and the window follows the eye. Three uniform writes: the field's
       // layout is window-local and its heights come from the bake, so there is
       // nothing on the CPU to re-lay (src/world/ghibli/height.ts).
@@ -1204,9 +1182,62 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
     startLibrary();
   };
   const reported = new Set<string>();
+  /*
+   * A LOST CONTEXT IS A PAUSE, NOT A CRASH (2026-09-17, the iOS audit).
+   *
+   * Mobile Safari drops a WebGL context when it wants the memory back — a
+   * backgrounded tab, a video call, another heavy tab — and a page that keeps
+   * calling `render` on a dead context burns a core drawing nothing. Worse,
+   * the DEFAULT behaviour is that the context never comes back at all: the
+   * browser only attempts a restore if the `webglcontextlost` handler calls
+   * `preventDefault`.
+   *
+   * So: stop the loop, say one line, and let three re-upload on the restore
+   * it now has permission to make. If no restore arrives within one ambient
+   * beat the page reloads, which is a recovery this world is built for — a
+   * refreshed projection heals itself from the retained epoch and the
+   * handsets' own stored drawings (docs/RUNBOOK.md).
+   *
+   * The line borrows `.world-say`, the operator line's own class: one rule
+   * line and type, no panel and no card (TASTE §2.6), and lowercase.
+   */
+  let contextLost = false;
+  let reloadTimer = 0;
+  const sayOnCanvas = (line: string): void => {
+    let el = document.querySelector<HTMLDivElement>('.world-say');
+    if (!el) {
+      el = document.createElement('div');
+      el.className = 'world-say';
+      el.setAttribute('role', 'status');
+      document.body.appendChild(el);
+    }
+    el.textContent = line;
+    // Slides in on the class, never a pop (TASTE §2.1).
+    requestAnimationFrame(() => el?.classList.add('visible'));
+  };
+  canvas.addEventListener('webglcontextlost', (event) => {
+    event.preventDefault();
+    contextLost = true;
+    sayOnCanvas('the picture paused — waiting for the browser');
+    window.clearTimeout(reloadTimer);
+    reloadTimer = window.setTimeout(() => {
+      if (contextLost) window.location.reload();
+    }, MOTION.ambientMs);
+  });
+  canvas.addEventListener('webglcontextrestored', () => {
+    contextLost = false;
+    window.clearTimeout(reloadTimer);
+    // three re-initialises its own state and re-uploads on this event; the
+    // size and the pixel cap are ours to say again.
+    renderer.setPixelRatio(pixelRatio);
+    resize();
+    document.querySelector<HTMLDivElement>('.world-say')?.classList.remove('visible');
+  });
   const loop = (nowMs: number): void => {
     try {
-      frame(nowMs);
+      // A dead context draws nothing but still costs a full traversal and a
+      // few hundred gl calls that all fail, so the frame is skipped whole.
+      if (!contextLost) frame(nowMs);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (!reported.has(message)) {
