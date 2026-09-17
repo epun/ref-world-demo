@@ -65,10 +65,12 @@ export const HEIGHTFIELD_SEGMENTS = 256;
 
 /**
  * …and the count the collider is actually built at: the one above through
- * `mapScale` (2026-09-16, the island doubled), so the CELL stays 1.56 world
- * units and the reason the number was picked survives a map four times the
- * area. 512 on the doubled island — 263k samples a rebuild against 66k, which
- * is why `TERRAIN_REBUILD_MIN_MS` exists.
+ * `mapScale` (2026-09-16), ROUNDED because `MAP_SCALE` is not an integer
+ * (1.3 since 2026-09-17) and a segment count has to be, so the CELL stays
+ * 1.56 world units and the reason the number was picked survives a bigger
+ * map. 512 at scale 2 (263k samples a rebuild against 66k, which is why
+ * `TERRAIN_REBUILD_MIN_MS` exists); 282 at 1.1, a cell of 1.5603 and 80k
+ * samples.
  *
  * Physics only ever runs on the simulating page of a katamari world
  * (`WorldHandles.enablePhysics`), which is the only world with an island — so
@@ -83,7 +85,9 @@ export function heightfieldSegments(): number {
   // cell is 3.12 units, coarser than a riser, so a stone can roll off a
   // terrace it should have stopped on — a physics nicety on a page that is
   // usually a VIEWER anyway (physics runs only on the simulating page), and
-  // the projection that actually hosts a room keeps the 1.56-unit cell.
+  // the projection that actually hosts a room keeps the 1.56-unit cell. At
+  // scale 1.1 the handset's cell is 1.56 units rather than 3.12: 440 units
+  // over the 256 kept here is coarser than the projection only above scale 2.
   if (isPhoneTier()) return HEIGHTFIELD_SEGMENTS;
   return Math.round(HEIGHTFIELD_SEGMENTS * mapScale());
 }

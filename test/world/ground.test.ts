@@ -84,15 +84,19 @@ describe('ground — what gets built', () => {
 
   it('keeps the field at the budgeted density', () => {
     // ~205k triangles is the ceiling this world pays for its ground on a world
-    // with no island; 819k on the doubled one (2026-09-16, `MAP_SCALE` in
-    // src/world/landscape.ts), because what is held fixed across the scale is
+    // with no island, and `MAP_SCALE`² times that on a scaled one
+    // (src/world/landscape.ts), because what is held fixed across the scale is
     // the QUAD and not the count — a quad wider than a terrace riser washes
-    // the drawn contour out (PLAN §7.1 measured it, and re-measured it for the
-    // doubled island: the riser's own run is 1.99 units at the steepest slope
-    // on the map, so a 1.25-unit quad still puts more than one vertex across
-    // it while a 2.5-unit one would be wider than the riser).
+    // the drawn contour out (PLAN §7.1 measured it, and `riserRun` in
+    // src/world/field.ts re-measures it per scale: the riser's own run is
+    // 2.101 units at 1.1, so a 1.25-unit quad still puts more than one vertex
+    // across it while a 2.5-unit one would be wider than the riser).
     expect(FIELD_SEGMENTS).toBeLessThanOrEqual(320);
-    expect(fieldQuad()).toBeLessThanOrEqual(1.25);
+    // `toBeCloseTo` and not `toBeLessThanOrEqual`: since `MAP_SCALE` became
+    // 1.1 the side is 400 · 1.1 = 440.00000000000006 and the quad comes out
+    // 1.2500000000000002 — the same 1.25 with the last bit of a float that is
+    // not exact in binary (2026-09-17).
+    expect(fieldQuad()).toBeCloseTo(1.25, 9);
     const index = field().geometry.getIndex();
     expect(index).not.toBeNull();
     expect(index!.count / 3).toBe(fieldSegments() * fieldSegments() * 2);

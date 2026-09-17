@@ -9,21 +9,21 @@
  * re-exported from `ground.ts`, which is still where the meshes are built and
  * still the name every existing consumer reads.
  *
- * TWICE AS BIG (2026-09-16, user ask — *"make the island twice as big"*).
- * Every number below is the one that shipped, times `mapScale()`
- * (src/world/landscape.ts): with the island off it is exactly 1 and this
+ * SCALED WITH THE MAP (`MAP_SCALE`, src/world/landscape.ts — 2 from
+ * 2026-09-16, 1.1 since 2026-09-17). Every number below is the one that
+ * shipped, times `mapScale()`: with the island off it is exactly 1 and this
  * module is the set of constants it always was, and with it on the field
- * covers a coast that now reaches ~352 units from the origin.
+ * covers a coast that now reaches ~194 units from the origin.
  *
  * The SIDE is the same on every device, because the bakes span it and the
  * physics heightfield is laid over it. The CUT is not: a projection keeps the
- * 1.25-unit quad the risers were measured against, and a handset takes 1.67
- * (see `fieldSegments`). That is the one place this module asks what kind of
- * screen it is on.
+ * 1.25-unit quad the risers were measured against, and a handset's own
+ * ceiling no longer binds at this scale (see `fieldSegments`). That is the one
+ * place this module asks what kind of screen it is on.
  */
 
 import { isPhoneTier } from './device';
-import { mapScale } from './landscape';
+import { mapScale, TERRAIN } from './landscape';
 
 /**
  * Side of the displaced field, world units: ±200 in x and z on a world with
@@ -55,7 +55,9 @@ export function fieldSize(): number {
 }
 
 /**
- * [D] Segments per side on a handset's doubled island — 480 rather than 640.
+ * [D] A CEILING on the segments per side on a handset's scaled island — 480
+ * rather than the projection's `FIELD_SEGMENTS * mapScale` (640 at scale 2,
+ * 352 at 1.1, where it does not bind).
  *
  * WHY THERE IS A TIER HERE AT ALL. Displacing the field is a CPU cost, not a
  * frame cost: every vertex goes through the Surface seam once per build and
@@ -67,14 +69,26 @@ export function fieldSize(): number {
  *
  * WHY 480 IS ALLOWED. PLAN §7.1's riser-height-error method: the steepest
  * slope on the doubled map is 0.4814, so a 1.6-unit riser over the middle
- * 60% of its step is 0.96 / 0.4814 ≈ **1.99 units of run** — and a quad has
- * to be narrower than the riser it draws or the ground's own terrace mark
- * reads as a wash. 480 segments over 800 units is a **1.67-unit quad**, still
- * inside the riser, and the measured height error against the authored field
- * over 250,000 land samples in the camera's core is **0.112 u** against
- * 0.066 u at 640 — a fourteenth of a tier step, on the device with the
- * smallest screen. 320 segments would be a 2.5-unit quad, WIDER than the
- * riser, which is exactly the failure §7.1 rejected 160 for on the old map.
+ * 60% of its step is 0.96 / 0.4814 ≈ **1.99 units of run** (`riserRun`) —
+ * and a quad has to be narrower than the riser it draws or the ground's own
+ * terrace mark reads as a wash. 480 segments over 800 units is a **1.67-unit
+ * quad**, still inside the riser, and the measured height error against the
+ * authored field over 250,000 land samples in the camera's core is
+ * **0.112 u** against 0.066 u at 640 — a fourteenth of a tier step, on the
+ * device with the smallest screen. 320 segments would be a 2.5-unit quad,
+ * WIDER than the riser, which is exactly the failure §7.1 rejected 160 for on
+ * the old map.
+ *
+ * IT IS NOT RE-TRADED AT 1.1, AND IT NO LONGER BINDS (2026-09-17,
+ * `MAP_SCALE` 2 then 1.3 then 1.1). The count is the handset's own budget and
+ * not a fraction of the projection's, and both of the day's asks were about
+ * the map's size and not the phone's cut. But at 1.1 the projection's own
+ * field is 352 segments, BELOW this ceiling — 480 over 440 units would be a
+ * 0.92-unit quad, finer than the projection's 1.25 and more work than the
+ * projection does — so `fieldSegments` takes the `min` and a phone reads the
+ * projection's 352. The number is kept rather than deleted because it is the
+ * measured budget for a bigger map and the scale has moved twice in one day;
+ * it starts binding again above scale 1.5.
  */
 export const FIELD_SEGMENTS_PHONE_ISLAND = 480;
 
@@ -89,28 +103,74 @@ export const FIELD_SEGMENTS_PHONE_ISLAND = 480;
  */
 export function fieldSegments(): number {
   if (mapScale() === 1) return FIELD_SEGMENTS;
-  return isPhoneTier() ? FIELD_SEGMENTS_PHONE_ISLAND : FIELD_SEGMENTS * mapScale();
+  // ROUNDED: `MAP_SCALE` is not an integer (1.1 since 2026-09-17), and a
+  // segment count has to be one. 352 at 1.1, which holds the quad at exactly
+  // 1.25 because 320 * 1.1 is already whole; at a scale where it is not, the
+  // quad moves by at most half a segment and `fieldQuad` is what a test
+  // measures against the riser.
+  const full = Math.round(FIELD_SEGMENTS * mapScale());
+  // …and the handset's budget is a CEILING, not a substitute: at a scale
+  // small enough that the projection's own cut is already finer than 480, a
+  // phone takes the projection's rather than paying MORE for a map that got
+  // smaller (see `FIELD_SEGMENTS_PHONE_ISLAND`).
+  return isPhoneTier() ? Math.min(FIELD_SEGMENTS_PHONE_ISLAND, full) : full;
 }
 
 /** World units a single ground quad spans — 1.25 everywhere but a handset's
- * doubled island, which takes 1.67. Exported so a test can measure it against
- * the riser it has to draw rather than restate either number. */
+ * scaled island, which takes `fieldSize() / 480` (1.67 at scale 2; at 1.1 the
+ * ceiling does not bind and it is 1.25 again). Exported so a test can measure
+ * it against the riser it has to draw rather than restate either number. */
 export function fieldQuad(): number {
   return fieldSize() / fieldSegments();
 }
 
 /**
- * [D] The narrowest terrace riser the ground has to draw, world units of run
- * — PLAN §7.1's own arithmetic, in one place so the field's cut can be
- * measured against it instead of against a copied number.
+ * [D] The steepest gradient the SMOOTH field reaches, per map scale —
+ * measured, not derived, one entry per scale that has been measured.
  *
- * A riser occupies the middle 60% of a step, so it climbs `0.6 · tierStep`
- * of SMOOTH field; the run that takes is that over the steepest gradient on
- * the map. Measured 0.843 at the authored size (1.14 units of run) and 0.4814
- * on the doubled island (1.99), because the island is twice as wide and
- * exactly as high.
+ * The method is PLAN §7.1's and test/world/landscape.test.ts runs it: walk
+ * the whole field at 0.5 units, skip the lake island (the one landform with
+ * its own bound) and the flat rim past `farEnd`, and take the worst central
+ * difference. Verticals do not scale and the noise wavelengths do not either,
+ * so the number does NOT fall as 1/scale — a wider island has the same
+ * hummocks spread further apart, not gentler ones:
+ *
+ *   - 1   → **0.843** (the authored island)
+ *   - 1.1 → **0.4570** (2026-09-17, at 64.5, -133, on the range's apron)
+ *   - 1.3 → **0.5111** (2026-09-17, at 53, -191.5, on the way down to 1.1)
+ *   - 2   → **0.4814** (2026-09-16)
  */
-export const RISER_RUN: Record<1 | 2, number> = { 1: 1.14, 2: 1.99 };
+const STEEPEST_SLOPE: Readonly<Record<string, number>> = {
+  '1': 0.843,
+  '1.1': 0.457,
+  '1.3': 0.5111,
+  '2': 0.4814,
+};
+
+/** Units of SMOOTH climb a terrace riser carries: the middle 60% of a step. */
+const RISER_CLIMB = TERRAIN.terraceStep * (TERRAIN.terraceRiser[1] - TERRAIN.terraceRiser[0]);
+
+/**
+ * [D] The narrowest terrace riser the ground has to draw at a map scale,
+ * world units of run — PLAN §7.1's own arithmetic, in one place so the
+ * field's cut can be measured against it instead of against a copied number.
+ *
+ * A riser occupies the middle 60% of a step, so it climbs `0.6 · terraceStep`
+ * of SMOOTH field; the run that takes is that over the steepest gradient on
+ * the map. 1.14 units at the authored size, **2.101** at 1.1, 1.878 at 1.3
+ * and 1.99 on the doubled island.
+ *
+ * A scale nobody has measured falls back on `0.843 / √scale`, which is a
+ * CONSERVATIVE stand-in and deliberately so: the measured slopes fall more
+ * slowly than 1/scale (0.4814 at scale 2 against 0.4215), so √scale
+ * over-states the slope, under-states the run, and makes the riser bound
+ * stricter than the truth rather than looser. Measure the scale and add it to
+ * `STEEPEST_SLOPE` before relying on the number.
+ */
+export function riserRun(scale: number = mapScale()): number {
+  const measured = STEEPEST_SLOPE[String(scale)];
+  return RISER_CLIMB / (measured ?? STEEPEST_SLOPE['1']! / Math.sqrt(scale));
+}
 
 /**
  * Outer radius of the flat far field on the map being read.
@@ -118,10 +178,12 @@ export const RISER_RUN: Record<1 | 2, number> = { 1: 1.14, 2: 1.99 };
  * It rides the scale for a reason that is not symmetry: at the zoom floor the
  * frame is the island's own width, and on a portrait phone that floor is set
  * by the WIDTH, so the frame is ~4.3 times as tall as it is wide and looks
- * ~1.4 times the coast's reach up-screen of the island. At 1400 the far
- * corners of that frame fell off the edge of the ring and showed the void;
- * at `1400 · mapScale` the sea still runs past every corner of it
- * (test/world/camera.test.ts measures the corner against this number).
+ * ~4 times the coast's reach up-screen of the island. At 1400 the far corners
+ * of that frame fell off the edge of the ring and showed the void; at
+ * `1400 * mapScale` the sea still runs past every corner of it — 1540 at
+ * scale 1.1 against a far corner that measures 818
+ * (test/world/island-scale.test.ts and test/world/camera.test.ts both measure
+ * the corner against this number rather than restating it).
  */
 export function groundRadius(): number {
   return GROUND_RADIUS * mapScale();

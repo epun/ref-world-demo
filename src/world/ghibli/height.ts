@@ -25,10 +25,16 @@
  * stands on a smoothed version of it. That is the trade the frame time bought:
  * 65 000 seam samples a rebuild instead of 150 000 a window slide. **[D]**
  *
- * BOTH numbers ride `mapScale` (2026-09-16, the island doubled): 512² over
- * 800 units keeps the texel at exactly 1.56, so the trade above is the same
- * trade on a map four times the area and the bake costs 262k samples instead
- * of 65k.
+ * BOTH numbers ride `mapScale` (2026-09-16): 512² over 800 units at scale 2,
+ * **282² over 440 at 1.1**, either way a texel of 1.56 — so the trade above is
+ * the same trade on a bigger map, and the bake costs 80k samples at 1.1
+ * against 65k authored and 262k at scale 2.
+ *
+ * The count is ROUNDED and so is NPOT at 1.1 (256 * 1.1 = 281.6 -> 282, a
+ * texel of 1.5603 against 1.5625). It is a WebGL2 R32F texture at CLAMP +
+ * NEAREST with the bilinear tap done in the shader off `uHeightRes`, so there
+ * is nothing in the sampling path that wants a power of two; holding the
+ * TEXEL is what keeps the trade the one that was measured.
  */
 
 import { DataTexture, FloatType, NearestFilter, RedFormat } from 'three';
@@ -44,9 +50,10 @@ export const HEIGHT_SIZE = FIELD_SIZE;
 
 /**
  * …and the two the bake actually uses: the ground field's side through
- * `mapScale`, and the resolution through the same factor, so the TEXEL stays
- * 1.56 world units whatever the island's size (2026-09-16, `MAP_SCALE` in
- * src/world/landscape.ts). 512² over 800 units on the doubled island.
+ * `mapScale`, and the resolution through the same factor, ROUNDED to a whole
+ * texel count, so the TEXEL stays 1.56 world units whatever the island's size
+ * (2026-09-16, `MAP_SCALE` in src/world/landscape.ts). 512² over 800 units at
+ * scale 2, 282² over 440 at 1.1.
  *
  * Read at bake time and at material-build time, both of which happen after
  * the island flag is set (src/world/scene.ts `start`) — which is why the

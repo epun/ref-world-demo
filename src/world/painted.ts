@@ -63,10 +63,11 @@ export const PAINTED_RES = 512;
  * paintable region is precisely the region that has vertices to move. Past
  * it the far ring is flat by construction and nothing could show a stamp.
  *
- * …on a world with no island. Since the island doubled (2026-09-16,
- * `MAP_SCALE`) the ground field there is 800 units wide and this is still 400,
- * so the brushes paint the middle quarter of that map. It does NOT ride the
- * scale, because this extent is on the wire — `SCENE_EXTENT` in
+ * …on a world with no island. Since the map took a scale (2026-09-16,
+ * `MAP_SCALE`) the ground field there is 440 units wide at 1.1 — it was 800 at
+ * scale 2 — and this is still 400, so the brushes paint the middle of that
+ * map. It does NOT ride the scale, because this extent is on the wire —
+ * `SCENE_EXTENT` in
  * src/session/scene.ts is this number, and a session log or a stored map is
  * written in it. Widening the paintable region is a protocol change and its
  * own job; what it costs today is that the geography bakes no longer share

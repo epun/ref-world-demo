@@ -119,11 +119,11 @@ export const WORLD_MAP_EXTENT = 185;
 
 /**
  * …and the half-extent the map is actually drawn at: `WORLD_MAP_EXTENT`
- * through `mapScale` (2026-09-16, the island doubled) — 370, which holds the
- * doubled coast's measured 352.52 with the same 17.5 units of breathing room
- * the 185 above holds over 176.26. A map of an island has to contain the
- * island at either size, and on a world with no island the two are the one
- * number that shipped.
+ * through `mapScale` (2026-09-16) — 203.5 at scale 1.1, which holds that
+ * coast's measured 193.88 with the same 17.5 units of breathing room the 185
+ * above holds over 176.26, because both numbers ride the same factor. A map
+ * of an island has to contain the island at any size, and on a world with no
+ * island the two are the one number that shipped.
  */
 export function worldMapExtent(): number {
   return WORLD_MAP_EXTENT * mapScale();

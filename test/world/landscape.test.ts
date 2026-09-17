@@ -1025,7 +1025,7 @@ describe('landscape — terrain height', () => {
   /** Units of walk a plateau has to hold to count as a tread — see below. */
   const PLATEAU_RUN = 8;
 
-  it('reads as tiers, not a swell — four levels between the origin and the range', () => {
+  it('reads as tiers, not a swell — a tread on every tier it climbs', () => {
     const target = MOUNTAIN_BLOBS[1]!;
     const len = Math.hypot(target.x, target.z);
     const line: number[] = [];
@@ -1036,13 +1036,21 @@ describe('landscape — terrain height', () => {
     // units long. A smooth swell has none; a terrace has one per tread.
     //
     // Eight and not the six this used to ask for (2026-09-16, `MAP_SCALE`):
-    // the island is twice as wide and exactly as high, so every gradient on it
-    // is half what it was, and at six the walk picked up two 6-unit flats near
+    // the island is wider than it was authored and exactly as high, so every
+    // gradient on it is shallower, and at six the walk picked up flats near
     // the crest of the range that are not on a tier at all — the shelf's own
-    // rounded top, which at half the gradient now holds a tenth of a unit for
+    // rounded top, which at a shallower gradient holds a tenth of a unit for
     // six units without holding a tier. Eight is the shortest run that admits
-    // only genuine treads: measured four of them, 0 / 1.6 / 3.2 / 4.8, and
-    // nothing off-tier (at ten it is still those four, at twelve only three).
+    // only genuine treads, and the off-tier assertion at the bottom is what
+    // says so rather than this comment.
+    //
+    // HOW MANY there are is a property of the CLIMB and not of the map's
+    // size, so it is derived below rather than spelled out: the walk to the
+    // range rises 4.12 units at `MAP_SCALE` 1.1 and crosses three treads
+    // (0 / 1.6 / 3.2), where the doubled island's longer walk reached the
+    // fourth at 4.8. The claim is that there is a tread on EVERY tier the
+    // walk climbs — no tier crossed on a ramp — which is the thing that
+    // distinguishes a terrace from a swell at any scale.
     const levels: number[] = [];
     let current = Math.round(line[0]! * 10) / 10;
     let run = 1;
@@ -1056,7 +1064,11 @@ describe('landscape — terrain height', () => {
       current = h;
       run = 1;
     }
-    expect(new Set(levels).size).toBeGreaterThanOrEqual(4);
+    // Every tier the walk's own height range covers has a tread on it.
+    const climbed = Math.floor(Math.max(...line) / TERRAIN.terraceStep) + 1;
+    expect(new Set(levels).size).toBe(climbed);
+    // …and there are several of them: one plateau is a flat, not a terrace.
+    expect(climbed).toBeGreaterThanOrEqual(3);
     // …and they are genuine tiers of the terrace, not arbitrary heights.
     for (const level of levels) {
       expect(Math.abs(level / TERRAIN.terraceStep - Math.round(level / TERRAIN.terraceStep))).toBeLessThan(
@@ -1295,21 +1307,38 @@ describe('landscape — the terrain dials', () => {
   });
 
   it('spaces the treads farther apart at a bigger tierStep', () => {
-    // Count the distinct treads the walk to the range crosses. Measured:
-    // 4 at 1.6, 2 at 3.2 — the same climb cut into half as many steps. On the
-    // doubled island the walk is twice as long and crosses one tread more:
-    // 5 at 1.6, 2 at 3.2 (2026-09-16, `MAP_SCALE`).
-    const treadsAt = (tierStep: number): number => {
+    // Count the distinct treads the walk to the range crosses, and the tiers
+    // its own height range spans — the two have to be the same number, which
+    // is the assertion: the walk visits every tier between its lowest and its
+    // highest and skips none, so a coarser step really is the same climb cut
+    // into fewer steps rather than a different climb.
+    //
+    // DERIVED AND NOT SPELLED OUT, because the count rides the walk's length
+    // and the walk rides `MAP_SCALE`: 4 at 1.6 and 2 at 3.2 at the authored
+    // size and again at 1.1 (a 129.9-unit walk rising 4.12 units), 5 and 2 on
+    // the doubled island whose walk was twice as long (2026-09-16).
+    const treadsAt = (tierStep: number): { seen: number; span: number } => {
       setTerrainParams({ tierStep });
       const seen = new Set<number>();
-      alongRange(0.5, (x, z) => seen.add(Math.round(terrainHeight(x, z) / tierStep)));
-      return seen.size;
+      let lo = Infinity;
+      let hi = -Infinity;
+      alongRange(0.5, (x, z) => {
+        const h = terrainHeight(x, z);
+        seen.add(Math.round(h / tierStep));
+        lo = Math.min(lo, Math.round(h / tierStep));
+        hi = Math.max(hi, Math.round(h / tierStep));
+      });
+      return { seen: seen.size, span: hi - lo + 1 };
     };
     const fine = treadsAt(1.6);
     const coarse = treadsAt(3.2);
-    expect(fine).toBe(mapScale() === 1 ? 4 : 5);
-    expect(coarse).toBe(2);
-    expect(coarse).toBeLessThan(fine);
+    expect(fine.seen).toBe(fine.span);
+    expect(coarse.seen).toBe(coarse.span);
+    // A coarser step cuts the same climb into fewer treads, and the finest
+    // reads as a terrace rather than a single step.
+    expect(coarse.seen).toBeLessThan(fine.seen);
+    expect(fine.seen).toBeGreaterThanOrEqual(3);
+    expect(coarse.seen).toBeGreaterThanOrEqual(2);
   });
 
   it('spreads the relief wider — the contours move apart', () => {

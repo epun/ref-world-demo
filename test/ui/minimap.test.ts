@@ -87,9 +87,10 @@ describe('fixed world extent', () => {
     expect(WORLD_MAP_EXTENT).toBeGreaterThanOrEqual(160);
     expect(WORLD_MAP_EXTENT).toBeLessThanOrEqual(220);
     // …and the extent actually drawn rides the map's own scale
-    // (src/world/landscape.ts `MAP_SCALE`), so a map of an island twice as
-    // wide still contains it: 370 against a coast that reaches 352.52.
-    expect(worldMapExtent()).toBe(WORLD_MAP_EXTENT * mapScale());
+    // (src/world/landscape.ts `MAP_SCALE`), so a map of a wider island still
+    // contains it: 203.5 against a coast that reaches 193.88 at scale 1.1.
+    // `toBeCloseTo`, because 1.1 is not an exact binary float.
+    expect(worldMapExtent()).toBeCloseTo(WORLD_MAP_EXTENT * mapScale(), 9);
   });
 });
 
@@ -766,8 +767,8 @@ describe('bodyKindAt reads the landscape', () => {
     //
     // The probe walks INLAND by a share of the island, not a count of units
     // (2026-09-16, `MAP_SCALE` in src/world/landscape.ts): the features move
-    // out with the coast, so 30 units in on a doubled island lands in the open
-    // plain outside the western stand rather than inside it.
+    // out with the coast, so a fixed 30 units in on a wider island lands in
+    // the open plain outside the western stand rather than inside it.
     const inland = -30 * mapScale();
     const wood = offCoast(Math.PI, inland);
     expect(bodyKindAt(wood.x, wood.z)).toBe('forest');

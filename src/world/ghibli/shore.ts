@@ -21,8 +21,8 @@
  *
  * 512² over the ground field's 400 units — 0.78 units a texel, against a foam
  * rim of about one and a half to three units, so the rim is four texels wide
- * at its thinnest. **[D]** Both ride `mapScale` (2026-09-16, the island
- * doubled), so the texel is 0.78 on any size of map.
+ * at its thinnest. **[D]** Both ride `mapScale` (2026-09-16), so the texel is
+ * 0.78 on any size of map.
  *
  * INSIDE IS POSITIVE. A texel in water holds its distance to the nearest dry
  * texel, in world units; a texel on land holds 0, which is the value the
@@ -47,9 +47,16 @@ export const SHORE_SIZE = FIELD_SIZE;
  * …and the two the bake actually uses: both through `mapScale`
  * (2026-09-16, `MAP_SCALE` in src/world/landscape.ts), so the TEXEL stays
  * 0.78 world units and the foam rim is still four texels wide at its
- * thinnest. 1024² over 800 units on the doubled island — a million
- * `isWater` calls and one distance transform over the same, which is the
- * price of a coast twice as long.
+ * thinnest. 1024² over 800 units at scale 2; **563² over 440 at 1.1**.
+ *
+ * ROUNDED TO A TEXEL COUNT, NOT STEPPED TO A POWER OF TWO (2026-09-17, when
+ * `MAP_SCALE` stopped being an integer). 512 * 1.1 is 563.2, and the choice
+ * was between an NPOT 563 that keeps the texel (0.7815 against 0.78125, three
+ * hundredths of a percent) and a POT 1024 that would have halved it and
+ * quadrupled a bake that already measures a second on one core. This is a WebGL2 renderer and
+ * the texture is CLAMP + LINEAR with no mipmaps, which NPOT has always
+ * supported there, so the rounding costs nothing at all and the texel — the
+ * number the foam rim is measured against — is the thing that is held.
  */
 export function shoreSize(): number {
   return fieldSize();

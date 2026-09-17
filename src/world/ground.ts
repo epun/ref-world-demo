@@ -15,16 +15,17 @@
  *   field  a 400×400 plane at 1.25-unit resolution, every vertex lifted to
  *          `surface.sampleHeight` (the Surface seam, src/world/surface.ts —
  *          nothing here derives a height of its own) and re-normalled.
- *          800×800 at the same 1.25-unit resolution on the doubled island
- *          (src/world/field.ts): the side rides `mapScale`, the QUAD does not.
- *   far    a flat ring from the field's rim out to 1400 — 2800 on the island,
+ *          440×440 at the same 1.25-unit resolution on a `MAP_SCALE` 1.1
+ *          island (src/world/field.ts): the side rides `mapScale` and so does
+ *          the segment count, rounded; the QUAD does not.
+ *   far    a flat ring from the field's rim out to 1400 — 1540 on the island,
  *          for the same reason and through the same factor.
  *
  * WHY THE FAR FIELD IS NOT PART OF THE PLANE [D]: it exists only so that no
  * orbit or pan reveals the void past the world, and a 1400-radius plane at
  * the field's density would be ~10 million triangles for ground nobody
- * looks at. The terrain is exactly 0 past `farFieldEnd` (185, and 370 on the
- * doubled island) by construction, so everything outside the field is one
+ * looks at. The terrain is exactly 0 past `farFieldEnd` (185, and 203.5 on a
+ * scaled island) by construction, so everything outside the field is one
  * flat sheet and a couple of hundred triangles draw it.
  *
  * WHY THE NORMALS MATTER: the terraces read only because of them. The ink

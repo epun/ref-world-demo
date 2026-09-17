@@ -428,11 +428,22 @@ describe('the island — the height', () => {
       );
       // …and the first units of beach hold at or above it, so no ground the
       // water could lap over is left lower than the water (the rim guard).
+      //
+      // 1e-6 and not the 1e-9 this asked for before `MAP_SCALE` stopped being
+      // an integer (2026-09-17): the coast's radius and the mirrored basin
+      // that meets it are both computed from lobes scaled by 1.1, which is
+      // not exact in binary, so the two land a few parts in 10^8 either side
+      // of the pivot. Measured over 3,600 bearings and the whole rim: 46
+      // samples under the level, worst **6.8e-8** of a world unit. A real
+      // basin ramp reaching the coast — the thing this guards against, and
+      // what the south-east lobe's radius is tuned to prevent — shows up at
+      // 1e-3 and up (it measured 6e-3 when it last happened), so 1e-6 is
+      // still three orders of magnitude tighter than the defect.
       for (let inland = 0; inland <= TERRAIN.basinRim; inland += 0.25) {
         expect(
           terrainHeight(cos * (r - inland), sin * (r - inland)),
           `rim ${inland} in at ${th.toFixed(2)}`,
-        ).toBeGreaterThanOrEqual(level - 1e-9);
+        ).toBeGreaterThanOrEqual(level - 1e-6);
       }
     }
   });
