@@ -34,6 +34,9 @@ import {
   HINTS_KEY,
   MOVE_UNITS,
   PICKUP_STEP_U,
+  ARROW_BOX,
+  KNOB_R,
+  RING_R,
   arrowPaths,
   hinted,
   hintsFinished,
@@ -48,7 +51,7 @@ import {
 } from '../../src/ui/hints';
 import { HINTS, hintFor, showsArrows } from '../../src/ui/hintcopy';
 import { frameInset } from '../../src/ui/leaderboard';
-import { DEADZONE } from '../../src/world/joystick';
+import { DEADZONE, KNOB_RATIO, RING_WAVER } from '../../src/world/joystick';
 import { MOTION } from '../../src/taste/tokens';
 import { find, findAll, stubDom, stubStore, type StubEl } from './stubdom';
 
@@ -90,6 +93,33 @@ describe('the copy — the mock’s three labels, in order', () => {
     expect(showsArrows('moved')).toBe(false);
     expect(showsArrows('done')).toBe(false);
     expect(hintFor('nonsense')).toBe(null);
+  });
+
+  it('keeps every chevron INSIDE the ring, in the band above the knob', () => {
+    // User direction, 2026-09-17: *"the chevrons must sit INSIDE the outer
+    // ring of the joystick (between the knob and the ring…)"*.
+    const c = ARROW_BOX / 2;
+    const radii: number[] = [];
+    for (const d of arrowPaths()) {
+      for (const [, x, y] of d.matchAll(/([\d.-]+) ([\d.-]+)/g)) {
+        radii.push(Math.hypot(Number(x) - c, Number(y) - c));
+      }
+    }
+    expect(radii.length).toBe(12); // three points per chevron, four chevrons
+    // Inside the ring, with the hairline's own waver left clear…
+    expect(Math.max(...radii)).toBeLessThanOrEqual(RING_R - RING_WAVER);
+    // …and outside the knob, which has to be pushed to the rim and back.
+    expect(Math.min(...radii)).toBeGreaterThan(KNOB_R);
+    expect(KNOB_R).toBeCloseTo(RING_R * KNOB_RATIO, 12);
+  });
+
+  it('mirrors the stick’s own ring radius rather than guessing it', () => {
+    // The radius is a local of `mountJoystick`; this pins the mirror to the
+    // expression in its source, so the two cannot drift apart.
+    const joystick = readFileSync(join(process.cwd(), 'src/world/joystick.ts'), 'utf8');
+    expect(joystick).toMatch(/const BOX = 100;/);
+    expect(joystick).toMatch(/const R = BOX \/ 2 - 3;/);
+    expect(RING_R).toBe(100 / 2 - 3);
   });
 
   it('draws four chevrons, one per direction, as strokes and not a shape', () => {

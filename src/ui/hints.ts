@@ -85,7 +85,7 @@ import {
   wavyBorderPath,
   wavyBorderPoints,
 } from '../phone/minimap';
-import { DEADZONE } from '../world/joystick';
+import { DEADZONE, KNOB_RATIO } from '../world/joystick';
 import type { StorageLike } from '../phone/identity';
 import { HINTS, hintFor, showsArrows } from './hintcopy';
 
@@ -314,16 +314,30 @@ export function labelFramePath(w: number, h: number, seed = LABEL_SEED): string 
 export const ARROW_BOX = 100;
 
 /**
+ * THE STICK'S OWN RING, in that box: `BOX / 2 - 3` with `BOX` 100, which is
+ * where `mountJoystick` draws it (src/world/joystick.ts), and the knob at
+ * `KNOB_RATIO` of it.
+ *
+ * Mirrored rather than imported because the ring's radius is a local of that
+ * module's mount and the stick is not this module's to change; a test reads
+ * the expression out of its source, so the two cannot drift apart.
+ */
+export const RING_R = 47;
+export const KNOB_R = RING_R * KNOB_RATIO;
+
+/**
  * Where the four chevrons point, and how big they are in that box. **[D]**
  *
- * `out` is how far the chevron's tip sits from the centre and `size` is the
- * half-width of its two strokes. Four marks at the compass points, just
- * outside the stick's own ring (the ring is drawn at radius 44 of the same
- * 100-box, src/world/joystick.ts), so they read as "this thing goes these four
- * ways" without touching the ring itself.
+ * INSIDE the ring, in the band between the knob and it (user direction,
+ * 2026-09-17: *"the chevrons must sit INSIDE the outer ring of the
+ * joystick"*). `ARROW_OUT` is how far a chevron's tip reaches from the centre
+ * and `ARROW_SIZE` is the half-width of its two strokes, so the mark occupies
+ * `ARROW_OUT - ARROW_SIZE … ARROW_OUT` — 34.5 to 40 of a ring at 47 with a
+ * knob at 17.9, which leaves the hairline its own air on the outside and the
+ * knob room to be pushed on the inside.
  */
-export const ARROW_OUT = 47;
-export const ARROW_SIZE = 6.5;
+export const ARROW_OUT = 40;
+export const ARROW_SIZE = 5.5;
 
 /** The four chevrons as svg path data, one string each. Pure. */
 export function arrowPaths(): string[] {
@@ -432,7 +446,11 @@ function ensureStyle(): void {
  */
 .world-hint-arrows {
   position: absolute;
-  inset: -13%;
+  /* The stick's own box exactly, so the chevrons are drawn in the same
+     100-unit space its ring and knob are and land in the band between them. */
+  inset: 0;
+  width: 100%;
+  height: 100%;
   display: block;
   overflow: visible;
   pointer-events: none;
