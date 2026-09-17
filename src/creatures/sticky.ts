@@ -277,8 +277,18 @@ export function stickyFor(kind: PropKind, variant = 0): StickyProps {
  * They were the same number until 2026-09-16, and at 1.0 that made two
  * creatures of equal size each eligible to carry the other — which is the
  * bug the stuck report turned out to be.
+ *
+ * 1.15 since 2026-09-17 (user report, twice: *"some users are having issues
+ * sticking to objects"*, *"when a user walks into things it doesn't stick"*).
+ * The phone-host sweep in scratch/room-drive-smoke.mjs measured the pickup
+ * path working and the LIMIT being what people meet: a hatchling's first
+ * encounters are with props a few percent either side of its own radius
+ * (r 0.908 stuck, r 1.089 shoved past with no feedback), which reads as "it
+ * doesn't stick" long before it reads as "that one is bigger than me". A
+ * little headroom over the body makes the first rung the common case; the
+ * worst first pickup is still under a doubling (growth-ladder test).
  */
-export const PICKUP_RATIO = 1;
+export const PICKUP_RATIO = 1.15;
 
 /**
  * [D] How much BIGGER a creature has to be to carry another creature.
