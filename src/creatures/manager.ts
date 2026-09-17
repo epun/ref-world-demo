@@ -1334,6 +1334,14 @@ export interface CreatureManager {
    */
   groundLift(id: string): number;
   /**
+   * HOW FAR THE DRAWN PILE REACHES from its centre, world units — the
+   * silhouette's own radius (`Clump.reach`), which is what the ground pass
+   * rests on the paper and is NOT `ballDiameter / 2` (that is the accumulated
+   * volume, the game's size, and it is larger). 0 for a creature carrying
+   * nothing, for an id nobody holds, and for every world without the game.
+   */
+  pileReach(id: string): number;
+  /**
    * TURN THE MAP'S GRAVITY OFF, OR BACK ON (user ask, 2026-09-17: *"i want a
    * zero gravity mode where i can hit g on the keyboard and it turns off
    * gravity for the map. characters should float in space"*).
@@ -3864,7 +3872,7 @@ export function createCreatureManager(
    * the brief asks for.
    */
   /**
-   * THE BALL'S GROUND CLEARANCE — how far above the ground under its centre
+   * THE PILE RESTS ON THE PAPER — how far above the ground under its centre
    * this creature's root is held this frame.
    *
    * > User report, 2026-09-16: *"the ball is glitching through the map floor
@@ -3872,20 +3880,34 @@ export function createCreatureManager(
    *
    * A creature is placed on the height under its CENTRE, which is the whole
    * of the Surface seam (PLAN §7.2) and is exactly right for a 0.9 u
-   * hatchling. A grown ball is a different shape of problem: its underside is
-   * the root (`clump.group` sits at `(0, baseR, 0)` and the root's scale is
-   * the growth, so the ball's bottom is exactly `root.y`), and it spans
-   * `bodyR` in every direction — so on a slope, a terrace riser or a basin
-   * lip the ground under its uphill edge is above the ground under its middle
-   * and the downhill half of the ball, with the items seated low on the pile,
-   * goes under the paper.
+   * hatchling. A pile is a different shape of problem, and since the items
+   * were packed onto the character (2026-09-17, *"the character should be the
+   * object that the items stick to"*) it is TWO:
    *
-   * So the footprint is sampled — the centre and a ring of `CLEARANCE_POINTS`
-   * (`src/creatures/sticky.ts`) — and the root rides up on the highest ground
-   * under it. THE SAMPLE IS THE ONLY NEW COST AND ONLY A PILE PAYS IT: an
-   * empty clump's `growth()` is exactly 1, so a creature carrying nothing
-   * takes the early return and gets the placement it shipped with, to the
-   * float.
+   *   - the pile is packed around the creature's MIDDLE — `clump.group` sits
+   *     at `baseR` in the world — and it reaches `clump.reach()` in every
+   *     direction, so a creature standing on the paper has the lower part of
+   *     its own mass inside the ground. Measured at fifteen props before this
+   *     term existed: the items spanned world y −6.27 on a ground at 0.135.
+   *     So the root sits up by `reach − baseR`, which puts the mass's lowest
+   *     point exactly on the height under its centre;
+   *   - and on a slope, a terrace riser or a basin lip the ground under the
+   *     uphill edge of that mass is above the ground under its middle, so the
+   *     footprint is sampled — the centre and a ring of `CLEARANCE_POINTS`
+   *     (`src/creatures/sticky.ts`) — and the root rides up on the highest
+   *     ground under it.
+   *
+   * BOTH READ `clump.reach()` AND NOT `bodyR`. `bodyR` is the accumulated
+   * volume, which is the game's size (the readout, the pickup reach, the
+   * resolve circle) and is bigger than the packed pile — a ring sampled at
+   * `bodyR × CLEARANCE_RING` would be feeling the terrain a couple of metres
+   * outside anything a person can see, and the sit would hold the mass off
+   * the ground by the difference. What has to rest on the paper is the
+   * silhouette.
+   *
+   * THE SAMPLE IS THE ONLY NEW COST AND ONLY A PILE PAYS IT: an empty pile's
+   * reach is exactly 0, so a creature carrying nothing takes the early return
+   * and gets the placement it shipped with, to the float.
    *
    * WHERE IT IS APPLIED: the frame's one ground pass, on top of the height it
    * already sampled. Not a second Y writer and not in the locomotion pass —
@@ -3893,18 +3915,20 @@ export function createCreatureManager(
    * host pose gets the same lift on top of the same sampled ground, because
    * both pages derive it here rather than either being told.
    *
-   * `bodyR` is last frame's (growth is written in `growPass`, which runs
-   * after this): a frame of lag on a number that is easing in over
-   * `MOTION.primaryMs` anyway, and taking the growth here instead would mean
-   * two passes writing the size.
+   * The reach is this frame's — it is a property of the seats, which only a
+   * pickup changes, so there is no growth-ordering question in it at all
+   * (unlike `bodyR`, which `growPass` writes after this pass runs).
    */
   function groundClearance(slot: Slot, dt: number): number {
     const spring = slot.liftSpring;
     const root = slot.characterRoot;
     if (!spring || !root) return 0;
-    const g = slot.clump?.growth() ?? 1;
+    const reach = slot.clump?.reach() ?? 0;
+    const sit = Math.max(0, reach - slot.baseR);
     const target =
-      g > 1 ? clearanceLift(root.position.x, root.position.z, slot.bodyR, sampleAt) : 0;
+      reach > 0
+        ? sit + clearanceLift(root.position.x, root.position.z, reach, sampleAt)
+        : 0;
     spring.retarget(target);
     // Clamped at 0 on the way out: a clearance can lift a creature and must
     // never be able to push one INTO the ground, whatever a solver does.
@@ -5426,6 +5450,10 @@ export function createCreatureManager(
     groundLift(id): number {
       const slot = slots.get(id);
       return slot ? slot.lift : 0;
+    },
+
+    pileReach(id): number {
+      return slots.get(id)?.clump?.reach() ?? 0;
     },
 
     setGravity(on): void {

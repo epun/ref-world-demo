@@ -159,6 +159,21 @@ export interface Clump {
    * deciding page's one pickup, not a frame.
    */
   seats(): { x: number; y: number; z: number; r: number }[];
+  /**
+   * HOW FAR THE DRAWN MASS REACHES from the pile's centre, world units — the
+   * furthest `|seat| + itemR` over everything on it, and 0 for an empty pile.
+   *
+   * This is the pile's own silhouette, and it is NOT `bodyR`: `bodyR` is the
+   * accumulated volume (the game's size — the readout, the pickup reach, the
+   * resolve circle) while the packed pile is tighter than that and the two
+   * drift apart as it grows. The frame's ground pass reads THIS, because what
+   * has to rest on the paper is what a person can see (`groundClearance`,
+   * src/creatures/manager.ts).
+   *
+   * One walk of the pile per creature per frame, which is the same walk
+   * `volumes()` already does for the growth.
+   */
+  reach(): number;
   /** …and ONE of them, by key: where that thing is sitting in world units
    * from the pile's centre. What the rigid-body stand-in reads, since the
    * collider has to be where the item is DRAWN. */
@@ -316,6 +331,16 @@ export function createClump(baseR: number): Clump {
         out.push({ x: entry.seat.x, y: entry.seat.y, z: entry.seat.z, r: entry.item.r });
       }
       return out;
+    },
+
+    reach(): number {
+      let far = 0;
+      for (const entry of entries.values()) {
+        const seat = entry.seat;
+        const out = Math.hypot(seat.x, seat.y, seat.z) + entry.item.r;
+        if (out > far) far = out;
+      }
+      return far;
     },
 
     seatOf(key): { x: number; y: number; z: number } | undefined {

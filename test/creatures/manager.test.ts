@@ -1284,10 +1284,19 @@ describe('ground clearance — a big ball rides on its whole footprint', () => {
     // One frame to write the pose and the growth, so the target the spring is
     // chasing is the one this asserts against.
     holdAt(manager, 6, -4, 1);
-    const bodyR = manager.ballDiameter('ball') / 2;
-    const target = clearanceLift(root.position.x, root.position.z, bodyR, (x, z) =>
-      slope.sampleHeight(x, z),
-    );
+    /*
+     * The target the spring is chasing, off the PILE'S OWN REACH — the drawn
+     * silhouette, not `bodyR` (2026-09-17, with the packing): the sit that
+     * puts the mass's lowest point on the ground plus the ring's rise.
+     */
+    const baseR = measureBodyRadius(manager.latestCharacter()!);
+    const reach = manager.pileReach('ball');
+    expect(reach).toBeGreaterThan(baseR);
+    const target =
+      Math.max(0, reach - baseR) +
+      clearanceLift(root.position.x, root.position.z, reach, (x, z) =>
+        slope.sampleHeight(x, z),
+      );
     expect(target).toBeGreaterThan(1);
 
     let previous = manager.groundLift('ball');
@@ -1405,14 +1414,61 @@ describe('ground clearance — a big ball rides on its whole footprint', () => {
     manager.clearAll();
   });
 
+  it('on the flat the pile touches the paper, with only the pad under it', () => {
+    /*
+     * THE FLAT NUMBER for the sit (2026-09-17). On a slope the lift is the
+     * sit plus the ring's own rise, and on the real map that rise is metres —
+     * a shot at one spot on the island read the lowest seat 4.0 u over the
+     * ground, of which 3.6 was the hillside under the pile's uphill edge. So
+     * this is the same pile with the hill taken away: the drawn mass's lowest
+     * point comes down onto the paper and what is left under it is the pad
+     * alone, sized off the DRAWN REACH and not off the volume's `bodyR`.
+     */
+    const manager = makeManager(ramped, 'katamari');
+    const root = rootOf(manager);
+    feedProps(manager, 6, 2);
+    // Flat ground, well clear of the riser, and settled.
+    holdAt(manager, -20, 0, 240);
+    const ground = ramped.sampleHeight(-20, 0);
+    const reach = manager.pileReach('ball');
+    expect(reach).toBeGreaterThan(1);
+
+    const clump = root.getObjectByName('clump');
+    expect(clump).toBeTruthy();
+    root.updateWorldMatrix(true, true);
+    const centre = clump!.getWorldPosition(new Vector3());
+
+    // The reach really is the drawn mass's bound: no seat is outside it.
+    for (const child of clump!.children) {
+      if (!child.name.startsWith('loose')) continue;
+      const at = child.getWorldPosition(new Vector3());
+      expect(at.distanceTo(centre)).toBeLessThanOrEqual(reach + 1e-6);
+      expect(at.y).toBeGreaterThanOrEqual(centre.y - reach - 1e-6);
+    }
+
+    // And the bottom of that bound rests on the ground, to the pad.
+    const under = centre.y - reach - ground;
+    expect(under).toBeCloseTo(reach * CLEARANCE_PAD, 3);
+    // Which at this pile is a few centimetres, not a hover.
+    expect(under).toBeLessThan(0.35);
+    manager.clearAll();
+  });
+
   it('a terrace edge is a slide, not a step', () => {
     const manager = makeManager(ramped, 'katamari');
     const root = rootOf(manager);
     feedProps(manager, 3, 3);
     // Settled well below the riser, where the ring reaches nothing.
     holdAt(manager, -20, 0, 200);
-    const bodyR = manager.ballDiameter('ball') / 2;
-    expect(manager.groundLift('ball')).toBeCloseTo(bodyR * CLEARANCE_PAD, 3);
+    /*
+     * On the flat, the lift is the SIT — the pile's reach less the creature's
+     * own radius, which rests the mass on the paper — plus the pad, both off
+     * the reach and not off `bodyR` (2026-09-17, with the packing).
+     */
+    const baseR = measureBodyRadius(manager.latestCharacter()!);
+    const reach = manager.pileReach('ball');
+    const flatLift = Math.max(0, reach - baseR) + reach * CLEARANCE_PAD;
+    expect(manager.groundLift('ball')).toBeCloseTo(flatLift, 3);
 
     // Then walk it up and over, through the pose path at a walking pace.
     const heights: number[] = [];
@@ -1434,7 +1490,7 @@ describe('ground clearance — a big ball rides on its whole footprint', () => {
        * the resting case exactly.
        */
       expect(
-        sphereClears(ramped, root.position.y, root.position.x, root.position.z, bodyR),
+        sphereClears(ramped, root.position.y, root.position.x, root.position.z, reach),
       ).toBe(true);
     }
 
@@ -1451,9 +1507,10 @@ describe('ground clearance — a big ball rides on its whole footprint', () => {
     for (let i = 1; i < heights.length; i++) {
       biggest = Math.max(biggest, Math.abs(heights[i]! - heights[i - 1]!));
     }
-    // On the upper tread, clear of it, with the pad and nothing else.
+    // On the upper tread, clear of it, with the sit and the pad and nothing
+    // else.
     expect(root.position.y).toBeGreaterThanOrEqual(RISER);
-    expect(manager.groundLift('ball')).toBeCloseTo(bodyR * CLEARANCE_PAD, 3);
+    expect(manager.groundLift('ball')).toBeCloseTo(flatLift, 3);
     // And the whole climb was a slide: no single frame moved it a twentieth
     // of the riser it climbed (TASTE §2.1 — no hard cuts, confidence 1.00).
     expect(biggest).toBeLessThan(RISER / 20);
