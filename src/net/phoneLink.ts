@@ -115,8 +115,19 @@ export interface PhoneLink {
    */
   onRecall(handler: () => void): void;
   /** Re-publish a drawing this handset already sent, in the kit's own wire
-   * shape so the world's feed ingests it exactly as it did the first time. */
-  resend(payload: { id: string; name: string | null; strokes: unknown[] }): void;
+   * shape so the world's feed ingests it exactly as it did the first time.
+   *
+   * `epoch` is the run of the world the drawing was ADMITTED under, not the
+   * one it is going into: the deciding page compares the two and refuses a
+   * drawing from before a reset (src/phone/identity.ts `admitsDrawing`).
+   * Omitted reads as generation 0, which is what every resend published
+   * before 2026-09-17 says by saying nothing. */
+  resend(payload: {
+    id: string;
+    name: string | null;
+    strokes: unknown[];
+    epoch?: string | null;
+  }): void;
   dispose(): void;
 }
 
@@ -268,6 +279,11 @@ export function createPhoneLink(
             id: payload.id,
             name: payload.name ?? '',
             strokes: payload.strokes,
+            // Additive: a world on an older build reads right past it, and a
+            // world that has been reset uses it to refuse this drawing.
+            ...(typeof payload.epoch === 'string' && payload.epoch.length > 0
+              ? { epoch: payload.epoch }
+              : {}),
             ts: Date.now(),
           }),
           { qos: 0 },

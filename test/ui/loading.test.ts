@@ -25,7 +25,10 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  CREATURE_TIMEOUT_MS,
+  DRAW_AGAIN_LABEL,
   FIRST_FRAME_MARK,
+  MISSING_LINE,
   LOADING_LINES,
   LOADING_STAGES,
   LOADING_TIMEOUT_MS,
@@ -107,12 +110,28 @@ describe('a room that never answers', () => {
     expect(LOADING_TIMEOUT_MS).toBeGreaterThan(10000);
   });
 
-  it('admits it only in the first wait', () => {
+  it('admits it in the first wait, and in the one for the creature', () => {
     expect(timedOut('room', LOADING_TIMEOUT_MS)).toBe(true);
     expect(timedOut('room', LOADING_TIMEOUT_MS - 1)).toBe(false);
-    // Past the room, a retry would throw away a built island for a slow store.
-    for (const stage of ['island', 'creature', 'hatch', 'done'] as const) {
-      expect(timedOut(stage, LOADING_TIMEOUT_MS * 10)).toBe(false);
+    // The creature's wait is the other one that can last forever with
+    // nobody's help — a drawing from an older generation of the world has no
+    // creature in the world that is running now (user report 2026-09-17: a
+    // stick that steers nothing).
+    expect(timedOut('creature', CREATURE_TIMEOUT_MS)).toBe(true);
+    expect(timedOut('creature', CREATURE_TIMEOUT_MS - 1)).toBe(false);
+    expect(CREATURE_TIMEOUT_MS).toBeGreaterThan(LOADING_TIMEOUT_MS);
+    // Every other stage has a creature standing or hatching already.
+    for (const stage of ['island', 'hatch', 'done'] as const) {
+      expect(timedOut(stage, CREATURE_TIMEOUT_MS * 10)).toBe(false);
+    }
+  });
+
+  it('says what is wrong, and offers the pad rather than a reload', () => {
+    expect(MISSING_LINE).toBe('your creature is not in this world');
+    expect(DRAW_AGAIN_LABEL).toBe('draw again');
+    for (const s of [MISSING_LINE, DRAW_AGAIN_LABEL]) {
+      expect(s).toBe(s.toLowerCase());
+      expect(s).not.toMatch(/[A-Z]/);
     }
   });
 });
@@ -266,6 +285,39 @@ describe('the line on screen', () => {
     later.handle.dispose();
     later.dom.restore();
 
+    handle.dispose();
+    dom.restore();
+  });
+
+  it('sends a handset whose creature never came to the pad', () => {
+    let clock = 0;
+    const dom = stubDom();
+    const handle = installWorldLoading({
+      mount: dom.mount as unknown as HTMLElement,
+      milestones: () => ({ reached: true, built: true, present: false, standing: false }),
+      padHref: '/draw/?room=xkcd&world=valiocon',
+      retry: () => {
+        throw new Error('a missing creature must not reload the page');
+      },
+      now: () => clock,
+    });
+    dom.step(40);
+    expect(handle.line()).toBe(LOADING_LINES.creature);
+    expect(handle.offeringRetry()).toBe(false);
+
+    clock = CREATURE_TIMEOUT_MS;
+    dom.step(80);
+    expect(handle.line()).toBe(MISSING_LINE);
+    expect(handle.offeringRetry()).toBe(true);
+    const link = find(handle.el as unknown as StubEl, 'world-loading-retry')!;
+    expect(link.textContent).toBe(DRAW_AGAIN_LABEL);
+    // A real href, so the person navigates and the page does not: a handset
+    // that was merely slow is never sent away from a creature still coming.
+    expect(link.attrs['href']).toBe('/draw/?room=xkcd&world=valiocon');
+    // …and the click is left to the browser (the retry above would throw).
+    link.fire('click');
+
+    // A creature that turns up a moment later still clears the line.
     handle.dispose();
     dom.restore();
   });

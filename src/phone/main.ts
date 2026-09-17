@@ -22,8 +22,10 @@ import { mountWaitScreen, type WaitScreenHandle } from './screens/wait';
 import { hatchPulse } from './haptics';
 import { resolveName } from '../creatures/naming';
 import {
+  admitsDrawing,
   clearSubmission,
   drawerId,
+  generationOf,
   generationVerdict,
   isStale,
   readSubmission,
@@ -734,8 +736,44 @@ async function boot(): Promise<void> {
     if (room.length === 0) return false;
     const mine = readSubmission(room);
     if (!mine) return false;
-    uplink?.resend({ id: mine.id, name: mine.name, strokes: mine.strokes });
-    if (epoch !== null && epoch.length > 0) {
+    /*
+     * NOT INTO A WORLD THAT HAS STARTED OVER (user report, 2026-09-17:
+     * *"even after reset using the mod secret key the scene does not
+     * reset"*).
+     *
+     * Both callers used to reach the wire with no generation check at all.
+     * The recall is the obvious one — a `recall` is the world asking for its
+     * population back and an old drawing answered it — but the re-home below
+     * was the worse one, because nobody presses anything for it: it fires on
+     * any epoch that merely DIFFERS, so a handset hearing a stale
+     * announcement from a projection left open on the last run would
+     * re-publish into it AND stamp its own record back to that older
+     * generation, which is a phone talking itself out of a reset.
+     *
+     * Same pure rule as the world's own accept, so a handset never spends a
+     * packet on a drawing the world would refuse (src/phone/identity.ts).
+     * The drawing is NOT touched — it stays exactly where it is, as it must
+     * (CLAUDE.md), and the keepsake still builds from it.
+     */
+    if (!admitsDrawing(epoch, mine.epoch)) return false;
+    // The epoch it was ADMITTED under rides with it, which is what lets the
+    // world decide for itself rather than taking this handset's word.
+    uplink?.resend({
+      id: mine.id,
+      name: mine.name,
+      strokes: mine.strokes,
+      epoch: mine.epoch ?? null,
+    });
+    /*
+     * The record adopts the world it went into, so the staleness check does
+     * not fire again a second later and bounce the person off a creature
+     * that now exists — but NEVER BACKWARDS. A stale announcement is the one
+     * kind of `world` message that is wrong, and a record that took its
+     * generation would be a phone that had talked itself back into the run
+     * before the reset: the next honest announcement would step it down, and
+     * its own next resend would be refused.
+     */
+    if (epoch !== null && epoch.length > 0 && generationOf(epoch) >= generationOf(mine.epoch)) {
       writeSubmission(room, { ...mine, epoch });
     }
     return true;

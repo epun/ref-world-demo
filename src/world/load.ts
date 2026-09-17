@@ -108,6 +108,22 @@ export interface FreshStart {
   /** Did the world's generation step forward? That is the part the handsets
    * read — it is what sends them back to the pad. */
   bumped: boolean;
+  /**
+   * THE GENERATION THE WORLD IS ON AFTER THIS CALL, when the endpoint said
+   * (`api/moderate.ts` answers `{ ok, generation }`), else null.
+   *
+   * Read so the page can announce the NEW run of the world at once, on the
+   * answer to the reset it just asked for, instead of waiting for the store
+   * pull that follows to tell it something it was already told. A handset
+   * that hears nothing keeps offering a drawing the world has just thrown
+   * away — which is the leak this whole path exists to close (user report,
+   * 2026-09-17: *"even after reset using the mod secret key the scene does
+   * not reset"*).
+   *
+   * Null on every failure and on an endpoint that says nothing, and the
+   * caller then learns the number from the pull exactly as before.
+   */
+  generation: number | null;
   /** May this page stand up what the store holds, from here on? True only
    * when the store was actually emptied. */
   absorbStore: boolean;
@@ -145,6 +161,7 @@ export async function startFresh(input: {
     return {
       requested: false,
       bumped: false,
+      generation: null,
       absorbStore: plan.absorbStore,
       note: plan.note,
     };
@@ -153,10 +170,13 @@ export async function startFresh(input: {
   const failed = (note: string): FreshStart => ({
     requested: true,
     bumped: false,
+    generation: null,
     absorbStore: false,
     note,
   });
   if (typeof doFetch !== 'function') return failed('world not emptied (unreachable)');
+  /** What the endpoint said the world is on now, if it said anything. */
+  let generation: number | null = null;
   try {
     const res = await doFetch(moderateEndpoint(input.world), {
       method: 'POST',
@@ -172,6 +192,16 @@ export async function startFresh(input: {
             : `world not emptied (${res.status})`,
       );
     }
+    // The number the handsets read. A body this page cannot parse is not a
+    // reset that failed — the generation simply arrives on the pull instead,
+    // which is where it came from before this was read at all.
+    try {
+      const body: unknown = await res.json();
+      const n = (body as Record<string, unknown> | null)?.['generation'];
+      if (typeof n === 'number' && Number.isFinite(n) && n > 0) generation = Math.floor(n);
+    } catch {
+      /* said nothing readable — the pull will say it */
+    }
   } catch {
     return failed('world not emptied (unreachable)');
   }
@@ -179,6 +209,7 @@ export async function startFresh(input: {
   return {
     requested: true,
     bumped: true,
+    generation,
     absorbStore: true,
     note: 'this world started over — the room is empty',
   };

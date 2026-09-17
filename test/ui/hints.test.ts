@@ -34,6 +34,9 @@ import {
   HINTS_KEY,
   MOVE_UNITS,
   PICKUP_STEP_U,
+  ARROW_BOX,
+  KNOB_R,
+  RING_R,
   arrowPaths,
   hinted,
   hintsFinished,
@@ -48,7 +51,7 @@ import {
 } from '../../src/ui/hints';
 import { HINTS, hintFor, showsArrows } from '../../src/ui/hintcopy';
 import { frameInset } from '../../src/ui/leaderboard';
-import { DEADZONE } from '../../src/world/joystick';
+import { DEADZONE, KNOB_RATIO, RING_WAVER } from '../../src/world/joystick';
 import { MOTION } from '../../src/taste/tokens';
 import { find, findAll, stubDom, stubStore, type StubEl } from './stubdom';
 
@@ -90,6 +93,33 @@ describe('the copy — the mock’s three labels, in order', () => {
     expect(showsArrows('moved')).toBe(false);
     expect(showsArrows('done')).toBe(false);
     expect(hintFor('nonsense')).toBe(null);
+  });
+
+  it('keeps every chevron INSIDE the ring, in the band above the knob', () => {
+    // User direction, 2026-09-17: *"the chevrons must sit INSIDE the outer
+    // ring of the joystick (between the knob and the ring…)"*.
+    const c = ARROW_BOX / 2;
+    const radii: number[] = [];
+    for (const d of arrowPaths()) {
+      for (const [, x, y] of d.matchAll(/([\d.-]+) ([\d.-]+)/g)) {
+        radii.push(Math.hypot(Number(x) - c, Number(y) - c));
+      }
+    }
+    expect(radii.length).toBe(12); // three points per chevron, four chevrons
+    // Inside the ring, with the hairline's own waver left clear…
+    expect(Math.max(...radii)).toBeLessThanOrEqual(RING_R - RING_WAVER);
+    // …and outside the knob, which has to be pushed to the rim and back.
+    expect(Math.min(...radii)).toBeGreaterThan(KNOB_R);
+    expect(KNOB_R).toBeCloseTo(RING_R * KNOB_RATIO, 12);
+  });
+
+  it('mirrors the stick’s own ring radius rather than guessing it', () => {
+    // The radius is a local of `mountJoystick`; this pins the mirror to the
+    // expression in its source, so the two cannot drift apart.
+    const joystick = readFileSync(join(process.cwd(), 'src/world/joystick.ts'), 'utf8');
+    expect(joystick).toMatch(/const BOX = 100;/);
+    expect(joystick).toMatch(/const R = BOX \/ 2 - 3;/);
+    expect(RING_R).toBe(100 / 2 - 3);
   });
 
   it('draws four chevrons, one per direction, as strokes and not a shape', () => {
@@ -269,11 +299,18 @@ describe('the machine — taught by doing, in order', () => {
 // ── once per device ──────────────────────────────────────────────────────────
 
 describe('taught once per device, under a key of their own', () => {
-  it('uses a NEW key, so the slideshow’s flag does not silence them', () => {
-    expect(HINTS_KEY).toBe('refworld:hinted');
+  it('carries a VERSION, so a change to what is taught teaches again', () => {
+    // 2026-09-17: *"i'm also not seeing the onboarding flow"* — from a phone
+    // taught by the version before the mock's labels. A flag records having
+    // been taught THIS.
+    expect(HINTS_KEY).toBe('refworld:hinted:2');
     expect(HINTS_KEY).not.toBe('refworld:onboarded');
-    // A phone that saw the slides is taught by these exactly once.
+    expect(HINTS_KEY).not.toBe('refworld:hinted');
+    // Neither of the two earlier flags silences these.
     expect(shouldHint('', stubStore({ 'refworld:onboarded': '1' }))).toBe(true);
+    expect(shouldHint('', stubStore({ 'refworld:hinted': '1' }))).toBe(true);
+    // …and the testing query still wins over the current one.
+    expect(shouldHint('?hints=1', stubStore({ [HINTS_KEY]: '1' }))).toBe(true);
   });
 
   it('is written once and then stays quiet', () => {
@@ -406,6 +443,48 @@ describe('the hints on screen', () => {
     expect(handle.showing()).toBe('move');
     expect(handle.arrows()).toBe(false);
     expect(findAll(dom.mount, 'world-hint-arrow')).toHaveLength(0);
+    handle.dispose();
+    dom.restore();
+  });
+
+  it('lets a thumb through to the stick while a hint is up', () => {
+    /*
+     * User report, 2026-09-17: *"on mobile there is a bug where a character
+     * can't move when I use the joystick."* The first suspect was this layer,
+     * because the onboarding that preceded it DID cover the screen — so the
+     * rule is pinned here rather than remembered: nothing this module mounts
+     * is hit-testable, including the chevrons, which live INSIDE the stick's
+     * own box and would otherwise take every touch meant for it.
+     *
+     * `scratch/stick-hit-probe.mjs` is the live half of this: with a hint up,
+     * `elementsFromPoint` at the stick's centre returns the stick's own knob
+     * and nothing of this module's.
+     */
+    const dom = stubDom();
+    const stick = (globalThis.document as unknown as { createElement(t: string): StubEl })
+      .createElement('div');
+    dom.mount.appendChild(stick);
+    const handle = installWorldHints({
+      mount: dom.mount as unknown as HTMLElement,
+      stickEl: stick as unknown as HTMLElement,
+      signals: () => READY,
+      store: stubStore(),
+    });
+    dom.step(40);
+    const sheet = dom.head.children[0]!.textContent;
+    // The label's whole layer, and the chevrons on the stick: both declare it.
+    expect(sheet).toMatch(/\.world-hint \{[^}]*pointer-events: none;/s);
+    expect(sheet).toMatch(/\.world-hint-arrows \{[^}]*pointer-events: none;/s);
+    // Nothing turns it back on anywhere in the sheet — no `auto`, and no
+    // listener of this module's on the label or the chevrons.
+    expect(sheet).not.toMatch(/pointer-events:\s*auto/);
+    for (const el of [
+      find(dom.mount, 'world-hint')!,
+      find(dom.mount, 'world-hint-row')!,
+      find(stick, 'world-hint-arrows')!,
+    ]) {
+      expect(el.listeners.size).toBe(0);
+    }
     handle.dispose();
     dom.restore();
   });
@@ -544,7 +623,7 @@ describe('the hints are absent on a world without the game', () => {
 
   it('is mounted only behind the katamari flag, the handset and a creature', () => {
     const site =
-      /if \(worldGame === 'katamari' && handheld\) \{[\s\S]{0,600}?if \(myDrawerId\.length > 0\) \{[\s\S]{0,3000}?installWorldHints\(/;
+      /if \(worldGame === 'katamari' && handheld\) \{[\s\S]{0,900}?if \(myDrawerId\.length > 0\) \{[\s\S]*?installWorldHints\(/;
     expect(main).toMatch(site);
     expect([...main.matchAll(/installWorldHints\(/g)].length).toBe(1);
   });

@@ -857,6 +857,26 @@
     function liveGeneration() {
       return Math.max(generationOf(WORLD_EPOCH), knownGeneration());
     }
+    /*
+     * THE EPOCH A DRAWING CARRIES ON THE WIRE (2026-09-17).
+     *
+     * The world refuses a drawing from before its last reset, and an absent
+     * epoch reads as generation 0 — so a pad that says nothing about itself
+     * would have every drawing it sends into a reset world thrown away
+     * (src/phone/identity.ts `admitsDrawing`, src/main.ts `onDrawing`).
+     *
+     * Three sources, best first: the retained announcement this pad heard,
+     * the `?w=` on a join code, and — when neither said a string — the
+     * generation this pad has LEARNED for this world, off the log
+     * `healThenGo` already reads. The last one is what covers a phone whose
+     * socket came up after the retained message went past.
+     */
+    function wireEpoch() {
+      if (liveEpoch) return liveEpoch;
+      if (WORLD_EPOCH) return WORLD_EPOCH;
+      var known = knownGeneration();
+      return WORLD && known > 0 ? 'w-' + WORLD + '-g' + known : '';
+    }
     /**
      * Has the world started over since this drawing was admitted?
      *
@@ -1058,6 +1078,32 @@
     enforceSingleDrawing();
     // Fires on first load AND on every bfcache restore (event.persisted).
     window.addEventListener('pageshow', () => { enforceSingleDrawing(); });
+    /*
+     * AND LEARN THE GENERATION EVEN WITH NOTHING TO HEAL (2026-09-17).
+     *
+     * `healThenGo` above reads the log — and therefore the world's
+     * generation — only when this handset already has a record. A FIRST-TIME
+     * drawer has none, so on a world that has been reset its only source is
+     * the retained mqtt announcement; and a drawing that cannot say which
+     * run it was made in is now refused (src/main.ts `onDrawing`). One
+     * packet held by one broker is not a good enough single point for
+     * somebody's drawing, so the pad also asks the store.
+     *
+     * Cheap, silent, and it only ever makes this pad more correct: the
+     * number is used to stamp what this person is about to draw, and to free
+     * a pad the reset has already freed.
+     */
+    if (WORLD && !storedSubmission()) {
+      fetch('/api/drawings?world=' + encodeURIComponent(WORLD), { cache: 'no-store' })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (body) {
+          var gen = body && body.config && typeof body.config.generation === 'number'
+            ? body.config.generation
+            : null;
+          if (gen !== null) learnGeneration(gen);
+        })
+        .catch(function () { /* offline — the announcement is still the fast path */ });
+    }
     // Some browsers only surface a restore as a visibility change.
     document.addEventListener('visibilitychange', () => {
       if (!document.hidden) enforceSingleDrawing();
@@ -1184,6 +1230,19 @@
       client = mqtt.connect(BROKER, { clientId: 'draw_' + Math.random().toString(16).slice(2, 10), keepalive: 30, reconnectPeriod: 2000 });
       client.on('connect', () => {
         connected = true; setStatus('on', 'connected'); syncKeys(); client.subscribe(UP_TOPIC);
+        /*
+         * ASK WHICH WORLD THIS IS (2026-09-17).
+         *
+         * The projection announces its epoch RETAINED, which normally lands
+         * the instant the subscription above is up — but a retained message
+         * is one packet held by one broker, and the pad now NEEDS the answer:
+         * a drawing that cannot say which run it was made in is refused by a
+         * world that has been reset. So the pad also asks, the way the
+         * companion has always asked, and the world answers on the down
+         * topic (src/main.ts `onHello`). Cheap, additive, and a world that
+         * never answers leaves this pad exactly as it was.
+         */
+        try { client.publish(TOPIC, JSON.stringify({ id: MY_ID + '-hello-' + Date.now().toString(36), type: 'hello', from: MY_ID, ts: Date.now() }), { qos: 0 }); } catch {}
         // `?recover=1` — the link an operator sends round after a session was
         // lost. Fires once, as soon as there is a connection to send on.
         if (RECOVER_MODE && !recovered) { recovered = true; recoverFromLink(); }
@@ -1386,10 +1445,24 @@
       try {
         client.publish(TOPIC, JSON.stringify({
           id: rec.id, name: rec.name || '', strokes: rec.strokes, ts: Date.now(),
+          /*
+           * THE EPOCH OF THE WORLD RUNNING NOW, not the one this drawing
+           * came from — and that asymmetry is the whole of `?recover=1`.
+           *
+           * Every other path sends the run the drawing was ADMITTED under
+           * and lets the world refuse an older one. This one is an operator
+           * deliberately answering *"please open this so your creature comes
+           * back"*, into whatever world is running: it ignores the age of
+           * the record and the room it was drawn into already, and a world
+           * that has since been reset would otherwise refuse the one link
+           * that exists to undo a lost session. The record adopts the same
+           * epoch below, so the handset is honestly part of this run.
+           */
+          ...(wireEpoch() ? { epoch: wireEpoch() } : {}),
         }), { qos: 0 });
       } catch { return false; }
       try {
-        localStorage.setItem(SUBMISSION_KEY, JSON.stringify({ ...rec, epoch: liveEpoch || WORLD_EPOCH || null }));
+        localStorage.setItem(SUBMISSION_KEY, JSON.stringify({ ...rec, epoch: wireEpoch() || null }));
       } catch {}
       showToast('sent your creature back');
       setTimeout(goToCompanion, 900);
@@ -1399,12 +1472,38 @@
     function answerRecall(epoch) {
       const rec = storedSubmission();
       if (!rec || !rec.strokes || !rec.strokes.length || !connected) return;
+      /*
+       * NOT INTO A WORLD THAT HAS STARTED OVER (user report, 2026-09-17:
+       * *"even after reset using the mod secret key the scene does not
+       * reset"*).
+       *
+       * A `recall` is the world asking for the population it lost, and this
+       * pad answered every one of them with whatever it was holding. After a
+       * reset that is the run that was just cleared, handed straight back —
+       * and this is the page a stepped-down handset LANDS on, so it is the
+       * copy of the drawing most likely to be offered.
+       *
+       * Mirrors `admitsDrawing` in src/phone/identity.ts: only OLDER is
+       * refused, so a re-home into a restarted projection at the same
+       * generation is untouched. The record itself is never touched
+       * (CLAUDE.md) — only the offering stops.
+       */
+      const asking = epoch || liveEpoch || WORLD_EPOCH || '';
+      if (asking && generationOf(asking) > generationOf(rec.epoch)) { sayRestarted(); return; }
       try {
         client.publish(TOPIC, JSON.stringify({
           id: rec.id, name: rec.name || '', strokes: rec.strokes, ts: Date.now(),
+          // The run it was ADMITTED under, so the world decides for itself
+          // rather than taking this pad's word for it.
+          ...(rec.epoch ? { epoch: rec.epoch } : {}),
         }), { qos: 0 });
       } catch { return; }
-      const use = epoch || liveEpoch || WORLD_EPOCH || null;
+      // Never BACKWARDS: a stale announcement is the one kind of `world`
+      // message that is wrong, and a record that adopted its generation
+      // would have talked itself back into the run before the reset.
+      const use = generationOf(asking) >= generationOf(rec.epoch) && asking
+        ? asking
+        : rec.epoch || null;
       try {
         localStorage.setItem(SUBMISSION_KEY, JSON.stringify({ ...rec, epoch: use }));
       } catch {}
@@ -1422,6 +1521,11 @@
       if (alreadyDrew()) { enforceSingleDrawing(); return; }
       if (refusedHere()) return;
       const msg = { id: MY_ID, name: userName, strokes, ts: Date.now() };
+      // WHICH RUN OF THE WORLD THIS IS GOING INTO. Additive on the wire: a
+      // world on an older build reads right past it, and a world that has
+      // been reset needs it to tell this drawing from the ones it cleared.
+      const wire = wireEpoch();
+      if (wire) msg.epoch = wire;
       client.publish(TOPIC, JSON.stringify(msg), { qos: 0 });
       // The durable copy. Fire and forget: the drawing has already gone out
       // over mqtt and the person is already being walked to their egg, so a
@@ -1471,12 +1575,14 @@
         sessionStorage.setItem('refworld:handoff', JSON.stringify({ id: msg.id, name: userName || null, room, strokes: msg.strokes, ts: msg.ts }));
         // Persisted too: a reload (or coming back later) must land on the
         // creature this handset already made, never on an empty pad.
-        // `liveEpoch` first: the qr for a public world carries no `?w=`
-        // (src/net/protocol.ts `joinUrl`), so the retained announcement is
-        // the only thing that knows which generation this drawing is
-        // entering. A record with no epoch reads as generation 0 and would
-        // be stepped down by a reset that happened before it was drawn.
-        localStorage.setItem(SUBMISSION_KEY, JSON.stringify({ id: msg.id, name: userName || null, strokes: msg.strokes, ts: msg.ts, epoch: liveEpoch || WORLD_EPOCH || null }));
+        // The SAME string that went on the wire (`wireEpoch` above), so the
+        // record and the drawing the world admitted can never disagree about
+        // which run they belong to. The qr for a public world carries no
+        // `?w=` (src/net/protocol.ts `joinUrl`), so the retained
+        // announcement is usually the only thing that knows; a record with
+        // no epoch reads as generation 0 and would be stepped down by a
+        // reset that happened before it was drawn.
+        localStorage.setItem(SUBMISSION_KEY, JSON.stringify({ id: msg.id, name: userName || null, strokes: msg.strokes, ts: msg.ts, epoch: wire || null }));
       } catch {}
       keySend.disabled = true;
       // The seam (PHONE-STAGE §4). Satellites leave, the core travels to the

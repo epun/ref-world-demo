@@ -70,6 +70,18 @@ export interface IncomingDrawing {
   /** Validated personality answer; anything else (absent, unknown value,
    * older phone page) → null, meaning neutral behavior defaults. */
   personality: Personality | null;
+  /**
+   * WHICH RUN OF THE WORLD THIS DRAWING WAS DRAWN INTO, or null when the
+   * publisher did not say (2026-09-17).
+   *
+   * Additive on the wire and additive here: every drawing published before
+   * this existed carries no epoch, null reads as generation 0, and a world
+   * that has never been reset admits it exactly as it always did. What it
+   * buys is the world that HAS been reset — it can now tell a drawing from
+   * the run it just cleared from one drawn a second ago
+   * (src/phone/identity.ts `admitsDrawing`).
+   */
+  epoch: string | null;
   strokes: StrokeList;
 }
 
@@ -96,7 +108,8 @@ export function normalizeDrawing(d: FeedDrawing): IncomingDrawing | null {
   if (strokes.length === 0) return null;
   const id = d.id != null ? String(d.id) : contentId(strokes);
   const name = typeof d.name === 'string' && d.name.trim() !== '' ? d.name.trim().toLowerCase() : null;
-  return { id, name, personality: normalizePersonality(d.personality), strokes };
+  const epoch = typeof d.epoch === 'string' && d.epoch.length > 0 ? d.epoch : null;
+  return { id, name, personality: normalizePersonality(d.personality), epoch, strokes };
 }
 
 export interface WorldFeedOptions {

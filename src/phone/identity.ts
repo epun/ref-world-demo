@@ -122,6 +122,45 @@ export type GenerationVerdict =
   | 'step-down';
 
 /**
+ * IS THIS DRAWING STILL FROM THE WORLD THAT IS RUNNING?
+ *
+ * The one rule, and the one place it is written (user report, 2026-09-17,
+ * valiocon: *"even after reset using the mod secret key the scene does not
+ * reset"*). The store WAS reset — generation 1, no drawings — and the
+ * projection filled straight back up, because a drawing arriving over the
+ * BROKER was admitted without anybody asking which run of the world it was
+ * drawn into. The store's reset is not the only door into the world.
+ *
+ * So every accept path asks this instead: the world's own accept (the feed's
+ * `onDrawing` in src/main.ts), a handset's resend on a recall, its re-home
+ * into a restarted world, and the pad's hand-back (public/draw/, which
+ * imports nothing and writes the rule out again — keep the two in step).
+ *
+ * ONLY OLDER IS REFUSED, and the asymmetry is `generationVerdict`'s. An
+ * EQUAL generation is a re-home into a projection that restarted, which is
+ * the recovery this whole project is built around; a NEWER epoch on the
+ * drawing means this side heard a stale announcement, and refusing on the
+ * strength of a message that is behind would drop a creature standing in
+ * the world right now.
+ *
+ * ABSENT reads as generation 0 on both sides: a world that has never been
+ * reset admits everything, and a world that HAS been reset refuses a drawing
+ * that cannot say it came after the reset. That is why the epoch now travels
+ * with the drawing on the wire.
+ *
+ * Pure, total, and never throws.
+ */
+export function admitsDrawing(
+  worldEpoch: string | null | undefined,
+  drawingEpoch: string | null | undefined,
+): boolean {
+  // Nothing known about the world yet: a page that has not read its own
+  // generation has no standing to refuse anybody.
+  if (typeof worldEpoch !== 'string' || worldEpoch === '') return true;
+  return generationOf(worldEpoch) <= generationOf(drawingEpoch);
+}
+
+/**
  * Compare the world's epoch against the one a drawing was admitted under.
  *
  * ONLY NEWER COUNTS. An equal generation is today's behaviour untouched,
@@ -135,7 +174,10 @@ export function generationVerdict(
   worldEpoch: string | null,
 ): GenerationVerdict {
   if (!submission || worldEpoch === null || worldEpoch === '') return 'stay';
-  return generationOf(worldEpoch) > generationOf(submission.epoch) ? 'step-down' : 'stay';
+  // The same rule as every accept path, read from the handset's side: a
+  // drawing the world would no longer admit is one this handset stops
+  // offering (`admitsDrawing` above).
+  return admitsDrawing(worldEpoch, submission.epoch) ? 'stay' : 'step-down';
 }
 
 /**
