@@ -232,10 +232,18 @@ describe('a creature does not grow with its pile', () => {
     expect(root.scale.x).toBeGreaterThan(2);
     // Children of the character root, so they ride the counter-scale with it.
     expect(worldScale(topper!)).toBeCloseTo(before, 8);
-    // …and they are still ATTACHED: the topper sits on the body, which has
-    // moved up onto the pile, so its world position moved with the creature
-    // rather than staying behind.
-    expect(worldPos(topper!).y).toBeGreaterThan(wherever.y);
+    /*
+     * …and they are still ATTACHED, at the height the creature stands at.
+     *
+     * This pile is seated ABOVE the creature's middle (`stick` above uses
+     * `oy: r`), so there is nothing under its feet and the ground pass does
+     * not lift it at all — which is the 2026-09-17 report, *"the character
+     * should be on the ground"*: a pile beside or over a creature is not
+     * something for it to stand on. What this pins is that the topper moves
+     * WITH the creature rather than being left behind by the counter-scale.
+     */
+    expect(worldPos(topper!).y).toBeCloseTo(wherever.y, 6);
+    expect(worldPos(topper!).y).toBeGreaterThan(worldPos(root).y);
     manager.clearAll();
   });
 

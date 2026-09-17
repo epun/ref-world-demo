@@ -659,14 +659,36 @@ export function clearanceLift(
   sampleHeight: (x: number, z: number) => number,
 ): number {
   if (!(bodyR > 0)) return 0;
+  return footprintRise(x, z, bodyR, sampleHeight) + bodyR * CLEARANCE_PAD;
+}
+
+/**
+ * HOW MUCH HIGHER THE GROUND IS UNDER THE EDGE of a footprint this wide than
+ * it is under the middle, world units. PURE, and never negative.
+ *
+ * The ring half of `clearanceLift` on its own, because the ground pass wants
+ * exactly that and NOT the pad (2026-09-17, the *"characters are floating"*
+ * report): the pad is a fraction of a RADIUS, and a pile is sat down by its
+ * own lowest point now, so adding a fraction of anything to it is a creature
+ * held off the paper by a number with nothing under it. The pad stays where
+ * it was earned — inside `clearanceLift`, which the ball's own silhouette
+ * still uses.
+ */
+export function footprintRise(
+  x: number,
+  z: number,
+  radius: number,
+  sampleHeight: (x: number, z: number) => number,
+): number {
+  if (!(radius > 0)) return 0;
   const centre = sampleHeight(x, z);
-  const ringR = bodyR * CLEARANCE_RING;
+  const ringR = radius * CLEARANCE_RING;
   let highest = centre;
   for (const dir of CLEARANCE_DIRS) {
     const h = sampleHeight(x + dir.x * ringR, z + dir.z * ringR);
     if (h > highest) highest = h;
   }
-  return Math.max(0, highest - centre) + bodyR * CLEARANCE_PAD;
+  return Math.max(0, highest - centre);
 }
 
 /** The biggest item radius this carrier can take on. */
