@@ -2408,13 +2408,15 @@ function main(): void {
    * HOW TO PLAY, WHAT IS LOADING, AND WHAT TO DO WITH AN EMPTY VIEW
    * (user ask, 2026-09-17, mobile: *"there should be better empty/loading
    * states. we should have an onboarding stage to tell people how to play the
-   * game, before they load into the world."*).
+   * game"* — and then, with screenshots of the three grey slides that first
+   * answered it: *"For mobile I want the onboarding to be contextual within
+   * the device."*).
    *
    * Three modules, one mount site, and the same three conditions the ball
    * readout above is already under:
    *
    * - the KATAMARI world and nowhere else (src/world/game.ts, 2026-09-15 user
-   *   ruling). Every word of the onboarding is about a stick, a pickup and a
+   *   ruling). Every word of the hints is about a stick, a pickup and a
    *   ball, none of which exist in a world without the game — and each module
    *   is reached through a DYNAMIC import, so meridian and the public world
    *   never carry the chunks;
@@ -2440,30 +2442,13 @@ function main(): void {
   if (worldGame === 'katamari' && handheld) {
     if (myDrawerId.length > 0) {
       /*
-       * THE ONBOARDING, over everything, before the world is played.
-       *
-       * Mounted here rather than on the handset's own page for one reason:
-       * the game flag is a `<meta>` the build injects into THIS document
-       * only (scripts/world-build.mjs — phone.html gets no game tag), so
-       * this is the only page that knows a katamari is what is being loaded
-       * into. It covers the view while the world comes up behind it, which
-       * is also the wait it is spending.
+       * THE LOADING LINE: what this wait IS, until this handset's own
+       * creature is standing.
        */
-      void import('./ui/onboard').then((m) => {
-        if (!m.shouldOnboard(location.search, m.deviceStore())) return;
-        m.installOnboarding({
-          mount: document.body,
-          onDone: () => {
-            /* nothing to undo: the field takes itself off the page */
-          },
-        });
-      });
-      /*
-       * …and under it, the loading line: what this wait IS, until this
-       * handset's own creature is standing.
-       */
-      void import('./ui/loading').then((m) =>
-        m.installWorldLoading({
+      /** The line itself, once its chunk is here — the hints wait on it. */
+      let loadingLine: { gone(): boolean } | null = null;
+      void import('./ui/loading').then((m) => {
+        loadingLine = m.installWorldLoading({
           mount: document.body,
           milestones: () => ({
             reached: roomOn,
@@ -2477,8 +2462,65 @@ function main(): void {
               creatures.positionOf(myDrawerId) !== null &&
               !creatures.eggIds().includes(myDrawerId),
           }),
-        }),
-      );
+        });
+      });
+      /*
+       * …and then the HINTS — the onboarding, contextual, in the world
+       * (2026-09-17 user ask; src/ui/hints.ts).
+       *
+       * Not three screens in front of the game any more: a line above the
+       * joystick the moment the stick can move something, a line under the
+       * ball readout once the person is rolling, and a line beside the number
+       * once they have picked something up. Each one is dismissed by DOING
+       * the thing it asks for.
+       *
+       * The five signals it reads are all answers something else already
+       * owns — the manager's `positionOf`, `eggIds` and `ballDiameter`, the
+       * stick's own vector, and whether the loading line has left. The two
+       * ACCUMULATIONS (how far this creature has travelled, how many pickups
+       * its ball has taken) are kept here, beside the reads they are made of,
+       * because nothing else on this page wants them and a second event path
+       * for "did something get picked up" is exactly what docs/PLAN.md §7.6
+       * forbids.
+       */
+      void import('./ui/hints').then((m) => {
+        if (!m.shouldHint(location.search, m.deviceStore())) return;
+        /** Where the creature was last frame, for the distance it has run. */
+        let wasAt: { x: number; z: number } | null = null;
+        let travelled = 0;
+        /** The ball's size when it was last looked at — null until hatch. */
+        let ball: number | null = null;
+        let picked = 0;
+        m.installWorldHints({
+          mount: document.body,
+          // The tray, so the first hint stands over the stick it is about.
+          stickMount: tray?.middle ?? null,
+          signals: () => {
+            const here = creatures.positionOf(myDrawerId);
+            const standing = here !== null && !creatures.eggIds().includes(myDrawerId);
+            if (here) {
+              if (wasAt) travelled += Math.hypot(here.x - wasAt.x, here.z - wasAt.z);
+              wasAt = { x: here.x, z: here.z };
+            }
+            // A pickup is a CHANGE in the ball: `ballDiameter` is the
+            // creature's own footprint from the moment it hatches, so the
+            // first reading is a baseline and never a pickup.
+            const now = creatures.ballDiameter(myDrawerId);
+            if (ball === null) ball = now;
+            else if (now > ball + m.PICKUP_STEP_U) {
+              picked++;
+              ball = now;
+            } else if (now > ball) ball = now;
+            return {
+              ready: standing && stick !== null,
+              loading: loadingLine !== null && !loadingLine.gone(),
+              drive: stickVec.mag,
+              travelled,
+              picked,
+            };
+          },
+        });
+      });
     } else {
       // No drawing on this device: a view of a game that cannot be played.
       // Say so, and point at the pad — the same address every other hop
