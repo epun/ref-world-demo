@@ -44,11 +44,14 @@ export const REGION_SIZE = FIELD_SIZE;
 
 /**
  * …and the two the bake actually uses: both through `mapScale` (2026-09-16,
- * `MAP_SCALE` in src/world/landscape.ts), so the TEXEL stays 3.1 world units
- * whatever the island's size — 256² over 800 units on the doubled island.
+ * `MAP_SCALE` in src/world/landscape.ts), ROUNDED to a whole texel count, so
+ * the TEXEL stays 3.1 world units whatever the island's size — 256² over 800
+ * at scale 2, and 141² over 440 at 1.1 (128 * 1.1 = 140.8, a texel of 3.1206
+ * against 3.125). NPOT is free here for the same reason it is on the shore
+ * bake: WebGL2, CLAMP + LINEAR, no mipmaps.
  *
  * The bake spans the GROUND FIELD and the painted layers span the PAINTED
- * MAP, and on the doubled island those are no longer the same square: the
+ * MAP, and on a scaled island those are no longer the same square: the
  * consumers read the region at `xz / GG_MAP_SIZE` and a painted layer at
  * `xz / GG_SIZE`, two constants instead of the one they shared. The painted
  * map stays 400 units because its extent is on the wire

@@ -411,11 +411,23 @@ describe('the plain is the world that shipped', () => {
   // `scatterExtent` in src/world/scatter.ts), so the field is four times the
   // area at the same 6-unit grid step and the deep plain inside it grows with
   // it — 511 → 3103, a factor of 6.07 rather than 4 because the coast and its
-  // shore clearance eat a smaller share of a bigger island. The expression is
-  // untouched: the readable half below, the hatch clearing, is a fixed place on
-  // the map and has not moved a digit.
-  const PLAIN_COUNT = 3103;
-  const PLAIN_DIGEST = '4881ed0e';
+  // shore clearance eat a smaller share of a bigger island.
+  //
+  // Re-taken 2026-09-17 (was 3103 / 4881ed0e): THE ISLAND CAME BACK DOWN, to
+  // `MAP_SCALE` 1.1 by way of 1.3 (two user asks in a day, both "too big").
+  // The same arithmetic runs backwards: the scattered square is 176 units of
+  // half-extent rather than 320 at the same 6-unit step, so there are 3.3
+  // times fewer cells, and the coast and its 13-unit shore clearance are back
+  // to eating a large share of a small island — 3103 → 674, below the 1.21×
+  // the area alone would suggest against the authored 511 for exactly that
+  // reason.
+  //
+  // The expression is untouched at every one of those re-takes, and the way
+  // this file KNOWS that is the readable half below: the four ticks in the
+  // hatch clearing are a fixed place on the map and have not moved a digit
+  // through any of 1 → 2 → 1.3 → 1.1.
+  const PLAIN_COUNT = 674;
+  const PLAIN_DIGEST = '6ca0c6ee';
 
   it('places exactly what it placed before the map existed', () => {
     const plain = shipped().filter(deepPlain).map(key);
@@ -454,18 +466,19 @@ describe('the plain is the world that shipped', () => {
    * predicate calls deep plain. Those spill-overs are the map's, so the plain
    * world does not have them.
    *
-   * It is EIGHT rather than nine because the traffic now runs both ways: the
-   * plain world has one deep-plain bush the mapped world does not, thrown
-   * from a cell the beach has since claimed. The map used only to ADD to this
-   * ground; an island takes some of it away. */
-  const PLAIN_MODE_COUNT = 3087;
-  const PLAIN_MODE_DIGEST = 'faaa263c';
+   * Re-taken 2026-09-17 with the fixture above (`MAP_SCALE` 2 → 1.1). */
+  const PLAIN_MODE_COUNT = 666;
+  const PLAIN_MODE_DIGEST = '1f9fc454';
 
   /** Deep-plain placements the PLAIN world has and the mapped one does not —
    * located rather than counted below. Two on the doubled island (2026-09-16),
-   * one before it: a bigger island has more coast, so more cells whose seed the
-   * beach has claimed. */
-  const PLAIN_ONLY = 2;
+   * one before it, and NONE at 1.1 (2026-09-17): the traffic runs both ways
+   * only where the beach has claimed the seed cell of a cluster that threw a
+   * neighbour clear, and a small island has few enough of those that at this
+   * scale it has none. Zero is a real measurement here and not a disabled
+   * check — the assertion below still compares the two sets in full, and any
+   * placement the plain world gained would fail it. */
+  const PLAIN_ONLY = 0;
 
   it('places no mountain and no reed anywhere in the plain mode', () => {
     const plain = inPlain(() => computePlacements());
@@ -478,9 +491,8 @@ describe('the plain is the world that shipped', () => {
     expect(kindsOf(shipped(), 'reed').length).toBeGreaterThan(0);
   });
 
-  // 30s: the fixture is 3,103 placements over a field four times the area
-  // since the island doubled (2026-09-16, `MAP_SCALE`), and this rolls the
-  // whole scatter twice to compare the two modes.
+  // 30s: this rolls the whole scatter twice to compare the two modes, and the
+  // deep-plain predicate probes 24 bearings at 25 radii per placement.
   it('rolls the pre-map expression over the ENTIRE field in the plain mode', () => {
     const plain = inPlain(() => computePlacements());
     // The fixture selects deep-plain GROUND, so the predicate is evaluated
@@ -507,8 +519,8 @@ describe('the plain is the world that shipped', () => {
     }
   }, 30_000);
 
-  // 30s: same reason as the test above — the doubled island's fixture is
-  // 3,103 placements and this rolls the scatter in both modes.
+  // 30s: same reason as the test above — this rolls the scatter in both
+  // modes.
   it('differs from the mapped fixture only where a region spills over its edge', () => {
     const plain = new Set(inPlain(() => computePlacements()).filter(deepPlain).map(key));
     const extra = shipped().filter(deepPlain).filter((p) => !plain.has(key(p)));
@@ -528,8 +540,11 @@ describe('the plain is the world that shipped', () => {
     // Seven on the doubled island against four before it (2026-09-16,
     // `MAP_SCALE`): there are four times the cells competing for the same
     // BUILDING_MAX / WATER_TOWER_MAX slots, so the cap bites earlier and the
-    // two modes disagree about more of the boundary. Still a handful out of
-    // 3,103, and still the cap rather than the map.
+    // two modes disagree about more of the boundary. Five at 1.1 (2026-09-17),
+    // between the two, for the same reason read backwards. Still a handful,
+    // and still the cap rather than the map — the bound is left at 8 because
+    // it is the measured worst of the scales this has run at, not a fit to the
+    // current one.
     const capped = extra.filter((p) => p.kind === 'building' || p.kind === 'waterTower');
     expect(capped.length, 'cap-boundary structures').toBeLessThanOrEqual(8);
     for (const p of extra.filter((q) => q.kind !== 'building' && q.kind !== 'waterTower')) {

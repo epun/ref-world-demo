@@ -895,8 +895,17 @@ describe('the stuck detector — with rapier under it', () => {
 
   it('grows every radius together — the ball, the resolve circle and the reach', () => {
     const { manager, root, ballRadius, frame } = hosted('grower');
-    const baseR = manager.positions().find((q) => q.kind === 'character')!.r;
+    // AFTER the first frame, not before it (2026-09-17). The spawn spot rides
+    // `SPAWN_RADIUS · mapScale` and the scatter rides `SCATTER_EXTENT ·
+    // mapScale`, so a change of `MAP_SCALE` deals this id a different patch of
+    // ground — and at 1.1 it is dealt one with a piece of junk inside its
+    // pickup reach, which it swallows on frame one. That is the game working;
+    // what this test is about is that the ball, the resolve circle and the
+    // root's scale are ONE number, so it reads its baseline off the settled
+    // state rather than off the instant before the first update.
     frame(1000);
+    const baseR = manager.positions().find((q) => q.kind === 'character')!.r;
+    const baseScale = root().scale.x;
     expect(ballRadius()).toBeCloseTo(baseR, 4);
 
     // Eat something its own size, through the event path — so this is the
@@ -920,7 +929,7 @@ describe('the stuck detector — with rapier under it', () => {
     // scale, the rapier ball and the pickup reach are all this `bodyR`, so
     // there is no radius a creature can wedge in the gap between.
     expect(ballRadius()).toBeCloseTo(grown, 4);
-    expect(root().scale.x).toBeCloseTo(grown / baseR, 6);
+    expect(root().scale.x / baseScale).toBeCloseTo(grown / baseR, 6);
     manager.clearAll();
   });
 

@@ -291,8 +291,9 @@ so the marker never jitters or snaps.
   **131.7–176.3** [D], inside the ground field's own ±200. Every authored feature keeps at
   least **12 units of land** between its edge and the sea (measured 12.55 at the range's
   eastern mass); the headlands are placed to buy that clearance, and nothing in the 2026-09-03
-  layout moved. **It is TWICE THAT SIZE on the katamari world since 2026-09-16** — coast
-  **263.3–352.5**, land area four times over — see "twice as big" below.
+  layout moved. **It is 1.1× THAT SIZE on the katamari world** (`MAP_SCALE`; it was 2 from
+  2026-09-16 and 1.3 briefly on 2026-09-17) — coast **144.8–193.9**, land area 1.21× over —
+  see "one number for the map's size" below.
   **The sea is the complement of the coast** — `isWater` answers true outside it, so there is
   no separate ocean outline and nothing else has to know where the edge of the world is. It
   sits at `SEA_LEVEL = -1.2` before the elevation dial [D], under the plain's own tier 0 so
@@ -312,26 +313,57 @@ so the marker never jitters or snaps.
   reaches 0.5. Scatter gives it a table (`BEACH_SEED`): small rocks and plenty of them,
   stumps as driftwood, palms, a rare cactus, sparse ticks, and nothing built or forested. The
   sea plants nothing, as it always did for water. Creatures are stopped at the waterline by a
-  **wall** of hex-pitch collider circles walked along the coast (479 of them, 958 at the
-  doubled size) rather than a tiling of the ocean, which would be unbounded.
+  **wall** of hex-pitch collider circles walked along the coast (479 of them at the authored
+  size, and `MAP_SCALE` times as many on a scaled one) rather than a tiling of the ocean,
+  which would be unbounded.
   The plain mode is untouched by all of it: no coast, no sea, no beach, flat paper — pinned at
   2,000 points in `test/world/island.test.ts`.
-- **Twice as big — *(2026-09-16, user ask: "make the island twice as big")*.** Read as twice
-  the DIAMETER: one number, `MAP_SCALE = 2` in `src/world/landscape.ts`, read through
-  `mapScale()` and **gated on `islandMode`**, so meridian and the public world are the map
-  they already have to the bit (`test/world/island-scale.test.ts` pins both halves). The
-  scale is UNIFORM and ABOUT THE ORIGIN, and that is what makes it one number rather than a
-  second layout: the wobble phases key off a blob's seed and its polar angle and both survive
-  such a scale, so `coastInland(2x, 2z) = 2·coastInland(x, z)` exactly and every clearance,
-  ring width and bay depth the island's tests measure comes out exactly doubled.
+- **One number for the map's size — *(2026-09-16 "make the island twice as big", then
+  2026-09-17 "the map is way too big, let's reduce its size by 35%" and, the same day, "I
+  still think this island is way too big, let's reduce it by another 15%")*.** `MAP_SCALE` in
+  `src/world/landscape.ts` has been **2, then 1.3, then 1.1** — read as the multiple of the
+  authored DIAMETER, and each reduction read as LINEAR (2 · 0.65 = 1.3, 1.3 · 0.85 ≈ 1.1).
+  The doubled island was simply too much ground to cross for a room of 50–80 people: a
+  creature a viewer could not find, and a katamari that never met the next thing to roll over.
+  **1.1 keeps the island reading as an island** — a coast in frame at the zoom floor, a
+  forest and a range and a lake that do not touch — while putting the far shore back within
+  a walk.
+  It is ONE number, read through `mapScale()` and **gated on `islandMode`**, so meridian and
+  the public world are the map they already have to the bit
+  (`test/world/island-scale.test.ts` pins both halves, and spells the scale out in exactly
+  one assertion so the next change is one number plus a re-measure). The scale is UNIFORM and
+  ABOUT THE ORIGIN, and that is what makes it one number rather than a second layout: the
+  wobble phases key off a blob's seed and its polar angle and both survive such a scale, so
+  `coastInland(kx, kz) = k·coastInland(x, z)` exactly and every clearance, ring width and bay
+  depth the island's tests measure comes out scaled rather than re-authored.
+  **It is no longer an integer, and that is the whole cost of the change.** Every derived
+  COUNT has to be rounded where it is derived, and what was held *exactly* across the scale
+  (a chord, a quad, a texel) is now held to within half a count: the three outline vertex
+  counts (211 / 106 / 70 at 1.1, a 4.90-unit coast chord against the authored 4.9), the
+  ground field's segments (352 — `320 · 1.1` happens to be whole, so the quad is exactly
+  1.25 again), the three bake resolutions and the physics heightfield. The bakes are **rounded
+  to a whole texel count rather than stepped to the next power of two**: 141² / 282² / 563²
+  over 440 units, which holds every texel within 0.1% of its authored size (3.1206 / 1.5603 /
+  0.7815 against 3.125 / 1.5625 / 0.78125). NPOT is free here — WebGL2, CLAMP, no mipmaps,
+  and the height bake does its own bilinear tap off `uHeightRes` — where a power-of-two step
+  would have halved the texel and quadrupled a bake that already measures a second on one
+  core. And `MAP_SCALE` is not an exact binary float either, so a test asserts a scaled
+  coordinate against `authored · MAP_SCALE` rather than against a spelled-out literal.
+  **The riser run is now a function of the scale** (`riserRun`, `src/world/field.ts`) instead
+  of a two-entry table: a riser climbs the middle 60% of a tier step, so it takes
+  `0.96 / steepestSlope` units of run, and the steepest slope is MEASURED per scale because
+  the verticals and the noise wavelengths do not scale — **0.843** authored, **0.4570** at 1.1
+  (at 64.5, −133 on the range's apron), 0.5111 at 1.3, 0.4814 at 2. So the run is **2.101 u**
+  at 1.1 against the 1.25 u quad. An unmeasured scale falls back on `0.843/√scale`, which
+  understates the run and so tightens the bound rather than loosening it.
   **What scales** is anything that says WHERE something is: the coast's lobes; the forest and
   the range, centre *and* radius (a region has to stay one readable mass — at their authored
   radii the four mountain masses would have stopped overlapping and the range would have come
   apart into four hills); the lake, whole, its own island with it (the ring of water round it
   is a measured pair); the ponds' centres; `TERRAIN.islandRamp`, which is read as a fraction
-  of a lake island's own radius; the far-field gate (`farFieldStart` / `farFieldEnd`, 300 /
-  370) which is where the land settles onto the flat outer disc and so has to stay outside
-  the coast; and every ring's vertex count, so a coastline twice as long keeps its ~4.9-unit
+  of a lake island's own radius; the far-field gate (`farFieldStart` / `farFieldEnd`, 165 /
+  203.5 at 1.1) which is where the land settles onto the flat outer disc and so has to stay
+  outside the coast; and every ring's vertex count, so a longer coastline keeps its ~4.9-unit
   chords.
   **What does not** is anything that says HOW BIG a physical thing is: `BEACH_WIDTH` 14,
   `TERRAIN.coastRamp` 26, `shoreRamp` 16, `basinRim`, `basinDrop`, `SEA_LEVEL`, every shelf
@@ -341,32 +373,49 @@ so the marker never jitters or snaps.
   from z = −210 to z = −18 and lifted most of the open plain with it, so the forest stopped
   standing a tier over it (1.12 → 0.49 on `test/world/landscape.test.ts`'s own metric). A
   bigger island gets more foothills, not wider ones. Verticals are untouched throughout, so
-  every slope on the map is half what it was — the steepest measures **0.4814** against the
-  field's 0.6 bound, and the lake island's bank no longer needs the terrain test's explicit
-  exception.
+  every slope on the map is shallower than it was authored — the steepest measures **0.4570**
+  at 1.1 against the field's 0.6 bound (0.4814 at 2, 0.843 authored), and the lake island's
+  bank no longer needs the terrain test's explicit exception.
+  **A body of water is the one thing a change of scale can break.** A pond's centre scales
+  and the terrain NOISE does not, so every body lands on a different patch of the same
+  hummocks at every scale, and `test/world/landscape.test.ts`'s basin-shoulder bound is what
+  catches it: at the 1.3 tried on the way to 1.1 the first pond landed straddling a terrace
+  riser with the ground east of it a whole tier below its own water line (0.517 against the
+  0.6 bound — water reading as perched rather than sunk), and the fix would have been the
+  pond's authored centre, not the bound. At 1.1 it measures 1.076, the healthiest of the
+  four, so the authored layout is untouched. Re-measure the four when the scale moves.
   **Every field that has to cover the land rides the same factor**, and what is held fixed
-  across the scale is the RESOLUTION: `FIELD_SIZE` 400 → 800 with `FIELD_SEGMENTS` 320 → 640,
-  so the quad stays **1.25 u** and the field is 819,200 triangles; the three geography bakes
-  keep their texel exactly (region 128² → 256², height 256² → 512², shore 512² → 1024², all
-  over 800 u); `GRASS_BASE_SPAN` 360 → 720 at the same budget, with the base blade widened
-  √2 and its pixel floor 1.5× to absorb the quarter density; `SCATTER_EXTENT` 160 → 320 at the
-  same 6-unit grid step, so the prop count per unit area is unchanged (1,472 → 6,004
-  placements, 38 (kind, variant) pairs either way); `HEIGHTFIELD_SEGMENTS` 256 → 512 at the
-  same 1.56-u cell; `SPAWN_RADIUS` 120 → 240; `WORLD_MAP_EXTENT` 185 → 370; and
-  `GROUND_RADIUS` 1400 → 2800 with the depth range that clears it (`cameraDistance` 1800 →
-  3400, `cameraFar` 3800 → 6800). The sea disc had to grow: at the zoom floor on a portrait
-  phone the WIDTH binds, so the frame looks ~1,400 units up-screen past the island and the
-  far corner of it fell outside a 1400-unit ring.
+  across the scale is the RESOLUTION. At 1.1: `FIELD_SIZE` 400 → 440 with `FIELD_SEGMENTS`
+  320 → 352, so the quad stays **1.25 u**; the three geography bakes keep their texel
+  (region 128² → 141², height 256² → 282², shore 512² → 563², all over 440 u);
+  `GRASS_BASE_SPAN` 360 → 396 at the same budget; `SCATTER_EXTENT` 160 → 176 at the same
+  6-unit grid step, so the prop count per unit area is unchanged; `HEIGHTFIELD_SEGMENTS`
+  256 → 282 at the same 1.56-u cell; `SPAWN_RADIUS` 120 → 132; `WORLD_MAP_EXTENT` 185 →
+  203.5; and `GROUND_RADIUS` 1400 → 1540 with the depth range that clears it
+  (`cameraDistance` 1800 → 1960, `cameraFar` 3800 → 3920). The sea disc has to ride the map
+  for a reason that is not symmetry, and it is a RULE and not a table: at the zoom floor on a
+  390×844 phone the WIDTH binds, so the frame looks ~4× the coast's radius up-screen past the
+  island, and the sea has to cover the far CORNER of it — measured **818 u** at 1.1 against
+  the 1540-u ring (at 2 the corner was outside a 1400-u ring, which is what made this a
+  derived number in the first place). `test/world/island-scale.test.ts` measures the corner
+  rather than restating it.
+  The blade field's base blade was widened √2 with its pixel floor 1.5× for the doubled
+  island's quarter density; that switch is on `mapScale() !== 1` and still applies at 1.1,
+  where the density loss is only a fifth — a slightly heavier blade on a slightly bigger
+  meadow, and left alone deliberately rather than re-tuned for a scale that has moved twice
+  in a day.
   `zoomMinFor` and `panLimitFor` needed no change — they were already derived from the
   coast's own reach — but the pan CEILING did: 200 units on an island whose coast reaches 352
-  would have put the far shore out of reach at every zoom, so it rides the scale too.
+  would have put the far shore out of reach at every zoom, so it rides the scale too (220 at
+  1.1).
   **Not scaled: the painted map.** `PAINTED_SIZE` stays 400 because its extent is on the wire
   (`SCENE_EXTENT`, `src/session/scene.ts`), so the dev brushes paint the middle 400 units of
-  the doubled island and the geography bakes no longer share their uv with the painted layers
+  a scaled island and the geography bakes no longer share their uv with the painted layers
   — the ghibli shaders carry `GG_SIZE` for the painted square and `GG_MAP_SIZE` for the
   ground field's. Widening the paintable region is a protocol change and a separate job.
-- **The handset's terrain budget — *(2026-09-16)*.** Four times the land at the same
-  resolution is four times the CPU, and it is a **rebuild** cost, not a frame cost: every
+- **The handset's terrain budget — *(2026-09-16, measured at `MAP_SCALE` 2)*.** Four times
+  the land at the same resolution is four times the CPU, and it is a **rebuild** cost, not a
+  frame cost: every
   vertex and every texel goes through the geography once per build and again on every
   `setTerrain`, `setLandscape` and painted pond. Measured on one node core, the terrain walk
   (region + height + shore bakes, the field's displacement, the physics heightfield and the
@@ -377,12 +426,20 @@ so the marker never jitters or snaps.
   pixel cap, before the ground, the water or any bake is built, defaulting to `projection` so
   a test and a node script read the same world. A phone takes: the ground field at
   `FIELD_SEGMENTS_PHONE_ISLAND` **480** (a 1.67 u quad — still inside the **1.99 u** riser run
-  `RISER_RUN` states, measured height error **0.112 u** against 640's 0.066 u over 250,000
-  land samples), the **shore** bake at 512² (1.56 u a texel, so the 1.5–3 u foam rim is one to
-  two texels rather than two to four), the **region** bake at 128² (6.25 u a texel, and both
-  its consumers smooth it further), and the physics **heightfield** at 256 (a 3.12 u cell,
-  coarser than a riser, on a page that is usually a viewer — physics runs only on the
+  `riserRun` gives at scale 2, measured height error **0.112 u** against 640's 0.066 u over
+  250,000 land samples), the **shore** bake at 512² (1.56 u a texel, so the 1.5–3 u foam rim
+  is one to two texels rather than two to four), the **region** bake at 128² (6.25 u a texel,
+  and both its consumers smooth it further), and the physics **heightfield** at 256 (a 3.12 u
+  cell, coarser than a riser, on a page that is usually a viewer — physics runs only on the
   simulating one). Measured after: **1944 ms**, 2.14× the public world rather than 4.00×.
+  **Those trades were measured at `MAP_SCALE` 2 and are kept, but the field's one no longer
+  binds — *(2026-09-17)*.** 480 is a CEILING, not a substitute: at 1.1 the projection itself
+  cuts 352, so `fieldSegments` takes the `min` and a phone reads the projection's 352. A phone
+  must never pay MORE than the projection for a map that got smaller, which is what 480 over
+  440 units (a 0.92 u quad) would have been. The three texel trades still bind and are
+  milder: 1.72 u a shore texel, 6.9 u a region texel, a 1.72 u physics cell. The numbers are
+  kept rather than deleted because they are the measured budget for a bigger map and the
+  scale has moved twice in one day; the field's ceiling starts binding again above 1.5.
   The **height** bake is deliberately NOT traded, and the reason is a kind and not a size:
   `ggGroundAt` is read per blade to seat it on the ground, so its error shows as geometry — a
   blade floating over a tread or buried in a riser — rather than as a soft edge. At 671 ms it

@@ -1,16 +1,25 @@
 /**
- * The island is TWICE AS BIG — every field that has to cover it, and the plain
- * world that must not have moved (2026-09-16, user ask: *"make the island
- * twice as big"*).
+ * The island is `MAP_SCALE` TIMES THE AUTHORED ONE — every field that has to
+ * cover it, and the plain world that must not have moved.
+ *
+ * The scale has moved three times: 2 on 2026-09-16 (*"make the island twice
+ * as big"*), then 1.3 and then **1.1** on 2026-09-17 (*"the map is way too
+ * big, let's reduce its size by 35%"*, then *"I still think this island is way
+ * too big, let's reduce it by another 15%"*). NOTHING IN THIS FILE SPELLS THE
+ * SCALE OUT except the one assertion that pins `MAP_SCALE` itself: every
+ * expectation below is written against `MAP_SCALE` or measured off the
+ * geography, so the next change is one number in src/world/landscape.ts and a
+ * re-measure of the handful of numbers that are genuinely measured (the
+ * steepest slope, the coast's reach) rather than an edit to every `it`.
  *
  * `test/world/island.test.ts` measures the coast's own geometry. This file
  * measures the RING OF CONSUMERS around it: the displaced ground field, the
  * three geography bakes, the blade field's base span, the scatter's extent,
  * the physics heightfield, the spawn disc, the minimap and the camera. Each of
  * them was sized for a 150-radius island, and each of them has to hold a
- * 300-radius one — and hold it at the same RESOLUTION, because a texel or a
- * quad that grew with the map would have quietly coarsened the picture instead
- * of enlarging it.
+ * `150 · MAP_SCALE` one — and hold it at the same RESOLUTION, because a texel
+ * or a quad that grew with the map would have quietly coarsened the picture
+ * instead of enlarging it.
  *
  * …and the other half of the bargain, which is the reason every number here
  * goes through `mapScale`: with the island off, every single one of them is
@@ -45,7 +54,7 @@ import {
   FIELD_SEGMENTS_PHONE_ISLAND,
   FIELD_SIZE,
   GROUND_RADIUS,
-  RISER_RUN,
+  riserRun,
 } from '../../src/world/field';
 import { grassBaseSpan, GRASS_BASE_SPAN } from '../../src/world/ghibli/grass';
 import { heightRes, heightSize, HEIGHT_RES } from '../../src/world/ghibli/height';
@@ -76,6 +85,26 @@ import { scatterExtent, SCATTER_EXTENT } from '../../src/world/scatter';
 const TAU = Math.PI * 2;
 const ISO_SIN = Math.sin(Math.atan(1 / Math.SQRT2));
 
+/**
+ * An authored number through the scale — and the reason it is a helper and not
+ * a `*`: `MAP_SCALE` is 1.1 and 1.1 is not exact in binary, so `-25 * 1.1` is
+ * -27.500000000000004 and `toEqual` on a spelled-out literal fails on the last
+ * bit. Everything scaled below is compared with `toBeCloseTo` at 9 places,
+ * which is far tighter than any of these numbers means and still immune to
+ * the float.
+ */
+const K = (n: number): number => n * MAP_SCALE;
+
+/** …and the same for a list of authored [x, z, r] triples. */
+function closeTriples(got: readonly number[][], authored: readonly number[][]): void {
+  expect(got.length).toBe(authored.length);
+  authored.forEach((want, i) => {
+    want.forEach((n, j) => {
+      expect(got[i]![j], `[${i}][${j}]`).toBeCloseTo(K(n), 9);
+    });
+  });
+}
+
 /** The coast's own reach, measured off the geography rather than restated. */
 function coastReach(): { min: number; max: number } {
   let min = Infinity;
@@ -100,7 +129,7 @@ function coastBox(): number {
   return box;
 }
 
-describe('the doubled island — the geography', () => {
+describe('the scaled island — the geography', () => {
   beforeAll(() => {
     setLandscapeMode('landscape');
     setIslandMode(true);
@@ -111,55 +140,73 @@ describe('the doubled island — the geography', () => {
   });
 
   it('scales the coast about the origin, exactly', () => {
-    expect(MAP_SCALE).toBe(2);
+    // THE ONE PLACE THE SCALE IS SPELLED OUT. 1.1 since 2026-09-17 (it was 2,
+    // then 1.3, both on the way down): a room of 50-80 people did not need
+    // the doubled map. Everything else in this file reads it.
+    expect(MAP_SCALE).toBe(1.1);
     expect(mapScale()).toBe(MAP_SCALE);
-    expect(ISLAND.r).toBe(150 * MAP_SCALE);
+    expect(ISLAND.r).toBeCloseTo(K(150), 9);
     expect(ISLAND.x).toBe(0);
     expect(ISLAND.z).toBe(0);
     expect(ISLAND_LOBES[0]).toBe(ISLAND);
-    // The authored lobes, doubled — centre AND radius, so the union keeps the
+    // The authored lobes, scaled — centre AND radius, so the union keeps the
     // shape it was tuned to and only its size changes.
-    expect(ISLAND_LOBES.map((l) => [l.x, l.z, l.r, l.seed])).toEqual([
-      [0, 0, 300, 501],
-      [14, -78, 230, 505],
-      [70, 70, 228, 511],
-      [-112, 42, 180, 521],
-    ]);
-    // Measured: exactly twice the authored 131.67 .. 176.26, because the
-    // wobble phases key off a blob's SEED and the polar angle and both survive
-    // a uniform scale about the origin.
+    closeTriples(
+      ISLAND_LOBES.map((l) => [l.x, l.z, l.r]),
+      [
+        [0, 0, 150],
+        [7, -39, 115],
+        [35, 35, 114],
+        [-56, 21, 90],
+      ],
+    );
+    expect(ISLAND_LOBES.map((l) => l.seed)).toEqual([501, 505, 511, 521]);
+    // Measured: exactly `MAP_SCALE` times the authored 131.67 .. 176.26,
+    // because the wobble phases key off a blob's SEED and the polar angle and
+    // both survive a uniform scale about the origin. 144.84 .. 193.88 at 1.1.
     const { min, max } = coastReach();
-    expect(min).toBeCloseTo(263.34, 1);
-    expect(max).toBeCloseTo(352.52, 1);
+    expect(min).toBeCloseTo(K(131.67), 1);
+    expect(max).toBeCloseTo(K(176.26), 1);
   });
 
   it('moves the authored features out with it, and keeps a pond a pond', () => {
     // A region scales WHOLE — centre and radius — because it has to stay one
     // readable mass (the four mountain masses overlap by ~5 units, and
-    // doubling the centres alone would have opened 40-unit gaps).
-    expect(FOREST_BLOBS.map((b) => [b.x, b.z, b.r])).toEqual([
-      [-190, 40, 80],
-      [-120, 110, 36],
-    ]);
-    expect(MOUNTAIN_BLOBS.map((b) => [b.x, b.z, b.r])).toEqual([
-      [-100, -210, 48],
-      [-10, -236, 52],
-      [80, -224, 48],
-      [160, -180, 40],
-    ]);
+    // scaling the centres alone would have opened gaps between them).
+    closeTriples(
+      FOREST_BLOBS.map((b) => [b.x, b.z, b.r]),
+      [
+        [-95, 20, 40],
+        [-60, 55, 18],
+      ],
+    );
+    closeTriples(
+      MOUNTAIN_BLOBS.map((b) => [b.x, b.z, b.r]),
+      [
+        [-50, -105, 24],
+        [-5, -118, 26],
+        [40, -112, 24],
+        [80, -90, 20],
+      ],
+    );
     // The lake scales whole too, its own island with it — the ring of water
     // between them is a measured pair.
     const lake = WATER_BODIES[0]!;
-    expect([lake.x, lake.z, lake.r]).toEqual([160, 140, 84]);
-    expect([lake.island!.x, lake.island!.z, lake.island!.r]).toEqual([144, 124, 28]);
+    closeTriples([[lake.x, lake.z, lake.r]], [[80, 70, 42]]);
+    closeTriples([[lake.island!.x, lake.island!.z, lake.island!.r]], [[72, 62, 14]]);
     // …and a POND only moves: it is a physical thing you stand beside, not a
-    // proportion of the map.
-    expect(WATER_BODIES.slice(1).map((b) => [b.x, b.z, b.r])).toEqual([
-      [30, -110, 6],
-      [-50, 190, 6],
-      [170, -70, 7],
-      [-190, -116, 6],
-    ]);
+    // proportion of the map. Its RADIUS is the authored one at every scale,
+    // which is why it is not run through `K` here.
+    closeTriples(
+      WATER_BODIES.slice(1).map((b) => [b.x, b.z]),
+      [
+        [15, -55],
+        [-25, 95],
+        [85, -35],
+        [-95, -58],
+      ],
+    );
+    expect(WATER_BODIES.slice(1).map((b) => b.r)).toEqual([6, 6, 7, 6]);
     // Every authored feature is still on the island, with dry land to spare
     // (test/world/island.test.ts measures the clearance itself).
     for (const b of [...FOREST_BLOBS, ...MOUNTAIN_BLOBS, ...WATER_BODIES]) {
@@ -182,22 +229,38 @@ describe('the doubled island — the geography', () => {
     expect(TERRAIN.octaves.map((o) => o.wavelength)).toEqual([60, 26]);
     // …and the far-field gate is the FIRST kind: it is the map's own rim and
     // has to stay outside the coast.
-    expect(farFieldStart()).toBe(TERRAIN.farStart * MAP_SCALE);
-    expect(farFieldEnd()).toBe(TERRAIN.farEnd * MAP_SCALE);
+    expect(farFieldStart()).toBeCloseTo(TERRAIN.farStart * MAP_SCALE, 9);
+    expect(farFieldEnd()).toBeCloseTo(TERRAIN.farEnd * MAP_SCALE, 9);
     expect(farFieldStart()).toBeGreaterThan(coastReach().min);
     expect(farFieldEnd()).toBeGreaterThan(coastReach().max);
   });
 
   it('walks every ring at the count its chords were picked for', () => {
-    // A coastline twice as long drawn at the same vertex count would have
-    // doubled the chord — so the counts ride the scale and the chords do not.
-    expect(coastOutlinePoints()).toBe(192 * MAP_SCALE);
-    expect(outlinePoints()).toBe(96 * MAP_SCALE);
-    expect(islandOutlinePoints()).toBe(64 * MAP_SCALE);
+    // A longer coastline drawn at the same vertex count would have stretched
+    // the chord — so the counts ride the scale and the chords do not. ROUNDED,
+    // because `MAP_SCALE` is not an integer: 211 / 106 / 70 at 1.1, and the
+    // chord is held to within half a vertex instead of exactly.
+    expect(coastOutlinePoints()).toBe(Math.round(192 * MAP_SCALE));
+    expect(outlinePoints()).toBe(Math.round(96 * MAP_SCALE));
+    expect(islandOutlinePoints()).toBe(Math.round(64 * MAP_SCALE));
+    // …and every one of them is a whole number, which is the thing a
+    // non-integer scale can break: a fractional count silently truncates in
+    // the loop that walks it.
+    for (const n of [coastOutlinePoints(), outlinePoints(), islandOutlinePoints()]) {
+      expect(Number.isInteger(n)).toBe(true);
+    }
+    // The chord each count was picked for, held across the scale to within
+    // the half-vertex the rounding costs: the coast's is 5.77 units at the
+    // widest bearing either way (211 points at 1.1 against 192 authored, a
+    // tenth of a percent apart).
+    expect((TAU * coastReach().max) / coastOutlinePoints()).toBeCloseTo(
+      (TAU * (coastReach().max / MAP_SCALE)) / 192,
+      1,
+    );
   });
 });
 
-describe('the doubled island — every field covers it', () => {
+describe('the scaled island — every field covers it', () => {
   beforeAll(() => {
     setLandscapeMode('landscape');
     setIslandMode(true);
@@ -208,7 +271,7 @@ describe('the doubled island — every field covers it', () => {
   });
 
   it('displaces a ground field that holds the coast and its floor slope', () => {
-    expect(fieldSize()).toBe(FIELD_SIZE * MAP_SCALE);
+    expect(fieldSize()).toBeCloseTo(FIELD_SIZE * MAP_SCALE, 9);
     // A SQUARE field, so what it has to hold is the coast's box and not its
     // radius — plus the shore ramp the sea floor falls away over, so the rim
     // really is one flat number (test/world/ground.test.ts seats the ring on
@@ -218,17 +281,24 @@ describe('the doubled island — every field covers it', () => {
 
   it('keeps the QUAD, not the count — the terrace risers still read', () => {
     // The PROJECTION's field: the side rides the scale and so does the count,
-    // so the quad is the one the risers were measured against.
-    expect(fieldSegments()).toBe(FIELD_SEGMENTS * MAP_SCALE);
-    expect(fieldQuad()).toBe(FIELD_SIZE / FIELD_SEGMENTS);
-    expect(fieldQuad()).toBe(1.25);
-    // PLAN §7.1's riser-height-error method, in one line: the steepest slope
-    // on the map is 0.4814, so a 1.6-unit riser over the middle 60% of its
-    // step is 0.96 / 0.4814 ≈ 1.99 units of run — and the quad has to be
-    // narrower than that or it draws a wash instead of a line. (2.5 would not
-    // be; that is the measurement that kept 640 segments rather than 320.)
-    expect(RISER_RUN[MAP_SCALE]).toBeCloseTo(1.99, 2);
-    expect(fieldQuad()).toBeLessThan(RISER_RUN[MAP_SCALE]);
+    // so the quad is the one the risers were measured against. The count is
+    // ROUNDED — a segment count has to be whole and `MAP_SCALE` is not — and
+    // at 1.1 it happens to come out whole anyway (352).
+    expect(fieldSegments()).toBe(Math.round(FIELD_SEGMENTS * MAP_SCALE));
+    expect(Number.isInteger(fieldSegments())).toBe(true);
+    expect(fieldQuad()).toBeCloseTo(FIELD_SIZE / FIELD_SEGMENTS, 9);
+    expect(fieldQuad()).toBeCloseTo(1.25, 9);
+    // PLAN §7.1's riser-height-error method, in one line: a 1.6-unit riser
+    // climbs over the middle 60% of its step, so it takes
+    // `0.96 / steepestSlope` units of run — and the quad has to be narrower
+    // than that or it draws a wash instead of a line. The slope is MEASURED
+    // per scale (`riserRun`, src/world/field.ts): 0.4570 at 1.1, so 2.101
+    // units of run, against 1.99 on the doubled map and 1.14 as authored.
+    expect(riserRun()).toBeCloseTo(2.101, 2);
+    expect(fieldQuad()).toBeLessThan(riserRun());
+    // …and the bound really is a bound: the 2.5-unit quad §7.1 rejected would
+    // still be outside it at this scale.
+    expect(FIELD_SIZE / 160).toBeGreaterThan(riserRun());
   });
 
   it('bakes the geography over the whole field, at the texel it was picked for', () => {
@@ -240,16 +310,30 @@ describe('the doubled island — every field covers it', () => {
       // The span is the ground field's, so no land texel is off the edge…
       expect(size, name).toBe(fieldSize());
       expect(coastBox(), name).toBeLessThan(size / 2);
-      // …and the resolution rides it, so the TEXEL is exactly what it was.
-      expect(res, name).toBe(authoredRes * MAP_SCALE);
-      expect(size / res, name).toBe(FIELD_SIZE / authoredRes);
+      // …and the resolution rides it, ROUNDED TO A WHOLE TEXEL COUNT — which
+      // is the choice a non-integer `MAP_SCALE` forced (2026-09-17): round and
+      // keep the texel, rather than step to the next power of two and halve
+      // it. WebGL2 samples an NPOT texture at CLAMP + LINEAR without a
+      // complaint, so the rounding costs nothing and the TEXEL is the thing
+      // that is held.
+      expect(res, name).toBe(Math.round(authoredRes * MAP_SCALE));
+      expect(Number.isInteger(res), name).toBe(true);
+      // The texel to within half a texel of the authored one — at 1.1 the
+      // three land within 0.1% (0.7815 / 1.5603 / 3.1206 against 0.78125 /
+      // 1.5625 / 3.125).
+      expect(size / res, name).toBeCloseTo(FIELD_SIZE / authoredRes, 2);
     }
-    // The shipped resolutions, spelled out: 256² / 512² / 1024² over 800 units.
-    expect([regionRes(), heightRes(), shoreRes()]).toEqual([256, 512, 1024]);
+    // The resolutions this scale asks for, spelled out: 141² / 282² / 563²
+    // over 440 units.
+    expect([regionRes(), heightRes(), shoreRes()]).toEqual([
+      Math.round(REGION_RES * MAP_SCALE),
+      Math.round(HEIGHT_RES * MAP_SCALE),
+      Math.round(SHORE_RES * MAP_SCALE),
+    ]);
   });
 
   it('spans the base blade field over the island, budget unchanged', () => {
-    expect(grassBaseSpan()).toBe(GRASS_BASE_SPAN * MAP_SCALE);
+    expect(grassBaseSpan()).toBeCloseTo(GRASS_BASE_SPAN * MAP_SCALE, 9);
     // The base field is laid over a BOX, so the coast's box is what it has to
     // hold — and the map's own meadow weight decides which of those cells grow
     // anything (src/world/ghibli/grass.ts).
@@ -257,27 +341,34 @@ describe('the doubled island — every field covers it', () => {
   });
 
   it('scatters props over the island at the density it always had', () => {
-    expect(scatterExtent()).toBe(SCATTER_EXTENT * MAP_SCALE);
+    expect(scatterExtent()).toBeCloseTo(SCATTER_EXTENT * MAP_SCALE, 9);
     // The GRID step is untouched, so the prop count per unit area is exactly
     // what it was and the extra placements are extra map rather than a denser
     // field (test/world/scatter.test.ts measures the density itself).
     //
     // The extent holds the coast's NEAREST reach, not its box: the scattered
     // square has always stopped a few units inside the extreme headlands
-    // (168.66 against 160 as authored, 337.32 against 320 doubled) and the
-    // relationship is exactly the one that shipped. What matters is that the
-    // props reach the coast everywhere the coast is close, which they do.
+    // (168.66 against 160 as authored, 185.53 against 176 at 1.1) and the
+    // relationship is exactly the one that shipped — it is a RATIO, so it is
+    // the same number at every scale. What matters is that the props reach the
+    // coast everywhere the coast is close, which they do.
     expect(scatterExtent()).toBeGreaterThan(coastReach().min);
     expect(coastBox() / scatterExtent()).toBeCloseTo(168.66 / 160, 3);
   });
 
   it('cuts the physics heightfield at the cell it was picked for', () => {
-    expect(heightfieldSegments()).toBe(HEIGHTFIELD_SEGMENTS * MAP_SCALE);
-    expect(fieldSize() / heightfieldSegments()).toBe(FIELD_SIZE / HEIGHTFIELD_SEGMENTS);
+    expect(heightfieldSegments()).toBe(Math.round(HEIGHTFIELD_SEGMENTS * MAP_SCALE));
+    expect(Number.isInteger(heightfieldSegments())).toBe(true);
+    // Rounded, so the cell is held to within half a cell — 1.5603 at 1.1
+    // against the authored 1.5625.
+    expect(fieldSize() / heightfieldSegments()).toBeCloseTo(
+      FIELD_SIZE / HEIGHTFIELD_SEGMENTS,
+      2,
+    );
   });
 
   it('spawns over the whole island, and never in the sea', () => {
-    expect(spawnRadius()).toBe(SPAWN_RADIUS * MAP_SCALE);
+    expect(spawnRadius()).toBeCloseTo(SPAWN_RADIUS * MAP_SCALE, 9);
     // Inside the far-field gate, where the authored geography is still at full
     // height — the same margin the authored 120 keeps inside 150.
     expect(spawnRadius()).toBeLessThan(farFieldStart());
@@ -295,7 +386,7 @@ describe('the doubled island — every field covers it', () => {
   });
 
   it('draws a minimap that contains the island', () => {
-    expect(worldMapExtent()).toBe(WORLD_MAP_EXTENT * MAP_SCALE);
+    expect(worldMapExtent()).toBeCloseTo(WORLD_MAP_EXTENT * MAP_SCALE, 9);
     expect(coastReach().max).toBeLessThan(worldMapExtent());
   });
 });
@@ -311,7 +402,7 @@ describe('the doubled island — every field covers it', () => {
  * back where the trade is cheapest to look at, and the projection keeps every
  * number it had. `src/world/device.ts` `setRenderTier` is the one switch.
  */
-describe('the doubled island — a handset trades resolution, not extent', () => {
+describe('the scaled island — a handset trades resolution, not extent', () => {
   beforeAll(() => {
     setLandscapeMode('landscape');
     setIslandMode(true);
@@ -328,30 +419,36 @@ describe('the doubled island — a handset trades resolution, not extent', () =>
     // spans, the spawn disc, the minimap and the sea disc are the map, and a
     // phone and a projection have to agree about them to the unit or two
     // pages of the same room would disagree about where the coast is.
-    expect(fieldSize()).toBe(FIELD_SIZE * MAP_SCALE);
+    expect(fieldSize()).toBeCloseTo(FIELD_SIZE * MAP_SCALE, 9);
     expect([regionSize(), heightSize(), shoreSize()]).toEqual([
       fieldSize(),
       fieldSize(),
       fieldSize(),
     ]);
-    expect(spawnRadius()).toBe(SPAWN_RADIUS * MAP_SCALE);
-    expect(worldMapExtent()).toBe(WORLD_MAP_EXTENT * MAP_SCALE);
-    expect(groundRadius()).toBe(GROUND_RADIUS * MAP_SCALE);
-    expect(grassBaseSpan()).toBe(GRASS_BASE_SPAN * MAP_SCALE);
-    expect(scatterExtent()).toBe(SCATTER_EXTENT * MAP_SCALE);
+    expect(spawnRadius()).toBeCloseTo(SPAWN_RADIUS * MAP_SCALE, 9);
+    expect(worldMapExtent()).toBeCloseTo(WORLD_MAP_EXTENT * MAP_SCALE, 9);
+    expect(groundRadius()).toBeCloseTo(GROUND_RADIUS * MAP_SCALE, 9);
+    expect(grassBaseSpan()).toBeCloseTo(GRASS_BASE_SPAN * MAP_SCALE, 9);
+    expect(scatterExtent()).toBeCloseTo(SCATTER_EXTENT * MAP_SCALE, 9);
   });
 
-  it('cuts the field at 480, still inside the riser it has to draw', () => {
-    expect(fieldSegments()).toBe(FIELD_SEGMENTS_PHONE_ISLAND);
-    expect(fieldQuad()).toBeCloseTo(1.667, 3);
+  it('cuts the field at 480 OR AT THE PROJECTION\'S OWN CUT, whichever is finer', () => {
+    // `FIELD_SEGMENTS_PHONE_ISLAND` is a CEILING, not a substitute. It was
+    // written for the doubled island, where the projection cut 640 and the
+    // phone's 480 was a real saving (231k vertices against 411k). At 1.1 the
+    // projection cuts 352, BELOW the ceiling, so the phone takes 352 too — a
+    // phone must never pay MORE than the projection for a map that got
+    // smaller (2026-09-17).
+    const full = Math.round(FIELD_SEGMENTS * MAP_SCALE);
+    expect(fieldSegments()).toBe(Math.min(FIELD_SEGMENTS_PHONE_ISLAND, full));
+    expect(fieldSegments()).toBeLessThanOrEqual(full);
+    expect(fieldQuad()).toBeGreaterThanOrEqual(FIELD_SIZE / FIELD_SEGMENTS);
     // The bound that matters, and the whole reason 480 is allowed where 320
     // is not: a quad wider than the riser's own run draws a wash instead of a
     // line (PLAN §7.1). Measured height error against the authored field over
-    // 250,000 land samples in the camera's core: 0.112 u at 480 against
-    // 0.066 u at 640 — a fourteenth of a tier step.
-    expect(fieldQuad()).toBeLessThan(RISER_RUN[MAP_SCALE]);
-    // …and it really is a saving: 231k vertices against 411k.
-    expect((fieldSegments() + 1) ** 2).toBeLessThan((FIELD_SEGMENTS * MAP_SCALE + 1) ** 2 * 0.6);
+    // 250,000 land samples in the camera's core: 0.112 u at 480 on the doubled
+    // map against 0.066 u at 640 — a fourteenth of a tier step.
+    expect(fieldQuad()).toBeLessThan(riserRun());
   });
 
   it('keeps the shore, region and heightfield at their authored resolutions', () => {
@@ -361,12 +458,17 @@ describe('the doubled island — a handset trades resolution, not extent', () =>
     expect(shoreRes()).toBe(SHORE_RES);
     expect(regionRes()).toBe(REGION_RES);
     expect(heightfieldSegments()).toBe(HEIGHTFIELD_SEGMENTS);
-    // The texels that follow, stated so a future change has to face them: the
-    // foam rim of 1.5–3 units is one to two texels rather than two to four,
-    // and the heightfield's cell is 3.12 units rather than 1.56.
-    expect(shoreSize() / shoreRes()).toBeCloseTo(1.5625, 4);
-    expect(regionSize() / regionRes()).toBeCloseTo(6.25, 4);
-    expect(fieldSize() / heightfieldSegments()).toBeCloseTo(3.125, 4);
+    // The texels that follow, stated so a future change has to face them:
+    // each is the authored texel times the scale, because the phone holds the
+    // COUNT and the span grew. At 1.1 the foam rim of 1.5–3 units is two to
+    // three texels rather than four, and the heightfield's cell is 1.72 units
+    // rather than 1.56 — both a good deal milder than the doubled map's 3.12.
+    expect(shoreSize() / shoreRes()).toBeCloseTo(K(FIELD_SIZE / SHORE_RES), 4);
+    expect(regionSize() / regionRes()).toBeCloseTo(K(FIELD_SIZE / REGION_RES), 4);
+    expect(fieldSize() / heightfieldSegments()).toBeCloseTo(
+      K(FIELD_SIZE / HEIGHTFIELD_SEGMENTS),
+      4,
+    );
   });
 
   it('leaves the HEIGHT bake alone — that one is where a blade stands', () => {
@@ -377,8 +479,8 @@ describe('the doubled island — a handset trades resolution, not extent', () =>
     // item left in the handset's terrain walk — 671ms of 1944ms measured — so
     // it is the next lever if one is needed, and it is deliberately not
     // pulled here.
-    expect(heightRes()).toBe(HEIGHT_RES * MAP_SCALE);
-    expect(heightSize() / heightRes()).toBe(FIELD_SIZE / HEIGHT_RES);
+    expect(heightRes()).toBe(Math.round(HEIGHT_RES * MAP_SCALE));
+    expect(heightSize() / heightRes()).toBeCloseTo(FIELD_SIZE / HEIGHT_RES, 2);
   });
 
   it('is the field that shipped again with no island', () => {
@@ -394,7 +496,7 @@ describe('the doubled island — a handset trades resolution, not extent', () =>
   });
 });
 
-describe('the doubled island — the camera still frames it', () => {
+describe('the scaled island — the camera still frames it', () => {
   beforeAll(() => setIslandMode(true));
   afterAll(() => setIslandMode(false));
 
@@ -414,27 +516,37 @@ describe('the doubled island — the camera still frames it', () => {
   });
 
   it('reaches the sea past the corner of that frame, so no void is drawn', () => {
-    // The frame at the floor is enormous up the screen on a portrait phone —
-    // the WIDTH binds, so the ground reaches ~1.4× the coast's own radius
-    // behind the island. The sea disc has to cover the far CORNER of it, which
-    // is why `groundRadius` rides the map: at the authored 1400 the corner of
-    // the doubled island's floor frame landed outside the ring.
+    // THE RULE, and the one the sea disc's size is derived from: at the zoom
+    // floor on a 390×844 phone the WIDTH binds, so the frame is ~4× the
+    // coast's own radius up-screen of the island, and the sea has to cover the
+    // far CORNER of it or the void shows. At the authored 1400 the corner of
+    // the doubled island's floor frame landed outside the ring, which is why
+    // `groundRadius` rides the map at all. Measured at 1.1: the corner is 818
+    // units against a 1540-unit ring.
     for (const aspect of [390 / 844, 16 / 9]) {
       const zoom = zoomMinFor(aspect);
       const corner = Math.hypot(across(aspect, zoom) / 2, up(zoom) / 2);
       expect(corner, `aspect ${aspect}`).toBeLessThan(groundRadius());
     }
-    expect(groundRadius()).toBe(GROUND_RADIUS * MAP_SCALE);
+    expect(groundRadius()).toBeCloseTo(GROUND_RADIUS * MAP_SCALE, 9);
   });
 
   it('keeps the depth range past the sea on both sides of the target', () => {
+    // THE RULE, not a table: the eye stands one `DEPTH_MARGIN` behind
+    // everything drawable (the sea disc plus the whole pannable region) and
+    // the far plane clears the same reach again on the other side of the
+    // target. Both are derived in src/world/camera.ts from `groundRadius` and
+    // the pan ceiling, so they follow `MAP_SCALE` with no number to re-take.
     expect(cameraDistance()).toBeGreaterThan(groundRadius());
     expect(cameraFar()).toBeGreaterThanOrEqual(cameraDistance() + groundRadius());
-    // The doubled numbers, spelled out: the sea disc reaches 2800 and the
-    // pannable region 400, so the reach is 3200 and the eye stands one
-    // `DEPTH_MARGIN` behind it.
-    expect(cameraDistance()).toBe(3400);
-    expect(cameraFar()).toBe(6800);
+    // …and the arithmetic spelled out, so a change of scale has to face it:
+    // the reach is the sea disc plus the pan ceiling, both `· MAP_SCALE`, and
+    // the two margins are 200 each. At 1.1 the disc reaches 1540 and the
+    // pannable region 220, so the reach is 1760, the eye stands at 1960 and
+    // the far plane at 3920 (it was 3400 / 6800 on the doubled map).
+    const reach = K(GROUND_RADIUS) + K(200);
+    expect(cameraDistance()).toBeCloseTo(reach + 200, 9);
+    expect(cameraFar()).toBeCloseTo(reach + 200 + reach + 200, 9);
   });
 
   it('lets the pan reach the far shore', () => {
@@ -510,7 +622,7 @@ describe('with the island off, every one of those fields is the shipped number',
     setIslandMode(true);
     try {
       expect(ISLAND).not.toBe(authored);
-      expect(ISLAND.r).toBe(300);
+      expect(ISLAND.r).toBeCloseTo(150 * MAP_SCALE, 9);
     } finally {
       setIslandMode(false);
     }
