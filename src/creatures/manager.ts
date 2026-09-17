@@ -256,6 +256,17 @@ export const DRIVE_IDLE_MS = MOTION.primaryMs;
  * presentation on a stride (`OFFSCREEN_STRIDE`), and the shadow stamps
  * draw as one instanced mesh (src/world/shadows.ts).
  */
+/**
+ * [D] How many `stick` records may wait for a creature that has not arrived on
+ * this page yet (`pendingSticks`).
+ *
+ * A pile is a few dozen things and the wait is the second or two between a
+ * drawing landing and its creature standing up, so this is a ceiling on a
+ * pathological case rather than a working limit: a page that is further
+ * behind than this gets the world from the scene store instead.
+ */
+export const PENDING_STICKS_MAX = 64;
+
 export const MAX_POPULATION = 256;
 
 /**
@@ -1503,6 +1514,25 @@ export function createCreatureManager(
    * the same object the same question is garbage for nothing. */
   const sampleAt = (x: number, z: number): number => surface.sampleHeight(x, z);
   const slots = new Map<string, Slot>();
+  /**
+   * STICKS THAT ARRIVED BEFORE THE CREATURE DID (2026-09-17).
+   *
+   * Measured in a real room (`scratch/room-scale-probe.mjs`): the projection
+   * decided six pickups and the phone watching it drew NONE of them, because
+   * on that page the drawing had not finished becoming a creature when the
+   * events landed — and a `stick` whose carrier is not alive yet was simply
+   * dropped. The pile is not re-sent: the roster carries poses, and the store
+   * only helps a page that opens after the batch. So a viewer kept a ball the
+   * host had grown six items ago, and every screen in the room was a
+   * different size.
+   *
+   * So they WAIT here, by carrier id, in arrival order, and `becomeAlive`
+   * drains them (`drainPendingSticks`). Bounded by `PENDING_STICKS_MAX` per
+   * carrier, oldest dropped first: a pile is a few dozen things and this is a
+   * gap of a second or two, so anything past that is a page that will get the
+   * world from the store instead.
+   */
+  const pendingSticks = new Map<string, StickRecord[]>();
   let orderCounter = 0;
   let timersPaused = false;
   let aiPaused = false;
@@ -1949,6 +1979,10 @@ export function createCreatureManager(
     slot.eggShadow = null;
     slot.egg = null;
     slot.phase = 'alive';
+    // …and whatever this creature was already carrying when it arrived. AFTER
+    // the phase is `alive` and the clump exists, because that is exactly what
+    // `seat` refuses without.
+    drainPendingSticks(slot);
     // The hidden life: seed from the slot id, personality from the audience
     // answer (null → mild seeded variation).
     const seed = behaviorSeed(slot.id);
@@ -2302,6 +2336,23 @@ export function createCreatureManager(
    * this overwrites anyway, and the continuity attach would have bought is
    * what the entrance slide is for.
    */
+  /**
+   * Apply the sticks that were waiting for this creature, in the order they
+   * arrived, and forget them.
+   *
+   * They are seated with NO SLIDE: nothing arrived just now — the world
+   * already looks like this, and a pile that slid in from the middle on the
+   * frame a late page finished loading would be an animation about the
+   * loading rather than about the game (the same reason `applyStick` off a
+   * restored log seats without a `from`).
+   */
+  function drainPendingSticks(slot: Slot): void {
+    const waiting = pendingSticks.get(slot.id);
+    if (!waiting) return;
+    pendingSticks.delete(slot.id);
+    for (const record of waiting) seat(slot, record, { slide: false });
+  }
+
   function seat(carrier: Slot, record: StickRecord, opts: { slide?: boolean } = {}): boolean {
     const clump = carrier.clump;
     if (!clump || carrier.phase !== 'alive') return false;
@@ -5536,7 +5587,32 @@ export function createCreatureManager(
     applyStick(record): void {
       if (!katamari) return;
       const carrier = slots.get(record.id);
-      if (!carrier) return;
+      /*
+       * NOT YET HERE IS NOT THE SAME AS NEVER (2026-09-17, measured in a real
+       * room — see `pendingSticks`). A carrier that has not hatched on this
+       * page yet is a page that is still building the creature the host has
+       * already put six things on, so the record waits for it instead of
+       * being dropped; `becomeAlive` drains the queue.
+       */
+      if (!carrier || carrier.phase !== 'alive' || !carrier.clump) {
+        const waiting = pendingSticks.get(record.id) ?? [];
+        /*
+         * Re-seat rather than duplicate, the same rule `Clump.add` follows:
+         * the same key arriving twice is a resent batch and the second one is
+         * the truth. IN PLACE, though — the queue is drained in order and an
+         * offset is world units over the growth the pile had when the
+         * DECIDING page seated it (src/creatures/clump.ts), so the arrival
+         * order is part of the message. Moving a re-sent record to the back
+         * would apply it at a bigger growth than it was computed for and put
+         * it a metre further out than the host has it.
+         */
+        const at = waiting.findIndex((held) => held.item === record.item);
+        if (at >= 0) waiting[at] = record;
+        else waiting.push(record);
+        if (waiting.length > PENDING_STICKS_MAX) waiting.splice(0, waiting.length - PENDING_STICKS_MAX);
+        pendingSticks.set(record.id, waiting);
+        return;
+      }
       seat(carrier, record);
     },
 

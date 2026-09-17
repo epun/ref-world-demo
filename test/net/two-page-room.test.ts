@@ -1090,6 +1090,77 @@ describe('sticking, as the viewer sees it', () => {
     viewer.clearAll();
     late.clearAll();
   }, 120_000);
+
+  it('holds a stick that arrives before the creature does, and seats it', () => {
+    /*
+     * MEASURED IN A REAL ROOM (`scratch/room-scale-probe.mjs`, 2026-09-17):
+     * the projection decided six pickups and the phone watching it drew NONE
+     * of them, because on that page the drawing had not finished becoming a
+     * creature when the events landed — and a `stick` whose carrier was not
+     * alive yet was dropped on the floor. Nothing re-sends a pile (the roster
+     * carries poses; the store only helps a page that opens later), so that
+     * viewer kept a ball six items out of date for the rest of the session.
+     *
+     * So the records WAIT for the carrier, by id, in arrival order.
+     */
+    const tree: Collider = {
+      x: 0,
+      z: 0,
+      r: 1.2,
+      hard: true,
+      kind: 'tree',
+      key: 'tree:0:0.00:0.00',
+    } as Collider;
+    const viewer = pageWithRows([tree], false);
+    // A baseR for the seats, measured off an identical creature on another
+    // page — which is what the host would have sent.
+    const ruler = pageWithRows([tree], false);
+    ruler.spawn('mine', snowman, { hatchMs: 10, grown: true });
+    ruler.update(FRAME_MS, 1000);
+    const baseR = ruler.ballDiameter('mine') / 2;
+    ruler.clearAll();
+
+    // THE EVENTS FIRST. Nothing on this page has ever heard of `mine`.
+    const records = [];
+    for (let i = 0; i < 4; i++) {
+      const th = (i / 4) * Math.PI * 2;
+      const g = Math.cbrt(1 + (4 * i * tree.r ** 3) / baseR ** 3);
+      const local = (baseR + tree.r * 0.7) / g;
+      records.push({
+        id: 'mine',
+        item: `${tree.key!}:${i}`,
+        kind: 'tree' as const,
+        variant: 0,
+        scale: 1,
+        r: tree.r,
+        ox: Math.cos(th) * local,
+        oy: 0,
+        oz: Math.sin(th) * local,
+        qx: 0,
+        qy: 0,
+        qz: 0,
+        qw: 1,
+      });
+    }
+    for (const record of records) viewer.applyStick(record);
+    // …and one of them twice, which is what a resent batch looks like.
+    viewer.applyStick(records[1]!);
+    expect(viewer.ballDiameter('mine')).toBe(0);
+
+    // THEN THE CREATURE. The queue is drained in `becomeAlive`.
+    viewer.spawn('mine', snowman, { hatchMs: 10, grown: true });
+    viewer.pauseAi(true);
+    for (let i = 0; i < 120; i++) viewer.update(FRAME_MS, 2000 + i * FRAME_MS);
+
+    const seen = drawn(viewer, 'mine');
+    // Four items, not five: the resent one re-seated rather than doubling.
+    expect(seen.seats.length).toBe(4);
+    for (const seat of seen.seats) expect(seat).toBeCloseTo(baseR + tree.r * 0.7, 3);
+    // A grown ball, and the creature still at its drawn size inside it.
+    expect(seen.bodyR).toBeGreaterThan(baseR * 2);
+    expect(seen.charScale).toBeCloseTo(1, 6);
+    viewer.clearAll();
+  }, 120_000);
 });
 
 describe('an item keeps its own size on every page', () => {
