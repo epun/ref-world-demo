@@ -37,6 +37,7 @@ import {
   CameraRig,
   FRUSTUM_HEIGHT,
   ISLAND_VIEW_MARGIN,
+  ZOOM_WRITE_EPSILON,
   cameraDistance,
   cameraFar,
   panLimitFor,
@@ -279,7 +280,18 @@ describe('CameraRig zoom floor', () => {
     for (let i = 0; i < 400; i++) rig.zoomBy(0.9);
     rig.zoomTo(0.0001);
     for (let i = 0; i < 400; i++) rig.update(16, i * 16);
-    expect(rig.camera.zoom).toBeCloseTo(zoomMinFor(1.78), 4);
+    // WITHIN THE PROJECTION DEADBAND, and not a decimal place: `update` stops
+    // rewriting `camera.zoom` once the spring is inside
+    // `ZOOM_WRITE_EPSILON` of it (src/world/camera.ts), so a parked camera
+    // reports its floor to exactly that accuracy and no better — on either
+    // side of it. The remainder inside the band is not a settle time and
+    // more frames do not shrink it; it is wherever the last write landed,
+    // and it is a different number at every map scale (9.0e-5 at `MAP_SCALE`
+    // 1.32, 4.9e-5 below the floor on the resize path underneath). The claim
+    // is that both paths reach the FLOOR, which is what this measures.
+    expect(Math.abs(rig.camera.zoom - zoomMinFor(1.78))).toBeLessThanOrEqual(
+      ZOOM_WRITE_EPSILON,
+    );
   });
 
   it('raises a parked zoom when a resize raises the floor, by drifting', () => {
@@ -298,7 +310,9 @@ describe('CameraRig zoom floor', () => {
     expect(rig.camera.zoom).toBeGreaterThan(wide);
     expect(rig.camera.zoom).toBeLessThan(narrow);
     for (let i = 0; i < 400; i++) rig.update(16, 32 + i * 16);
-    expect(rig.camera.zoom).toBeCloseTo(narrow, 4);
+    // …and it arrives at the raised floor within the same projection
+    // deadband the test above reads (`ZOOM_WRITE_EPSILON`), from below.
+    expect(Math.abs(rig.camera.zoom - narrow)).toBeLessThanOrEqual(ZOOM_WRITE_EPSILON);
   });
 });
 

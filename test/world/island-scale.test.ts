@@ -2,15 +2,17 @@
  * The island is `MAP_SCALE` TIMES THE AUTHORED ONE — every field that has to
  * cover it, and the plain world that must not have moved.
  *
- * The scale has moved three times: 2 on 2026-09-16 (*"make the island twice
- * as big"*), then 1.3 and then **1.1** on 2026-09-17 (*"the map is way too
- * big, let's reduce its size by 35%"*, then *"I still think this island is way
- * too big, let's reduce it by another 15%"*). NOTHING IN THIS FILE SPELLS THE
- * SCALE OUT except the one assertion that pins `MAP_SCALE` itself: every
- * expectation below is written against `MAP_SCALE` or measured off the
- * geography, so the next change is one number in src/world/landscape.ts and a
- * re-measure of the handful of numbers that are genuinely measured (the
- * steepest slope, the coast's reach) rather than an edit to every `it`.
+ * The scale has moved four times: 2 on 2026-09-16 (*"make the island twice
+ * as big"*), then 1.3 and 1.1 on 2026-09-17 (*"the map is way too big, let's
+ * reduce its size by 35%"*, then *"I still think this island is way too big,
+ * let's reduce it by another 15%"*), and then **1.32** the same day the other
+ * way (*"map is now too small, let's increase the size of the island by
+ * 20%"*). NOTHING IN THIS FILE SPELLS THE SCALE OUT except the one assertion
+ * that pins `MAP_SCALE` itself: every expectation below is written against
+ * `MAP_SCALE` or measured off the geography, so the next change is one number
+ * in src/world/landscape.ts and a re-measure of the handful of numbers that
+ * are genuinely measured (the steepest slope, the coast's reach, and the one
+ * pond that has to step off a riser) rather than an edit to every `it`.
  *
  * `test/world/island.test.ts` measures the coast's own geometry. This file
  * measures the RING OF CONSUMERS around it: the displaced ground field, the
@@ -87,20 +89,29 @@ const ISO_SIN = Math.sin(Math.atan(1 / Math.SQRT2));
 
 /**
  * An authored number through the scale — and the reason it is a helper and not
- * a `*`: `MAP_SCALE` is 1.1 and 1.1 is not exact in binary, so `-25 * 1.1` is
- * -27.500000000000004 and `toEqual` on a spelled-out literal fails on the last
- * bit. Everything scaled below is compared with `toBeCloseTo` at 9 places,
+ * a `*`: `MAP_SCALE` is 1.32 and 1.32 is not exact in binary, so `-55 * 1.32`
+ * is -72.60000000000001 and `toEqual` on a spelled-out literal fails on the
+ * last bit. Everything scaled below is compared with `toBeCloseTo` at 9 places,
  * which is far tighter than any of these numbers means and still immune to
  * the float.
  */
 const K = (n: number): number => n * MAP_SCALE;
 
-/** …and the same for a list of authored [x, z, r] triples. */
-function closeTriples(got: readonly number[][], authored: readonly number[][]): void {
+/** …and the same for a list of authored [x, z, r] triples.
+ *
+ * `offsets` are UNSCALED world units added after the scale — the `islandNudge`
+ * a body may carry (src/world/landscape.ts), which is a distance on the ground
+ * and not a proportion of the map. Omitted, nothing is added, which is every
+ * list here but the ponds'. */
+function closeTriples(
+  got: readonly number[][],
+  authored: readonly number[][],
+  offsets: readonly number[][] = [],
+): void {
   expect(got.length).toBe(authored.length);
   authored.forEach((want, i) => {
     want.forEach((n, j) => {
-      expect(got[i]![j], `[${i}][${j}]`).toBeCloseTo(K(n), 9);
+      expect(got[i]![j], `[${i}][${j}]`).toBeCloseTo(K(n) + (offsets[i]?.[j] ?? 0), 9);
     });
   });
 }
@@ -140,10 +151,12 @@ describe('the scaled island — the geography', () => {
   });
 
   it('scales the coast about the origin, exactly', () => {
-    // THE ONE PLACE THE SCALE IS SPELLED OUT. 1.1 since 2026-09-17 (it was 2,
-    // then 1.3, both on the way down): a room of 50-80 people did not need
-    // the doubled map. Everything else in this file reads it.
-    expect(MAP_SCALE).toBe(1.1);
+    // THE ONE PLACE THE SCALE IS SPELLED OUT. 1.32 since 2026-09-17 (it was
+    // 2, then 1.3, then 1.1 — a room of 50-80 people did not need the doubled
+    // map — and then 1.1 x 1.2 the same day, *"map is now too small, let's
+    // increase the size of the island by 20%"*). Everything else in this file
+    // reads it.
+    expect(MAP_SCALE).toBe(1.32);
     expect(mapScale()).toBe(MAP_SCALE);
     expect(ISLAND.r).toBeCloseTo(K(150), 9);
     expect(ISLAND.x).toBe(0);
@@ -163,7 +176,7 @@ describe('the scaled island — the geography', () => {
     expect(ISLAND_LOBES.map((l) => l.seed)).toEqual([501, 505, 511, 521]);
     // Measured: exactly `MAP_SCALE` times the authored 131.67 .. 176.26,
     // because the wobble phases key off a blob's SEED and the polar angle and
-    // both survive a uniform scale about the origin. 144.84 .. 193.88 at 1.1.
+    // both survive a uniform scale about the origin. 173.80 .. 232.66 at 1.32.
     const { min, max } = coastReach();
     expect(min).toBeCloseTo(K(131.67), 1);
     expect(max).toBeCloseTo(K(176.26), 1);
@@ -197,6 +210,14 @@ describe('the scaled island — the geography', () => {
     // …and a POND only moves: it is a physical thing you stand beside, not a
     // proportion of the map. Its RADIUS is the authored one at every scale,
     // which is why it is not run through `K` here.
+    //
+    // THE FIRST POND CARRIES AN `islandNudge` ON TOP OF THE SCALE
+    // (2026-09-17, src/world/landscape.ts): (+5, +5) world units, added after
+    // the scale and only on a scaled map, because everywhere in the band
+    // 1.28-1.35 the scaled centre lands straddling a terrace riser and the
+    // basin-shoulder bound in test/world/landscape.test.ts reads 0.478
+    // against 0.6. It is UNSCALED here for the same reason a pond's radius is:
+    // it is a distance on the ground, not a proportion of the map.
     closeTriples(
       WATER_BODIES.slice(1).map((b) => [b.x, b.z]),
       [
@@ -204,6 +225,12 @@ describe('the scaled island — the geography', () => {
         [-25, 95],
         [85, -35],
         [-95, -58],
+      ],
+      [
+        [5, 5],
+        [0, 0],
+        [0, 0],
+        [0, 0],
       ],
     );
     expect(WATER_BODIES.slice(1).map((b) => b.r)).toEqual([6, 6, 7, 6]);
@@ -283,18 +310,26 @@ describe('the scaled island — every field covers it', () => {
     // The PROJECTION's field: the side rides the scale and so does the count,
     // so the quad is the one the risers were measured against. The count is
     // ROUNDED — a segment count has to be whole and `MAP_SCALE` is not — and
-    // at 1.1 it happens to come out whole anyway (352).
+    // at 1.32 the rounding bites: 422.4 comes down to 422 over 528 units, so
+    // the quad is 1.25118 rather than 1.25 (at 1.1 it came out whole, 352).
     expect(fieldSegments()).toBe(Math.round(FIELD_SEGMENTS * MAP_SCALE));
     expect(Number.isInteger(fieldSegments())).toBe(true);
-    expect(fieldQuad()).toBeCloseTo(FIELD_SIZE / FIELD_SEGMENTS, 9);
-    expect(fieldQuad()).toBeCloseTo(1.25, 9);
+    // HALF A SEGMENT, which is exactly what the rounding can cost and all this
+    // allows: the quad is `fieldSize() / round(FIELD_SEGMENTS · k)`, so it can
+    // miss the authored quad by half a segment's share of the side and no
+    // more.
+    const quadSlack = (FIELD_SIZE / FIELD_SEGMENTS) * (0.5 / fieldSegments());
+    expect(Math.abs(fieldQuad() - FIELD_SIZE / FIELD_SEGMENTS)).toBeLessThanOrEqual(quadSlack);
+    expect(Math.abs(fieldQuad() - 1.25)).toBeLessThanOrEqual(quadSlack);
     // PLAN §7.1's riser-height-error method, in one line: a 1.6-unit riser
     // climbs over the middle 60% of its step, so it takes
     // `0.96 / steepestSlope` units of run — and the quad has to be narrower
     // than that or it draws a wash instead of a line. The slope is MEASURED
-    // per scale (`riserRun`, src/world/field.ts): 0.4570 at 1.1, so 2.101
-    // units of run, against 1.99 on the doubled map and 1.14 as authored.
-    expect(riserRun()).toBeCloseTo(2.101, 2);
+    // per scale (`riserRun`, src/world/field.ts): 0.5037 at 1.32, so 1.906
+    // units of run, against 2.101 at 1.1, 1.99 on the doubled map and 1.14 as
+    // authored. It does not widen with the scale — the noise does not scale,
+    // so which hummock is the steepest changes.
+    expect(riserRun()).toBeCloseTo(1.906, 2);
     expect(fieldQuad()).toBeLessThan(riserRun());
     // …and the bound really is a bound: the 2.5-unit quad §7.1 rejected would
     // still be outside it at this scale.
@@ -318,13 +353,13 @@ describe('the scaled island — every field covers it', () => {
       // that is held.
       expect(res, name).toBe(Math.round(authoredRes * MAP_SCALE));
       expect(Number.isInteger(res), name).toBe(true);
-      // The texel to within half a texel of the authored one — at 1.1 the
-      // three land within 0.1% (0.7815 / 1.5603 / 3.1206 against 0.78125 /
+      // The texel to within half a texel of the authored one — at 1.32 the
+      // three land within 0.03% (0.78107 / 1.56213 / 3.12426 against 0.78125 /
       // 1.5625 / 3.125).
       expect(size / res, name).toBeCloseTo(FIELD_SIZE / authoredRes, 2);
     }
-    // The resolutions this scale asks for, spelled out: 141² / 282² / 563²
-    // over 440 units.
+    // The resolutions this scale asks for, spelled out: 169² / 338² / 676²
+    // over 528 units.
     expect([regionRes(), heightRes(), shoreRes()]).toEqual([
       Math.round(REGION_RES * MAP_SCALE),
       Math.round(HEIGHT_RES * MAP_SCALE),
@@ -359,7 +394,7 @@ describe('the scaled island — every field covers it', () => {
   it('cuts the physics heightfield at the cell it was picked for', () => {
     expect(heightfieldSegments()).toBe(Math.round(HEIGHTFIELD_SEGMENTS * MAP_SCALE));
     expect(Number.isInteger(heightfieldSegments())).toBe(true);
-    // Rounded, so the cell is held to within half a cell — 1.5603 at 1.1
+    // Rounded, so the cell is held to within half a cell — 1.56213 at 1.32
     // against the authored 1.5625.
     expect(fieldSize() / heightfieldSegments()).toBeCloseTo(
       FIELD_SIZE / HEIGHTFIELD_SEGMENTS,
