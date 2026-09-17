@@ -398,9 +398,24 @@ async function nearestProp(p, who) {
     const mine = window.__refworldCreatures.poses().find((q) => q.id === id);
     if (!mine) return null;
     const cols = window.__refworldColliders?.() ?? [];
+    const bodyR = window.__refworldCreatures.ballDiameter(id) / 2;
+    /*
+     * The nearest prop this creature can ACTUALLY CARRY, not merely the
+     * nearest prop.
+     *
+     * Three runs in a row the sweep drove at the closest keyed collider and
+     * it happened to be a hair OVER the carry limit — r 1.089, then 1.213,
+     * against a 1.0 u hatchling — so the creature rolled up against it,
+     * pushed past (`shove`, not `block`) and the run reported "nothing
+     * stuck" about a prop that is not supposed to stick. `PICKUP_RATIO` is
+     * the ratio and this file does not import it; 0.8 of the body radius is
+     * comfortably inside any ratio at or above 1, which is what makes the
+     * answer mean something.
+     */
     let best = null;
     for (const c of cols) {
       if (c.key === undefined) continue;
+      if (!(c.r <= bodyR * 0.8)) continue;
       const d = Math.hypot(c.x - mine.x, c.z - mine.z);
       if (!best || d < best.d) {
         best = { key: c.key, kind: c.kind ?? null, r: c.r, x: c.x, z: c.z, hard: c.hard === true, d };
@@ -408,7 +423,7 @@ async function nearestProp(p, who) {
     }
     return {
       at: { x: mine.x, z: mine.z },
-      bodyR: window.__refworldCreatures.ballDiameter(id) / 2,
+      bodyR,
       colliders: cols.length,
       rapier: Boolean(window.__refworldPhysics?.()),
       target: best,
@@ -463,7 +478,18 @@ async function hasCollider(p, key) {
 const fail = [];
 const steps = [];
 
+/**
+ * `ONLY=3` runs one step and skips the rest.
+ *
+ * Three live worlds on one software renderer is a slow machine, and the six
+ * steps together are twenty minutes of it. When the question is a single
+ * step — *does a pickup land on the page that is deciding* — the twenty
+ * units of driving in the steps before it are cost with no answer in them.
+ */
+const ONLY = process.env['ONLY'] ?? '';
+
 async function step(name, body) {
+  if (ONLY && !name.startsWith(ONLY)) return;
   console.log(`\n── ${name} ──`);
   const mark = since();
   const out = await body(mark);
@@ -537,54 +563,19 @@ await step('2. host tab hidden and unfocused, phone A drives', async (mark) => {
   return out;
 });
 
-await step('3. projection closed, a phone hosts, phone A drives', async (mark) => {
-  await host.context.close();
-  host.closed = true;
-  // Two heartbeats plus the stale window, so the election has certainly run.
-  await new Promise((r) => setTimeout(r, 9000));
-  const out = await driveAndWatch(mark, A, [one]);
-  for (const label of Object.keys(out.moved)) {
-    if (!(out.moved[label] > MOVED)) fail.push(`step 3: ${A} did not move on ${label}`);
-  }
-  return out;
-});
-
-await step('4. both phones drive at once', async (mark) => {
-  if (!two) return { skipped: 'one phone in this run' };
-  const before = {};
-  for (const p of pages) {
-    if (p.closed) continue;
-    before[p.label] = { [A]: await posesOf(p, A), [B]: await posesOf(p, B) };
-  }
-  await Promise.all([holdStick(one, HOLD_MS), holdStick(two, HOLD_MS, { dx: 1, dy: 0 })]);
-  await new Promise((r) => setTimeout(r, 1500));
-  const after = {};
-  const moved = {};
-  for (const p of pages) {
-    if (p.closed) continue;
-    after[p.label] = { [A]: await posesOf(p, A), [B]: await posesOf(p, B) };
-    moved[p.label] = {};
-    for (const who of cast) {
-      const x = before[p.label][who];
-      const y = after[p.label][who];
-      moved[p.label][who] = x && y ? +Math.hypot(y.x - x.x, y.z - x.z).toFixed(3) : null;
-      if (!(moved[p.label][who] > MOVED)) fail.push(`step 4: ${who} did not move on ${p.label}`);
-    }
-  }
-  return { before, after, moved, roles: await roles(), driveMessages: sinceThen(mark, 'drive').length };
-});
-
-/*
- * AND WHAT IT PICKED UP ON THE WAY (2026-09-17: *"some users are having
- * issues sticking to objects"*).
+/**
+ * DRIVE INTO A PROP AND SEE WHETHER IT STICKS — run against whichever page is
+ * deciding, which is the whole point of running it twice.
  *
- * The decision is the host's and travels as a `stick` scene event; what the
- * VIEWER then has to end up with is the same pile and the same BALL SIZE,
- * which is derived on each page from the radii of what it is carrying. So:
- * whatever the driving above rolled over, every page has to agree about how
- * big the ball now is.
+ * The demo's host is the PROJECTION, and a projection holds rapier: every
+ * unrooted prop there is a dynamic body, the resolve drops kind `rock` from
+ * its collider set, and the pickup comes off `bodies.items()` rather than off
+ * the frame's contact reports. A phone host has none of that — no bodies, no
+ * `items()`, the pure resolve and the scatter's own circles — so the two hosts
+ * reach a pickup down two different routes and a measurement of one says
+ * nothing about the other (docs/PLAN.md §7.6).
  */
-await step('5. drive into a prop and see whether it sticks', async (mark) => {
+async function sweepForPickup(mark) {
   /*
    * > User report, 2026-09-17: *"on mobile currently when a user walks into
    * > things it doesn't stick to them."*
@@ -611,23 +602,38 @@ await step('5. drive into a prop and see whether it sticks', async (mark) => {
    * few encounters on this island are with models sitting either side of
    * their own radius, which reads as "it doesn't stick" long before it reads
    * as "that one is bigger than me".
+   *
+   * AND IT STICKS ON THE RAPIER HOST TOO. Measured the same day with the
+   * projection deciding (`rapier: true`, 4518 colliders), the stick still
+   * driven from the phone as a VIEWER — one batch, both events, same item:
+   *
+   *   {"k":"loose", …}                      the bush comes out of the ground
+   *   {"k":"stick","id":"phonea","item":"bush:10:-115.83:-84.26",
+   *    "kind":"bush","variant":10,"scale":0.8055265,"r":0.2332445,
+   *    "ox":-0.813,"oy":-0.833,"oz":0.006}  …and onto the pile
+   *
+   * and `ballDiameter` read 2.033925777436048 on BOTH pages, to the float.
+   * So the rapier route (rooted prop → `loose` → `bodies.items()` →
+   * `pickUpLoose`) works, and the unrooted branch being gated
+   * `else if (bodies === null)` is correct rather than a gap: with a solver
+   * present those props are in `items()`, which is where that pass looks.
    */
   const deciding = pages.find((p) => !p.closed);
   const before = await nearestProp(deciding, A);
-  if (!before?.target) return { skipped: 'no keyed collider anywhere near the creature' };
+  if (!before?.target) return { skipped: 'nothing carriable anywhere near the creature' };
   const target = before.target;
 
   const samples = [];
   let stuck = null;
   let best = { dx: 0, dy: -1 };
-  for (let round = 0; round < 10 && !stuck; round++) {
+  for (let round = 0; round < 4 && !stuck; round++) {
     // Every few rounds, re-find the way: the creature turns, the camera
     // drifts, and a direction that was closing can stop closing.
-    const tries = round % 3 === 0 ? COMPASS : [best];
+    const tries = round % 2 === 0 ? COMPASS : [best];
     let bestGain = -Infinity;
     for (const dir of tries) {
       const from = await gapTo(deciding, A, target);
-      await holdStick(one, tries.length === 1 ? 4000 : 1200, dir);
+      await holdStick(one, tries.length === 1 ? 3000 : 900, dir);
       const to = await gapTo(deciding, A, target);
       if (!from || !to) continue;
       const gain = from.d - to.d;
@@ -667,7 +673,7 @@ await step('5. drive into a prop and see whether it sticks', async (mark) => {
   const values = Object.values(size).filter((v) => typeof v === 'number');
   const spread = values.length > 1 ? Math.max(...values) - Math.min(...values) : 0;
   if (values.some((v) => v > 0) && spread > 0.02) {
-    fail.push(`step 5: the pages disagree about the ball size (${JSON.stringify(size)})`);
+    fail.push(`the pages disagree about the ball size (${JSON.stringify(size)})`);
   }
   const closest = Math.min(...samples.map((q) => q.gap));
   if (!stuck) {
@@ -687,6 +693,80 @@ await step('5. drive into a prop and see whether it sticks', async (mark) => {
     size,
     mark,
   };
+}
+
+/*
+ * …and now against BOTH hosts, in the order a room actually fills: the
+ * projection is deciding first (it is pinned with `?host=1`, so it wins the
+ * election outright), and the phone only inherits the world when the
+ * projection closes.
+ */
+await step('3. projection hosting (rapier) — drive into a prop', async (mark) => {
+  /*
+   * WAIT FOR THE SOLVER FIRST. `enablePhysics` is called on host election and
+   * the wasm is a chunk of its own, so a sweep that started before it landed
+   * would be measuring the phone-host path on the projection's page and
+   * calling it rapier (docs/PLAN.md §7.6).
+   */
+  await host.page
+    .waitForFunction(() => Boolean(window.__refworldPhysics?.()), null, { timeout: 180_000 })
+    .catch(() => console.log('[H] rapier never came up — the sweep below is not the host path'));
+  const out = await sweepForPickup(mark);
+  out.note = 'the projection is deciding: rapier, dynamic bodies, pickUpLoose';
+  return out;
+});
+
+await step('4. projection closed, a phone hosts, phone A drives', async (mark) => {
+  await host.context.close();
+  host.closed = true;
+  // Two heartbeats plus the stale window, so the election has certainly run.
+  await new Promise((r) => setTimeout(r, 9000));
+  const out = await driveAndWatch(mark, A, [one]);
+  for (const label of Object.keys(out.moved)) {
+    if (!(out.moved[label] > MOVED)) fail.push(`step 4: ${A} did not move on ${label}`);
+  }
+  return out;
+});
+
+await step('5. both phones drive at once', async (mark) => {
+  if (!two) return { skipped: 'one phone in this run' };
+  const before = {};
+  for (const p of pages) {
+    if (p.closed) continue;
+    before[p.label] = { [A]: await posesOf(p, A), [B]: await posesOf(p, B) };
+  }
+  await Promise.all([holdStick(one, HOLD_MS), holdStick(two, HOLD_MS, { dx: 1, dy: 0 })]);
+  await new Promise((r) => setTimeout(r, 1500));
+  const after = {};
+  const moved = {};
+  for (const p of pages) {
+    if (p.closed) continue;
+    after[p.label] = { [A]: await posesOf(p, A), [B]: await posesOf(p, B) };
+    moved[p.label] = {};
+    for (const who of cast) {
+      const x = before[p.label][who];
+      const y = after[p.label][who];
+      moved[p.label][who] = x && y ? +Math.hypot(y.x - x.x, y.z - x.z).toFixed(3) : null;
+      if (!(moved[p.label][who] > MOVED)) fail.push(`step 5: ${who} did not move on ${p.label}`);
+    }
+  }
+  return { before, after, moved, roles: await roles(), driveMessages: sinceThen(mark, 'drive').length };
+});
+
+/*
+ * AND WHAT IT PICKED UP ON THE WAY (2026-09-17: *"some users are having
+ * issues sticking to objects"*).
+ *
+ * The decision is the host's and travels as a `stick` scene event; what the
+ * VIEWER then has to end up with is the same pile and the same BALL SIZE,
+ * which is derived on each page from the radii of what it is carrying. So:
+ * whatever the driving above rolled over, every page has to agree about how
+ * big the ball now is.
+ */
+await step('6. phone hosting (no rapier) — drive into a prop', async (mark) => {
+  const out = await sweepForPickup(mark);
+  out.note = 'a phone is deciding: no bodies, the pure resolve, section 4';
+  return out;
 });
 
 // ── what happened ───────────────────────────────────────────────────────────
