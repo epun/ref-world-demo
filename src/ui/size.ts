@@ -27,8 +27,26 @@
  *   GROWS WITH THE BALL and stops growing at a cap. A picture of the thing
  *   the number is about, which is what an icon mark is for.
  *
- * No filled panel, no card, no background and no shadow: the corner is a
- * layout, not a surface.
+ * …and since 2026-09-17 a fourth mark, which is a PICTURE rather than a
+ * number (user ask: *"in the top left hand corner we should show a live view
+ * of the character and the objects it collects. the 3d view of the character
+ * and the object ball should not scale beyond the radius measurement ui div
+ * in the top left"*):
+ *
+ * - the INSET — one wavering hairline CIRCLE, behind the row, whose diameter
+ *   is the row's own width, with a live render of your creature and its ball
+ *   inside it. The drawing is not this module's: `rect()` publishes where the
+ *   circle is and `src/world/portrait.ts` renders the creature's own subtree
+ *   into that rect after the frame has composed, scissored to it. This module
+ *   owns the MARK — the ring, the size and the slide — and knows nothing
+ *   about a camera; the paper the picture stands on is cleared in GL, because
+ *   the DOM is in front of the canvas and a fill up here would cover the
+ *   picture it is supposed to be behind.
+ *
+ * It is the same ring generator as the icon beside the number and the same
+ * hairline the join code, the minimap and the leaderboard stand in
+ * (TASTE §9a) — one hand drew all of them. No filled panel, no card, no
+ * background and no shadow: the corner is a layout, not a surface.
  *
  * THE MOTION. The displayed diameter is not the true one — it is a ζ ≥ 1
  * spring chasing it over `MOTION.primaryMs` (src/motion/spring.ts, where
@@ -163,6 +181,31 @@ const DRIFT_SCALE = 140;
 /** Draw cadence — a number that rolls, not a viewport. */
 const DRAW_INTERVAL_MS = 1000 / 30;
 
+/**
+ * [D] The inset's own box in its viewBox — the same 0..100 space the icon's
+ * ring is generated in, so both circles are drawn by one hand at one scale
+ * and the CSS size is the only thing that differs.
+ */
+const INSET_BOX = 100;
+/** Ring radius in that box, leaving the waver room inside the viewBox. */
+const INSET_R = INSET_BOX / 2 - 4;
+/**
+ * [D] The smallest the circle gets, css px.
+ *
+ * Its DIAMETER IS THE ROW'S WIDTH (the ask), and the row is narrow before
+ * there is a number in it — `0` of a width would be a picture nobody can
+ * see. 96 px is about the width of `15m 16cm` on a phone, which is where the
+ * row ends up within the first few pickups anyway.
+ */
+export const INSET_MIN_PX = 96;
+/**
+ * [D] …and the largest, css px. A quarter of the narrowest phone this world
+ * is drawn on (390 css px) plus a little: past that the corner stops being a
+ * corner. The row cannot get this wide with a real number in it; the cap is
+ * for a font nobody tested and a rotated tablet.
+ */
+export const INSET_MAX_PX = 132;
+
 const STYLE_ID = 'world-size-style';
 
 function ensureStyle(): void {
@@ -176,6 +219,32 @@ function ensureStyle(): void {
   top: calc(env(safe-area-inset-top, 0px) + 4vw);
   z-index: 5;
   pointer-events: none;
+}
+/*
+ * The inset's ring. An earlier SIBLING of the drift layer, so it paints
+ * BEHIND the row without a second z-index — the number reads over the
+ * picture, which is the layout the mock shows.
+ *
+ * NO FILL. The paper inside the circle is cleared in WebGL by the render pass
+ * (src/world/portrait.ts): this element is in front of the canvas, so a fill
+ * here would hide the very thing it frames. Nothing else comes with it —
+ * still no shadow, still no radius, still no second fill (TASTE §9a).
+ */
+.world-size-inset {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: block;
+  opacity: 0;
+  transition: opacity ${MOTION.secondaryMs}ms ${MOTION.settleCurve};
+  overflow: visible;
+}
+.world-size-inset.in {
+  opacity: 1;
+}
+.world-size-inset-ring {
+  fill: none;
+  stroke: var(--rw-ink, ${WORLD.ink});
 }
 /* The drift layer. Nothing fully arrests (TASTE §3), and the transform here
    is written per frame — which is why it is its own element: the slide below
@@ -245,6 +314,20 @@ export interface BallSizeOptions {
 export interface BallSizeHandle {
   /** The corner's root, for a caller that owns where it hangs. */
   el: HTMLElement;
+  /**
+   * WHERE THE LIVE VIEW GOES — the inset circle's box in css pixels from the
+   * top-left of the page, or null while there is nothing to show (2026-09-17).
+   *
+   * This is the whole contract with the render pass: the picture is drawn
+   * into this rect and scissored to it, so *"the 3d view … should not scale
+   * beyond the radius measurement ui div"* is a property of the rect rather
+   * than a hope about a camera. Square, because the mark is a circle.
+   *
+   * Measured from the live element rather than computed, so the safe-area
+   * insets and the 4vw corner are read from the one place that knows them —
+   * the stylesheet.
+   */
+  rect(): { x: number; y: number; w: number; h: number } | null;
   /** What the corner says right now — '' while it is still showing nothing. */
   text(): string;
   /** Has it slid in yet? */
@@ -264,6 +347,26 @@ export function installBallSize(opts: BallSizeOptions): BallSizeHandle {
   // Findable, and it says what it is rather than reading out a bare number.
   el.setAttribute('role', 'status');
   el.setAttribute('aria-label', 'your ball');
+
+  /*
+   * THE INSET, first — an earlier sibling paints behind the row (see the
+   * stylesheet), and the number has to read over the picture.
+   */
+  const inset = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  inset.setAttribute('class', 'world-size-inset');
+  inset.setAttribute('viewBox', `0 0 ${INSET_BOX} ${INSET_BOX}`);
+  inset.setAttribute('aria-hidden', 'true');
+  const insetRing = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  insetRing.setAttribute('class', 'world-size-inset-ring');
+  // Generated ONCE, at the viewBox's own radius: what changes with the
+  // circle's size is the css box around it, never the geometry — the same
+  // arrangement the icon's ring is under, so neither one re-draws itself
+  // thirty times a second.
+  insetRing.setAttribute(
+    'd',
+    wavyBorderPath(wavyRingPoints(INSET_BOX / 2, INSET_BOX / 2, INSET_R, SIZE_SEED + 11)),
+  );
+  inset.appendChild(insetRing);
 
   const drift = document.createElement('div');
   drift.className = 'world-size-drift';
@@ -290,7 +393,7 @@ export function installBallSize(opts: BallSizeOptions): BallSizeHandle {
 
   row.append(svg, value);
   drift.appendChild(row);
-  el.appendChild(drift);
+  el.append(inset, drift);
   opts.mount.appendChild(el);
 
   /*
@@ -303,6 +406,18 @@ export function installBallSize(opts: BallSizeOptions): BallSizeHandle {
    * instead of a slide with a number already in it.
    */
   const eased = new Spring(0, { settleMs: MOTION.primaryMs });
+  /*
+   * AND THE CIRCLE'S OWN SIZE, on a ζ ≥ 1 spring of its own.
+   *
+   * Its diameter is the ROW's width, and the row widens as the number does
+   * (`34cm 5mm` → `15m 16cm`). Following that width directly would step the
+   * circle on the frame a digit changed, which is a cut in the one mark a
+   * person is watching — so the measured width is a TARGET and the circle
+   * slides to it, over the secondary beat because this is a mark settling and
+   * not the number itself arriving.
+   */
+  const insetPx = new Spring(INSET_MIN_PX, { settleMs: MOTION.secondaryMs });
+  let insetSize = INSET_MIN_PX;
   let shown = false;
   let text = '';
   let last = 0;
@@ -334,6 +449,29 @@ export function installBallSize(opts: BallSizeOptions): BallSizeHandle {
     drift.style.transform = `translate(${d.x.toFixed(3)}px, ${d.y.toFixed(3)}px)`;
 
     if (!shown) return;
+
+    /*
+     * THE CIRCLE'S DIAMETER IS THE ROW'S WIDTH. Read off the live row — the
+     * one element that knows what the type and the icon came out to — clamped
+     * to the corner's bounds and eased. One `offsetWidth` a paint (30 fps) on
+     * an element with no children of its own after layout, which is the
+     * cheapest honest way to know how wide a line of type turned out.
+     */
+    const measured = row.offsetWidth;
+    if (measured > 0) {
+      insetPx.retarget(Math.min(INSET_MAX_PX, Math.max(INSET_MIN_PX, measured)));
+    }
+    insetSize = insetPx.update(dt);
+    inset.setAttribute('width', insetSize.toFixed(2));
+    inset.setAttribute('height', insetSize.toFixed(2));
+    // A hairline stays a hairline at every size: the stroke is in viewBox
+    // units, so it is divided back out by the box-to-pixel scale exactly the
+    // way the icon's is.
+    insetRing.setAttribute(
+      'stroke-width',
+      ((ICON_STROKE_PX * INSET_BOX) / Math.max(1, insetSize)).toFixed(3),
+    );
+    if (!inset.classList.contains('in')) inset.classList.add('in');
 
     const metres = metresOf(eased.value);
     const next = formatLength(metres);
@@ -389,10 +527,19 @@ export function installBallSize(opts: BallSizeOptions): BallSizeHandle {
     el,
     text: () => text,
     shown: () => shown,
+    rect(): { x: number; y: number; w: number; h: number } | null {
+      // Nothing to frame yet — a creature in its shell has no ball and the
+      // corner is empty, so there is no picture either.
+      if (!shown) return null;
+      const box = inset.getBoundingClientRect();
+      if (!(box.width > 1) || !(box.height > 1)) return null;
+      return { x: box.left, y: box.top, w: box.width, h: box.height };
+    },
     dispose(): void {
       stop();
       document.removeEventListener('visibilitychange', onVisibility);
       eased.dispose();
+      insetPx.dispose();
       el.remove();
     },
   };

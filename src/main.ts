@@ -112,7 +112,7 @@ import { start } from './world/scene';
 import { opensOnLandscape, readWorldGame } from './world/game';
 import { planLoad, readFreshLoad, startFresh } from './world/load';
 import { readWorldStyle } from './world/style';
-import { installUiTheme } from './ui/theme';
+import { installUiTheme, uiTheme } from './ui/theme';
 import { createTour } from './world/tour';
 
 /** Hatch timer — dev pacing; a live demo wants ~90s (PLAN §13). */
@@ -2473,10 +2473,49 @@ function main(): void {
    */
   if (worldGame === 'katamari' && tray?.middle && myDrawerId.length > 0) {
     void import('./ui/size').then((m) => {
-      m.installBallSize({
+      const size = m.installBallSize({
         diameter: () => creatures.ballDiameter(myDrawerId),
         mount: document.body,
       });
+      /*
+       * A LIVE VIEW OF YOUR OWN BALL, inside the readout's circle (user ask,
+       * 2026-09-17: *"in the top left hand corner we should show a live view
+       * of the character and the objects it collects. the 3d view of the
+       * character and the object ball should not scale beyond the radius
+       * measurement ui div in the top left."*).
+       *
+       * The three conditions are the readout's own — the katamari, a handset
+       * looking at the world, a creature of its own — so it is wired from
+       * inside the same dynamic import, and no other page ever builds the
+       * pass at all (`setPortrait` constructs it on the first call).
+       *
+       * THE PILE IT IS INSIDE, not always its own: `ballOwner` resolves a
+       * passenger to the creature at the bottom of the pile, exactly as the
+       * size readout and the leaderboard do — a person stuck to somebody
+       * else's ball is watching that ball.
+       *
+       * The paper is the CHROME's paper role (src/ui/theme.ts), because the
+       * circle is a piece of UI standing on the same paper as the join code
+       * and the minimap — and it is cleared in GL rather than painted by the
+       * DOM, since the DOM is in front of the canvas.
+       */
+      world.setPortrait(
+        {
+          subject: () => {
+            const owner = creatures.ballOwner(myDrawerId);
+            const id = owner.length > 0 ? owner : myDrawerId;
+            const root = creatures.rootOf(id);
+            if (!root) return null;
+            return {
+              root,
+              bodyR: creatures.ballDiameter(id) / 2,
+              roll: creatures.rollBlend(id),
+            };
+          },
+          rect: () => size.rect(),
+        },
+        uiTheme().paper,
+      );
       /*
        * WHICH WAY THE NEAREST OTHER CREATURE IS (user ask, 2026-09-17: *"on
        * mobile we should show a directional arrow in relation to the closest

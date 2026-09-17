@@ -169,7 +169,15 @@ The traps, in order of how easily they get violated:
   `groundLift`, so Y never goes on the wire and the Surface seam stands; rapier's own gravity
   and the nudge for the sleepers are the simulating page's alone, PLAN §7.6), the
   ball-diameter readout on the phone's world view (`src/ui/size.ts`,
-  `CreatureManager.ballDiameter`), the handset's contextual hints, loading and empty states
+  `CreatureManager.ballDiameter`) **and the LIVE VIEW behind it** (user ask 2026-09-17: *"in
+  the top left hand corner we should show a live view of the character and the objects it
+  collects … should not scale beyond the radius measurement ui div"* — `src/world/portrait.ts`
+  draws that creature's ROOT SUBTREE alone (`renderer.render(root, ortho)`, one pass, no
+  shadows and no post, after grain has composed) into a scissor on the rect `size.ts`
+  publishes, so the picture cannot land outside the circle; the ortho half-extent is
+  `portraitHalfExtent(bodyR)` on a ζ ≥ 1 spring, so the mass keeps its share of the circle as
+  the ball grows. The subtree carries no lights because the cel chain is self-lit — a katamari
+  world on the `ink` style would need a light rig), the handset's contextual hints, loading and empty states
   (`src/ui/hints.ts`, `loading.ts`, `empty.ts` — the hints are three marks in the live world
   view, each dismissed by doing what it says; user ask 2026-09-17, no slideshow), and **the island** — `setIslandMode` in
   `src/world/landscape.ts`, off by default, so the coast, the sea and the beach do not exist

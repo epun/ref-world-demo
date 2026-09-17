@@ -1229,6 +1229,22 @@ export interface CreatureManager {
   /** Live creature ids, in a stable order — the roster a host publishes. */
   liveIds(): string[];
   /**
+   * ONE CREATURE'S ROOT NODE, by the id it was spawned under, or null while
+   * it is still a shell (user ask, 2026-09-17: the corner's live view).
+   *
+   * The whole rig hangs under it — the drawn creature in its `rider`, the
+   * ball, the pile and every passenger — so this is what a second camera has
+   * to be handed to draw exactly one creature and nothing else
+   * (src/world/portrait.ts renders it as its own scene graph). A READ, not a
+   * handle: nothing may move it, and the one pass that owns its position is
+   * still the frame's ground pass.
+   *
+   * By the id ASKED FOR and not the pile's owner: a caller that wants the
+   * ball a passenger is inside resolves that through `ballOwner` first, the
+   * same way the leaderboard and the size readout do.
+   */
+  rootOf(id: string): Group | null;
+  /**
    * Ids still standing as eggs — nothing opened, nothing opening.
    *
    * The host puts these on its roster so a viewer can tell an egg that is
@@ -5418,6 +5434,12 @@ export function createCreatureManager(
         if (slot.phase === 'alive' && slot.characterRoot) out.push(slot.id);
       }
       return out;
+    },
+
+    rootOf(id): Group | null {
+      const slot = slots.get(id);
+      if (!slot || slot.phase !== 'alive') return null;
+      return slot.characterRoot;
     },
 
     eggIds(): string[] {

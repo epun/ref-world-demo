@@ -33,6 +33,8 @@ import { describe, expect, it } from 'vitest';
 import {
   ICON_CAP_M,
   ICON_MIN_SCALE,
+  INSET_MAX_PX,
+  INSET_MIN_PX,
   formatLength,
   iconScale,
   installBallSize,
@@ -144,6 +146,10 @@ interface StubEl {
   children: StubEl[];
   parent: StubEl | null;
   setAttribute(name: string, value: string): void;
+  /** What a layout would have measured. The recording DOM has no layout, so
+   * a test that cares sets it (the inset's diameter is the row's width). */
+  offsetWidth: number;
+  getBoundingClientRect(): { left: number; top: number; width: number; height: number };
   appendChild(child: StubEl): StubEl;
   append(...kids: StubEl[]): void;
   remove(): void;
@@ -170,6 +176,19 @@ function makeEl(tag: string): StubEl {
     },
     children: [],
     parent: null,
+    offsetWidth: 0,
+    getBoundingClientRect(): {
+      left: number;
+      top: number;
+      width: number;
+      height: number;
+    } {
+      // Whatever the caller wrote on the element, which for the inset is the
+      // width and height the module itself set (an svg sized in attributes).
+      const w = Number(el.attrs['width'] ?? '0');
+      const h = Number(el.attrs['height'] ?? '0');
+      return { left: 16, top: 16, width: w, height: h };
+    },
     setAttribute(name: string, value: string): void {
       el.attrs[name] = value;
     },
@@ -443,6 +462,162 @@ describe('the corner mounts, waits for a ball, and leaves cleanly', () => {
     // And the label a screen reader reads is lowercase, like every string.
     const label = (handle.el as unknown as StubEl).attrs['aria-label']!;
     expect(label).toBe(label.toLowerCase());
+    handle.dispose();
+    dom.restore();
+  });
+});
+
+describe('the inset — the live view’s frame and its rect', () => {
+  /*
+   * > User ask, 2026-09-17: *"in the top left hand corner we should show a
+   * > live view of the character and the objects it collects. the 3d view of
+   * > the character and the object ball should not scale beyond the radius
+   * > measurement ui div in the top left."*
+   *
+   * This module owns the MARK and the RECT; the picture inside it is
+   * src/world/portrait.ts's, and the rect is the whole contract between them.
+   */
+  it('is a square circle whose diameter is the row’s width', () => {
+    const dom = stubDom();
+    const handle = installBallSize({
+      diameter: () => 2,
+      mount: dom.mount as unknown as HTMLElement,
+    });
+    const el = handle.el as unknown as StubEl;
+    const row = find(el, 'world-size-row')!;
+    // What a layout would have measured for `15m 16cm` beside the icon.
+    row.offsetWidth = 118;
+    for (let f = 1; f <= 120; f++) dom.step(f * 40);
+
+    const inset = find(el, 'world-size-inset')!;
+    expect(inset.attrs['width']).toBeDefined();
+    expect(Number(inset.attrs['width'])).toBeCloseTo(118, 0);
+    // Square, because the mark is a circle.
+    expect(inset.attrs['height']).toBe(inset.attrs['width']);
+    // …and it paints BEHIND the row: an earlier sibling, no z-index of its own.
+    expect(el.children.indexOf(inset)).toBeLessThan(
+      el.children.findIndex((kid) => kid.className === 'world-size-drift'),
+    );
+    handle.dispose();
+    dom.restore();
+  });
+
+  it('holds the corner’s bounds whatever the row measures', () => {
+    for (const [measured, want] of [
+      [0, INSET_MIN_PX],
+      [40, INSET_MIN_PX],
+      [400, INSET_MAX_PX],
+    ] as const) {
+      const dom = stubDom();
+      const handle = installBallSize({
+        diameter: () => 2,
+        mount: dom.mount as unknown as HTMLElement,
+      });
+      const el = handle.el as unknown as StubEl;
+      find(el, 'world-size-row')!.offsetWidth = measured;
+      for (let f = 1; f <= 200; f++) dom.step(f * 40);
+      expect(Number(find(el, 'world-size-inset')!.attrs['width'])).toBeCloseTo(want, 0);
+      handle.dispose();
+      dom.restore();
+    }
+  });
+
+  it('grows to it by sliding — the number steps, the circle does not', () => {
+    const dom = stubDom();
+    const handle = installBallSize({
+      diameter: () => 2,
+      mount: dom.mount as unknown as HTMLElement,
+    });
+    const el = handle.el as unknown as StubEl;
+    const row = find(el, 'world-size-row')!;
+    const inset = find(el, 'world-size-inset')!;
+    row.offsetWidth = INSET_MIN_PX;
+    for (let f = 1; f <= 60; f++) dom.step(f * 40);
+    expect(Number(inset.attrs['width'])).toBeCloseTo(INSET_MIN_PX, 0);
+
+    // A digit lands and the row jumps twenty pixels wider.
+    row.offsetWidth = INSET_MIN_PX + 20;
+    let previous = Number(inset.attrs['width']);
+    let steps = 0;
+    for (let f = 61; f <= 160; f++) {
+      dom.step(f * 40);
+      const now = Number(inset.attrs['width']);
+      // Monotone, and never past the target: ζ ≥ 1 (TASTE §2.1).
+      expect(now).toBeGreaterThanOrEqual(previous - 1e-9);
+      expect(now).toBeLessThanOrEqual(INSET_MIN_PX + 20 + 1e-9);
+      steps = Math.max(steps, now - previous);
+      previous = now;
+    }
+    // It got there, and no single frame moved it a quarter of the way — the
+    // twenty pixels arrive over the secondary beat, not in one jump.
+    expect(previous).toBeCloseTo(INSET_MIN_PX + 20, 0);
+    expect(steps).toBeLessThan(5);
+    handle.dispose();
+    dom.restore();
+  });
+
+  it('publishes no rect until there is something to show', () => {
+    const dom = stubDom();
+    const handle = installBallSize({
+      diameter: () => 0,
+      mount: dom.mount as unknown as HTMLElement,
+    });
+    for (let f = 1; f <= 40; f++) dom.step(f * 40);
+    // A creature in its shell: no ball, no number — and no picture either.
+    expect(handle.shown()).toBe(false);
+    expect(handle.rect()).toBeNull();
+    handle.dispose();
+    dom.restore();
+  });
+
+  it('publishes the circle’s own box once it has', () => {
+    const dom = stubDom();
+    const handle = installBallSize({
+      diameter: () => 2,
+      mount: dom.mount as unknown as HTMLElement,
+    });
+    const el = handle.el as unknown as StubEl;
+    find(el, 'world-size-row')!.offsetWidth = 110;
+    for (let f = 1; f <= 200; f++) dom.step(f * 40);
+    const rect = handle.rect()!;
+    expect(rect).not.toBeNull();
+    expect(rect.w).toBeCloseTo(110, 0);
+    // Square and at the corner the sheet puts it.
+    expect(rect.h).toBeCloseTo(rect.w, 6);
+    expect(rect.x).toBe(16);
+    expect(rect.y).toBe(16);
+    handle.dispose();
+    dom.restore();
+  });
+
+  it('is a hairline ring and nothing else — no fill, no shadow', () => {
+    const dom = stubDom();
+    const handle = installBallSize({
+      diameter: () => 2,
+      mount: dom.mount as unknown as HTMLElement,
+    });
+    const el = handle.el as unknown as StubEl;
+    find(el, 'world-size-row')!.offsetWidth = 120;
+    for (let f = 1; f <= 200; f++) dom.step(f * 40);
+    const ring = find(el, 'world-size-inset-ring')!;
+    // A path, drawn by the project's own wavering hand, stroked at a
+    // hairline in the viewBox's own units (so it is 1.25 css px at any size).
+    expect(ring.tag).toBe('path');
+    expect((ring.attrs['d'] ?? '').length).toBeGreaterThan(80);
+    const width = Number(ring.attrs['stroke-width']);
+    const size = Number(find(el, 'world-size-inset')!.attrs['width']);
+    expect((width * size) / 100).toBeCloseTo(1.25, 3);
+
+    // The sheet: the ring is unfilled, and the inset brings no surface with
+    // it (TASTE §9a — paper and a hairline, nothing else). The paper inside
+    // it is cleared in GL, not painted here, because this element is in
+    // FRONT of the canvas.
+    const sheet = dom.head.children[0]!.textContent;
+    const rules = sheet.slice(sheet.indexOf('.world-size-inset'));
+    expect(rules).toContain('fill: none');
+    expect(rules).not.toContain('box-shadow');
+    expect(rules).not.toContain('background');
+    expect(rules).not.toContain('border-radius');
     handle.dispose();
     dom.restore();
   });
