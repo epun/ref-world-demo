@@ -925,7 +925,13 @@ export interface CreatureObserver {
    */
   stick(record: StickRecord): void;
   drop(record: DropRecord): void;
-  loose(item: string, x: number, z: number): void;
+  /**
+   * `scale` is the instance scale the placement was DRAWN at — the one thing
+   * about a loose prop that cannot be re-derived anywhere else (2026-09-17,
+   * *"objects shrink when they stick to the character"*). Optional on the
+   * wire, so it is optional here.
+   */
+  loose(item: string, x: number, z: number, scale?: number): void;
   settle(record: SettleRecord): void;
   /**
    * THE TWO DESTRUCTION STATES (src/world/wreck.ts, docs/SESSION.md §6).
@@ -1251,7 +1257,7 @@ export interface CreatureManager {
    */
   applyStick(record: StickRecord): void;
   applyDrop(record: DropRecord): void;
-  applyLoose(item: string, x: number, z: number): void;
+  applyLoose(item: string, x: number, z: number, scale?: number): void;
   applySettle(record: SettleRecord): void;
   /**
    * PRESENTATION ONLY, again — the two destruction states.
@@ -3336,7 +3342,10 @@ export function createCreatureManager(
       if (item) {
         if (!bodies) hidePlacement(prop.key);
         showLoose(prop.key, item.x, item.z, item.scale);
-        observer?.loose(prop.key, item.x, item.z);
+        // …and the SCALE goes with it (2026-09-17). This page has the
+        // instance row and the body it just made; nobody else does, and
+        // there is nothing in the world for them to re-derive it from.
+        observer?.loose(prop.key, item.x, item.z, item.scale);
       }
       return;
     }
@@ -5314,7 +5323,7 @@ export function createCreatureManager(
       });
     },
 
-    applyLoose(item, x, z): void {
+    applyLoose(item, x, z, scale): void {
       /*
        * ON A HOST, THE BODY TOO — and this was a gap, not a choice.
        *
@@ -5336,7 +5345,16 @@ export function createCreatureManager(
       const bodies = bodiesOf();
       const built = bodies ? bodies.loosen(item) : null;
       if (!built) hidePlacement(item);
-      showLoose(item, x, z, built?.scale);
+      /*
+       * THE HOST'S OWN BODY FIRST, then the event's, then the instance row
+       * (2026-09-17). A host replaying its own log has just rebuilt the body
+       * and knows better than the log; a VIEWER has neither a body nor a row
+       * — the placement stopped being drawn the moment this event was
+       * decided — and the event's scale is the only thing left. Falling
+       * through to 1 is what drew a library model at a third of its size on
+       * every screen but the one that decided.
+       */
+      showLoose(item, x, z, built?.scale ?? scale);
     },
 
     applyCrack(item, stage): void {

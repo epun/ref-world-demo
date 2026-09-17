@@ -121,8 +121,8 @@ describe('the popover is paper inside a hairline, and slides', () => {
     expect(src()).toMatch(/\.keep-menu \{[\s\S]{0,900}?background: transparent/);
     expect(src()).not.toMatch(/box-shadow|filter: drop-shadow|backdrop-filter/);
     expect(src()).not.toMatch(/border-radius/);
-    expect(src()).toMatch(/border-bottom: 1px solid \$\{WORLD\.ink\}/);
-    expect(src()).toMatch(/border-top: 1px solid \$\{WORLD\.ink\}/);
+    expect(src()).toMatch(/border-bottom: 1px solid var\(--rw-ink, \$\{WORLD\.ink\}\)/);
+    expect(src()).toMatch(/border-top: 1px solid var\(--rw-ink, \$\{WORLD\.ink\}\)/);
     // The border is the project's own wavering loop, the same hand as the
     // minimap's frame and the stick's rings.
     expect(src()).toMatch(/wavyBorderPath\(wavyBorderPoints\(100, 100, 2, MENU_SEED, 10\)\)/);
@@ -135,7 +135,7 @@ describe('the popover is paper inside a hairline, and slides', () => {
     // its four straight edges outside the wobble. One path, filled and
     // stroked, cannot: the paper ends exactly where the line is.
     expect(src()).toMatch(
-      /\.keep-menu-border path \{[\s\S]{0,260}?fill: \$\{SURFACE\.ground\}[\s\S]{0,80}?stroke: \$\{WORLD\.ink\}/,
+      /\.keep-menu-border path \{[\s\S]{0,260}?fill: var\(--rw-paper, \$\{SURFACE\.ground\}\)[\s\S]{0,80}?stroke: var\(--rw-ink, \$\{WORLD\.ink\}\)/,
     );
     // …and nothing rounds a rectangle off as a stand-in for the shape.
     expect(src()).not.toMatch(/border-radius/);
@@ -157,7 +157,9 @@ describe('the popover is paper inside a hairline, and slides', () => {
     expect(corners![1]!.match(/\[\s*\d+,\s*\d+\s*\]/g)).toHaveLength(5);
     // Strokes only, with the one paper-light label strip.
     expect(src()).toMatch(/\.keep-mark path \{[\s\S]{0,900}?fill: none/);
-    expect(src()).toMatch(/\.keep-mark path\[data-fill='paper'\] \{ fill: \$\{WORLD\.light\}/);
+    expect(src()).toMatch(
+      /\.keep-mark path\[data-fill='paper'\] \{ fill: var\(--rw-light, \$\{WORLD\.light\}\)/,
+    );
     // The window would close on itself at the full amplitude.
     expect(src()).toMatch(/SLOT_WAVER = 0\.5/);
   });

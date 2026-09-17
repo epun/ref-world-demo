@@ -32,6 +32,7 @@ import { Box3, Color, OrthographicCamera, Scene, Vector3, WebGLRenderer } from '
 import { createCharacter } from '../character/character';
 import type { StrokeList } from '../shape/types';
 import { SURFACE } from '../taste/tokens';
+import { uiTheme } from '../ui/theme';
 import { GrainPass } from '../world/grain';
 import { InkPass } from '../world/ink';
 import { createLighting } from '../world/lighting';
@@ -260,7 +261,10 @@ export async function renderKeepsake(
     renderer.setSize(sidePx, sidePx, false);
 
     const scene = new Scene();
-    scene.background = new Color(SURFACE.ground);
+    // The keepsake is the one surface here that is NOT inside the bezel:
+    // it is a picture the person takes away, so it is laid on the world's
+    // own paper (src/ui/theme.ts) rather than the case's.
+    scene.background = new Color(uiTheme().paper);
     scene.add(createLighting().group, character.group);
 
     const size = bounds.getSize(new Vector3());

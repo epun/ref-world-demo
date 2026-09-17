@@ -61,7 +61,7 @@ function ensureStyle(): void {
   width: 100%;
   height: 100%;
   display: block;
-  background: ${SURFACE.ground};
+  background: var(--rw-paper, ${SURFACE.ground});
   /*
    * Off the bottom, and out of reach. Visibility matters as much as the
    * transform: a frame merely translated away still takes taps meant for

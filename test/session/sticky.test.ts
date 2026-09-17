@@ -181,6 +181,29 @@ describe('readSceneEvent — the door', () => {
     }
   });
 
+  it('carries a loose prop\u2019s DRAWN SCALE, and reads without it', () => {
+    /*
+     * 2026-09-17, *"objects shrink when they stick to the character"*.
+     *
+     * A `loose` said only where the prop landed. The host has the scatter's
+     * instance row and the body it has just made; a viewer has neither — the
+     * placement stopped being drawn the moment this was decided — so
+     * `showLoose` fell back to 1 and a library model that stood at 2.4 lay
+     * there at a third of its size. `LooseMeshes.show` is idempotent, so that
+     * scale then survived the settle and the pickup after it.
+     */
+    expect(readSceneEvent({ ...LOOSE, scale: 2.4 })).toMatchObject({ scale: 2.4 });
+    const without = readSceneEvent(LOOSE) as unknown as Record<string, unknown>;
+    expect(without).not.toBeNull();
+    expect('scale' in without).toBe(false);
+    // Clamped like an offset, and refused rather than read as nothing: a
+    // prop drawn at zero is not a thing the host can have meant.
+    expect(readSceneEvent({ ...LOOSE, scale: 1e6 })).toMatchObject({ scale: 64 });
+    for (const bad of [0, -1, Infinity, NaN, 'big', null]) {
+      expect(readSceneEvent({ ...LOOSE, scale: bad }), String(bad)).toBeNull();
+    }
+  });
+
   it('clamps a drop, a loose and a settle to the map', () => {
     const far = readSceneEvent({ ...DROP, x: 1e9, z: -1e9 });
     expect(far).toMatchObject({ x: SCENE_EXTENT, z: -SCENE_EXTENT });
