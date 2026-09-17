@@ -45,6 +45,47 @@ export function ggFloat(n: number): string {
 }
 
 /**
+ * THE MEAN OF `toonFbm(p, octaves)` — what a band-limited term FADES TO
+ * (2026-09-17, the camo reports; `toonBandLimit` in src/world/toon.ts).
+ *
+ * Every octave is value noise on a uniform hash, so each averages 0.5 and the
+ * fbm averages half its amplitude sum: 0.375 at two octaves, 0.4375 at three.
+ *
+ * WHY THE MEAN AND NOT ZERO. Every one of these terms is a wobble ON something
+ * or a threshold OF something. Fading a wobble to zero straightens the edge it
+ * wobbles and MOVES it — the sea would change colour as the camera pulled out,
+ * a canopy would step to a different band, a rock's moss cap would jump. At
+ * the mean, each keeps the average place and the average width it was drawn
+ * with and simply stops being ragged, which is all a mark a fifth of a pixel
+ * across can say anyway.
+ *
+ * The one exception is a SPARSE mark, whose threshold sits far above the mean
+ * (the water's `LINE_KEEP` 0.78, `FOAM_STREAK_KEEP` 0.62): at the mean it is
+ * below the threshold everywhere and the mark fades out altogether, which is
+ * right — a few short strokes that no longer cover a pixel should leave, not
+ * spread.
+ *
+ * Here rather than in one shader's module because four of them need it now:
+ * the water's seven terms, the rocks' moss edge, the canopy's break-up and
+ * the cloud's belly mottle.
+ */
+export function fbmMean(octaves: number): number {
+  let amp = 0.5;
+  let sum = 0;
+  for (let i = 0; i < octaves; i++) {
+    sum += amp;
+    amp *= 0.5;
+  }
+  return sum * 0.5;
+}
+
+/**
+ * The `* 1.3333` the water's marks apply to `toonFbm` so the two-octave form
+ * spans 0–1. Named because the MEANS above are derived from it.
+ */
+export const FBM_GAIN = 1.3333;
+
+/**
  * envpaint's deterministic 32-bit PRNG (`mulberry32`, verbatim), so a reload
  * — and a second device — lays out identical blades.
  *

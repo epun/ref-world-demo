@@ -220,6 +220,62 @@ float toonBandLimit(float cyclesPerUnit) {
   return smoothstep(1.5, 2.5, pxPerCycle);
 }
 
+/*
+ * AND THE RAMP ITSELF IS A HARD STEP OVER A SURFACE THE FRAME CANNOT RESOLVE
+ * [D] (2026-09-17, the third pass at the camo).
+ *
+ * Band-limiting every noise dial to zero did NOT take the blotches out of the
+ * low-tilt frame, and hiding the water showed why: the GROUND alone carries
+ * them. The cel ramp is a two-tone step on dot(normal, sun), and the ground
+ * field's quad is 1.25 world units -- half a CSS pixel at the zoom floor. So
+ * each pixel takes whichever of four quads won the depth test, the ramp lands
+ * on opposite sides of its own edge in neighbouring pixels, and a hard
+ * two-tone step over an unresolved normal field beats into exactly the same
+ * large soft blobs. No band limit can reach it: the aliased input is the MESH.
+ *
+ * What CAN reach it is the step's own gradient, which is the standard analytic
+ * antialias and the trick three's own lights_physical_fragment uses to stop a
+ * specular highlight sparkling on a dense mesh (its geometryRoughness). If
+ * dot(n, sun) moves by w across a pixel, a smoothstep narrower than w cannot
+ * be resolved, so the ramp's half-width is floored at w: where the quads
+ * resolve, w is far under uBandSoft and the two tones stay exactly as hard as
+ * they were; where they do not, the terminator widens to the pixel it actually
+ * covers and the mottle becomes the one mid-tone the area averages to.
+ *
+ * ONE NUMBER, and it is ours (TASTE §9 grants the cel look, not this): a half
+ * width of 1.0 x the per-pixel change, so the transition spans about two
+ * pixels. Under one pixel it still shimmers as the camera drifts; much over
+ * two and a resolved hillside starts to go soft.
+ *
+ * OPT-IN PER SHADER, which is the whole gate: this is zero unless a fragment
+ * calls toonMeasureRamp, and only the ground does. A creature's terminator,
+ * a prop's and a rock's are untouched and stay as hard as they ship -- a
+ * creature is the one thing in the frame whose silhouette and cel edge ARE the
+ * character (TASTE §8), and it is never the thing that goes to camo.
+ */
+const float TOON_RAMP_PX = 1.0;
+const float TOON_RAMP_MAX = 0.5;
+
+/** How far the ramp's own input -- dot(normal, sun) -- moves across this
+ * fragment, or 0 where nobody measured it: every shader but the ground, which
+ * is today's frame exactly. */
+float gToonNdlPerPx = 0.0;
+
+void toonMeasureRamp(vec3 n) {
+  // The ramp's own gradient, exactly: d(dot(n,s)) = dot(dn,s).
+  float ndl = max(abs(dot(dFdx(n), uSunDir)), abs(dot(dFdy(n), uSunDir))) * TOON_RAMP_PX;
+  // The same guard the pixel measure carries -- a comparison with a NaN is
+  // false, so a quad that straddles a silhouette falls back to no widening
+  // rather than carrying a NaN into the band edge -- and a CEILING.
+  //
+  // The ceiling is not paranoia. A widened threshold leaks wherever its input
+  // sits inside the new width, and at TOON_RAMP_MAX the ramp already spans
+  // more than the terminator ever travels: past it the extra buys nothing and
+  // only drags a resolved slope toward the mid-tone. 0.5 against a band edge
+  // of 0.22 is a full smooth gradient across the lit side already.
+  gToonNdlPerPx = ndl > 0.0 && ndl < 8.0 ? min(ndl, TOON_RAMP_MAX) : 0.0;
+}
+
 float toonHash21(vec2 p) {
   vec3 p3 = fract(vec3(p.xyx) * 0.1031);
   p3 += dot(p3, p3.yzx + 33.33);
@@ -292,8 +348,13 @@ float gToonLit = 1.0;
 // bands <= 1.5 gives a pure two-tone; > 1.5 enables the half-tone.
 float toonRamp(float ndl, float bands, float soft) {
   float e = uBandEdge;
-  float lit = smoothstep(e - uBandSoft, e + uBandSoft, ndl);
-  float mid = smoothstep(e + 0.10 - uBandSoft, e + 0.10 + uBandSoft, ndl);
+  // The band edge is never narrower than the pixel it has to land in
+  // (toonMeasureRamp above). gToonNdlPerPx is 0 everywhere but the ground, so
+  // this is uBandSoft exactly — the shipped two-tone — in every other shader
+  // and at every framing where the surface resolves.
+  float w = max(uBandSoft, gToonNdlPerPx);
+  float lit = smoothstep(e - w, e + w, ndl);
+  float mid = smoothstep(e + 0.10 - w, e + 0.10 + w, ndl);
   return mix(lit, mix(lit * 0.5 + 0.5 * mid, lit, 1.0 - uHalfTone), step(1.5, bands));
 }
 

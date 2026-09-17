@@ -25,6 +25,12 @@ import { readFileSync } from 'node:fs';
 import { PNG } from 'pngjs';
 
 const files = process.argv.slice(2);
+/** The blur radius the soft measure uses, and how far the mask is pulled in
+ * from its own edge. The sea is a huge region and takes 24/26; the ISLAND at a
+ * low tilt is a few hundred pixels tall and full of props, so 26 erodes it to
+ * nothing — BLUR=8 ERODE=10 is what measures the land there. */
+const BLUR = Number(process.env['BLUR'] ?? 24);
+const ERODE = Number(process.env['ERODE'] ?? BLUR + 2);
 if (files.length === 0) throw new Error('usage: camo-energy.mjs <png>...');
 
 function plane(png) {
@@ -107,7 +113,7 @@ function masks(png) {
       else if (g > b + 12 && g > r + 4) land[i] = 1;
     }
   }
-  return { sea: erode(sea, png.width, png.height, 26), land: erode(land, png.width, png.height, 26) };
+  return { sea: erode(sea, png.width, png.height, ERODE), land: erode(land, png.width, png.height, ERODE) };
 }
 
 /**
@@ -164,7 +170,7 @@ function spread(p, mask) {
 for (const file of files) {
   const png = PNG.sync.read(readFileSync(file));
   const luma = plane(png);
-  const soft = blur(luma, 24);
+  const soft = blur(luma, BLUR);
   const hp = { width: png.width, height: png.height, out: new Float64Array(luma.out.length) };
   for (let i = 0; i < luma.out.length; i++) hp.out[i] = luma.out[i] - soft.out[i];
   const { sea, land } = masks(png);
@@ -179,7 +185,7 @@ for (const file of files) {
       px: raw.n,
       mean: Number(raw.mean.toFixed(2)),
       sd: Number(raw.sd.toFixed(3)),
-      sdBlur24: Number(spread(soft, mask).sd.toFixed(3)),
+      sdBlur: Number(spread(soft, mask).sd.toFixed(3)),
       hpRms: Number(spread(hp, mask).sd.toFixed(3)),
     };
   }

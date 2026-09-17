@@ -32,7 +32,13 @@
 import { Color, DoubleSide, ShaderMaterial } from 'three';
 import { GHIBLI } from '../../taste/tokens';
 import { TOON_LIGHTING_GLSL, TOON_VARYINGS_GLSL, toonUniforms } from '../toon';
-import { GG_VARIATION_GLSL, GG_WIND_NOISE_GLSL, createWindUniforms, ggFloat } from './shared';
+import {
+  GG_VARIATION_GLSL,
+  GG_WIND_NOISE_GLSL,
+  createWindUniforms,
+  fbmMean,
+  ggFloat,
+} from './shared';
 
 /** The scatter's `WIND_PROFILE_CLOUD`, mirrored. World units, not radians —
  * the displacement factor is a constant, so `bend` and `flutter` are a
@@ -110,11 +116,21 @@ uniform vec3 uCloudShade;
 varying float vH;
 
 void main() {
+  // How coarsely this fragment samples the world — first line, raw varying,
+  // outside every branch (src/world/toon.ts toonUnitsPerPxAt).
+  toonMeasurePixel(vToonWorldPos.xz);
   vec3 n = normalize(vToonNormal) * (gl_FrontFacing ? 1.0 : -1.0);
 
   // Lumpy break-up so the band edge on the underside is not a clean sphere
   // line. It drifts with the wind clock, so the belly never fully arrests.
-  float mottle = toonFbm(vToonWorldPos.xz * 0.24 + vec2(uWindTime * 0.02), 3);
+  // Band-limited at its own 0.24 cycles a world unit, fading to its 3-octave
+  // MEAN (2026-09-17): it moves the belly's band EDGE, which is the term that
+  // shows worst past nyquist — neighbouring pixels land on opposite sides of
+  // a hard two-tone step — and at the mean the underside keeps the average
+  // band it was drawn with.
+  float mottle = mix(${ggFloat(fbmMean(3))},
+    toonFbm(vToonWorldPos.xz * 0.24 + vec2(uWindTime * 0.02), 3),
+    toonBandLimit(0.24));
   float belly = 1.0 - smoothstep(0.12, 0.78, vH + (mottle - 0.5) * 0.28);
 
   vec3 albedo = mix(uCloudLit, uCloudShade, belly * 0.85);

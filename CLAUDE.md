@@ -255,19 +255,43 @@ The traps, in order of how easily they get violated:
   rocks, the canopies, the clouds, the katamari props). **The WATER had no band limit at all**
   until then and was the worse half of the picture: all seven `toonFbm` terms in
   `src/world/ghibli/water.ts` now ride one at their own base frequency and each fades to its
-  own MEAN (`fbmMean`) rather than to zero, so the sea at the floor is the flat wash the
-  marks average to instead of blotches — fading a wobble to zero would move the colour band
-  it wobbles, and fading a threshold's noise to zero would erase the mark instead of
-  averaging it.
-  ⚠️ **The low-tilt blotching is NOT all noise, and the rest of it is upstream of every
-  dial.** Measured at the floor at `ELEVATION_MIN`, the shared uniform reads 2.53 u/px and
-  every term above 0.5 cycles a unit is limited to exactly 0 — and the sea's mottle barely
-  moves (sd 3.07 → 3.01). With the water hidden the GROUND carries the same blob field over
-  the whole frame (`scratch/camo-source.mjs`): the cel ramp is a hard two-tone step over a
-  terrain normal field the frame cannot resolve, because the ground field's quad is 1.25 u
-  and that is half a CSS pixel at the zoom floor. Widening the ramp by the NORMAL's own
-  screen-space derivative is the fix for that, not another band limit — and softening the cel
-  bands is a look decision under TASTE §9, so it waits to be asked for.
+  own MEAN (`fbmMean`, now in `src/world/ghibli/shared.ts`) rather than to zero, so the sea
+  at the floor is the flat wash the marks average to instead of blotches — fading a wobble to
+  zero would move the colour band it wobbles, and fading a threshold's noise to zero would
+  erase the mark instead of averaging it. **The rocks moss edge (2.5), the canopy break-up
+  (1.6) and the cloud belly mottle (0.24) ride one too** since 2026-09-17 — a walking
+  creature zoomed out has all three in frame — and each of those three shaders measures its
+  own rate, because a scattered prop is a few pixels across long before the ground is.
+- **The CEL RAMP widens where the MESH outruns the frame, and only there** [D] — the third
+  pass at the camo (2026-09-17), because band-limiting every noise dial to zero did not empty
+  the low-tilt frame. The ramp is a hard two-tone step on `dot(normal, sun)`, and the ground
+  field's quad is 1.25 u — half a CSS pixel at the zoom floor — so each pixel takes whichever
+  of four quads won the depth test and the step lands on opposite sides of its own edge in
+  neighbours. Only the step's own gradient can reach that (three's `geometryRoughness`
+  measures the same quantity): `toonMeasureRamp` reads `dot(dFdx(normal), sun)`, and
+  `toonRamp` floors its half-width at it. Measured on the ground alone at the floor at
+  `ELEVATION_MIN` (`scratch/camo-source.mjs`): land sd 23.75 → 21.48, high-pass rms
+  16.52 → 14.47, and the flat basin unchanged (sd 4.92 → 4.91) — it acts where normals vary
+  and nowhere else. The default view is inside the frame's own animation floor.
+  **It is OPT-IN per fragment and the ground is the only shader that opts in** — a creature's
+  terminator, a prop's and an egg's are the character (TASTE §8) and stay exactly as hard as
+  they ship. Two numbers: `TOON_RAMP_PX` 1.0 (about two pixels of transition) and
+  `TOON_RAMP_MAX` 0.5, the ceiling.
+  ⚠️ **A WIDENED THRESHOLD LEAKS — twice tried, twice measured worse, twice reverted.** The
+  same trick on the ground's `step(rockEdge, n.y)` washed four tenths of a GREY rock over the
+  whole map (sea sd 3.07 → 13.39, mean 40.8 → 54.0) and on the sea's foam edge put a tenth of
+  a foam over the whole ocean (mean 40.8 → 53.8). The average of a threshold over a pixel is
+  only the answer when both sides are equally likely; rock and foam are rare, so widening
+  them past the distance from the input to the edge returns a partial EVERYWHERE. The ramp is
+  different because its two sides are the two tones and the average IS the answer. Both
+  reverts are pinned in `test/world/ghibli/band-limit.test.ts`; don't re-try them without
+  reading why.
+  ⚠️ **And the sea's residual mottle is NOT aliasing.** With every water term limited to 0 it
+  still measures sd 3.0 on a mean of 41 — that is the painterly swell (`SWELL_SCALE` 15 u,
+  band limit 1.0 at every framing the rig can reach) and the long shoreward swell, both
+  intended. The huge soft blobs the `nowater` probe shows over the basin are the ground's own
+  authored 67-unit colour break-up (`cn`) and its beach two-tone, which the sea covers in
+  every real frame — don't chase them.
 - **No `FloatType` texture is ever `LinearFilter`ed.** 32-bit float is not
   texture-filterable in core WebGL 2 — that is `OES_texture_float_linear`, which iOS Safari
   does not expose — and a `LINEAR` sampler on one makes the texture INCOMPLETE, so it samples

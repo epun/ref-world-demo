@@ -41,7 +41,13 @@ import { Color, DoubleSide, ShaderMaterial } from 'three';
 import { GHIBLI } from '../../taste/tokens';
 import { TOON_LIGHTING_GLSL, TOON_VARYINGS_GLSL, toonUniforms } from '../toon';
 import { WIND_FIELD_GLSL } from '../wind';
-import { GG_VARIATION_GLSL, GG_WIND_NOISE_GLSL, createWindUniforms, ggFloat } from './shared';
+import {
+  GG_VARIATION_GLSL,
+  GG_WIND_NOISE_GLSL,
+  createWindUniforms,
+  fbmMean,
+  ggFloat,
+} from './shared';
 
 /** The scatter's `WIND_PROFILE_SWAY`, mirrored (see the header). */
 const SWAY = {
@@ -170,11 +176,23 @@ varying float vH;
 varying float vVar;
 
 void main() {
+  // How coarsely this fragment samples the world — first line, raw varying,
+  // outside every branch (src/world/toon.ts toonUnitsPerPxAt). A canopy at
+  // the zoom floor is a handful of pixels, and a walking creature's
+  // zoomed-out frame is full of them.
+  toonMeasurePixel(vToonWorldPos.xz);
   vec3 n = normalize(vToonNormal);
 
   // Vertical canopy gradient, broken up by noise then quantised into three
   // flat bands the way cel painters block in foliage.
-  float t = smoothstep(0.35, 1.0, vH) + (toonFbm(vToonWorldPos.xz * 1.6, 2) - 0.5) * 0.35;
+  // The break-up is band-limited at its own 1.6 cycles a world unit and fades
+  // to its 2-octave MEAN, not to zero (2026-09-17): the quantise below is a
+  // floor(), so a wobble sampled past nyquist throws neighbouring pixels into
+  // different bands, and at zero the whole canopy would STEP to a different
+  // band rather than settle on the one it averages to.
+  float t = smoothstep(0.35, 1.0, vH)
+    + (mix(${ggFloat(fbmMean(2))}, toonFbm(vToonWorldPos.xz * 1.6, 2), toonBandLimit(1.6))
+      - 0.5) * 0.35;
   float q = clamp(floor(clamp(t, 0.0, 1.0) * 3.0) / 2.0, 0.0, 1.0);
   vec3 canopy = mix(uCanopyDark, uCanopyLight, q);
 
