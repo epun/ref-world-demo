@@ -110,6 +110,7 @@ import { readHatchMode } from './world/hatchmode';
 import { storeNote } from './world/storeline';
 import { start } from './world/scene';
 import { opensOnLandscape, readWorldGame } from './world/game';
+import { planLoad, readFreshLoad, startFresh } from './world/load';
 import { readWorldStyle } from './world/style';
 import { installUiTheme } from './ui/theme';
 import { createTour } from './world/tour';
@@ -549,6 +550,41 @@ function main(): void {
     }
   };
   const moderatorSecret = readModeratorSecret();
+
+  /**
+   * `?fresh=1` — THIS ONE LOAD STARTS THE ROOM EMPTY (src/world/load.ts).
+   *
+   * A testing load, and nothing more (2026-09-17, user ask: *"it doesn't
+   * need to start empty on every load but just for testing. on the actual
+   * demo day we want to make sure that the world saves and is stored."*).
+   * Every load without it restores and heals exactly as it always has, on
+   * every world — there is no build flag, no `<meta>` and nothing in
+   * worlds.json, so there is nothing here that could reach meridian or the
+   * public world by being merged.
+   *
+   * And it leaves the address AT ONCE, the way `?mod=` above does and for a
+   * related reason: the url on the projection is the one people photograph
+   * and the one an operator copies to send round, and a link that empties
+   * the room every time somebody opens it is a trap. Stripped here, so the
+   * reload after this one is an ordinary restoring load.
+   */
+  const freshAsked = readFreshLoad(location.search);
+  if (freshAsked) {
+    params.delete('fresh');
+    history.replaceState(null, '', `${location.pathname}?${params}${location.hash}`);
+  }
+  /**
+   * What this page does about the run before it — decided once, here, and
+   * read by the two places that could bring it back: the store's drawings
+   * and the store's scene. A handset's world view and an installation room
+   * always take the shipped plan (see `planLoad`).
+   */
+  const loadPlan = planLoad({
+    fresh: freshAsked,
+    isPublic,
+    handheld,
+    hasSecret: moderatorSecret.length > 0,
+  });
 
   // ── the landscape mode ────────────────────────────────────────────────────
   /*
@@ -1771,6 +1807,44 @@ function main(): void {
    */
   if (!isPublic) void world.enablePhysics();
 
+  /**
+   * THE EMPTY START, BEFORE ANYTHING IS LOADED (`?fresh=1`, src/world/load.ts).
+   *
+   * Ordered ahead of both loads on purpose: the reset has to land before the
+   * first pull, or this page reads the generation it is about to replace and
+   * announces an epoch it then takes back — every phone in the room told the
+   * world changed, twice. So the two loads wait on this one promise, which
+   * resolves immediately on every ordinary load.
+   *
+   * `absorbStore` is what the poll reads afterwards, and it is FALSE for the
+   * whole run of a fresh load that could not bump the generation: the store
+   * still holds the last run, and standing it up twenty seconds later would
+   * undo the clean start rather than delay it. A drawing made DURING this run
+   * still arrives — it comes over the room's own link, not out of the store.
+   */
+  let absorbStore = loadPlan.absorbStore;
+  /**
+   * The operator's line goes through `say`, which is declared further down —
+   * the poll's own error path reaches it the same way. Held behind an arrow
+   * rather than called straight out of the promise below because a promise
+   * body is a later task and this is the one place that has to say so out
+   * loud: by the time anything here runs, `say` is assigned.
+   */
+  const sayFresh = (line: string): void => say(line);
+  const freshen: Promise<void> = (async () => {
+    const outcome = await startFresh({
+      plan: loadPlan,
+      world: worldName,
+      secret: moderatorSecret,
+    });
+    absorbStore = outcome.absorbStore;
+    if (outcome.note !== null) {
+      sceneStored = outcome.note;
+      refreshScene();
+      sayFresh(outcome.note);
+    }
+  })();
+
   if (isPublic) {
     sceneOutbox = createSceneOutbox({
       // From the tokens, never a literal: one tertiary beat is the shortest
@@ -1786,7 +1860,11 @@ function main(): void {
     });
     // The stroke somebody was in the middle of when they closed the laptop.
     window.addEventListener('pagehide', () => sceneOutbox?.flush());
-    void loadScene();
+    // A FRESH LOAD OPENS ON THE PLAIN. The stored scene is last run's ground
+    // — with the secret it has just been thrown away with the drawings, and
+    // without it there is nothing to throw it away with, so this page simply
+    // does not ask for it. Every other load restores it exactly as before.
+    if (loadPlan.applyStoredScene) void loadScene();
   }
 
   /** The panel's half of all this (src/dev/index.ts `scene` folder). Only in
@@ -2074,7 +2152,11 @@ function main(): void {
       // projection, and on every phone whose world view pulled the same
       // list. They spawn as eggs; the host's roster then says which of them
       // it has already opened, and this page opens exactly those.
-      const added = (await absorb(log, first && hatchMode === 'timer')).length;
+      // `absorbStore` is the `?fresh=1` load's one subtraction and it is
+      // false only there (src/world/load.ts): a page that is starting this
+      // run clean reads the store for its GENERATION — which is what tells
+      // the handsets to step down — and stands none of its drawings up.
+      const added = absorbStore ? (await absorb(log, first && hatchMode === 'timer')).length : 0;
       if (added > 0) saveSession();
       /*
        * NOTHING IS ANNOUNCED ON ARRIVAL (user ask, 2026-09-09).
@@ -2106,8 +2188,14 @@ function main(): void {
     // A world with no residents skips it outright rather than loading and
     // discarding: an empty field is what that world is FOR, so there is
     // nothing to cover up and no reason to spend the request.
-    if (residents === 'none') void pull(true);
-    else void loadSeed().then(() => pull(true));
+    //
+    // Both wait on the empty start (`freshen`), which resolves at once on
+    // every ordinary load: the reset has to land before the first pull reads
+    // the generation. A fresh load skips the seed outright — the residents
+    // are a population too, and an empty room with twenty-three strangers in
+    // it is not the clean start that was asked for.
+    if (residents === 'none' || !loadPlan.absorbStore) void freshen.then(() => pull(true));
+    else void freshen.then(() => loadSeed()).then(() => pull(true));
     window.setInterval(() => void pull(false), PUBLIC_POLL_MS);
   }
 

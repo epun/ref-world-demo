@@ -341,6 +341,61 @@ session — but even then the record is kept, so a recall can still ask for it.
 
 ---
 
+## 4b. The empty load — `?fresh=1`, for testing
+
+> User ask, 2026-09-17, doing test runs on valiocon: *"i want the default load to be
+> empty."* Then, on how far that goes: *"it doesn't need to start empty on every load but
+> just for testing. on the actual demo day we want to make sure that the world saves and is
+> stored."*
+
+Everything above is what a load does. `?fresh=1` on the projection's address is the one
+load that does the opposite — the same event as the panel's `reset world`, performed before
+anything is shown rather than after:
+
+| | a plain load | `?fresh=1` |
+|---|---|---|
+| the store's drawings | stood up, grown (§the first pull) | not read into the world at all |
+| the stored scene | restored in order (§6) | not asked for; the world opens on the plain |
+| the world's generation | unchanged | **+1**, through `/api/moderate` — with the secret |
+| the handsets that drew | re-home themselves (§4a) | **step down to the pad, keeping their drawings** |
+| the address afterwards | unchanged | the flag is stripped, like `?mod=` |
+
+It is a per-LOAD flag, decided in `src/world/load.ts` (`readFreshLoad`, `planLoad`,
+`startFresh`) and read once in `src/main.ts`. There is no `worlds.json` field and no
+`<meta>`: nothing is baked into any build, so no world — meridian and the public world
+first — can inherit it, and the reload after a fresh one is an ordinary restoring load.
+
+Three cases it deliberately leaves alone:
+
+- **a handset's world view.** A phone in a room is a viewer and has to see the live
+  creatures the host is simulating; a phone that emptied the room by looking at it would be
+  the worst reading of this ask. `?fresh=1` on a handheld page is inert — including the
+  phone that is alone on the link and therefore hosting. It is looking at a live room, not
+  opening a run.
+- **an installation world** (no `?world=`). No store, no generation, nothing to reset: a
+  refresh there already is a new world.
+- **a page with no moderator secret.** It cannot bump the generation, so it cannot ask the
+  handsets to step down. It still comes up empty — it ignores the store's drawings and the
+  store's scene for the whole run, not just the first pull — and it says so on screen:
+  `empty on this screen only (no secret — open with ?mod=)`. The phones keep their
+  companions and the pad still refuses them a second drawing, because in the store nothing
+  happened.
+
+A reset that fails for any other reason (wrong secret, no store, unreachable) is reported
+and the load **still comes up empty**: the store is holding the last run, which is exactly
+what this load must not show.
+
+Nothing is ever deleted from a handset (CLAUDE.md, §4a, `test/session/recovery.test.ts`).
+A stepped-down phone keeps its drawing, its keepsake still builds from it, and a recall can
+still ask for it. The projection's own autosaved log is kept too — `shift+R` will restore
+the previous run into a freshly emptied world, which is an operator's deliberate act.
+
+`test/session/freshload.test.ts` pins the plan (a load without the flag is byte-for-byte
+the load that shipped) and the request; `scratch/fresh-load-smoke.mjs` opens the built
+valiocon projection against a mocked store three ways and counts what stands up.
+
+---
+
 ## 5. Where it is wired
 
 | seam | what it records |

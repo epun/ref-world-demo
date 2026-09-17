@@ -35,6 +35,35 @@ One page. Read it before the demo, not during.
    started over — draw again`, keeping its drawing. Reload any other screen
    you have open on the world.
 
+## between test runs — `?fresh=1`
+
+Doing runs back to back and wanting each one to start clean? Open the
+projection as `?host=1&mod=<MODERATOR_SECRET>&fresh=1`. That **one load** does
+what `reset world` does, before anything comes up: the world steps its
+generation, the store's drawings and scene go, the room opens empty, and every
+handset that drew is sent back to the pad keeping its drawing.
+
+Then the flag takes itself off the address — the way `?mod=` does — so the next
+reload is an ordinary load. **On demo day you want that ordinary load**: the
+world saves, the drawings come back grown, the scene comes back, and the
+projection heals itself (below). Nothing about it changed, and there is no
+world configured to start empty.
+
+Two things to know before you use it:
+
+- **without the secret it is local only.** The projection comes up empty and
+  says `empty on this screen only (no secret — open with ?mod=)`. Nothing in
+  the store moved, so the phones from the last run keep their companions and
+  the pad still refuses them a second drawing. It also ignores the store for
+  the rest of that run, so a drawing made while it is open arrives over the
+  room's link but a reload is what it takes to see the store again.
+- **it is the load, not the world.** Open a second projection with `?fresh=1`
+  mid-run and it empties the room out from under the first one. Use it on the
+  one screen, at the start of a run, and never on a link you hand round.
+
+A phone opening `?view=world&fresh=1` does nothing of the sort — a handset is a
+viewer and always sees the live room.
+
 ## during
 
 - `h` hatches every waiting egg, staggered.

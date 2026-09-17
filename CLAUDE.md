@@ -341,6 +341,21 @@ screen what it did — shifted because the ghost panel owns plain `r`. Never rea
 recover — that re-runs a session at its recorded pace; *restore* is the one
 that applies the whole log at once (docs/SESSION.md §4a).
 
+**`?fresh=1` is the one load that starts the room EMPTY — a testing flag, not a
+world setting (2026-09-17: *"i want the default load to be empty"*, then *"it doesn't need
+to start empty on every load but just for testing. on the actual demo day we want to make
+sure that the world saves and is stored."*).** On that load the projection does what `reset
+world` does before anything is shown — generation bumped through `/api/moderate` when the
+page holds the secret, the store's drawings and scene not read in, phones sent back to the
+pad KEEPING their drawings — and then it strips itself from the address the way `?mod=`
+does, so the next reload restores and heals as always. It is deliberately NOT a
+`worlds.json` field and has no `<meta>`, so no world can inherit it; the whole decision is
+`src/world/load.ts` (`readFreshLoad` / `planLoad` / `startFresh`), read once in
+`src/main.ts`, and it is inert on a handset (a phone in a room is a viewer and must see the
+live creatures), inert in an installation world, and still locally empty — saying so — on a
+page with no secret. Don't make it a per-world default (docs/RUNBOOK.md §between test runs,
+docs/SESSION.md §4b).
+
 **Never delete a handset's stored drawing.** It is the only copy that survives
 a projection restart, and two separate code paths used to destroy it on exactly
 the event that made it precious. `test/session/recovery.test.ts` pins both gone.
