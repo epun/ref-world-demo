@@ -387,6 +387,25 @@ export interface LooseEvent extends EventBase {
   item: string;
   x: number;
   z: number;
+  /**
+   * The instance scale it was DRAWN at (2026-09-17, *"objects shrink when
+   * they stick to the character"*).
+   *
+   * Added additively, and the same argument as `StickEvent.r`: the host has
+   * the scatter's instance row when it decides, and a viewer does not — the
+   * placement stopped being drawn the moment it came out of the ground. So
+   * `showLoose` fell back to 1 and a library model that stood at 2.4 lay
+   * there at a third of its size on every screen but the one that decided.
+   *
+   * And it does not end there: `LooseMeshes.show` is idempotent and hands
+   * back the mesh it already made, so a prop drawn at 1 while it lay on the
+   * ground kept that scale through the `settle` that followed it and through
+   * the pickup after that.
+   *
+   * Optional, so an old log and an old page read exactly as they did: absent
+   * falls back to the instance row, then to 1.
+   */
+  scale?: number;
 }
 
 /**
