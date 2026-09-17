@@ -408,3 +408,44 @@ there is range under it.
 `sampleLandscape` and `coastInland`, so it follows a coast that moves), `sampleBodyGrid` the
 raster, and `mapPalette` the two mark values. The body repaints once per map revision (the
 scatter's `rebuildVersion`, plus the landscape and island switches) and blits per frame.
+
+### 9a (continued). The leaderboard's paper, and its one capital — user override *(2026-09-17)* **[D]**
+
+**Two user decisions, recorded as two.** They arrived together, about the projection's top
+ten (`src/ui/leaderboard.ts`, the same day's earlier ask): *"let's title it 'Leaderboard'.
+Give it a white background and style it in the same style as we've done for the rest of ref,
+with the doodle lines."* — and the title was asked for a second time with the capital after
+it was first set in lowercase.
+
+**1. The paper box relaxes §4's "no filled panels" for this element.** The board stands on
+paper inside the project's own wavering hand-drawn hairline: `wavyBorderPoints` +
+`wavyBorderPath` from `src/phone/minimap.ts`, at `mapBorderInset` off `mapMarkScale` and a
+1.25 stroke — the identical generator, inset and weight the join code's frame
+(`src/ui/joinqr.ts`) and the minimap's border already use, emitted as an svg path because
+this box is type in the dom rather than a canvas (`src/phone/worldlink.ts` draws its button
+the same way).
+
+It is **the same override those two corners are already under**, not a new one: the join
+code's field is `WORLD.light` and the minimap's is `SURFACE.ground`, both paper inside a
+wavering hairline, and the mark-set lint has carried the minimap's as a ruled exemption since
+the qa audit (p8). This box takes the **join code's** value — `WORLD.light`, the whitest paper
+in the palette — because the join code is the other thing on that screen that is a card of
+paper laid on the world rather than a window into it. **Nothing else comes with it:** no
+shadow, no radius, no second fill, no new mark type. `MARK_LINT_TARGETS` in `src/dev/index.ts`
+samples `.world-leaderboard` and reports its fill as this ruling, so the gate stays a button
+rather than a memo.
+
+**2. The title carries the one capital in the product.** `Leaderboard` is a recorded override
+of §5 (*no uppercase, anywhere*, confidence 1.00) for **exactly one string**, held in
+`LEADERBOARD_TITLE` with the static gate's own scoped `gate-allow-uppercase` hatch on its
+line — the scan is not widened for anybody else. Everything around it is untouched: room
+codes still render `xkcd`, the way out of the device still says `view world`, the ball readout
+still says `34cm 5mm`, and every creature name on this very board is still lowercased at its
+source (`src/creatures/naming.ts`).
+
+**Where it lives.** `src/ui/leaderboard.ts` — `framePath`/`frameInset` are the pure border
+(so the loop is testable without a browser and identical on every device), `boardHeight` is
+the paper's size for a field of *n*, and the box's height rides a ζ≥1 spring so it grows and
+shrinks with the field instead of standing at ten rows over an empty world. Katamari worlds
+only, projection only, behind a dynamic import: `test/ui/leaderboard.test.ts` pins all of it,
+and the public build is byte-identical.

@@ -10,24 +10,42 @@
  * (src/ui/size.ts); this answers "who is winning", and the two never appear
  * on the same screen: the readout is a handset's and this is a wall's.
  *
- * THE MARKS, and there are two (TASTE §4 — `icon` + `ruleLine` + `border`,
+ * THE MARKS, and there are three (TASTE §4 — `icon` + `ruleLine` + `border`,
  * the world brief's #1 defining signal at confidence 1.00):
  *
+ * - a BORDER: the project's own wavering hand-drawn loop on paper, which is
+ *   the frame the join code and the minimap already stand in. Same
+ *   generator, same smoothing, same inset and same 1.25 hairline —
+ *   `wavyBorderPoints` + `wavyBorderPath` off src/phone/minimap.ts, emitted
+ *   as an svg path because this box is type in the dom rather than a canvas
+ *   (src/phone/worldlink.ts draws its button the same way). A second
+ *   implementation would be a second hand;
  * - TYPE, in the world view's own face and size — the same one `.world-say`,
  *   `.draw-hint` and the ball readout are set in, because this is another
  *   line of the world's own chrome and a second face here would be a second
- *   voice. Lowercase throughout (TASTE §5): the header word, every name (the
- *   name is lowercased at its source, src/creatures/naming.ts) and the units;
- * - a single HAIRLINE RULE under the header — the world brief's *"reserve a
- *   single hairline rule to divide the frame"*. One, under `biggest`, and
- *   none between the rows: ten rules down the left of a projection is a
+ *   voice. Lowercase throughout (TASTE §5): the title, every name (the name
+ *   is lowercased at its source, src/creatures/naming.ts) and the units;
+ * - a single HAIRLINE RULE under the title — the world brief's *"reserve a
+ *   single hairline rule to divide the frame"*. One, under `leaderboard`,
+ *   and none between the rows: ten rules down the left of a projection is a
  *   table, and the density axis is the design (TASTE §2.3).
  *
- * No filled panel, no card, no background, no shadow, and no rank icons: the
- * edge is a layout, not a surface. It sits at the TOP of the left edge
- * because the bottom-left corner is the join code (src/ui/joinqr.ts) and the
- * two must never reach each other — the rows are capped at ten and the block
- * is one fixed height, so the leaderboard cannot grow into the qr.
+ * THE PAPER IS A USER OVERRIDE of §4's "no filled panels", recorded in
+ * docs/TASTE.md §9b: *"Give it a white background and style it in the same
+ * style as we've done for the rest of ref, with the doodle lines."*
+ * (2026-09-17). It is the same override the two corners it now matches are
+ * already under — the join code's field is `WORLD.light` and the minimap's
+ * is `SURFACE.ground`, both of them paper inside a wavering hairline, and
+ * the mark-set lint has carried the minimap's as a ruled exemption since the
+ * qa audit. This box takes the JOIN CODE's value, because the join code is
+ * the other thing on this screen that is a card of paper laid on the world
+ * rather than a window into it, and `WORLD.light` is the whitest paper this
+ * palette has. Nothing else comes with it: no shadow, no radius, no second
+ * fill. The lint samples this element by name.
+ *
+ * It sits at the TOP of the left edge because the bottom-left corner is the
+ * join code (src/ui/joinqr.ts) and the two must never reach each other — the
+ * rows are capped at ten, so the tallest the box can ever be is ten rows.
  *
  * THE MOTION (TASTE §2.1, confidence 1.00 — no overshoot, no bounce, no hard
  * cuts):
@@ -46,6 +64,10 @@
  *   rolls — and through the SAME formatter (`formatLength`, imported from
  *   src/ui/size.ts), so a ball cannot be one length on the wall and another
  *   in its owner's hand;
+ * - the BOX grows and shrinks with the field on a spring of its own, so the
+ *   paper is never taller than the rows standing on it and never cuts one
+ *   off. The border is re-emitted at each new size — the same hand redrawing
+ *   the same loop, which is what the generator is deterministic for;
  * - the whole block drifts imperceptibly, forever, like everything else on
  *   screen (TASTE §3).
  *
@@ -64,6 +86,7 @@
 import { MOTION, WORLD } from '../taste/tokens';
 import { Spring } from '../motion/spring';
 import { sampleDrift } from '../motion/ambient';
+import { mapBorderInset, mapMarkScale, wavyBorderPath, wavyBorderPoints } from '../phone/minimap';
 import { formatLength, metresOf } from './size';
 
 // ── pure helpers ─────────────────────────────────────────────────────────────
@@ -139,10 +162,99 @@ export function rowOffset(rank: number): number {
   return rank * ROW_PX;
 }
 
+/**
+ * The title, and the only copy this module has.
+ *
+ * `Leaderboard`, with the capital — a RECORDED USER OVERRIDE of TASTE §5
+ * (*"no uppercase. anywhere"*, confidence 1.00) for this ONE string, asked
+ * for twice on 2026-09-17 and written down in docs/TASTE.md §9a beside the
+ * paper. Nothing else in the product moves: the room code still renders
+ * `xkcd`, the way out of the device still says `view world`, the ball
+ * readout still says `34cm 5mm`, and every name on this very board is still
+ * lowercased at its source (src/creatures/naming.ts).
+ *
+ * It is a named constant so that the override is one string in one place,
+ * and the line carries the static gate's own scoped escape hatch
+ * (`gate-allow-uppercase`, scripts/gates/static.ts) rather than the scan
+ * being widened for everybody.
+ */
+// gate-allow-uppercase — recorded user override, 2026-09-17 (docs/TASTE.md §9a)
+export const LEADERBOARD_TITLE = 'Leaderboard';
+
+/**
+ * Stable seed for this box — its border's waver and its drift channel.
+ *
+ * Its own, not the map's (129.4) and not the join code's (57.3): three
+ * boxes drawn from one seed would be three copies of one wobble, and they
+ * are all on screen at once.
+ */
+export const BOARD_SEED = 71.6;
+
+/** The box's width, css px. **[D]** `264` is the size the join code and the
+ * minimap cap at, so the three boxes on this screen are one family. */
+export const BOARD_W_PX = 264;
+/**
+ * Paper kept clear inside the wavering border, css px. **[D]**
+ *
+ * The border itself sits `frameInset` (9) in, so this leaves nine more
+ * between the hairline and the type. Generous negative space is one of the
+ * two briefs' shared signals, and at 15 the last row's units came within five
+ * pixels of the border (measured in the headless run).
+ */
+export const BOARD_PAD_PX = 18;
+/**
+ * Clear paper between the hairline rule and the top of the list, css px.
+ * **[D]** — a user ask (2026-09-17, *"16px of padding between the divider
+ * and the top of the list"*); before it the first row sat flush on the rule.
+ * Applied as the rows block's top margin and counted in `TITLE_BLOCK_PX`.
+ */
+export const LIST_GAP_PX = 16;
+/**
+ * The title's block, css px. **[D]** Its 14px/1.4 line (19.6), the hairline
+ * rule's own 0.45em of breathing room (6.3), the rule itself (1) and
+ * `LIST_GAP_PX` between the rule and the first row, rounded up. The gap is
+ * counted HERE rather than left to the rows, so `boardHeight` is the whole
+ * truth about how tall the paper is.
+ */
+export const TITLE_BLOCK_PX = Math.ceil(19.6 + 6.3 + 1 + LIST_GAP_PX);
+
+/**
+ * How tall the box is for a field of `rows`, css px.
+ *
+ * The paper follows the field: an empty board is not drawn at all, and a
+ * board of three is three rows tall rather than a tenth of the screen with
+ * seven rows of nothing on it. Pure, so the frame below can be generated
+ * without a browser.
+ */
+export function boardHeight(rows: number): number {
+  const n = Math.max(0, Math.min(LEADERBOARD_ROWS, Math.floor(rows)));
+  return BOARD_PAD_PX * 2 + TITLE_BLOCK_PX + n * ROW_PX;
+}
+
+/**
+ * The border's inset for a box this size — `mapBorderInset` off the map's
+ * own mark scale, which is the expression the join code uses and the map
+ * uses, so the three hairlines sit the same distance inside their edges.
+ */
+export function frameInset(w: number, h: number): number {
+  return mapBorderInset(mapMarkScale(Math.min(w, h)));
+}
+
+/**
+ * The frame, as svg path data: the project's own wavering loop at this size.
+ *
+ * `wavyBorderPoints` + `wavyBorderPath` from src/phone/minimap.ts — the
+ * identical generator and midpoint smoothing the minimap's border, the join
+ * code's frame and the way-back button are all drawn with. Deterministic per
+ * size and seed, so the same box is the same hand on every device.
+ */
+export function framePath(w: number, h: number, seed = BOARD_SEED): string {
+  if (!(w > 2) || !(h > 2)) return '';
+  return wavyBorderPath(wavyBorderPoints(Math.round(w), Math.round(h), frameInset(w, h), seed));
+}
+
 // ── the edge ─────────────────────────────────────────────────────────────────
 
-/** Stable seed for this block's drift channel. */
-const BOARD_SEED = 71.6;
 /**
  * Nominal scale the drift amplitude is a fraction of, px — the minimap's
  * 140, which is about this block's own span. `MOTION` owns the fraction.
@@ -165,39 +277,66 @@ function ensureStyle(): void {
   left: calc(env(safe-area-inset-left, 0px) + 4vw);
   top: calc(env(safe-area-inset-top, 0px) + 4vw);
   z-index: 5;
-  width: clamp(224px, 18vmin, 300px);
+  width: ${BOARD_W_PX}px;
   color: ${WORLD.ink};
   font: 400 14px/1.4 ui-sans-serif, system-ui, sans-serif;
   pointer-events: none;
 }
 /* The drift layer, written per frame: nothing fully arrests (TASTE §3). It
-   is its own element because the slide below owns a transform of its own. */
+   is its own element because the box below owns a transform of its own. */
 .world-leaderboard-drift { display: block; }
 /*
- * The header, and the one hairline rule. Out of the way and transparent
- * until there is a ball anywhere in the world, then it comes down into
- * place over t.secondary on the drift-settle curve — the css-side
- * equivalent of the ζ≥1 spring, so no bounce by construction.
+ * The paper. Its HEIGHT is written per frame off a ζ≥1 spring, so the box
+ * grows with the field instead of standing at its full ten rows over an
+ * empty world. No background here and no radius: the fill is the svg path
+ * below, because the shape is a drawn loop and a css box would be a
+ * rectangle — nothing rectilinear (TASTE §2.5).
  */
-.world-leaderboard-head {
-  padding-bottom: 0.45em;
-  border-bottom: 1px solid ${WORLD.ink};
+.world-leaderboard-box {
+  position: relative;
+  /* The written height IS the paper's height, padding included — so the
+     frame drawn at that size and the box on screen are the same box. */
+  box-sizing: border-box;
+  padding: ${BOARD_PAD_PX}px;
   opacity: 0;
   transform: translateY(-8px);
   transition:
     opacity ${MOTION.secondaryMs}ms ${MOTION.settleCurve},
     transform ${MOTION.secondaryMs}ms ${MOTION.settleCurve};
 }
-.world-leaderboard-head.in {
+.world-leaderboard-box.in {
   opacity: 1;
   transform: translateY(0);
 }
-/* The rows are laid out by transform inside a block of fixed height, so a
-   rank change slides and never reflows. Ten rows is the cap and the height. */
+/* The frame, under the type and over nothing: the world shows through the
+   paper's own value, which is the join code's arrangement exactly. */
+.world-leaderboard-frame {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  overflow: visible;
+}
+.world-leaderboard-paper {
+  fill: ${WORLD.light};
+  stroke: ${WORLD.ink};
+  stroke-width: 1.25;
+  stroke-linejoin: round;
+}
+/* The title, and the one hairline rule under it. */
+.world-leaderboard-head {
+  position: relative;
+  padding-bottom: 0.45em;
+  border-bottom: 1px solid ${WORLD.ink};
+}
+/* The rows are laid out by transform inside a block whose height is written
+   per frame, so a rank change slides and never reflows. */
 .world-leaderboard-rows {
   position: relative;
-  height: ${LEADERBOARD_ROWS * ROW_PX}px;
-  margin-top: 0.4em;
+  margin-top: ${LIST_GAP_PX}px;
+  height: 0;
   overflow: hidden;
 }
 .world-leaderboard-row {
@@ -307,16 +446,34 @@ export function installLeaderboard(opts: LeaderboardOptions): LeaderboardHandle 
   el.className = 'world-leaderboard';
   // Findable, and it says what it is rather than reading out a bare column.
   el.setAttribute('role', 'status');
-  el.setAttribute('aria-label', 'biggest balls');
+  el.setAttribute('aria-label', LEADERBOARD_TITLE);
 
   const drift = document.createElement('div');
   drift.className = 'world-leaderboard-drift';
+  const box = document.createElement('div');
+  box.className = 'world-leaderboard-box';
+
+  /*
+   * The frame: one wavering loop on paper, the join code's own arrangement
+   * in the dom instead of on a canvas (src/phone/worldlink.ts does the same
+   * for the way-back button). `aria-hidden` — it is the shape of the thing
+   * the type is already announcing.
+   */
+  const frameSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  frameSvg.setAttribute('class', 'world-leaderboard-frame');
+  frameSvg.setAttribute('aria-hidden', 'true');
+  frameSvg.setAttribute('preserveAspectRatio', 'none');
+  const paper = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  paper.setAttribute('class', 'world-leaderboard-paper');
+  frameSvg.appendChild(paper);
+
   const head = document.createElement('div');
   head.className = 'world-leaderboard-head';
-  head.textContent = 'biggest';
+  head.textContent = LEADERBOARD_TITLE;
   const rowsEl = document.createElement('div');
   rowsEl.className = 'world-leaderboard-rows';
-  drift.append(head, rowsEl);
+  box.append(frameSvg, head, rowsEl);
+  drift.appendChild(box);
   el.appendChild(drift);
   opts.mount.appendChild(el);
 
@@ -337,6 +494,18 @@ export function installLeaderboard(opts: LeaderboardOptions): LeaderboardHandle 
   let shown = false;
   let last = 0;
   let lastRank = 0;
+  /*
+   * The paper's own height, on a ζ≥1 spring over `MOTION.secondaryMs`: the
+   * box grows as the field fills and shrinks again as creatures retire, and
+   * it never cuts a row off because the row count it is chasing counts the
+   * rows still sliding out as well. It starts at the height of an EMPTY
+   * board rather than at zero — a box that grew from nothing would be a
+   * pop, and the whole thing slides in as one anyway (TASTE §2.1).
+   */
+  const boxH = new Spring(boardHeight(0), { settleMs: MOTION.secondaryMs });
+  /** The size the frame was last drawn at, so the loop is re-emitted only
+   * when it has actually changed (src/phone/worldlink.ts's own guard). */
+  let drawnAt = '';
 
   const makeRow = (id: string, rank: number, diameter: number): Row => {
     const rowEl = document.createElement('div');
@@ -410,7 +579,7 @@ export function installLeaderboard(opts: LeaderboardOptions): LeaderboardHandle 
     const any = ranked.length > 0;
     if (any !== shown) {
       shown = any;
-      head.classList.toggle('in', any);
+      box.classList.toggle('in', any);
     }
   };
 
@@ -427,6 +596,27 @@ export function installLeaderboard(opts: LeaderboardOptions): LeaderboardHandle 
     // world where nothing has changed size in a minute (TASTE §3).
     const d = sampleDrift(now, BOARD_SEED, DRIFT_SCALE);
     drift.style.transform = `translate(${d.x.toFixed(3)}px, ${d.y.toFixed(3)}px)`;
+
+    /*
+     * The paper, at the height of the field standing on it — every row this
+     * board holds, the ones on their way out included, so a leaving row
+     * still has paper under it while it goes.
+     */
+    boxH.retarget(boardHeight(rows.size));
+    boxH.update(dt);
+    const h = boxH.value;
+    rowsEl.style.height = `${Math.max(0, h - boardHeight(0)).toFixed(2)}px`;
+    box.style.height = `${h.toFixed(2)}px`;
+    // …and the border re-emitted at that size: the same hand redrawing the
+    // same loop, which is what makes it deterministic per size and seed.
+    const fw = Math.round(BOARD_W_PX);
+    const fh = Math.round(h);
+    const key = `${fw}x${fh}`;
+    if (key !== drawnAt) {
+      drawnAt = key;
+      frameSvg.setAttribute('viewBox', `0 0 ${fw} ${fh}`);
+      paper.setAttribute('d', framePath(fw, fh));
+    }
 
     for (const row of [...rows.values()]) {
       row.y.update(dt);
@@ -511,6 +701,7 @@ export function installLeaderboard(opts: LeaderboardOptions): LeaderboardHandle 
         row.fade.dispose();
         row.size.dispose();
       }
+      boxH.dispose();
       rows.clear();
       el.remove();
     },

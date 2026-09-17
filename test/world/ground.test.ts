@@ -89,14 +89,17 @@ describe('ground — what gets built', () => {
     // the QUAD and not the count — a quad wider than a terrace riser washes
     // the drawn contour out (PLAN §7.1 measured it, and `riserRun` in
     // src/world/field.ts re-measures it per scale: the riser's own run is
-    // 2.101 units at 1.1, so a 1.25-unit quad still puts more than one vertex
+    // 1.906 units at 1.32, so a 1.25-unit quad still puts more than one vertex
     // across it while a 2.5-unit one would be wider than the riser).
     expect(FIELD_SEGMENTS).toBeLessThanOrEqual(320);
-    // `toBeCloseTo` and not `toBeLessThanOrEqual`: since `MAP_SCALE` became
-    // 1.1 the side is 400 · 1.1 = 440.00000000000006 and the quad comes out
-    // 1.2500000000000002 — the same 1.25 with the last bit of a float that is
-    // not exact in binary (2026-09-17).
-    expect(fieldQuad()).toBeCloseTo(1.25, 9);
+    // HELD TO WITHIN HALF A SEGMENT, not exactly — which is what a
+    // non-integer `MAP_SCALE` costs: the count is
+    // `round(FIELD_SEGMENTS · MAP_SCALE)`, and at 1.32 that rounds 422.4 down
+    // to 422, so the quad is 528 / 422 = 1.25118 (2026-09-17; at 1.1 it came
+    // out 1.25 to the last bit because 320 · 1.1 is already whole). The
+    // tolerance below is the rounding's own arithmetic and nothing more: half
+    // a segment out of the whole side.
+    expect(Math.abs(fieldQuad() - 1.25)).toBeLessThanOrEqual(1.25 * (0.5 / fieldSegments()));
     const index = field().geometry.getIndex();
     expect(index).not.toBeNull();
     expect(index!.count / 3).toBe(fieldSegments() * fieldSegments() * 2);

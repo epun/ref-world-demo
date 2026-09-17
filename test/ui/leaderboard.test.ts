@@ -20,9 +20,13 @@
  *    at it (TASTE §2.1, no hard cuts). A new entrant slides in, a dropped
  *    one slides out before it leaves the page, and nothing shows at all in a
  *    world with no balls in it.
- * 5. THE MARK SET. `icon` + `ruleLine` + `border` and nothing else (TASTE
- *    §4): the sheet is read back and checked for a background, a card and a
- *    shadow.
+ * 5. THE MARKS. The PAPER BOX — a recorded user override of §4's "no filled
+ *    panels" for this element (docs/TASTE.md §9a) — is drawn with the shared
+ *    wavering generator at the shared inset, filled with the join code's own
+ *    paper token, and it brings nothing else with it: no shadow, no radius.
+ *    The one hairline rule is still one.
+ * 6. THE TITLE. `Leaderboard`, the product's one recorded capital, in one
+ *    constant — and every other string on the board still lowercase.
  *
  * …and the wiring, read out of src/main.ts: the board is behind the game flag
  * and behind a dynamic import, and it is mounted on the PROJECTION only.
@@ -31,16 +35,33 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { find, stubDom, type StubEl } from './stubdom';
 import {
+  BOARD_PAD_PX,
+  BOARD_SEED,
+  BOARD_W_PX,
   LEADERBOARD_ROWS,
+  LEADERBOARD_TITLE,
+  LIST_GAP_PX,
   RERANK_MS,
   ROW_PX,
+  TITLE_BLOCK_PX,
+  boardHeight,
   displayName,
+  frameInset,
+  framePath,
   installLeaderboard,
   rankEntries,
   rowOffset,
   type LeaderboardEntry,
 } from '../../src/ui/leaderboard';
+import {
+  mapBorderInset,
+  mapMarkScale,
+  wavyBorderPath,
+  wavyBorderPoints,
+} from '../../src/phone/minimap';
+import { WORLD } from '../../src/taste/tokens';
 import { formatLength, metresOf } from '../../src/ui/size';
 import { MOTION } from '../../src/taste/tokens';
 
@@ -144,139 +165,18 @@ describe('the cadence and the layout are tokens, not literals', () => {
 
 // ── the board, against a recording DOM ───────────────────────────────────────
 // This project keeps no jsdom (see test/ui/size.test.ts, test/phone/keepui.
-// test.ts): what is worth pinning here — what the rows say, where they are
-// sliding to, and whether they leave — is all observable on a recorder.
+// test.ts): what is worth pinning here — what the rows say, how big the paper
+// is, where they are sliding to, and whether they leave — is all observable on
+// the shared recorder in test/ui/stubdom.ts.
 
-interface StubEl {
-  tag: string;
-  id: string;
-  className: string;
-  textContent: string;
-  style: Record<string, string>;
-  attrs: Record<string, string>;
-  classes: Set<string>;
-  classList: {
-    add(name: string): void;
-    remove(name: string): void;
-    contains(name: string): boolean;
-    toggle(name: string, on?: boolean): void;
-  };
-  children: StubEl[];
-  parent: StubEl | null;
-  setAttribute(name: string, value: string): void;
-  appendChild(child: StubEl): StubEl;
-  append(...kids: StubEl[]): void;
-  remove(): void;
-}
 
-function makeEl(tag: string): StubEl {
-  const el: StubEl = {
-    tag,
-    id: '',
-    className: '',
-    textContent: '',
-    style: {},
-    attrs: {},
-    classes: new Set<string>(),
-    classList: {
-      add: (name: string): void => void el.classes.add(name),
-      remove: (name: string): void => void el.classes.delete(name),
-      contains: (name: string): boolean => el.classes.has(name),
-      toggle: (name: string, on?: boolean): void => {
-        const next = on ?? !el.classes.has(name);
-        if (next) el.classes.add(name);
-        else el.classes.delete(name);
-      },
-    },
-    children: [],
-    parent: null,
-    setAttribute(name: string, value: string): void {
-      el.attrs[name] = value;
-    },
-    appendChild(child: StubEl): StubEl {
-      child.parent = el;
-      el.children.push(child);
-      return child;
-    },
-    append(...kids: StubEl[]): void {
-      for (const kid of kids) el.appendChild(kid);
-    },
-    remove(): void {
-      const at = el.parent?.children.indexOf(el) ?? -1;
-      if (el.parent && at >= 0) el.parent.children.splice(at, 1);
-      el.parent = null;
-    },
-  };
-  return el;
-}
-
-function find(root: StubEl, className: string): StubEl | null {
-  if (root.className === className) return root;
-  for (const kid of root.children) {
-    const hit = find(kid, className);
-    if (hit) return hit;
-  }
-  return null;
-}
-
-function stubDom(): {
-  mount: StubEl;
-  head: StubEl;
-  step(now: number): void;
-  restore(): void;
-} {
-  const head = makeEl('head');
-  const mount = makeEl('body');
-  const styles = new Map<string, StubEl>();
-  let pending: FrameRequestCallback | null = null;
-
-  const globals = globalThis as Record<string, unknown>;
-  const before = {
-    document: globals.document,
-    raf: globals.requestAnimationFrame,
-    caf: globals.cancelAnimationFrame,
-  };
-  globals.document = {
-    hidden: false,
-    head,
-    getElementById: (id: string): StubEl | null => styles.get(id) ?? null,
-    createElement: (tag: string): StubEl => {
-      const el = makeEl(tag);
-      if (tag === 'style') {
-        Object.defineProperty(el, 'id', {
-          get: () => el.attrs['id'] ?? '',
-          set: (value: string) => {
-            el.attrs['id'] = value;
-            styles.set(value, el);
-          },
-        });
-      }
-      return el;
-    },
-    addEventListener: (): void => {},
-    removeEventListener: (): void => {},
-  };
-  globals.requestAnimationFrame = (cb: FrameRequestCallback): number => {
-    pending = cb;
-    return 1;
-  };
-  globals.cancelAnimationFrame = (): void => {
-    pending = null;
-  };
-  return {
-    mount,
-    head,
-    step: (now: number): void => {
-      const cb = pending;
-      pending = null;
-      cb?.(now);
-    },
-    restore: (): void => {
-      globals.document = before.document;
-      globals.requestAnimationFrame = before.raf;
-      globals.cancelAnimationFrame = before.caf;
-    },
-  };
+/**
+ * The sheet's DECLARATIONS, with its comments blanked — the same masking the
+ * static gate does before it scans (scripts/gates/static.ts), so a comment
+ * that says the word `background` is not read as one.
+ */
+function declarations(sheet: string): string {
+  return sheet.replace(/\/\*[\s\S]*?\*\//g, ' ');
 }
 
 /** Drive `frames` throttled frames, 40ms apart. */
@@ -304,9 +204,9 @@ describe('the board mounts, ranks, and leaves cleanly', () => {
     run(dom, 0, 30);
     expect(handle.shown()).toBe(false);
     expect(handle.rows()).toEqual([]);
-    const head = find(handle.el as unknown as StubEl, 'world-leaderboard-head')!;
-    // No empty header: the word is in the element, but it has not slid in.
-    expect(head.classList.contains('in')).toBe(false);
+    const box = find(handle.el as unknown as StubEl, 'world-leaderboard-box')!;
+    // No empty board: the title is in the element, but it has not slid in.
+    expect(box.classList.contains('in')).toBe(false);
     const rows = find(handle.el as unknown as StubEl, 'world-leaderboard-rows')!;
     expect(rows.children.length).toBe(0);
     handle.dispose();
@@ -506,27 +406,85 @@ describe('the board mounts, ranks, and leaves cleanly', () => {
     dom.restore();
   });
 
-  it('is marks only — no filled panel, no card, no shadow (TASTE §4)', () => {
+  it('brings the paper and NOTHING else with it (TASTE §4, docs §9a)', () => {
     const dom = stubDom();
     const handle = installLeaderboard({
       entries: () => [{ id: 'a', diameter: 1 }],
       mount: dom.mount as unknown as HTMLElement,
     });
-    const sheet = dom.head.children[0]!.textContent;
-    // The one hairline rule, under the header…
+    const sheet = declarations(dom.head.children[0]!.textContent);
+    // The one hairline rule, under the title…
     expect(sheet).toContain('border-bottom: 1px solid');
     expect([...sheet.matchAll(/border-bottom/g)].length).toBe(1);
-    // …and the marks that are not in this taste's vocabulary are not here.
+    // …the paper, which is the recorded override: the JOIN CODE's own value,
+    // and drawn as a fill on the wavering path rather than a css box.
+    expect(sheet).toContain(`fill: ${WORLD.light}`);
+    expect(sheet).toContain(`stroke: ${WORLD.ink}`);
+    expect(sheet).toContain('stroke-width: 1.25');
+    // …and the marks that are still not in this taste's vocabulary.
     expect(sheet).not.toMatch(/\bbackground\b/);
     expect(sheet).not.toMatch(/box-shadow/);
     expect(sheet).not.toMatch(/\bfilter\s*:\s*drop-shadow/);
     expect(sheet).not.toMatch(/border-radius/);
     expect(sheet).not.toMatch(/\b(?:linear|ease-in-out)\b/);
-    // The header word and the label a screen reader reads are lowercase.
-    const head = find(handle.el as unknown as StubEl, 'world-leaderboard-head')!;
-    expect(head.textContent).toBe('biggest');
-    const label = (handle.el as unknown as StubEl).attrs['aria-label']!;
-    expect(label).toBe(label.toLowerCase());
+    handle.dispose();
+    dom.restore();
+  });
+
+  it('draws the frame with the shared generator, at the shared inset', () => {
+    const dom = stubDom();
+    const handle = installLeaderboard({
+      entries: () => [
+        { id: 'a', diameter: 3 },
+        { id: 'b', diameter: 1 },
+      ],
+      mount: dom.mount as unknown as HTMLElement,
+    });
+    run(dom, 0, 300);
+    const svg = find(handle.el as unknown as StubEl, 'world-leaderboard-frame')!;
+    const path = find(handle.el as unknown as StubEl, 'world-leaderboard-paper')!;
+    const h = Math.round(boardHeight(2));
+    // The box settled at the height of the field standing on it…
+    expect(svg.attrs['viewBox']).toBe(`0 0 ${BOARD_W_PX} ${h}`);
+    // …and the loop is the minimap's and the join code's own hand, not a
+    // second one: the same points, smoothing, inset and seed.
+    expect(path.attrs['d']).toBe(
+      wavyBorderPath(
+        wavyBorderPoints(BOARD_W_PX, h, mapBorderInset(mapMarkScale(Math.min(BOARD_W_PX, h))), BOARD_SEED),
+      ),
+    );
+    expect(path.attrs['d']).toBe(framePath(BOARD_W_PX, h));
+    expect(frameInset(BOARD_W_PX, h)).toBe(
+      mapBorderInset(mapMarkScale(Math.min(BOARD_W_PX, h))),
+    );
+    // A wavering loop of quadratics, never a rectangle (TASTE §2.5).
+    expect(path.attrs['d']).toMatch(/^M .* Q .* Z$/);
+    handle.dispose();
+    dom.restore();
+  });
+
+  it('grows the paper with the field instead of jumping to it', () => {
+    const dom = stubDom();
+    const sizes = new Map<string, number>([['a', 4]]);
+    const handle = installLeaderboard({
+      entries: () => [...sizes].map(([id, diameter]) => ({ id, diameter })),
+      mount: dom.mount as unknown as HTMLElement,
+    });
+    let t = run(dom, 0, 300);
+    const box = find(handle.el as unknown as StubEl, 'world-leaderboard-box')!;
+    const oneRow = Number.parseFloat(box.style['height']!);
+    expect(oneRow).toBeCloseTo(boardHeight(1), 1);
+
+    sizes.set('b', 2);
+    sizes.set('c', 1);
+    t = run(dom, t, Math.ceil(RERANK_MS / 40) + 1);
+    const growing = Number.parseFloat(box.style['height']!);
+    // On its way up, not there yet: a box that resized in one frame would
+    // be a cut (TASTE §2.1).
+    expect(growing).toBeGreaterThan(oneRow);
+    expect(growing).toBeLessThan(boardHeight(3));
+    run(dom, t, 300);
+    expect(Number.parseFloat(box.style['height']!)).toBeCloseTo(boardHeight(3), 1);
     handle.dispose();
     dom.restore();
   });
@@ -538,12 +496,93 @@ describe('the board mounts, ranks, and leaves cleanly', () => {
       mount: dom.mount as unknown as HTMLElement,
     });
     const sheet = dom.head.children[0]!.textContent;
-    // One fixed height, ten rows of it: the block's extent does not depend
-    // on how many creatures are in the room.
-    expect(sheet).toContain(`height: ${LEADERBOARD_ROWS * ROW_PX}px`);
+    expect(sheet).toContain(`width: ${BOARD_W_PX}px`);
     expect(sheet).toContain('top: calc(env(safe-area-inset-top, 0px) + 4vw)');
+    // Ten rows is the cap AND the tallest the paper can ever be.
+    expect(boardHeight(LEADERBOARD_ROWS)).toBe(
+      BOARD_PAD_PX * 2 + TITLE_BLOCK_PX + LEADERBOARD_ROWS * ROW_PX,
+    );
+    expect(boardHeight(40)).toBe(boardHeight(LEADERBOARD_ROWS));
+    expect(boardHeight(0)).toBeLessThan(boardHeight(1));
     handle.dispose();
     dom.restore();
+  });
+
+  it('keeps 16px of paper between the rule and the top of the list (user ask, 2026-09-17)', () => {
+    const dom = stubDom();
+    const handle = installLeaderboard({
+      entries: () => [{ id: 'a', diameter: 1 }],
+      mount: dom.mount as unknown as HTMLElement,
+    });
+    const sheet = dom.head.children[0]!.textContent;
+    expect(LIST_GAP_PX).toBe(16);
+    // The gap is the rows block's top margin, not a margin on the first row,
+    // so a rank change never moves it…
+    const rowsRule = /\.world-leaderboard-rows\s*\{[^}]*\}/.exec(sheet)?.[0] ?? '';
+    expect(rowsRule).toContain(`margin-top: ${LIST_GAP_PX}px`);
+    expect(/\.world-leaderboard-row\s*\{[^}]*\}/.exec(sheet)?.[0] ?? '').not.toMatch(/margin-top/);
+    // …and the paper counts it: the title block covers the 14px/1.4 line, the
+    // rule's 0.45em of room, the rule itself and the gap.
+    expect(TITLE_BLOCK_PX).toBeGreaterThanOrEqual(19.6 + 6.3 + 1 + LIST_GAP_PX);
+    expect(TITLE_BLOCK_PX).toBeLessThan(19.6 + 6.3 + 1 + LIST_GAP_PX + 1);
+    handle.dispose();
+    dom.restore();
+  });
+});
+
+describe('the title — one recorded capital, and nothing else moves', () => {
+  const source = readFileSync(join(process.cwd(), 'src/ui/leaderboard.ts'), 'utf8');
+
+  it('says Leaderboard, from the copy constant', () => {
+    // The 2026-09-17 user override of TASTE §5, asked for twice, recorded in
+    // docs/TASTE.md §9a. One string, in one place.
+    expect(LEADERBOARD_TITLE).toBe('Leaderboard');
+  });
+
+  it('carries the static gate’s own scoped hatch on that line', () => {
+    // Not a widened scan: the line before the constant is the documented
+    // escape hatch (scripts/gates/static.ts), and it names the ruling.
+    expect(source).toMatch(
+      /\/\/ gate-allow-uppercase[^\n]*\n\s*export const LEADERBOARD_TITLE = 'Leaderboard';/,
+    );
+  });
+
+  it('is the only capital the module ships', () => {
+    // Every other string here is lowercase — the names are lowercased at
+    // their source, and the stand-in and the units never had a capital.
+    expect(displayName('ANA', 1)).toBe('ana');
+    expect(displayName(null, 2)).toBe('creature 2');
+    // The class names and selectors are lowercase too, so the sheet the
+    // module writes holds no capital at all.
+    const sheet = declarations(/style\.textContent = `([\s\S]*?)`;/.exec(source)?.[1] ?? '');
+    expect(sheet.length).toBeGreaterThan(100);
+    // Interpolations are code, not copy — the gate's own allowance. The
+    // word boundary is the other one: `translateY` is a css function, and a
+    // capital that starts a WORD is the thing the taste is about.
+    expect(sheet.replace(/\$\{[^}]*\}/g, '')).not.toMatch(/\b[A-Z]/);
+  });
+
+  it('is what a screen reader is told, too', () => {
+    const dom = stubDom();
+    const handle = installLeaderboard({
+      entries: () => [{ id: 'a', diameter: 1 }],
+      mount: dom.mount as unknown as HTMLElement,
+    });
+    expect((handle.el as unknown as StubEl).attrs['aria-label']).toBe(LEADERBOARD_TITLE);
+    handle.dispose();
+    dom.restore();
+  });
+});
+
+describe('the mark-set lint knows about the paper', () => {
+  const dev = readFileSync(join(process.cwd(), 'src/dev/index.ts'), 'utf8');
+
+  it('samples the board and reports its fill as the recorded ruling', () => {
+    // The same arrangement the minimap's own paper is under, so the gate
+    // stays a button rather than a memo (TASTE §7).
+    expect(dev).toMatch(
+      /selector: '\.world-leaderboard',[\s\S]{0,200}?exemptReason: 'paper-card ruling[^']*'/,
+    );
   });
 });
 

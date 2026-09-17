@@ -206,7 +206,7 @@ export const SCATTER_EXTENT = 160;
  * …and the half-extent actually walked: `SCATTER_EXTENT` through `mapScale`
  * (2026-09-16), so the cell GRID keeps its 6-unit step and the prop count per
  * unit area is exactly what it was — `mapScale²` times the cells and the
- * placements. 176 at scale 1.1, 320 on the doubled island.
+ * placements. 211 at scale 1.32, 320 on the doubled island.
  *
  * Scaling the extent rather than the step is the whole point: `SCATTER_STEP`
  * is the isometric grid a prop is placed on, and stretching that would change

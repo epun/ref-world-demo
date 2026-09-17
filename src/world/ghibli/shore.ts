@@ -67,11 +67,11 @@ export const SHORE_SIZE = FIELD_SIZE;
  * …and the two the bake actually uses: both through `mapScale`
  * (2026-09-16, `MAP_SCALE` in src/world/landscape.ts), so the TEXEL stays
  * 0.78 world units and the foam rim is still four texels wide at its
- * thinnest. 1024² over 800 units at scale 2; **563² over 440 at 1.1**.
+ * thinnest. 1024² over 800 units at scale 2; **676² over 528 at 1.32**.
  *
  * ROUNDED TO A TEXEL COUNT, NOT STEPPED TO A POWER OF TWO (2026-09-17, when
- * `MAP_SCALE` stopped being an integer). 512 * 1.1 is 563.2, and the choice
- * was between an NPOT 563 that keeps the texel (0.7815 against 0.78125, three
+ * `MAP_SCALE` stopped being an integer). 512 * 1.32 is 675.84, and the choice
+ * was between an NPOT 676 that keeps the texel (0.78107 against 0.78125, two
  * hundredths of a percent) and a POT 1024 that would have halved it and
  * quadrupled a bake that already measures a second on one core. This is a WebGL2 renderer and
  * the texture is CLAMP + LINEAR with no mipmaps, which NPOT has always

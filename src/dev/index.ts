@@ -366,10 +366,16 @@ const MARK_LINT_TARGETS: { selector: string; name: string; exemptReason?: string
   },
   { selector: '.hover-name', name: 'hover name' },
   /* The projection's top ten (src/ui/leaderboard.ts, 2026-09-17 user ask).
-   * Type and ONE hairline rule under the header — a constraint that is not
-   * a button does not survive a build, so the new block is sampled like
-   * every other piece of chrome rather than reviewed once. */
-  { selector: '.world-leaderboard', name: 'leaderboard' },
+   * Type, ONE hairline rule under the title, and — since the second ask the
+   * same day — the paper box the join code and the minimap already stand in
+   * (docs/TASTE.md §9a). Sampled like every other piece of chrome rather
+   * than reviewed once, and its fill reported as the recorded ruling it is,
+   * exactly as the minimap's is below. */
+  {
+    selector: '.world-leaderboard',
+    name: 'leaderboard',
+    exemptReason: 'paper-card ruling — user override 2026-09-17, the join code’s own fill',
+  },
   {
     selector: '.world-minimap',
     name: 'minimap',

@@ -10,10 +10,10 @@
  * still the name every existing consumer reads.
  *
  * SCALED WITH THE MAP (`MAP_SCALE`, src/world/landscape.ts — 2 from
- * 2026-09-16, 1.1 since 2026-09-17). Every number below is the one that
- * shipped, times `mapScale()`: with the island off it is exactly 1 and this
- * module is the set of constants it always was, and with it on the field
- * covers a coast that now reaches ~194 units from the origin.
+ * 2026-09-16, then 1.1 and **1.32** on 2026-09-17). Every number below is the
+ * one that shipped, times `mapScale()`: with the island off it is exactly 1
+ * and this module is the set of constants it always was, and with it on the
+ * field covers a coast that now reaches ~233 units from the origin.
  *
  * The SIDE is the same on every device, because the bakes span it and the
  * physics heightfield is laid over it. The CUT is not: a projection keeps the
@@ -79,16 +79,16 @@ export function fieldSize(): number {
  * WIDER than the riser, which is exactly the failure §7.1 rejected 160 for on
  * the old map.
  *
- * IT IS NOT RE-TRADED AT 1.1, AND IT NO LONGER BINDS (2026-09-17,
- * `MAP_SCALE` 2 then 1.3 then 1.1). The count is the handset's own budget and
- * not a fraction of the projection's, and both of the day's asks were about
- * the map's size and not the phone's cut. But at 1.1 the projection's own
- * field is 352 segments, BELOW this ceiling — 480 over 440 units would be a
- * 0.92-unit quad, finer than the projection's 1.25 and more work than the
- * projection does — so `fieldSegments` takes the `min` and a phone reads the
- * projection's 352. The number is kept rather than deleted because it is the
- * measured budget for a bigger map and the scale has moved twice in one day;
- * it starts binding again above scale 1.5.
+ * IT IS NOT RE-TRADED BELOW SCALE 1.5, AND IT DOES NOT BIND THERE
+ * (2026-09-17, `MAP_SCALE` 2 then 1.3 then 1.1 then 1.32). The count is the
+ * handset's own budget and not a fraction of the projection's, and every one
+ * of the day's asks was about the map's size and not the phone's cut. But at
+ * 1.32 the projection's own field is 422 segments, BELOW this ceiling — 480
+ * over 528 units would be a 1.1-unit quad, finer than the projection's 1.25
+ * and more work than the projection does — so `fieldSegments` takes the `min`
+ * and a phone reads the projection's 422. The number is kept rather than
+ * deleted because it is the measured budget for a bigger map and the scale has
+ * moved four times in two days; it starts binding again above scale 1.5.
  */
 export const FIELD_SEGMENTS_PHONE_ISLAND = 480;
 
@@ -96,17 +96,18 @@ export const FIELD_SEGMENTS_PHONE_ISLAND = 480;
  * Segments per side on the map being read.
  *
  * A projection holds the QUAD at 1.25 units whatever the island's size — the
- * side rides `mapScale` and so does the count. A handset takes
+ * side rides `mapScale` and so does the count, to within the half segment the
+ * rounding costs (1.25118 at 1.32). A handset takes
  * `FIELD_SEGMENTS_PHONE_ISLAND` instead, for the reason written there; with
  * no island the two are the same 320, so the public world's field is the one
  * that shipped on every device.
  */
 export function fieldSegments(): number {
   if (mapScale() === 1) return FIELD_SEGMENTS;
-  // ROUNDED: `MAP_SCALE` is not an integer (1.1 since 2026-09-17), and a
-  // segment count has to be one. 352 at 1.1, which holds the quad at exactly
-  // 1.25 because 320 * 1.1 is already whole; at a scale where it is not, the
-  // quad moves by at most half a segment and `fieldQuad` is what a test
+  // ROUNDED: `MAP_SCALE` is not an integer (1.32 since 2026-09-17), and a
+  // segment count has to be one. 422 at 1.32 — 422.4 rounded down, so the
+  // quad is 1.25118 rather than 1.25, half a segment out over the whole side;
+  // at 1.1 it happened to come out whole (352). `fieldQuad` is what a test
   // measures against the riser.
   const full = Math.round(FIELD_SEGMENTS * mapScale());
   // …and the handset's budget is a CEILING, not a substitute: at a scale
@@ -117,8 +118,8 @@ export function fieldSegments(): number {
 }
 
 /** World units a single ground quad spans — 1.25 everywhere but a handset's
- * scaled island, which takes `fieldSize() / 480` (1.67 at scale 2; at 1.1 the
- * ceiling does not bind and it is 1.25 again). Exported so a test can measure
+ * scaled island, which takes `fieldSize() / 480` (1.67 at scale 2; at 1.32 the
+ * ceiling does not bind and it is 1.25118, half a segment off 1.25). Exported so a test can measure
  * it against the riser it has to draw rather than restate either number. */
 export function fieldQuad(): number {
   return fieldSize() / fieldSegments();
@@ -135,15 +136,19 @@ export function fieldQuad(): number {
  * so the number does NOT fall as 1/scale — a wider island has the same
  * hummocks spread further apart, not gentler ones:
  *
- *   - 1   → **0.843** (the authored island)
- *   - 1.1 → **0.4570** (2026-09-17, at 64.5, -133, on the range's apron)
- *   - 1.3 → **0.5111** (2026-09-17, at 53, -191.5, on the way down to 1.1)
- *   - 2   → **0.4814** (2026-09-16)
+ *   - 1    → **0.843** (the authored island)
+ *   - 1.1  → **0.4570** (2026-09-17, at 64.5, -133, on the range's apron)
+ *   - 1.3  → **0.5111** (2026-09-17, at 53, -191.5, on the way down to 1.1)
+ *   - 1.32 → **0.5037** (2026-09-17, at 80.4, -164.6, the range's apron
+ *     again — a fifth of a unit steeper than 1.1 for the reason above: a
+ *     twentieth more island puts a different hummock under the steepest walk)
+ *   - 2    → **0.4814** (2026-09-16)
  */
 const STEEPEST_SLOPE: Readonly<Record<string, number>> = {
   '1': 0.843,
   '1.1': 0.457,
   '1.3': 0.5111,
+  '1.32': 0.5037,
   '2': 0.4814,
 };
 
@@ -157,8 +162,8 @@ const RISER_CLIMB = TERRAIN.terraceStep * (TERRAIN.terraceRiser[1] - TERRAIN.ter
  *
  * A riser occupies the middle 60% of a step, so it climbs `0.6 · terraceStep`
  * of SMOOTH field; the run that takes is that over the steepest gradient on
- * the map. 1.14 units at the authored size, **2.101** at 1.1, 1.878 at 1.3
- * and 1.99 on the doubled island.
+ * the map. 1.14 units at the authored size, **1.906** at 1.32, 2.101 at 1.1,
+ * 1.878 at 1.3 and 1.99 on the doubled island.
  *
  * A scale nobody has measured falls back on `0.843 / √scale`, which is a
  * CONSERVATIVE stand-in and deliberately so: the measured slopes fall more
@@ -180,8 +185,8 @@ export function riserRun(scale: number = mapScale()): number {
  * by the WIDTH, so the frame is ~4.3 times as tall as it is wide and looks
  * ~4 times the coast's reach up-screen of the island. At 1400 the far corners
  * of that frame fell off the edge of the ring and showed the void; at
- * `1400 * mapScale` the sea still runs past every corner of it — 1540 at
- * scale 1.1 against a far corner that measures 818
+ * `1400 * mapScale` the sea still runs past every corner of it — 1848 at
+ * scale 1.32 against a far corner that measures 980
  * (test/world/island-scale.test.ts and test/world/camera.test.ts both measure
  * the corner against this number rather than restating it).
  */
