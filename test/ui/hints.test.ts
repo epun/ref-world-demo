@@ -1,22 +1,25 @@
 /**
  * The contextual hints on the world view (src/ui/hints.ts, hintcopy.ts).
  *
- * > User ask, 2026-09-17, with three screenshots of the live slides: *"For
- * > mobile I want the onboarding to be contextual within the device."*
+ * > User ask, 2026-09-17, from a three-screen mock: *"For mobile I want the
+ * > onboarding to be contextual within the device"*, and with the mock,
+ * > *"retain our existing style for components"*.
  *
- * The three lessons are the same; what changed is that they are marks IN the
- * game, anchored to the thing they are about and dismissed by DOING it. What
- * is pinned here, in the order it can go wrong:
+ * Three labels, centred in the screen, one at a time, each dismissed by DOING
+ * what it says. What is pinned here, in the order it can go wrong:
  *
- * 1. THE COPY — three lines, in the order the game is learned, all lowercase
- *    (TASTE §5), each asking for a mark and a place that already exist.
+ * 1. THE COPY — the mock's three lines, in order, all lowercase (TASTE §5),
+ *    and the chevrons asked for by the first step only.
  * 2. THE MACHINE — the order, what dismisses what, and the two things that
- *    must never happen: a hint over the loading line, and a hint coming back.
- * 3. THE LAYER — it mounts at the right anchor, slides (never pops), drifts,
- *    skips, and leaves.
- * 4. ONCE PER DEVICE — under a NEW key, so everybody who saw the slideshow
- *    is taught once by these.
- * 5. THE GATE — nothing is reached on a world without the game, and it
+ *    must never happen: a label over the loading line, and a label coming
+ *    back.
+ * 3. THE LABEL — centred, paper inside the project's own wavering hairline
+ *    (docs/TASTE.md §9a, the recorded paper-card ruling), spring-driven in and
+ *    out, drifting, and gone when it is done. NOT the mock's filled pill with
+ *    a drop shadow: *"retain our existing style"*.
+ * 4. THE CHEVRONS — on the stick's own box, on step one and nowhere else.
+ * 5. ONCE PER DEVICE — under a key of its own.
+ * 6. THE GATE — nothing is reached on a world without the game, and it
  *    arrives by dynamic import like the readout and the loading line.
  */
 
@@ -31,17 +34,20 @@ import {
   HINTS_KEY,
   MOVE_UNITS,
   PICKUP_STEP_U,
+  arrowPaths,
   hinted,
   hintsFinished,
-  iconRings,
   installWorldHints,
+  labelFramePath,
+  labelInset,
   markHinted,
   shouldHint,
   stepHints,
   type HintSignals,
   type HintState,
 } from '../../src/ui/hints';
-import { HINTS, SKIP_LABEL, hintFor } from '../../src/ui/hintcopy';
+import { HINTS, hintFor, showsArrows } from '../../src/ui/hintcopy';
+import { frameInset } from '../../src/ui/leaderboard';
 import { DEADZONE } from '../../src/world/joystick';
 import { MOTION } from '../../src/taste/tokens';
 import { find, findAll, stubDom, stubStore, type StubEl } from './stubdom';
@@ -56,41 +62,70 @@ const IDLE: HintSignals = {
 /** The world is up, the creature stands, nobody has touched anything. */
 const READY: HintSignals = { ...IDLE, ready: true, loading: false };
 
-describe('the copy — three lessons, in the order the game is learned', () => {
-  it('teaches the stick, then the pickup, then the point', () => {
+describe('the copy — the mock’s three labels, in order', () => {
+  it('says exactly what the mock says', () => {
     expect(HINTS.map((h) => h.stage)).toEqual(['move', 'pickup', 'grow']);
     expect(HINTS.map((h) => h.line)).toEqual([
-      'move with the joystick to roll your creature',
-      'run into things to pick them up',
-      'grow as big as you can',
+      'move using the joystick',
+      'roll over objects to collect',
+      'become the biggest',
     ]);
     expect(HINT_COUNT).toBe(3);
   });
 
-  it('is lowercase, everywhere, including the way out (TASTE §5)', () => {
-    for (const line of [...HINTS.map((h) => h.line), SKIP_LABEL]) {
+  it('is lowercase and short enough to read at a glance (TASTE §5)', () => {
+    for (const { line } of HINTS) {
       expect(line).toBe(line.toLowerCase());
       expect(line).not.toMatch(/[A-Z]/);
+      expect(line.length).toBeLessThan(32);
+      expect(line).not.toContain('\n');
     }
   });
 
-  it('anchors each line to the thing it is about', () => {
-    // The stick's lesson stands over the stick; the two about the ball stand
-    // by the number that measures it.
-    expect(hintFor('move')?.anchor).toBe('stick');
-    expect(hintFor('pickup')?.anchor).toBe('readout');
-    expect(hintFor('grow')?.anchor).toBe('readout');
+  it('puts the chevrons on the stick for the first step and no other', () => {
+    expect(showsArrows('move')).toBe(true);
+    expect(showsArrows('pickup')).toBe(false);
+    expect(showsArrows('grow')).toBe(false);
+    // …including the phases that show nothing at all.
+    expect(showsArrows('moved')).toBe(false);
+    expect(showsArrows('done')).toBe(false);
     expect(hintFor('nonsense')).toBe(null);
   });
 
-  it('asks only for marks this world already draws', () => {
-    for (const { icon } of HINTS) {
-      const rings = iconRings(icon);
-      expect(rings.length).toBeGreaterThan(0);
-      for (const r of rings) expect(r.r).toBeGreaterThan(0);
+  it('draws four chevrons, one per direction, as strokes and not a shape', () => {
+    const paths = arrowPaths();
+    expect(paths).toHaveLength(4);
+    for (const d of paths) {
+      // A tip and two strokes back to it: an open mark, never a closed fill.
+      expect(d).toMatch(/^M [\d.-]+ [\d.-]+ L [\d.-]+ [\d.-]+ L [\d.-]+ [\d.-]+$/);
+      expect(d).not.toContain('Z');
     }
-    const [small, big] = iconRings('grow');
-    expect(big!.r).toBeGreaterThan(small!.r * 2);
+    // Deterministic, so the same stick is the same hand on every device.
+    expect(arrowPaths()).toEqual(paths);
+  });
+});
+
+describe('the label’s frame — the project’s hand, not the mock’s pill', () => {
+  it('insets its hairline exactly as the leaderboard and the map do', () => {
+    // One expression for all four boxes (docs/TASTE.md §9a): if the
+    // leaderboard's moves, this must move with it.
+    for (const [w, h] of [[120, 44], [240, 52], [300, 80], [90, 36]]) {
+      expect(labelInset(w!, h!)).toBe(frameInset(w!, h!));
+    }
+  });
+
+  it('is a drawn wavering loop, closed, and nothing for a degenerate box', () => {
+    const d = labelFramePath(220, 48);
+    expect(d.startsWith('M ')).toBe(true);
+    expect(d.endsWith('Z')).toBe(true);
+    // Quadratic midpoint smoothing — the same generator as the minimap's
+    // border, so the hand is one hand.
+    expect(d).toContain(' Q ');
+    expect(labelFramePath(2, 2)).toBe('');
+    expect(labelFramePath(0, 0)).toBe('');
+    // Deterministic per size and seed.
+    expect(labelFramePath(220, 48)).toBe(d);
+    expect(labelFramePath(220, 49)).not.toBe(d);
   });
 });
 
@@ -170,13 +205,13 @@ describe('the machine — taught by doing, in order', () => {
     expect(state.phase).toBe('pickup');
   });
 
-  it('drops it on the first pickup, and points at the number instead', () => {
+  it('drops it on the first pickup, and the last label takes its place', () => {
     let state: HintState = { phase: 'pickup', heldMs: 0, shownMs: 0, pickedAt: 0 };
     for (let i = 0; i < 100; i++) state = stepHints(state, { ...READY, picked: 0 }, 33);
     expect(state.phase).toBe('pickup');
     state = stepHints(state, { ...READY, picked: 1 }, 33);
     expect(state.phase).toBe('grow');
-    expect(hintFor(state.phase)?.anchor).toBe('readout');
+    expect(hintFor(state.phase)?.line).toBe(HINTS[2]!.line);
   });
 
   it('ends on the next pickup, or on its own if nobody picks anything', () => {
@@ -326,43 +361,86 @@ describe('the hints on screen', () => {
     dom.restore();
   });
 
-  it('puts the stick’s lesson in the tray when it is given one', () => {
+  it('puts four chevrons on the stick for step one, and takes them off', () => {
     const dom = stubDom();
-    const tray = (globalThis.document as unknown as { createElement(t: string): StubEl })
+    const stick = (globalThis.document as unknown as { createElement(t: string): StubEl })
       .createElement('div');
-    dom.mount.appendChild(tray);
+    dom.mount.appendChild(stick);
+    const signals = { ...READY };
     const handle = installWorldHints({
       mount: dom.mount as unknown as HTMLElement,
-      stickMount: tray as unknown as HTMLElement,
-      signals: () => READY,
+      stickEl: stick as unknown as HTMLElement,
+      signals: () => signals,
       store: stubStore(),
     });
     dom.step(40);
-    // In the tray, and marked as the anchor it asked for.
-    const hint = find(tray, 'world-hint at-stick');
-    expect(hint).not.toBe(null);
+    // On the stick's own box — not in the label, and not on the page.
+    const ring = find(stick, 'world-hint-arrows');
+    expect(ring).not.toBe(null);
+    expect(findAll(stick, 'world-hint-arrow')).toHaveLength(4);
+    expect(handle.arrows()).toBe(true);
+    // They fade in with the label rather than appearing (TASTE §2.1).
+    expect(Number.parseFloat(ring!.style['opacity'] ?? '1')).toBeLessThan(1);
+    for (let f = 2; f < 40; f++) dom.step(f * 40);
+    expect(Number.parseFloat(ring!.style['opacity'] ?? '0')).toBeCloseTo(1, 1);
+
+    // A held drive ends step one, and the chevrons go with it.
+    signals.drive = 1;
+    dom.step(40 * 40 + DRIVE_HELD_MS);
+    expect(handle.arrows()).toBe(false);
+    for (let f = 1; f < 60; f++) dom.step(40 * 40 + DRIVE_HELD_MS + f * 40);
+    expect(find(stick, 'world-hint-arrows')).toBe(null);
     handle.dispose();
     dom.restore();
   });
 
-  it('is skippable in one tap, and writes the flag when it is', () => {
+  it('shows no chevrons at all on a page with no stick to point at', () => {
     const dom = stubDom();
-    const store = stubStore();
     const handle = installWorldHints({
       mount: dom.mount as unknown as HTMLElement,
       signals: () => READY,
-      store,
+      store: stubStore(),
     });
     dom.step(40);
-    const skip = find(dom.mount, 'world-hint-skip')!;
-    expect(skip.textContent).toBe(SKIP_LABEL);
-    skip.fire('click');
-    expect(handle.phase()).toBe('done');
-    expect(handle.showing()).toBe('');
-    expect(store.data[HINTS_KEY]).toBe('1');
-    // …and nothing comes back on later frames.
-    for (let f = 2; f < 60; f++) dom.step(f * 40);
-    expect(handle.showing()).toBe('');
+    // The label still teaches; there is simply nothing to decorate.
+    expect(handle.showing()).toBe('move');
+    expect(handle.arrows()).toBe(false);
+    expect(findAll(dom.mount, 'world-hint-arrow')).toHaveLength(0);
+    handle.dispose();
+    dom.restore();
+  });
+
+  it('stands the label on paper inside the wavering hairline (TASTE §9a)', () => {
+    const dom = stubDom();
+    const handle = installWorldHints({
+      mount: dom.mount as unknown as HTMLElement,
+      signals: () => READY,
+      store: stubStore(),
+    });
+    dom.step(40);
+    const paper = find(dom.mount, 'world-hint-paper');
+    expect(paper).not.toBe(null);
+    // The recorded paper-card ruling: a drawn loop with a fill and the one
+    // 1.25 hairline — never a css box, which would be a rectangle.
+    const sheet = dom.head.children[0]!.textContent;
+    expect(sheet).toContain('stroke-width: 1.25');
+    expect(sheet).toMatch(/fill: var\(--rw-light,/);
+    handle.dispose();
+    dom.restore();
+  });
+
+  it('carries no skip and no dots — the mock has neither', () => {
+    const dom = stubDom();
+    const handle = installWorldHints({
+      mount: dom.mount as unknown as HTMLElement,
+      signals: () => READY,
+      store: stubStore(),
+    });
+    dom.step(40);
+    // Each step dismisses itself on the action it teaches, so there is
+    // nothing to press and nothing to count.
+    expect(find(dom.mount, 'world-hint-skip')).toBe(null);
+    expect(findAll(dom.mount, 'world-hint-tick')).toHaveLength(0);
     handle.dispose();
     dom.restore();
   });
@@ -413,7 +491,7 @@ describe('the hints on screen', () => {
     dom.restore();
   });
 
-  it('is marks only — no panel, no card, no shadow (TASTE §4)', () => {
+  it('is marks only — the ruled paper, and no shadow or radius (TASTE §4, §9a)', () => {
     const dom = stubDom();
     const handle = installWorldHints({
       mount: dom.mount as unknown as HTMLElement,
@@ -421,10 +499,13 @@ describe('the hints on screen', () => {
       store: stubStore(),
     });
     const sheet = dom.head.children[0]!.textContent;
-    // The rule mark is there…
-    expect(sheet).toContain('border-bottom: 1px solid');
-    // …and nothing this taste has no mark for is.
-    expect(sheet).not.toMatch(/\bbackground\b/);
+    // The paper is the recorded ruling — a DRAWN loop's fill and the one
+    // hairline, with the type over it…
+    expect(sheet).toContain('stroke-width: 1.25');
+    // …and nothing this taste has no mark for is. No css background
+    // DECLARATION in particular: the mock's filled pill is not what ships,
+    // and the paper is a path's fill rather than a box's colour.
+    expect(sheet).not.toMatch(/background\s*:/);
     expect(sheet).not.toMatch(/box-shadow/);
     expect(sheet).not.toMatch(/border-radius/);
     expect(sheet).not.toMatch(/gradient/);
@@ -484,8 +565,8 @@ describe('the hints are absent on a world without the game', () => {
     expect(main).toMatch(/travelled \+= Math\.hypot/);
   });
 
-  it('puts the stick’s hint in the tray the stick is in', () => {
-    expect(main).toMatch(/stickMount: tray\?\.middle \?\? null/);
+  it('hands the chevrons the stick’s own element', () => {
+    expect(main).toMatch(/stickEl: stick\?\.el \?\? null/);
   });
 
   it('left the old slideshow behind entirely', () => {

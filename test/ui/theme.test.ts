@@ -174,7 +174,10 @@ describe('the call sites', () => {
     'src/world/companionpanel.ts': ['--rw-paper'],
     'src/ui/size.ts': ['--rw-ink'],
     'src/ui/loading.ts': ['--rw-ink', '--rw-muted', '--rw-accent'],
-    'src/ui/hints.ts': ['--rw-ink', '--rw-muted'],
+    // The hints' label stands on the same paper as the leaderboard's board
+    // (docs/TASTE.md §9a): `light` is the fill, `ink` the hairline and the
+    // type — and the muted skip went with the slideshow it belonged to.
+    'src/ui/hints.ts': ['--rw-ink', '--rw-light'],
     'src/ui/empty.ts': ['--rw-ink'],
     'src/ui/leaderboard.ts': ['--rw-ink', '--rw-light'],
   };

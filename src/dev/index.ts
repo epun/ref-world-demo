@@ -376,6 +376,17 @@ const MARK_LINT_TARGETS: { selector: string; name: string; exemptReason?: string
     name: 'leaderboard',
     exemptReason: 'paper-card ruling — user override 2026-09-17, the join code’s own fill',
   },
+  /* The handset's contextual hints (src/ui/hints.ts, 2026-09-17 user ask —
+   * the mock's three labels, in the project's own style rather than the
+   * mock's filled pill). One label at a time, standing on the same paper
+   * inside the same wavering hairline as the three boxes above, so its fill
+   * is the identical recorded ruling (docs/TASTE.md §9a) and it is sampled
+   * like every other piece of chrome rather than reviewed once. */
+  {
+    selector: '.world-hint',
+    name: 'hint label',
+    exemptReason: 'paper-card ruling — user override 2026-09-17, the join code’s own fill',
+  },
   {
     selector: '.world-minimap',
     name: 'minimap',

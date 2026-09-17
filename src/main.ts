@@ -2622,8 +2622,9 @@ function main(): void {
         let picked = 0;
         m.installWorldHints({
           mount: document.body,
-          // The tray, so the first hint stands over the stick it is about.
-          stickMount: tray?.middle ?? null,
+          // The stick's own element, so its four chevrons sit on the ring
+          // they are about while the first label is up.
+          stickEl: stick?.el ?? null,
           signals: () => {
             const here = creatures.positionOf(myDrawerId);
             const standing = here !== null && !creatures.eggIds().includes(myDrawerId);
