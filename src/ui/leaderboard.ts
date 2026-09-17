@@ -87,6 +87,7 @@ import { MOTION, WORLD } from '../taste/tokens';
 import { Spring } from '../motion/spring';
 import { sampleDrift } from '../motion/ambient';
 import { mapBorderInset, mapMarkScale, wavyBorderPath, wavyBorderPoints } from '../phone/minimap';
+import { QR_INSET_PX } from './joinqr';
 import { formatLength, metresOf } from './size';
 
 // ── pure helpers ─────────────────────────────────────────────────────────────
@@ -274,8 +275,10 @@ function ensureStyle(): void {
   style.textContent = `
 .world-leaderboard {
   position: fixed;
-  left: calc(env(safe-area-inset-left, 0px) + 4vw);
-  top: calc(env(safe-area-inset-top, 0px) + 4vw);
+  /* The join code's own inset (user ask 2026-09-17: the board is left-aligned
+     to the qr code), so the two boxes on the left edge share one column. */
+  left: calc(env(safe-area-inset-left, 0px) + ${QR_INSET_PX}px);
+  top: calc(env(safe-area-inset-top, 0px) + ${QR_INSET_PX}px);
   z-index: 5;
   width: ${BOARD_W_PX}px;
   color: var(--rw-ink, ${WORLD.ink});

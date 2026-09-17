@@ -34,7 +34,7 @@ const QR_SEED = 57.3;
 export const QR_EXPANDED_VMIN = 60;
 
 /** Corner inset — the minimap's, so the two corners stay mirrored. */
-const QR_INSET_PX = 20;
+export const QR_INSET_PX = 20;
 
 const STYLE_ID = 'join-qr-style';
 
