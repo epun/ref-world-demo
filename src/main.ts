@@ -992,7 +992,7 @@ function main(): void {
      */
     stick: (event) => creatures.applyStick(event),
     drop: (event) => creatures.applyDrop(event),
-    loose: (event) => creatures.applyLoose(event.item, event.x, event.z),
+    loose: (event) => creatures.applyLoose(event.item, event.x, event.z, event.scale),
     settle: (event) => creatures.applySettle(event),
     /*
      * …AND THE TWO DESTRUCTION STATES, applied the same way. A `crack`

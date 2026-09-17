@@ -34,7 +34,7 @@
  *      at, and the release is never dropped by the rate cap.
  */
 
-import { Group, Scene, type Object3D } from 'three';
+import { Group, Scene, Vector3, type Object3D } from 'three';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { createCreatureManager, type CreatureManager } from '../../src/creatures/manager';
 import type { Collider } from '../../src/physics/colliders';
@@ -68,6 +68,10 @@ const mainSrc = (): string => readFileSync(join(process.cwd(), 'src/main.ts'), '
 /** A phone's frame. */
 const FRAME_MS = 33;
 
+/** The instance scale a library-backed prop is drawn at. Well away from 1, so
+ * a page that falls back to 1 is visibly wrong rather than arguably wrong. */
+const LIBRARY_SCALE = 2.4;
+
 beforeAll(() => {
   const g = globalThis as { document?: unknown };
   if (typeof g.document === 'undefined') {
@@ -75,14 +79,22 @@ beforeAll(() => {
   }
 });
 
-/** A `LooseMeshes` that draws nothing and remembers everything. */
+/**
+ * A `LooseMeshes` that draws nothing and remembers everything.
+ *
+ * It DOES apply the scale, like the real module (src/world/loose.ts sets
+ * `mesh.scale.setScalar(scale)` at creation) — the seat overwrites it with the
+ * countered value a moment later, and a stub that ignored it could not tell
+ * the difference between the two.
+ */
 function stubLoose(scene: Scene): LooseMeshes {
   const objects = new Map<string, Object3D>();
   return {
-    show(item: string): Object3D {
+    show(item: string, _kind: string, _variant: number, scale: number): Object3D {
       const existing = objects.get(item);
       if (existing) return existing;
       const object = new Group();
+      object.scale.setScalar(scale);
       scene.add(object);
       objects.set(item, object);
       return object;
@@ -139,7 +151,16 @@ function phoneWorld(
         rows
           ? colliders
               .filter((c) => c.kind === kind && c.key !== undefined && !taken.has(c.key))
-              .map((c) => ({ key: c.key!, scale: 1, radius: c.r, placement: { rotY: 0 } }))
+              .map((c) => ({
+                key: c.key!,
+                // The instance scale the scatter drew it at — a library model
+                // stands at 1.5–3, never 1 (docs/katamari-props.md), and the
+                // difference between the two is the *"objects shrink when they
+                // stick"* report.
+                scale: LIBRARY_SCALE,
+                radius: c.r,
+                placement: { rotY: 0 },
+              }))
           : [],
     },
   } as unknown as WorldHandles;
@@ -924,5 +945,270 @@ describe('sticking, as the viewer sees it', () => {
     expect(viewer.ballDiameter('mine')).toBeLessThan(host.ballDiameter('mine') * 0.9);
     host.clearAll();
     viewer.clearAll();
+  }, 120_000);
+});
+
+describe('an item keeps its own size on every page', () => {
+  /*
+   * > User report, 2026-09-17: *"right now objects shrink when they stick to
+   * > the character, they should remain the same size."*
+   *
+   * The chain is two multiplications that have to cancel. The pile hangs on the
+   * creature root and the root's uniform scale IS the growth (`growPass`), so
+   * `localScaleOf` divides the item's own scale back out — world scale =
+   * `growth × (scale / growth)` = `scale`. Which is right exactly as long as
+   * `scale` is the scale the scatter DREW the placement at.
+   *
+   * On the host it is: `placementDrawn` reads the instance row, which is still
+   * there because nothing has hidden the placement yet. On a VIEWER the row is
+   * gone — the host hid it the moment it took it — so the only source is the
+   * event, and anything the event does not carry falls back to 1. A library
+   * model stands at 1.5–3, so falling back to 1 is a prop drawn at a third of
+   * its size, on every screen but the one that decided.
+   */
+  function page(colliders: Collider[], rows: boolean): {
+    manager: CreatureManager;
+    loose: LooseMeshes;
+    /** The scatter this page is drawing — for reading its own instance row. */
+    scatter: {
+      instanceRefs(kind: string): { key: string; scale: number; radius: number }[];
+    };
+  } {
+    const scene = new Scene();
+    const loose = stubLoose(scene);
+    const world = phoneWorld(scene, colliders, rows);
+    const manager = createCreatureManager(world, {
+      autoHatch: false,
+      surface: ROLLING_SURFACE,
+      game: 'katamari',
+      loose,
+      observer: {
+        stick: () => {},
+        loose: () => {},
+        drop: () => {},
+        settle: () => {},
+        crack: () => {},
+        retire: () => {},
+        spawn: () => {},
+        hatch: () => {},
+        emote: () => {},
+        pose: () => {},
+        shatter: () => {},
+      } as never,
+    });
+    return {
+      manager,
+      loose,
+      scatter: (world as unknown as { scatter: { instanceRefs(kind: string): never } })
+        .scatter as never,
+    };
+  }
+
+  /**
+   * THE SIZE THE SCATTER IS DRAWING THIS PROP AT — read off the instance row,
+   * not off a constant in this file.
+   *
+   * > Coordinator, 2026-09-17, with the user's own screenshot: *"measure a
+   * > stuck prop's world scale on the viewer against the same prop's scale in
+   * > the scatter."*
+   *
+   * Which is the whole claim: a prop that has been rolled up is drawn at the
+   * size it stood at, and the page that DECIDED nothing is not allowed to
+   * have a different opinion about it than the page that decided.
+   */
+  function scatterScale(
+    p: { scatter: { instanceRefs(kind: string): { key: string; scale: number }[] } },
+    kind: string,
+    key: string,
+  ): number {
+    const row = p.scatter.instanceRefs(kind).find((r) => r.key === key);
+    if (!row) throw new Error(`no instance row for ${key}`);
+    return row.scale;
+  }
+
+  const prop = (): Collider =>
+    ({ x: 0, z: 0, r: 0.6, hard: true, kind: 'small', key: 'small:0:0.00:0.00' }) as Collider;
+
+  /** The item's scale IN THE WORLD — every factor between it and the scene. */
+  function worldScale(loose: LooseMeshes, key: string): number {
+    const object = loose.get(key);
+    if (!object) throw new Error(`no loose mesh for ${key}`);
+    const out = new Vector3();
+    object.updateWorldMatrix(true, false);
+    object.getWorldScale(out);
+    return out.x;
+  }
+
+  it('draws it at its ground scale on the host AND on the viewer', () => {
+    const stone = prop();
+    const host = page([stone], true);
+    const viewer = page([stone], false);
+    for (const p of [host, viewer]) {
+      p.manager.spawn('mine', snowman, { hatchMs: 10, grown: true });
+      p.manager.update(FRAME_MS, 1000);
+    }
+    viewer.manager.pauseAi(true);
+
+    // Enough pile under it that the growth is nowhere near 1 — the whole
+    // point is that two multiplications cancel, and at growth 1 they cancel
+    // whether or not either of them is right.
+    for (let i = 0; i < 3; i++) {
+      host.manager.spawn(`filler-${i}`, snowman, { hatchMs: 10, grown: true });
+      viewer.manager.spawn(`filler-${i}`, snowman, { hatchMs: 10, grown: true });
+      for (const p of [host, viewer]) {
+        p.manager.applyStick({
+          id: 'mine',
+          item: `creature:filler-${i}`,
+          ox: 0,
+          oy: 1,
+          oz: i * 0.1,
+          qx: 0,
+          qy: 0,
+          qz: 0,
+          qw: 1,
+        });
+      }
+    }
+    for (let i = 0; i < 40; i++) {
+      host.manager.update(FRAME_MS, 1100 + i * FRAME_MS);
+      viewer.manager.update(FRAME_MS, 1100 + i * FRAME_MS);
+    }
+    const growth = host.manager.ballDiameter('mine') / 2 / 0.9;
+    expect(growth).toBeGreaterThan(1.3);
+
+    /*
+     * The record the host makes for itself — `scale` off its own instance row
+     * — and the same record over the wire. This is exactly what
+     * `uprootOntoPile` builds and what `readStickScene` carries.
+     */
+    /*
+     * Read the row BEFORE the pickup, because taking the prop is what loses
+     * it — on the host too. That is the whole shape of this bug: the number
+     * only exists while the thing is still standing, so it has to be said
+     * out loud at the moment of the decision or it is gone for good.
+     */
+    const standing = scatterScale(host, 'small', stone.key!);
+    expect(standing).toBeCloseTo(LIBRARY_SCALE, 6);
+
+    const record = {
+      id: 'mine',
+      item: stone.key!,
+      kind: 'small',
+      variant: 0,
+      scale: LIBRARY_SCALE,
+      r: stone.r,
+      ox: 1,
+      oy: 0,
+      oz: 0,
+      qx: 0,
+      qy: 0,
+      qz: 0,
+      qw: 1,
+    };
+    expect(host.manager.applyStick(record)).not.toBe(false);
+    viewer.manager.applyStick(record);
+    for (let i = 0; i < 40; i++) {
+      host.manager.update(FRAME_MS, 3000 + i * FRAME_MS);
+      viewer.manager.update(FRAME_MS, 3000 + i * FRAME_MS);
+    }
+
+    /*
+     * The stone is the size the SCATTER is drawing that placement at, on both
+     * pages — read off the host's own instance row, which is the only thing
+     * in the world that knows it and the thing a viewer has lost.
+     */
+    expect(worldScale(host.loose, stone.key!)).toBeCloseTo(standing, 6);
+    expect(worldScale(viewer.loose, stone.key!)).toBeCloseTo(standing, 6);
+    // And not merely equal to each other: a pair of pages that both drew it
+    // at 1 would pass an equality and be wrong together. `growth` is well
+    // over 1 here, so the two multiplications had to cancel to land on it.
+    expect(worldScale(viewer.loose, stone.key!)).not.toBeCloseTo(1, 2);
+    host.manager.clearAll();
+    viewer.manager.clearAll();
+  }, 120_000);
+
+  it('draws a KNOCKED-LOOSE prop at its ground scale on the viewer', () => {
+    /*
+     * The other half, and the one the report is actually about: a `loose`
+     * event said only WHERE the prop landed. On the host `loosen` knows the
+     * scale — it has the instance row and the body it just made — but a
+     * viewer has neither (`hideTaken` has taken the placement out of the
+     * scatter by the time it applies the event), so `showLoose` fell back to
+     * 1 and the prop shrank the instant it came out of the ground.
+     *
+     * Worse than a cosmetic: the mesh is created ONCE and
+     * `LooseMeshes.show` is idempotent, so a prop that was drawn at 1 while
+     * it lay on the ground carried that into the `settle` that follows it.
+     */
+    const stone = prop();
+    const viewer = page([stone], false);
+    viewer.manager.spawn('mine', snowman, { hatchMs: 10, grown: true });
+    viewer.manager.update(FRAME_MS, 1000);
+    viewer.manager.pauseAi(true);
+    viewer.manager.applyLoose(stone.key!, 3, 4, LIBRARY_SCALE);
+    expect(worldScale(viewer.loose, stone.key!)).toBeCloseTo(LIBRARY_SCALE, 6);
+    // Nowhere near the fallback, in either direction: the instance scale is
+    // the placement's times the kind's dial, so a fallback of 1 draws a prop
+    // whose dial is under 1 far too BIG and one whose dial is over 1 too
+    // small. Which way it goes is not the point; that it is not the scale the
+    // scatter drew is.
+    expect(worldScale(viewer.loose, stone.key!)).not.toBeCloseTo(1, 2);
+    viewer.manager.clearAll();
+  }, 120_000);
+
+  it('keeps that scale when the loose prop is then picked up', () => {
+    // `show` returns the mesh it already made rather than re-scaling it, so
+    // the loose scale has to be right for the stick that follows to be.
+    const stone = prop();
+    const viewer = page([stone], false);
+    viewer.manager.spawn('mine', snowman, { hatchMs: 10, grown: true });
+    viewer.manager.update(FRAME_MS, 1000);
+    viewer.manager.pauseAi(true);
+    viewer.manager.applyLoose(stone.key!, 0.5, 0, LIBRARY_SCALE);
+    viewer.manager.applyStick({
+      id: 'mine',
+      item: stone.key!,
+      kind: 'small',
+      variant: 0,
+      scale: LIBRARY_SCALE,
+      r: stone.r,
+      ox: 1,
+      oy: 0,
+      oz: 0,
+      qx: 0,
+      qy: 0,
+      qz: 0,
+      qw: 1,
+    });
+    for (let i = 0; i < 20; i++) viewer.manager.update(FRAME_MS, 1100 + i * FRAME_MS);
+    expect(worldScale(viewer.loose, stone.key!)).toBeCloseTo(LIBRARY_SCALE, 6);
+    viewer.manager.clearAll();
+  }, 120_000);
+
+  it('shrinks on the viewer when the scale does NOT travel', () => {
+    // The bug, kept so the field cannot quietly stop being sent: with no
+    // `scale` on the record a viewer has nothing to read and draws it at 1.
+    const stone = prop();
+    const viewer = page([stone], false);
+    viewer.manager.spawn('mine', snowman, { hatchMs: 10, grown: true });
+    viewer.manager.update(FRAME_MS, 1000);
+    viewer.manager.pauseAi(true);
+    viewer.manager.applyStick({
+      id: 'mine',
+      item: stone.key!,
+      kind: 'small',
+      variant: 0,
+      r: stone.r,
+      ox: 1,
+      oy: 0,
+      oz: 0,
+      qx: 0,
+      qy: 0,
+      qz: 0,
+      qw: 1,
+    });
+    for (let i = 0; i < 20; i++) viewer.manager.update(FRAME_MS, 1100 + i * FRAME_MS);
+    expect(worldScale(viewer.loose, stone.key!)).toBeLessThan(LIBRARY_SCALE * 0.6);
+    viewer.manager.clearAll();
   }, 120_000);
 });

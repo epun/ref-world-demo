@@ -477,7 +477,21 @@ function readLooseScene(rec: Record<string, unknown>, t: number): SceneEvent | n
   if (key === null) return null;
   const at = ground(rec);
   if (!at) return null;
-  return { k: 'loose', t, item: key, x: at.x, z: at.z };
+  /*
+   * The drawn scale (2026-09-17). Refused rather than read as nothing when it
+   * is malformed — a zero or negative scale is a prop drawn inside out — and
+   * absent leaves the field off, which is the pre-2026-09-17 fallback.
+   */
+  const raw = rec['scale'] === undefined ? null : num(rec['scale']);
+  if (rec['scale'] !== undefined && (raw === null || !(raw > 0))) return null;
+  return {
+    k: 'loose',
+    t,
+    item: key,
+    x: at.x,
+    z: at.z,
+    ...(raw === null ? {} : { scale: Math.min(raw, MAX_OFFSET) }),
+  };
 }
 
 function readSettleScene(rec: Record<string, unknown>, t: number): SceneEvent | null {
