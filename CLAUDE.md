@@ -194,12 +194,15 @@ The traps, in order of how easily they get violated:
   last *"the 3d representation of the character and mass should be vertically and horizontally
   centred in the circle"*). The bounds are five numbers off the pile itself —
   `CHARACTER_HEIGHT`, `drawnRadius`, `pileFloor`, `pileCeiling`, `pileFootprint`.
-  The corner is a COLUMN: the circle is ONE fixed size (`INSET_PX`) at the top and the readout
-  hangs under it by `INSET_GAP_PX` (`rowOffsetPx`) in its own PAPER BOX — the join code's
-  wavering hairline on `--rw-light` (user direction: *"put it in a rectangular container with
-  a black outline and white fill, in the style of ref world"*), which is the recorded
-  paper-card ruling and carries its own mark-lint exemption. Stacked, the readout's rule cut
-  straight across the picture.
+  The corner is THREE RINGS from the inside out (user mock, 2026-09-17, which replaced a paper
+  box below the circle and a hairline rule before that — both had the number ON the picture):
+  the DISC (`INSET_PX`, the 3d view, and `rect()` publishes THAT and not the whole svg), a
+  BAND `BAND_PX` wide carrying `BAND_ALPHA` 40% of the theme's `light` with both edges
+  FEATHERED by a radial gradient (no filter — an offscreen pass for a 136 px mark), and the
+  number on a text path along it inside the wavering hairline. **The glyphs stand up because
+  the arc runs COUNTER-CLOCKWISE** (`ringTextPath`): SVG puts a glyph's up-vector on the
+  travel direction's left, so a clockwise arc on the lower half reads upside down — which is
+  what the mock showed and what the user asked to have flipped.
   **And the SHADOW is the mass's own silhouette** (user ask 2026-09-17: *"we should not show
   the shadow of the sphere … the actual silhouette of the mass of objects + character"*): the
   creature's stamp is its DRAWN radius — no longer `× growth`, which is also what made a fresh

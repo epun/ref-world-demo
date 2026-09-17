@@ -31,16 +31,15 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
-  ICON_CAP_M,
-  ICON_MIN_SCALE,
-  INSET_GAP_PX,
+  BAND_ALPHA,
+  BAND_FEATHER,
+  BAND_PX,
   INSET_PX,
   formatLength,
-  iconScale,
   installBallSize,
   metresOf,
-  rowFramePath,
-  rowOffsetPx,
+  ringBoxPx,
+  ringTextPath,
 } from '../../src/ui/size';
 import { WORLD_SCALE } from '../../src/world/katamari/rules';
 
@@ -108,24 +107,60 @@ describe('metresOf — the library’s own scale, read backwards', () => {
   });
 });
 
-describe('iconScale — a mark that grows and then stops', () => {
-  it('starts small but never at nothing (entrances slide, TASTE §2.1)', () => {
-    expect(iconScale(0)).toBe(ICON_MIN_SCALE);
-    expect(ICON_MIN_SCALE).toBeGreaterThan(0.2);
+describe('ringTextPath — the number curves, and the glyphs stand up', () => {
+  /*
+   * > User direction with a mock, 2026-09-17: the size text sits on the outer
+   * > radius of the circle, curving along it, *"with the text readable and
+   * > flipped the correct way"* — the mock's own glyphs were upside down.
+   *
+   * SVG lays text along a path with each glyph's up-vector on the LEFT of the
+   * travel direction, so on the lower half of a circle the direction IS the
+   * answer: clockwise hangs the letters feet-outward, counter-clockwise
+   * stands them up. That is what these pin, off the path data.
+   */
+  it('runs counter-clockwise, which is what stands the letters up', () => {
+    const d = ringTextPath(42);
+    // One move and one arc, with the sweep flag 0 — counter-clockwise in a
+    // y-down space. (`A rx ry rot large sweep x y`.)
+    const arc = d.slice(d.indexOf('A'));
+    const parts = arc.split(/\s+/);
+    expect(parts[0]).toBe('A');
+    expect(parts[4]).toBe('0');
+    expect(parts[5]).toBe('0');
   });
 
-  it('only ever grows', () => {
-    let previous = -1;
-    for (let m = 0; m <= 60; m += 0.25) {
-      const s = iconScale(m);
-      expect(s).toBeGreaterThanOrEqual(previous);
-      previous = s;
+  it('starts below the centre and ends to its right', () => {
+    const d = ringTextPath(42);
+    const nums = d.match(/-?\d+\.\d+/g)!.map(Number);
+    const [sx, sy] = [nums[0]!, nums[1]!];
+    // The end point is the last pair.
+    const ex = nums[nums.length - 2]!;
+    const ey = nums[nums.length - 1]!;
+    // Below the centre (y down), and left of it — the lower-left of the ring.
+    expect(sy).toBeGreaterThan(50);
+    expect(sx).toBeLessThan(50);
+    // …round to its right, and above where it started: the text climbs from
+    // the bottom of the ring to its right-hand side, reading left to right.
+    expect(ex).toBeGreaterThan(50);
+    expect(ey).toBeLessThan(sy);
+  });
+
+  it('is on the radius it was asked for, all the way round', () => {
+    for (const r of [30, 42, 48]) {
+      const d = ringTextPath(r);
+      const nums = d.match(/-?\d+\.\d+/g)!.map(Number);
+      const start = Math.hypot(nums[0]! - 50, nums[1]! - 50);
+      const end = Math.hypot(
+        nums[nums.length - 2]! - 50,
+        nums[nums.length - 1]! - 50,
+      );
+      expect(start).toBeCloseTo(r, 3);
+      expect(end).toBeCloseTo(r, 3);
     }
   });
 
-  it('caps, so the icon stays an icon', () => {
-    expect(iconScale(ICON_CAP_M)).toBeCloseTo(1, 12);
-    expect(iconScale(ICON_CAP_M * 100)).toBeCloseTo(1, 12);
+  it('answers nothing for a radius that is not one', () => {
+    for (const bad of [0, -3, Number.NaN]) expect(ringTextPath(bad)).toBe('');
   });
 });
 
@@ -148,6 +183,7 @@ interface StubEl {
   children: StubEl[];
   parent: StubEl | null;
   setAttribute(name: string, value: string): void;
+  setAttributeNS(ns: string | null, name: string, value: string): void;
   /** What a layout would have measured. The recording DOM has no layout, so
    * a test that cares sets it (the inset's diameter is the row's width). */
   offsetWidth: number;
@@ -196,6 +232,11 @@ function makeEl(tag: string): StubEl {
       return { left: 16, top: 16, width: w, height: h };
     },
     setAttribute(name: string, value: string): void {
+      el.attrs[name] = value;
+    },
+    // A namespaced attribute is recorded under its own name: the readout
+    // writes `xlink:href` beside `href` on its text path, for Safari.
+    setAttributeNS(_ns: string | null, name: string, value: string): void {
       el.attrs[name] = value;
     },
     appendChild(child: StubEl): StubEl {
@@ -308,10 +349,11 @@ describe('the corner mounts, waits for a ball, and leaves cleanly', () => {
     for (let f = 1; f <= 30; f++) dom.step(f * 40);
     expect(handle.shown()).toBe(false);
     expect(handle.text()).toBe('');
-    const row = find(handle.el as unknown as StubEl, 'world-size-row')!;
-    // Not slid in, and with no number in it: an empty corner, not a zero.
-    expect(row.classList.contains('in')).toBe(false);
-    expect(find(row, 'world-size-value')!.textContent).toBe('');
+    const el = handle.el as unknown as StubEl;
+    const inset = find(el, 'world-size-inset')!;
+    // Not slid in, and with no number on it: an empty corner, not a zero.
+    expect(inset.classList.contains('in')).toBe(false);
+    expect(find(el, 'world-size-value')!.children[0]!.textContent).toBe('');
     handle.dispose();
     dom.restore();
   });
@@ -323,12 +365,12 @@ describe('the corner mounts, waits for a ball, and leaves cleanly', () => {
       diameter: () => units,
       mount: dom.mount as unknown as HTMLElement,
     });
-    const row = find(handle.el as unknown as StubEl, 'world-size-row')!;
+    const inset = find(handle.el as unknown as StubEl, 'world-size-inset')!;
 
     dom.step(40);
     // It has arrived — by sliding, which is the class the sheet transitions.
     expect(handle.shown()).toBe(true);
-    expect(row.classList.contains('in')).toBe(true);
+    expect(inset.classList.contains('in')).toBe(true);
     // …and the number started from nothing rather than appearing at the
     // answer: the spring is what carries it, over MOTION.primaryMs.
     const first = handle.text();
@@ -376,39 +418,75 @@ describe('the corner mounts, waits for a ball, and leaves cleanly', () => {
     dom.restore();
   });
 
-  it('grows the ring with the ball and keeps its stroke a hairline', () => {
+  it('feathers a 40% white band between the picture and the outline', () => {
+    /*
+     * > User mock, 2026-09-17: the band between the 3d disc and the outline
+     * > has *"a white fill at 40% opacity with a slight feathered blur"* at
+     * > its edges — and the outline is the ref world hairline.
+     *
+     * A radial gradient rather than a blur filter: a filter is an offscreen
+     * pass on a phone for a mark a hundred pixels across, and what the mock
+     * asks for is an edge that is not an edge. Four stops do it — nothing at
+     * the picture, full white across the middle, nothing at the outline.
+     */
     const dom = stubDom();
-    const small = installBallSize({
-      diameter: () => 1,
+    const handle = installBallSize({
+      diameter: () => 3,
       mount: dom.mount as unknown as HTMLElement,
     });
-    for (let f = 1; f <= 200; f++) dom.step(f * 40);
-    const smallRing = find(small.el as unknown as StubEl, 'world-size-ring')!;
-    const smallScale = Number.parseFloat(
-      /scale\(([\d.]+)\)/.exec(smallRing.attrs['transform'] ?? '')?.[1] ?? '0',
-    );
-    const smallStroke = Number.parseFloat(smallRing.attrs['stroke-width'] ?? '0');
-    small.dispose();
+    for (let f = 1; f <= 120; f++) dom.step(f * 40);
+    const el = handle.el as unknown as StubEl;
 
-    const big = installBallSize({
-      diameter: () => 30,
-      mount: dom.mount as unknown as HTMLElement,
-    });
-    for (let f = 1; f <= 200; f++) dom.step(f * 40);
-    const bigRing = find(big.el as unknown as StubEl, 'world-size-ring')!;
-    const bigScale = Number.parseFloat(
-      /scale\(([\d.]+)\)/.exec(bigRing.attrs['transform'] ?? '')?.[1] ?? '0',
-    );
-    const bigStroke = Number.parseFloat(bigRing.attrs['stroke-width'] ?? '0');
+    const band = find(el, 'world-size-band')!;
+    // `find` matches a class, and a gradient has none: it is the one child of
+    // the mark's `defs`.
+    const inset = find(el, 'world-size-inset')!;
+    const grad = inset.children
+      .flatMap((kid) => (kid.tag === 'defs' ? kid.children : []))
+      .find((kid) => kid.tag === 'radialGradient');
+    expect(grad).toBeTruthy();
+    expect(band.tag).toBe('circle');
+    // The band is filled by the gradient and by nothing else.
+    expect(band.attrs['fill']).toMatch(/^url\(#rw-size-\d+-band\)$/);
 
-    expect(bigScale).toBeGreaterThan(smallScale);
-    // The rendered weight is `stroke-width × scale` in user units, and that
-    // product is what has to stay put: a mark that thickened as it grew
-    // would stop being the same mark.
-    // (within a thousandth of a px — both numbers are written to the
-    // attribute rounded, so they cannot agree to the last bit.)
-    expect(Math.abs(bigStroke * bigScale - smallStroke * smallScale)).toBeLessThan(0.01);
-    big.dispose();
+    const stops = (grad?.children ?? []).filter((kid) => kid.tag === 'stop');
+    expect(stops.length).toBe(4);
+    const alpha = stops.map((stop) => Number(stop.attrs['stop-opacity']));
+    const offset = stops.map((stop) => Number(stop.attrs['offset']));
+    // Transparent at both edges, 40% across the middle.
+    expect(alpha[0]).toBe(0);
+    expect(alpha[1]).toBeCloseTo(BAND_ALPHA, 6);
+    expect(alpha[2]).toBeCloseTo(BAND_ALPHA, 6);
+    expect(alpha[3]).toBe(0);
+    // The colour is the theme's light role, from the sheet — not a hex in a
+    // module (TASTE §7, the achromatic gate).
+    for (const stop of stops) expect(stop.attrs['class']).toBe('world-size-stop');
+    expect(dom.head.children[0]!.textContent).toContain('stop-color: var(--rw-light');
+    // The feather really is a fraction of the band and not a hard step.
+    expect(offset[1]! - offset[0]!).toBeGreaterThan(0.01);
+    expect(offset[3]! - offset[2]!).toBeGreaterThan(0.01);
+    /*
+     * …and the inner edge IS the picture's own edge. The offsets are
+     * fractions of the gradient's own radius, so this reads them back into
+     * the viewBox's units and compares with the disc: the band starts exactly
+     * where the 3d view stops.
+     */
+    const gradR = Number(grad!.attrs['r']);
+    expect(offset[0]! * gradR).toBeCloseTo((100 / 2) * (INSET_PX / ringBoxPx()), 2);
+    // The outer edge is the outline's own radius, so nothing white spills
+    // past the hairline.
+    expect(offset[3]!).toBeCloseTo(1, 6);
+    expect(BAND_FEATHER).toBeGreaterThan(0);
+
+    // The outline outermost: the project's wavering hand at a hairline.
+    const ring = find(el, 'world-size-inset-ring')!;
+    expect(ring.tag).toBe('path');
+    expect((ring.attrs['d'] ?? '').length).toBeGreaterThan(80);
+    // The stroke is in viewBox units, so its rendered weight is that times
+    // the box-to-pixel scale — a hairline at any size.
+    const width = Number(ring.attrs['stroke-width']);
+    expect((width * ringBoxPx()) / 100).toBeCloseTo(1.25, 3);
+    handle.dispose();
     dom.restore();
   });
 
@@ -457,15 +535,14 @@ describe('the corner mounts, waits for a ball, and leaves cleanly', () => {
     });
     const sheet = dom.head.children[0]!.textContent;
     /*
-     * The marks: the icon's ring, and — since the 2026-09-17 direction — the
-     * readout's PAPER BOX in place of the hairline rule it used to carry
-     * (*"a rectangular container with a black outline and white fill, in the
-     * style of ref world"*, the recorded paper-card ruling, TASTE §9a). One
-     * fill, one hairline, drawn by the project's own hand.
+     * The marks, after the 2026-09-17 mock: the wavering OUTLINE, the type on
+     * the band, and the band's own feathered white — the recorded paper-card
+     * ruling (TASTE §9a) at the softest it has been drawn. One hairline, one
+     * fill, both by the project's own hand, and no straight rule anywhere.
      */
-    expect(sheet).toContain('.world-size-paper');
-    expect(sheet).toContain('fill: var(--rw-light');
-    expect(sheet).toContain('stroke-width: 1.25');
+    expect(sheet).toContain('.world-size-inset-ring');
+    expect(sheet).toContain('.world-size-value');
+    expect(sheet).not.toContain('border-bottom');
     // …and the marks that are not in this taste's vocabulary are not.
     expect(sheet).not.toMatch(/\bbackground\b/);
     expect(sheet).not.toMatch(/box-shadow/);
@@ -491,92 +568,37 @@ describe('the inset — the live view’s frame and its rect', () => {
    * This module owns the MARK and the RECT; the picture inside it is
    * src/world/portrait.ts's, and the rect is the whole contract between them.
    */
-  it('is one fixed circle at the top of the corner', () => {
+  it('is one fixed mark: a disc of world inside a band', () => {
     const dom = stubDom();
     const handle = installBallSize({
       diameter: () => 2,
       mount: dom.mount as unknown as HTMLElement,
     });
     const el = handle.el as unknown as StubEl;
-    const row = find(el, 'world-size-row')!;
-    // What a layout would have measured for `15m 16cm` beside the icon.
-    row.offsetWidth = 118;
-    row.offsetHeight = 32;
     for (let f = 1; f <= 120; f++) dom.step(f * 40);
 
     const inset = find(el, 'world-size-inset')!;
     /*
-     * ONE SIZE, and not the row's width any more (user direction,
-     * 2026-09-17): the picture and the number are two marks in a column now,
-     * so a circle measured off the type moved the whole corner every time a
-     * digit landed.
+     * ONE SIZE: the disc plus the band on all four sides. It followed the
+     * number's own width for an afternoon and moved the whole corner every
+     * time a digit landed.
      */
-    expect(Number(inset.attrs['width'])).toBe(INSET_PX);
-    // Square, because the mark is a circle.
+    expect(Number(inset.attrs['width'])).toBe(ringBoxPx());
     expect(inset.attrs['height']).toBe(inset.attrs['width']);
-    // It takes the TOP of the corner; the readout hangs under it.
-    expect(el.children.indexOf(inset)).toBeLessThan(
-      el.children.findIndex((kid) => kid.className === 'world-size-drift'),
-    );
+    expect(ringBoxPx()).toBe(INSET_PX + 2 * BAND_PX);
     handle.dispose();
     dom.restore();
   });
 
-  it('keeps the readout’s box wholly below the circle, left edges aligned', () => {
+  it('writes the number on the band, upright, over nothing else', () => {
     /*
-     * > User direction, 2026-09-17, with two phone screenshots of a 52 m
-     * > ball: *"move the size of the ball BELOW the actual visual
-     * > representation so that it's not overlapped … It should sit on the
-     * > left-hand side, just below the circle."*
+     * > User mock, 2026-09-17: the size text sits on the outer radius of the
+     * > circle, curving along it, *"with the text readable and flipped the
+     * > correct way"*.
      *
-     * The rule is geometric and it is one expression — `rowOffsetPx()` — so
-     * this is what pins it: the box begins a whole circle plus the gap below
-     * the corner's top, and the corner's top IS the circle's top (the circle
-     * is out of the flow at 0, 0), at every width the number comes out to.
-     */
-    for (const [w, h] of [
-      [96, 32],
-      [118, 32],
-      [240, 32],
-      [118, 44],
-    ] as const) {
-      const dom = stubDom();
-      const handle = installBallSize({
-        diameter: () => 2,
-        mount: dom.mount as unknown as HTMLElement,
-      });
-      const el = handle.el as unknown as StubEl;
-      const row = find(el, 'world-size-row')!;
-      row.offsetWidth = w;
-      row.offsetHeight = h;
-      for (let f = 1; f <= 200; f++) dom.step(f * 40);
-
-      const circle = handle.rect()!;
-      expect(circle.w).toBe(INSET_PX);
-      const offset = rowOffsetPx();
-      const boxTop = circle.y + offset;
-      // Below the circle's bottom edge, by the gap and nothing else.
-      expect(boxTop).toBeGreaterThanOrEqual(circle.y + circle.h);
-      expect(boxTop - (circle.y + circle.h)).toBeCloseTo(INSET_GAP_PX, 6);
-      // The sheet puts that offset on the drift layer, which is what carries
-      // the box — so the two cannot overlap however wide the number is.
-      const sheet = dom.head.children[0]!.textContent;
-      expect(sheet).toContain(`margin-top: ${offset}px`);
-      // …and neither mark is inset from the corner, so the left edges align.
-      expect(sheet).toContain('.world-size-inset {\n  position: absolute;\n  left: 0;');
-      handle.dispose();
-      dom.restore();
-    }
-  });
-
-  it('draws the readout on paper inside one wavering hairline', () => {
-    /*
-     * > *"Put it in a rectangular container with a black outline and white
-     * > fill, in the style of ref world."*
-     *
-     * Which is the recorded paper-card mark (TASTE §9a): the join code's own
-     * fill and the join code's own hand, one hairline at 1.25, and nothing
-     * else — no shadow, no radius, no second fill.
+     * So the type hangs on a `textPath` around the arc, and the arc's RADIUS
+     * is what keeps it off both the picture and the outline: outside the
+     * disc, inside the hairline.
      */
     const dom = stubDom();
     const handle = installBallSize({
@@ -584,59 +606,33 @@ describe('the inset — the live view’s frame and its rect', () => {
       mount: dom.mount as unknown as HTMLElement,
     });
     const el = handle.el as unknown as StubEl;
-    const row = find(el, 'world-size-row')!;
-    row.offsetWidth = 118;
-    row.offsetHeight = 32;
-    for (let f = 1; f <= 120; f++) dom.step(f * 40);
+    for (let f = 1; f <= 200; f++) dom.step(f * 40);
 
-    const paper = find(el, 'world-size-paper')!;
-    expect(paper.tag).toBe('path');
-    // The frame is the box's own size, and the path is the project's loop.
-    expect(find(el, 'world-size-frame')!.attrs['viewBox']).toBe('0 0 118 32');
-    expect(paper.attrs['d']).toBe(rowFramePath(118, 32));
-    expect((paper.attrs['d'] ?? '').length).toBeGreaterThan(80);
-    // Behind the type: the first child of the row.
-    expect(row.children[0]!.attrs['class']).toBe('world-size-frame');
+    const label = find(el, 'world-size-value')!;
+    expect(label.tag).toBe('text');
+    const path = label.children[0]!;
+    expect(path.tag).toBe('textPath');
+    // It reads the corner's own number, lowercase.
+    expect(path.textContent).toBe(handle.text());
+    expect(path.textContent).toBe(path.textContent.toLowerCase());
+    // …and it references the arc this mark generated.
+    const arc = find(el, 'world-size-arc')!;
+    expect(path.attrs['href']).toBe(`#${arc.attrs['id']}`);
 
-    const sheet = dom.head.children[0]!.textContent;
-    const rules = sheet.slice(sheet.indexOf('.world-size-paper'));
-    expect(rules).toContain('--rw-light');
-    expect(rules).toContain('--rw-ink');
-    expect(rules).toContain('stroke-width: 1.25');
-    expect(sheet).not.toContain('box-shadow');
-    expect(sheet).not.toContain('border-radius');
-    // The rule the box replaced is gone: one mark, not a box AND a rule.
-    expect(sheet).not.toContain('border-bottom');
+    // THE ARC IS BETWEEN THE TWO EDGES: outside the disc, inside the outline.
+    const d = arc.attrs['d'] ?? '';
+    const nums = d.match(/-?\d+\.\d+/g)!.map(Number);
+    const r = Math.hypot(nums[0]! - 50, nums[1]! - 50);
+    const discR = (100 / 2) * (INSET_PX / ringBoxPx());
+    const outlineR = 100 / 2 - 2;
+    expect(r).toBeGreaterThan(discR);
+    expect(r).toBeLessThan(outlineR);
+    // And its sweep is the counter-clockwise one, which is what puts the
+    // glyphs' feet on the inside (see `ringTextPath`).
+    expect(d).toBe(ringTextPath(r));
     handle.dispose();
     dom.restore();
   });
-
-  it('redraws that frame only when the box’s size changes', () => {
-    const dom = stubDom();
-    const handle = installBallSize({
-      diameter: () => 2,
-      mount: dom.mount as unknown as HTMLElement,
-    });
-    const el = handle.el as unknown as StubEl;
-    const row = find(el, 'world-size-row')!;
-    row.offsetWidth = 100;
-    row.offsetHeight = 32;
-    for (let f = 1; f <= 60; f++) dom.step(f * 40);
-    const first = find(el, 'world-size-paper')!.attrs['d'];
-    expect(first).toBe(rowFramePath(100, 32));
-
-    // Sixty more paints at the same size: the same hand, not a new one.
-    for (let f = 61; f <= 120; f++) dom.step(f * 40);
-    expect(find(el, 'world-size-paper')!.attrs['d']).toBe(first);
-
-    // A wider number, and the box follows it.
-    row.offsetWidth = 132;
-    for (let f = 121; f <= 160; f++) dom.step(f * 40);
-    expect(find(el, 'world-size-paper')!.attrs['d']).toBe(rowFramePath(132, 32));
-    handle.dispose();
-    dom.restore();
-  });
-
 
   it('publishes no rect until there is something to show', () => {
     const dom = stubDom();
@@ -652,23 +648,25 @@ describe('the inset — the live view’s frame and its rect', () => {
     dom.restore();
   });
 
-  it('publishes the circle’s own box once it has', () => {
+  it('publishes the DISC’s box once it has — not the whole mark', () => {
     const dom = stubDom();
     const handle = installBallSize({
       diameter: () => 2,
       mount: dom.mount as unknown as HTMLElement,
     });
-    const el = handle.el as unknown as StubEl;
-    find(el, 'world-size-row')!.offsetWidth = 110;
     for (let f = 1; f <= 200; f++) dom.step(f * 40);
     const rect = handle.rect()!;
     expect(rect).not.toBeNull();
-    // The circle's own fixed diameter, whatever the number measured.
+    /*
+     * The picture is the DISC, and the mark is the disc plus the band on all
+     * four sides: hand the pass the whole svg and the creature would be drawn
+     * under the number and under the outline.
+     */
     expect(rect.w).toBe(INSET_PX);
-    // Square and at the corner the sheet puts it.
     expect(rect.h).toBeCloseTo(rect.w, 6);
-    expect(rect.x).toBe(16);
-    expect(rect.y).toBe(16);
+    // Inset from the mark's own corner by exactly the band.
+    expect(rect.x).toBe(16 + BAND_PX);
+    expect(rect.y).toBe(16 + BAND_PX);
     handle.dispose();
     dom.restore();
   });
@@ -680,7 +678,6 @@ describe('the inset — the live view’s frame and its rect', () => {
       mount: dom.mount as unknown as HTMLElement,
     });
     const el = handle.el as unknown as StubEl;
-    find(el, 'world-size-row')!.offsetWidth = 120;
     for (let f = 1; f <= 200; f++) dom.step(f * 40);
     const ring = find(el, 'world-size-inset-ring')!;
     // A path, drawn by the project's own wavering hand, stroked at a

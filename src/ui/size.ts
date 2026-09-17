@@ -33,29 +33,39 @@
  * and the object ball should not scale beyond the radius measurement ui div
  * in the top left"*):
  *
- * - the INSET — one wavering hairline CIRCLE whose diameter is the row's own
- *   width, with a live render of your creature and its pile inside it. The
- *   drawing is not this module's: `rect()` publishes where the circle is and
- *   `src/world/portrait.ts` renders the creature's own subtree into that rect
- *   after the frame has composed, scissored to it. This module owns the MARK
- *   — the ring, the size and the slide — and knows nothing about a camera;
- *   the paper the picture stands on is cleared in GL, because the DOM is in
- *   front of the canvas and a fill up here would cover the picture.
+ * - the INSET — a live render of your creature and the mass on it, in a disc,
+ *   with the NUMBER CURVING AROUND IT. The drawing is not this module's:
+ *   `rect()` publishes where the disc is and `src/world/portrait.ts` renders
+ *   the creature's own subtree into that rect after the frame has composed,
+ *   scissored to it. This module owns the MARKS and knows nothing about a
+ *   camera; the paper the picture stands on is cleared in GL, because the DOM
+ *   is in front of the canvas and a fill up here would cover the picture.
  *
- *   IT IS A COLUMN, not a stack (2026-09-17, measured at 390x844 on the
- *   hints delegate's own shot): the picture was BEHIND the row, so the number
- *   sat on the creature and the row's hairline rule cut straight across the
- *   circle — two marks reading as one. So the circle takes the top of the
- *   corner and the number and its rule hang under it, clear of it by
- *   `INSET_GAP_PX`. The offset is written in JS from `rowOffsetPx` rather
- *   than left to flow, because the circle's size is a spring and the row has
- *   to follow it without a step; `rect()` and that one number are what keep
- *   the two boxes from ever overlapping again (pinned in test/ui/size.test.ts).
+ *   THREE RINGS, FROM THE INSIDE OUT (user mock, 2026-09-17 — which replaced
+ *   the paper box this corner carried for an afternoon, and the hairline rule
+ *   before that; both had the number sitting ON the picture):
  *
- * It is the same ring generator as the icon beside the number and the same
- * hairline the join code, the minimap and the leaderboard stand in
- * (TASTE §9a) — one hand drew all of them. No filled panel, no card, no
- * background and no shadow: the corner is a layout, not a surface.
+ *     1. the DISC, `INSET_PX` across, which is the 3d view and nothing else;
+ *     2. the BAND around it, `BAND_PX` wide: white at `BAND_ALPHA` with both
+ *        its edges FEATHERED — a radial gradient rather than a ring, so it
+ *        fades into the picture on the inside and into the world on the
+ *        outside and has no edge of its own. It is what makes the number
+ *        legible over a meadow;
+ *     3. and the number ON that band, on a circular text path along the
+ *        lower-right, then the project's own wavering hairline outermost.
+ *
+ *   THE GLYPHS ARE UPRIGHT, which is a property of the path's DIRECTION and
+ *   the one thing the mock got wrong (*"with the text readable and flipped
+ *   the correct way"*): text is laid along the path with its up-vector on the
+ *   travel direction's left, so an arc drawn clockwise on the lower half puts
+ *   the letters' feet outward and reads upside down. `ringTextPath` sweeps
+ *   COUNTER-CLOCKWISE, from below the centre round to its right, so the
+ *   letters stand up and read left to right.
+ *
+ * The outline is the same generator as the stick's ring and the same hairline
+ * the join code, the minimap and the leaderboard stand in (TASTE §9a) — one
+ * hand drew all of them — and the band's 40% white is the recorded
+ * paper-card ruling in the same section. No card, no shadow, no radius.
  *
  * THE MOTION. The displayed diameter is not the true one — it is a ζ ≥ 1
  * spring chasing it over `MOTION.primaryMs` (src/motion/spring.ts, where
@@ -82,7 +92,7 @@
 import { MOTION, WORLD } from '../taste/tokens';
 import { Spring } from '../motion/spring';
 import { sampleDrift } from '../motion/ambient';
-import { mapBorderInset, mapMarkScale, wavyBorderPath, wavyBorderPoints } from '../phone/minimap';
+import { wavyBorderPath } from '../phone/minimap';
 import { wavyRingPoints } from '../world/joystick';
 import { WORLD_SCALE } from '../world/katamari/rules';
 
@@ -138,61 +148,41 @@ export function formatLength(metres: number): string {
 }
 
 /**
- * Where the icon's growth stops, in metres of diameter. **[D]**
+ * THE ARC THE NUMBER IS WRITTEN ON, as svg path data. PURE.
  *
- * A ring that tracked the ball all the way up would be a chart, not an icon,
- * and the mark set is *small, self-contained icon marks* (TASTE §4). Twenty
- * metres is a ball that has eaten a building — past that the NUMBER carries
- * the news and the ring just says "big".
- */
-export const ICON_CAP_M = 20;
-
-/**
- * How small the ring starts, as a fraction of its capped size. **[D]** Not
- * zero and not near it: an icon that begins as a dot has to pop to become a
- * ring, and entrances slide.
- */
-export const ICON_MIN_SCALE = 0.34;
-
-/**
- * The ring's scale for a ball this many metres across, in
- * [`ICON_MIN_SCALE`, 1].
+ * A circular path of radius `r` about the box's centre, from `fromDeg` to
+ * `toDeg` measured clockwise from three o'clock in SVG's own coordinates
+ * (y down) — and the DIRECTION is the whole point of it, not a detail:
  *
- * Square root of the ratio rather than the ratio: the ring is a picture of a
- * circle, so its AREA is what the eye reads as size, and area on a linear
- * radius runs away within a few pickups. Monotonic and capped, so the mark
- * only ever grows and only ever to one size.
+ * SVG lays text along a path with each glyph's up-vector on the LEFT of the
+ * travel direction. On the lower half of a circle, travelling clockwise (the
+ * direction a naive arc takes) puts that left-hand side on the OUTSIDE, so
+ * the letters hang feet-outward and read upside down — which is exactly what
+ * the user's mock showed and exactly what they asked to have flipped
+ * (*"with the text readable and flipped the correct way"*). So this runs
+ * COUNTER-CLOCKWISE: from below the centre round to its right, which puts the
+ * up-vector on the inside, stands the letters up, and reads left to right.
+ *
+ * One `A` command, sweep flag 0 (counter-clockwise in a y-down space) and
+ * large-arc 0, because a readout is never more than a quarter of the ring.
  */
-export function iconScale(metres: number): number {
-  const m = Number.isFinite(metres) && metres > 0 ? metres : 0;
-  const t = Math.min(1, Math.sqrt(m / ICON_CAP_M));
-  return ICON_MIN_SCALE + (1 - ICON_MIN_SCALE) * t;
-}
-
-/**
- * THE READOUT BOX'S OWN FRAME, as svg path data — the project's wavering loop
- * at that size, drawn by the same hand as the join code, the minimap, the
- * leaderboard and the hint labels (`mapBorderInset(mapMarkScale(min))`, the
- * identical expression all four use, so every hairline sits the same distance
- * inside its own edge). PURE and deterministic per size, so the same box is
- * the same hand on every device.
- */
-export function rowFramePath(w: number, h: number, seed = SIZE_SEED + 5): string {
-  if (!(w > 2) || !(h > 2)) return '';
-  const inset = mapBorderInset(mapMarkScale(Math.min(w, h)));
-  return wavyBorderPath(wavyBorderPoints(Math.round(w), Math.round(h), inset, seed));
+export function ringTextPath(r: number, fromDeg = 100, toDeg = 8, cx = 50, cy = 50): string {
+  if (!(r > 0)) return '';
+  const at = (deg: number): { x: number; y: number } => {
+    const a = (deg * Math.PI) / 180;
+    return { x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r };
+  };
+  const start = at(fromDeg);
+  const end = at(toDeg);
+  return `M ${start.x.toFixed(3)} ${start.y.toFixed(3)} A ${r.toFixed(3)} ${r.toFixed(
+    3,
+  )} 0 0 0 ${end.x.toFixed(3)} ${end.y.toFixed(3)}`;
 }
 
 // ── the corner ───────────────────────────────────────────────────────────────
 
-/** The icon's box on screen, css px — its capped size, not its current one. */
-const ICON_PX = 26;
-/** The ring's user-space box. Fixed, so the wavering is computed once. */
-const ICON_BOX = 100;
-/** Ring radius in that box, leaving the waver room inside the viewBox. */
-const ICON_R = ICON_BOX / 2 - 6;
-/** Stroke weight on screen, css px — a hairline, like every other border. */
-const ICON_STROKE_PX = 1.25;
+/** The mark's user-space box. Fixed, so the wavering is computed once. */
+const INSET_BOX = 100;
 /** Stable seed for the ring's waver and the corner's drift channel. */
 const SIZE_SEED = 58.2;
 /**
@@ -204,14 +194,6 @@ const DRIFT_SCALE = 140;
 /** Draw cadence — a number that rolls, not a viewport. */
 const DRAW_INTERVAL_MS = 1000 / 30;
 
-/**
- * [D] The inset's own box in its viewBox — the same 0..100 space the icon's
- * ring is generated in, so both circles are drawn by one hand at one scale
- * and the CSS size is the only thing that differs.
- */
-const INSET_BOX = 100;
-/** Ring radius in that box, leaving the waver room inside the viewBox. */
-const INSET_R = INSET_BOX / 2 - 4;
 /**
  * [D] THE CIRCLE'S DIAMETER, css px — one number, and it no longer follows
  * the row.
@@ -232,36 +214,58 @@ const INSET_R = INSET_BOX / 2 - 4;
 export const INSET_PX = 104;
 
 /**
- * [D] Air between the circle and the box under it, css px.
- *
- * The one number that keeps the number and its frame off the picture. About
- * the row's own padding — enough that the two read as two marks, and not so
- * much that they stop being one corner.
+ * [D] How wide the band around the disc is, css px — the ring the number is
+ * written on. Wide enough for the type at `RING_TEXT_PX` with air on both
+ * sides of it, and it is the whole of the difference between the picture and
+ * the mark: `INSET_PX + 2 × BAND_PX` is the corner's own box.
  */
-export const INSET_GAP_PX = 10;
+export const BAND_PX = 16;
 
-/**
- * Where the readout's box begins, css px below the corner's own top. PURE.
- *
- * The circle owns the top of the corner and the box hangs under it, LEFT
- * EDGES ALIGNED (the ask): the offset is the circle's whole diameter plus the
- * gap, so the box's frame begins below the bottom of the circle. That is the
- * whole of the no-overlap rule and it is one expression, which is what
- * test/ui/size.test.ts pins.
- */
-export function rowOffsetPx(): number {
-  return INSET_PX + INSET_GAP_PX;
+/** The mark's whole box, css px — the disc plus the band on both sides. */
+export function ringBoxPx(): number {
+  return INSET_PX + 2 * BAND_PX;
 }
 
 /**
- * [D] The readout's own padding inside its frame, css px — the hint label's
- * (`LABEL_PAD_PX`, src/ui/hints.ts), because these are the same mark: type on
- * paper inside one wavering hairline.
+ * [D] The band's white, and it is a FEATHERED 40% rather than a fill (user
+ * mock, 2026-09-17: *"white fill at 40% opacity with a slight feathered
+ * blur"*) — the recorded paper-card ruling (TASTE §9a) at the softest it has
+ * ever been drawn.
  */
-const ROW_PAD_PX = 7;
+export const BAND_ALPHA = 0.4;
+
+/**
+ * [D] How much of the band each edge's feather eats, as a fraction of the
+ * band's width. A fifth in from the picture and a fifth in from the outline,
+ * so the 40% only reaches full strength across the middle three fifths and
+ * neither edge is a line.
+ */
+export const BAND_FEATHER = 0.2;
 
 /** The hairline, css px — the project's one border weight (TASTE §9a). */
 const HAIRLINE_PX = 1.25;
+
+/** [D] The number's type size on the band, css px. */
+const RING_TEXT_PX = 11;
+
+/**
+ * The band's two radii and the number's own, in the viewBox's 0..100 space.
+ *
+ * `BAND_OUT_R` leaves the wavering hairline room to waver inside the box;
+ * `BAND_IN_R` is where the disc ends, which is the same fraction of the box
+ * that `INSET_PX` is of `ringBoxPx()`; and the type's baseline sits a little
+ * outside the disc so its ascenders stay inside the outline.
+ */
+const BAND_OUT_R = INSET_BOX / 2 - 2;
+const BAND_IN_R = (INSET_BOX / 2) * (INSET_PX / ringBoxPx());
+const RING_TEXT_R = BAND_IN_R + 2.2;
+
+/** One id per mounted readout, so two on a page cannot collide. */
+let markIds = 0;
+function nextMarkId(): number {
+  markIds += 1;
+  return markIds;
+}
 
 const STYLE_ID = 'world-size-style';
 
@@ -278,22 +282,24 @@ function ensureStyle(): void {
   pointer-events: none;
 }
 /*
- * The inset's ring — the top of the corner, out of the flow at its own
- * top-left, at one fixed size, with the readout's box below it (see the
- * header: stacked, the number sat on the creature and the row's rule cut
- * straight across the circle).
+ * The mark: a disc of world, a feathered white band around it, the number on
+ * that band, and the project's wavering hairline outermost (user mock,
+ * 2026-09-17). Out of the flow at the corner's own top-left, at one fixed
+ * size, with nothing under it and nothing over the picture.
  *
- * NO FILL. The paper inside the circle is cleared in WebGL by the render pass
- * (src/world/portrait.ts): this element is in front of the canvas, so a fill
- * here would hide the very thing it frames. Nothing else comes with it —
- * still no shadow, still no radius, still no second fill (TASTE §9a).
+ * NO FILL ON THE DISC. The paper inside it is the WORLD — the render pass
+ * (src/world/portrait.ts) draws the creature into that rect, and this element
+ * is in front of the canvas, so a fill here would hide the very thing it
+ * frames. The band's white is the recorded paper-card ruling (TASTE §9a) and
+ * it is 40% with both edges feathered, so it has no edge of its own: no card,
+ * no shadow, no radius.
  */
 .world-size-inset {
   position: absolute;
   left: 0;
   top: 0;
-  width: ${INSET_PX}px;
-  height: ${INSET_PX}px;
+  width: ${ringBoxPx()}px;
+  height: ${ringBoxPx()}px;
   display: block;
   opacity: 0;
   transition: opacity ${MOTION.secondaryMs}ms ${MOTION.settleCurve};
@@ -306,88 +312,28 @@ function ensureStyle(): void {
   fill: none;
   stroke: var(--rw-ink, ${WORLD.ink});
 }
-/* The drift layer. Nothing fully arrests (TASTE §3), and the transform here
-   is written per frame — which is why it is its own element: the slide below
-   owns a transform of its own and two of them cannot share one.
-
-   It also carries the column: the box begins one whole circle plus the gap
-   below the corner's top (rowOffsetPx), left edge aligned with the
-   circle's, which is the layout the ask names. */
-.world-size-drift {
-  display: block;
-  margin-top: ${rowOffsetPx()}px;
+/* The band's white — the theme's light role, which on the ghibli style is
+   that world's own paper. Each stop's opacity is written per stop; this is
+   the one colour they share. */
+.world-size-stop {
+  stop-color: var(--rw-light, ${WORLD.light});
 }
-/*
- * The slide. Out of the way and transparent until there is a ball, then it
- * comes down into place over t.secondary on the drift-settle curve — the
- * css-side equivalent of the ζ≥1 spring, so no bounce by construction.
- */
-.world-size-row {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  box-sizing: border-box;
-  padding: ${ROW_PAD_PX}px ${ROW_PAD_PX + 4}px;
-  color: var(--rw-ink, ${WORLD.ink});
-  font: 400 14px/1.4 ui-sans-serif, system-ui, sans-serif;
-  opacity: 0;
-  transform: translateY(-8px);
-  transition:
-    opacity ${MOTION.secondaryMs}ms ${MOTION.settleCurve},
-    transform ${MOTION.secondaryMs}ms ${MOTION.settleCurve};
-}
-/*
- * THE READOUT'S PAPER BOX (user direction, 2026-09-17: *"a rectangular
- * container with a black outline and white fill, in the style of ref world"*).
- *
- * The same mark the join code, the minimap, the leaderboard and the hint
- * labels stand in — type on light paper inside ONE wavering hairline drawn
- * by the same hand (wavyBorderPoints + wavyBorderPath, mapBorderInset,
- * 1.25) and nothing else: no shadow, no radius, no second fill (TASTE §9a,
- * the recorded paper-card ruling). The frame is behind the type and sized to
- * the box, so what grows with the number is the box and not the mark's hand.
- */
-.world-size-frame {
-  position: absolute;
-  left: 0;
-  top: 0;
-  width: 100%;
-  height: 100%;
-  display: block;
-  overflow: visible;
-}
-.world-size-paper {
-  fill: var(--rw-light, ${WORLD.light});
-  stroke: var(--rw-ink, ${WORLD.ink});
-  stroke-width: ${HAIRLINE_PX};
-  stroke-linejoin: round;
-}
-.world-size-row.in {
-  opacity: 1;
-  transform: translateY(0);
-}
-/* The ring sits on the type's own baseline block, at its capped size; what
-   grows is the path inside it. */
-.world-size-icon {
-  position: relative;
-  display: block;
-  width: ${ICON_PX}px;
-  height: ${ICON_PX}px;
-  align-self: center;
-  flex: none;
-  overflow: visible;
-}
-.world-size-ring {
+/* The arc is a path for the type to sit on and is never drawn itself. */
+.world-size-arc {
   fill: none;
-  stroke: var(--rw-ink, ${WORLD.ink});
+  stroke: none;
 }
-/* Tabular figures, so a rolling number does not shuffle the line it is on.
-   position: relative so the type is over its own paper. */
+/* The drift layer. Nothing fully arrests (TASTE §3), and the transform here
+   is written per frame — which is why it is its own element. */
+.world-size-drift { display: block; }
+/* Tabular figures, so a rolling number does not shuffle the letters it is
+   curving through. Lowercase, in the world view's own face, on the band. */
 .world-size-value {
-  position: relative;
+  font: 400 ${RING_TEXT_PX}px/1 ui-sans-serif, system-ui, sans-serif;
   font-variant-numeric: tabular-nums;
-  white-space: nowrap;
+  fill: var(--rw-ink, ${WORLD.ink});
+  stroke: none;
+  letter-spacing: 0.02em;
 }
 `;
   document.head.appendChild(style);
@@ -445,73 +391,103 @@ export function installBallSize(opts: BallSizeOptions): BallSizeHandle {
   el.setAttribute('role', 'status');
   el.setAttribute('aria-label', 'your ball');
 
+  const drift = document.createElement('div');
+  drift.className = 'world-size-drift';
+
   /*
-   * THE INSET, first — an earlier sibling paints behind the row (see the
-   * stylesheet), and the number has to read over the picture.
+   * THE MARK, one svg: the feathered band, the wavering outline, and the
+   * number on an arc between them. The disc in the middle is not drawn at all
+   * — it is the world, with the portrait pass scissored into it.
    */
   const inset = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   inset.setAttribute('class', 'world-size-inset');
   inset.setAttribute('viewBox', `0 0 ${INSET_BOX} ${INSET_BOX}`);
-  // One fixed diameter (`INSET_PX`), set once: the circle no longer follows
-  // the row's width, so nothing about the picture moves when a digit lands.
-  inset.setAttribute('width', String(INSET_PX));
-  inset.setAttribute('height', String(INSET_PX));
+  inset.setAttribute('width', String(ringBoxPx()));
+  inset.setAttribute('height', String(ringBoxPx()));
   inset.setAttribute('aria-hidden', 'true');
-  const insetRing = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-  insetRing.setAttribute('class', 'world-size-inset-ring');
-  // Generated ONCE, at the viewBox's own radius: what changes with the
-  // circle's size is the css box around it, never the geometry — the same
-  // arrangement the icon's ring is under, so neither one re-draws itself
-  // thirty times a second.
-  insetRing.setAttribute(
-    'd',
-    wavyBorderPath(wavyRingPoints(INSET_BOX / 2, INSET_BOX / 2, INSET_R, SIZE_SEED + 11)),
-  );
-  // A hairline stays a hairline: the stroke is in viewBox units, so it is
-  // divided back out by the box-to-pixel scale — one write, because the box
-  // is one size now.
-  insetRing.setAttribute('stroke-width', ((HAIRLINE_PX * INSET_BOX) / INSET_PX).toFixed(3));
-  inset.appendChild(insetRing);
-
-  const drift = document.createElement('div');
-  drift.className = 'world-size-drift';
-  const row = document.createElement('div');
-  row.className = 'world-size-row';
 
   /*
-   * THE BOX'S PAPER, behind the type — the recorded paper-card mark (TASTE
-   * §9a). Redrawn only when the box's measured size changes, which is what
-   * `frameAt` below guards: a wavering path regenerated thirty times a second
-   * would be a different hand every frame.
+   * Two ids, because a gradient and a text path can only be referenced by
+   * one — and a counter, because two handsets' readouts on one page (a test,
+   * or a projection with a tray) must not collide.
    */
-  const box = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  box.setAttribute('class', 'world-size-frame');
-  box.setAttribute('aria-hidden', 'true');
-  const paper = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-  paper.setAttribute('class', 'world-size-paper');
-  box.appendChild(paper);
+  const uid = `rw-size-${nextMarkId()}`;
+  const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+  const grad = document.createElementNS('http://www.w3.org/2000/svg', 'radialGradient');
+  grad.setAttribute('id', `${uid}-band`);
+  grad.setAttribute('gradientUnits', 'userSpaceOnUse');
+  grad.setAttribute('cx', String(INSET_BOX / 2));
+  grad.setAttribute('cy', String(INSET_BOX / 2));
+  grad.setAttribute('r', String(BAND_OUT_R));
+  /*
+   * THE FEATHER, as four stops: nothing at the picture's edge, full white
+   * across the middle of the band, nothing again at the outline. A blur
+   * filter would do it too and would cost a full-size offscreen pass on a
+   * phone for a mark this small (TASTE §2.3 — and a hard ring is what the
+   * mock says not to draw).
+   */
+  const feather = (BAND_OUT_R - BAND_IN_R) * BAND_FEATHER;
+  const stops: [number, number][] = [
+    [BAND_IN_R, 0],
+    [BAND_IN_R + feather, BAND_ALPHA],
+    [BAND_OUT_R - feather, BAND_ALPHA],
+    [BAND_OUT_R, 0],
+  ];
+  for (const [at, alpha] of stops) {
+    const stop = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
+    stop.setAttribute('class', 'world-size-stop');
+    stop.setAttribute('offset', (at / BAND_OUT_R).toFixed(4));
+    // The COLOUR comes from the sheet, so it is the theme's `light` role and
+    // not a hex literal in a module (TASTE §7, the achromatic gate) — what
+    // varies per stop is only how much of it there is.
+    stop.setAttribute('stop-opacity', alpha.toFixed(3));
+    grad.appendChild(stop);
+  }
+  defs.appendChild(grad);
 
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('class', 'world-size-icon');
-  svg.setAttribute('viewBox', `0 0 ${ICON_BOX} ${ICON_BOX}`);
-  svg.setAttribute('aria-hidden', 'true');
-  const ring = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-  ring.setAttribute('class', 'world-size-ring');
-  // One wavering ring, generated once at the capped radius: what changes per
-  // frame is the transform around it, never the geometry, so the hand that
-  // drew it does not re-draw itself every thirtieth of a second.
-  ring.setAttribute(
+  // The arc the number is written on, and nothing draws it.
+  const arc = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  arc.setAttribute('id', `${uid}-arc`);
+  arc.setAttribute('class', 'world-size-arc');
+  arc.setAttribute('d', ringTextPath(RING_TEXT_R));
+  defs.appendChild(arc);
+  inset.appendChild(defs);
+
+  const band = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+  band.setAttribute('class', 'world-size-band');
+  band.setAttribute('cx', String(INSET_BOX / 2));
+  band.setAttribute('cy', String(INSET_BOX / 2));
+  band.setAttribute('r', String(BAND_OUT_R));
+  band.setAttribute('fill', `url(#${uid}-band)`);
+  inset.appendChild(band);
+
+  const insetRing = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  insetRing.setAttribute('class', 'world-size-inset-ring');
+  /*
+   * The outline: generated ONCE at the viewBox's own radius by the same hand
+   * as the stick's ring and the join code's frame (TASTE §9a). A hairline
+   * stays a hairline — the stroke is in viewBox units, so it is divided back
+   * out by the box-to-pixel scale.
+   */
+  insetRing.setAttribute(
     'd',
-    wavyBorderPath(wavyRingPoints(ICON_BOX / 2, ICON_BOX / 2, ICON_R, SIZE_SEED)),
+    wavyBorderPath(wavyRingPoints(INSET_BOX / 2, INSET_BOX / 2, BAND_OUT_R, SIZE_SEED + 11)),
   );
-  svg.appendChild(ring);
+  insetRing.setAttribute('stroke-width', ((HAIRLINE_PX * INSET_BOX) / ringBoxPx()).toFixed(3));
+  inset.appendChild(insetRing);
 
-  const value = document.createElement('span');
-  value.className = 'world-size-value';
+  // …and the number, curving along that arc with its glyphs upright.
+  const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+  label.setAttribute('class', 'world-size-value');
+  const value = document.createElementNS('http://www.w3.org/2000/svg', 'textPath');
+  value.setAttribute('href', `#${uid}-arc`);
+  // `xlink:href` beside it, because Safari still reads that one on textPath.
+  value.setAttributeNS('http://www.w3.org/1999/xlink', 'xlink:href', `#${uid}-arc`);
+  label.appendChild(value);
+  inset.appendChild(label);
 
-  row.append(box, svg, value);
-  drift.appendChild(row);
-  el.append(inset, drift);
+  drift.appendChild(inset);
+  el.appendChild(drift);
   opts.mount.appendChild(el);
 
   /*
@@ -525,8 +501,6 @@ export function installBallSize(opts: BallSizeOptions): BallSizeHandle {
    */
   const eased = new Spring(0, { settleMs: MOTION.primaryMs });
   let shown = false;
-  /** The box size the wavering frame was last drawn at — `WxH`. */
-  let frameAt = '';
   let text = '';
   let last = 0;
 
@@ -545,7 +519,7 @@ export function installBallSize(opts: BallSizeOptions): BallSizeHandle {
       eased.retarget(target);
       if (!shown) {
         shown = true;
-        row.classList.add('in');
+        inset.classList.add('in');
       }
     }
 
@@ -558,42 +532,12 @@ export function installBallSize(opts: BallSizeOptions): BallSizeHandle {
 
     if (!shown) return;
 
-    /*
-     * THE BOX'S FRAME, at the box's real size. Measured off the live row —
-     * the one element that knows what the type and the icon came out to — and
-     * redrawn only when that size actually changes, so a number rolling
-     * through the same width keeps the same hand (the hint labels' own
-     * arrangement, src/ui/hints.ts).
-     */
-    const w = Math.round(row.offsetWidth);
-    const h = Math.round(row.offsetHeight);
-    if (w > 2 && h > 2) {
-      const key = `${w}x${h}`;
-      if (key !== frameAt) {
-        frameAt = key;
-        box.setAttribute('viewBox', `0 0 ${w} ${h}`);
-        paper.setAttribute('d', rowFramePath(w, h));
-      }
-    }
-    if (!inset.classList.contains('in')) inset.classList.add('in');
-
     const metres = metresOf(eased.value);
     const next = formatLength(metres);
     if (next !== text) {
       text = next;
       value.textContent = next;
     }
-
-    // The ring, at the eased size. `stroke-width` is divided back out by the
-    // scale so the hairline stays a hairline at every size — a mark that
-    // thickened as it grew would stop being the same mark.
-    const s = iconScale(metres);
-    const c = ICON_BOX / 2;
-    ring.setAttribute('transform', `translate(${c} ${c}) scale(${s.toFixed(4)}) translate(${-c} ${-c})`);
-    ring.setAttribute(
-      'stroke-width',
-      ((ICON_STROKE_PX * ICON_BOX) / (ICON_PX * s)).toFixed(3),
-    );
   };
 
   // ── ~30fps loop: own rAF, skipping frames — the minimap's arrangement ─────
@@ -637,7 +581,18 @@ export function installBallSize(opts: BallSizeOptions): BallSizeHandle {
       if (!shown) return null;
       const box = inset.getBoundingClientRect();
       if (!(box.width > 1) || !(box.height > 1)) return null;
-      return { x: box.left, y: box.top, w: box.width, h: box.height };
+      /*
+       * THE DISC, not the mark: the svg is the disc plus the band on all four
+       * sides, and what the render pass is handed has to be the picture alone
+       * or the creature would be drawn under the number and under the
+       * outline. One inset, both axes.
+       */
+      return {
+        x: box.left + BAND_PX,
+        y: box.top + BAND_PX,
+        w: Math.max(0, box.width - 2 * BAND_PX),
+        h: Math.max(0, box.height - 2 * BAND_PX),
+      };
     },
     dispose(): void {
       stop();
