@@ -150,14 +150,65 @@ export const TIMEOUT_LINE = 'the room is not answering';
 export const RETRY_LABEL = 'retry';
 
 /**
+ * How long a phone waits for its OWN CREATURE before it is told to draw
+ * again. **[D]**
+ *
+ * `MOTION.primaryMs` times sixteen — twice the room's threshold, about half a
+ * minute, and never a literal (CLAUDE.md).
+ *
+ * > User report, 2026-09-17: *"on mobile there is a bug where a character
+ * > can't move when I use the joystick"* — and, the same day, *"i'm also not
+ * > seeing the onboarding flow"*.
+ *
+ * Both of those are one state seen twice. A handset whose drawing belongs to
+ * an older GENERATION of the world (the projection has been reset since it
+ * drew) has no creature in the world that is running now: the stick steers
+ * nothing, because there is nothing of theirs to steer, and the first hint
+ * never appears, because it waits for a creature that can be moved. The page
+ * used to say `waiting for your creature` forever and leave a dead stick
+ * under it.
+ *
+ * This module cannot ask WHY — the epoch and the generation are the world
+ * page's own business (docs/SESSION.md, src/phone/identity.ts) — but it can
+ * see that the creature never came, which is the only part a person needs:
+ * after this long, say so and offer the pad. A creature that arrives a moment
+ * later still clears the line, because the milestone is read per frame.
+ */
+export const CREATURE_TIMEOUT_MULTIPLE = 16;
+export const CREATURE_TIMEOUT_MS = MOTION.primaryMs * CREATURE_TIMEOUT_MULTIPLE;
+
+/** What it says when the creature never arrived. */
+export const MISSING_LINE = 'your creature is not in this world';
+/** …and the way out of THAT, which is a new drawing rather than a reload. */
+export const DRAW_AGAIN_LABEL = 'draw again';
+
+/**
  * Has this page waited too long to be believed?
  *
- * Only in the FIRST wait. Every later stage is a page that has demonstrably
- * reached its room, and "retry" there would throw away a built island and a
- * creature already on its way for the sake of a slow store.
+ * Two waits can time out, and they are the only two that can be waited on
+ * forever without anybody's help:
+ *
+ * - `room` — nothing has answered at all. A retry is honest there;
+ * - `creature` — the room and the island are up and this handset's own
+ *   creature is not in the world. The way out is the pad, not a reload: a
+ *   reload rebuilds the same page and waits for the same absent creature.
+ *
+ * Every other stage is a page with a creature already standing or hatching,
+ * and a way out there would throw away a built island for the sake of a slow
+ * store.
  */
 export function timedOut(stage: LoadingStage, elapsedMs: number): boolean {
-  return stage === 'room' && elapsedMs >= LOADING_TIMEOUT_MS;
+  if (stage === 'room') return elapsedMs >= LOADING_TIMEOUT_MS;
+  if (stage === 'creature') return elapsedMs >= CREATURE_TIMEOUT_MS;
+  return false;
+}
+
+/** Which way out a timed-out stage offers. */
+export function timeoutLine(stage: LoadingStage): string {
+  return stage === 'creature' ? MISSING_LINE : TIMEOUT_LINE;
+}
+export function timeoutLabel(stage: LoadingStage): string {
+  return stage === 'creature' ? DRAW_AGAIN_LABEL : RETRY_LABEL;
 }
 
 /**
@@ -283,8 +334,15 @@ export interface LoadingOptions {
    * a pushed copy of them would be a second answer that could disagree.
    */
   milestones(): LoadingMilestones;
-  /** What `retry` does. Defaults to reloading this page. */
+  /** What `retry` does in the first wait. Defaults to reloading this page. */
   retry?: () => void;
+  /**
+   * Where the drawing pad is, for a handset whose creature never arrived. The
+   * link is a plain `href`, so it is a navigation the person makes and not one
+   * the page makes for them — a phone that is simply slow must not be sent
+   * away from a creature that is still coming.
+   */
+  padHref?: string;
   /** Injectable clock, for the timeout in a test. */
   now?: () => number;
 }
@@ -327,7 +385,10 @@ export function installWorldLoading(opts: LoadingOptions): LoadingHandle {
   rule.appendChild(fill);
   const retry = document.createElement('a');
   retry.className = 'world-loading-retry';
-  retry.href = '#';
+  // Through the attribute, always: the click handler reads it back to tell a
+  // real destination from this module's own reload, and a property write that
+  // did not reflect would make those two disagree.
+  retry.setAttribute('href', '#');
   retry.textContent = RETRY_LABEL;
 
   drift.append(line, rule, retry);
@@ -338,6 +399,9 @@ export function installWorldLoading(opts: LoadingOptions): LoadingHandle {
   const startedAt = clock();
   const reload = opts.retry ?? ((): void => window.location.reload());
   const onRetry = (event: Event): void => {
+    // The pad link is a real href and is left alone; only the reload is this
+    // module's to perform.
+    if (retry.getAttribute('href') !== '#') return;
     event.preventDefault();
     reload();
   };
@@ -396,14 +460,20 @@ export function installWorldLoading(opts: LoadingOptions): LoadingHandle {
     }
 
     const timeout = timedOut(held, clock() - startedAt);
-    const next = timeout ? TIMEOUT_LINE : LOADING_LINES[held];
+    const next = timeout ? timeoutLine(held) : LOADING_LINES[held];
     if (next !== text) {
       text = next;
       line.textContent = next;
     }
-    if (timeout !== offering) {
+    if (timeout !== offering || (timeout && retry.textContent !== timeoutLabel(held))) {
       offering = timeout;
       retry.classList.toggle('in', timeout);
+      // The label and where it goes are the stage's, not this module's mood:
+      // a room that never answered gets a retry, a creature that never came
+      // gets the pad.
+      retry.textContent = timeoutLabel(held);
+      const pad = held === 'creature' ? opts.padHref ?? '' : '';
+      retry.setAttribute('href', pad === '' ? '#' : pad);
     }
 
     eased.retarget(loadingProgress(held));

@@ -92,14 +92,20 @@ import { HINTS, hintFor, showsArrows } from './hintcopy';
 // ── pure: seen once per device ───────────────────────────────────────────────
 
 /**
- * The flag's key.
+ * The flag's key, and it carries a VERSION.
  *
- * Not the slideshow's `refworld:onboarded`: a phone that was taught by the
- * screens has not been taught by these, and the whole reason the hints exist
- * is that the screens did not teach anybody (2026-09-17). Namespaced like
- * every other key this project writes.
+ * Not the slideshow's `refworld:onboarded`: a phone that was taught by three
+ * grey screens has not been taught by these. And `:2` rather than the first
+ * hints' bare `refworld:hinted`, because the labels, their placement and
+ * their copy are all the mock's now (2026-09-17, *"retain our existing
+ * style"*) — user report the same day: *"i'm also not seeing the onboarding
+ * flow"*, from a phone that had been taught by the version before it.
+ *
+ * So the rule is: a change to WHAT is taught takes a new key, because the
+ * flag records having been taught THIS, and the cost of being wrong is a
+ * person who never sees the thing that explains the game.
  */
-export const HINTS_KEY = 'refworld:hinted';
+export const HINTS_KEY = 'refworld:hinted:2';
 
 /** The query that re-shows them, for testing on a device that has seen them. */
 export const HINTS_QUERY = 'hints';
