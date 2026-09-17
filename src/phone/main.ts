@@ -14,6 +14,8 @@ import { feedDrawingToStrokes, feedStrokeToStroke } from '../net/drawFeed';
 import { createPhoneLink } from '../net/phoneLink';
 import type { StrokeList } from '../shape/types';
 import { MOTION, SURFACE, WORLD } from '../taste/tokens';
+import { installUiTheme } from '../ui/theme';
+import { readWorldStyle } from '../world/style';
 import { mountAliveScreen, type AliveScreenHandle } from './screens/alive';
 import { mountDraw } from './screens/draw';
 import { mountWaitScreen, type WaitScreenHandle } from './screens/wait';
@@ -41,13 +43,38 @@ import {
   type ScreenMount,
 } from './states';
 
+/**
+ * WHICH LOOK DOES THIS HANDSET PAINT IN? (2026-09-17 user ask — *"can we
+ * style the device on mobile in the new style of the world so it's not just
+ * black and white"*.)
+ *
+ * The same two sources the world page reads, in the same order and through
+ * the same pure function: `?style=` on the address, then
+ * `<meta name="refworld:style">`, which scripts/world-build.mjs injects into
+ * this document for a world that opted out of the shipped look. Neither
+ * present is `ink`, so the public handset is unchanged.
+ *
+ * Read and installed HERE, at module top, before any screen mounts: the five
+ * chrome variables (src/ui/theme.ts) have to exist before the first
+ * stylesheet that says `var(--rw-paper, …)` is appended, or the first frame
+ * is painted in the other style's paper and then corrected — the one cut
+ * PHONE-STAGE §4.1 exists to prevent.
+ */
+const PHONE_STYLE = readWorldStyle(
+  window.location.search,
+  document.querySelector<HTMLMetaElement>('meta[name="refworld:style"]')?.content ?? null,
+);
+const PHONE_THEME = installUiTheme(PHONE_STYLE);
+
 document.documentElement.style.height = '100%';
 document.body.style.height = '100%';
 document.body.style.margin = '0';
 // One paper for the whole mobile flow (PHONE-STAGE §2) — the same value
 // phone.html paints inline before any script, and the same value /draw/
-// paints, so the navigation between them has nothing to flash to.
-document.body.style.background = SURFACE.ground;
+// paints, so the navigation between them has nothing to flash to. On the
+// ghibli style the theme's paper is that one paper instead, and this is the
+// line that repaints the document phone.html painted in SURFACE.ground.
+document.body.style.background = PHONE_THEME.paper;
 
 /**
  * The guideline notice — shown on the drawer's OWN handset when the world
@@ -81,8 +108,12 @@ function showGuidelineNotice(onDrawAgain: () => void): void {
   gap: 5cqw;
   padding: 8cqw;
   text-align: center;
+  /* The well's own value, not the theme's: this sheet slides up INSIDE the
+     device's screen (DEVICE §3), and a lit rectangle in the bezel is the one
+     thing the screen must not draw — src/phone/screens/alive.ts carries the
+     measurement. Its type and its border are still the theme's. */
   background: ${SURFACE.ground};
-  color: ${WORLD.ink};
+  color: var(--rw-ink, ${WORLD.ink});
   font-family: "helvetica neue", helvetica, arial, sans-serif;
   transform: translateY(103%);
   transition: transform ${MOTION.secondaryMs}ms ${MOTION.settleCurve};
@@ -96,16 +127,16 @@ function showGuidelineNotice(onDrawAgain: () => void): void {
 }
 .guideline-notice .sub {
   font-size: clamp(10px, 5.1cqw, 14px);
-  color: ${WORLD.neutral};
+  color: var(--rw-muted, ${WORLD.neutral});
 }
 .guideline-notice button {
   font: inherit;
   font-size: clamp(11px, 5.8cqw, 16px);
   padding: 4cqw 7cqw;
   border-radius: 13px;
-  border: 1px solid ${WORLD.ink};
+  border: 1px solid var(--rw-ink, ${WORLD.ink});
   background: transparent;
-  color: ${WORLD.ink};
+  color: var(--rw-ink, ${WORLD.ink});
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
   transition: transform ${MOTION.tertiaryMs}ms ${MOTION.settleCurve};

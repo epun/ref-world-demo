@@ -24,6 +24,7 @@ import {
   WORLD_GAMES,
   WORLD_STYLES,
   applyWorldToHtml,
+  applyWorldToPhoneHtml,
   normalizeHost,
   readWorlds,
   resolveWorld,
@@ -40,6 +41,7 @@ import { readWorldGame, sanitizeGame as sanitizeGameApp } from '../../src/world/
 
 const ROOT = resolve(__dirname, '..', '..');
 const INDEX = readFileSync(join(ROOT, 'index.html'), 'utf8');
+const PHONE = readFileSync(join(ROOT, 'phone.html'), 'utf8');
 const WORLDS = readWorlds(join(ROOT, 'worlds.json'));
 /** the rule in docs/PUBLIC.md §urls. */
 const NAME_RULE = /^[a-z0-9-]{1,24}$/;
@@ -537,6 +539,105 @@ describe('the html transform', () => {
     expect(out.match(/<title>/g)).toHaveLength(1);
     expect(out).toContain('<script type="module" src="/src/main.ts"></script>');
     expect(out).toContain('<canvas id="world"></canvas>');
+  });
+});
+
+/**
+ * The handset's document (2026-09-17).
+ *
+ * phone.html has no card — it is not a link anyone shares and its world is
+ * whichever projection it joined — so it takes exactly ONE of the five tags
+ * index.html takes, and only when it is not the default: the LOOK its chrome
+ * paints in (src/ui/theme.ts). Everything else about the document, the title
+ * included, is left alone.
+ *
+ * The property pinned hardest is the negative one, the same as index.html's:
+ * a world on the shipped look leaves the file byte-identical, so the public
+ * handset and meridian's are the file on disk.
+ */
+describe('applyWorldToPhoneHtml — the tag a handset reads', () => {
+  const valiocon = {
+    name: 'valiocon',
+    host: 'ref-world-valiocon.vercel.app',
+    residents: 'none',
+    hatch: 'timer',
+    style: 'ghibli',
+    game: 'katamari',
+    dev: true,
+  };
+
+  it('injects the style, in the same form index.html gets it', () => {
+    const out = applyWorldToPhoneHtml(PHONE, valiocon);
+    const tag = '<meta name="refworld:style" content="ghibli" />';
+    expect(out).toContain(tag);
+    // character for character the tag the world page carries, so the two
+    // documents can never name two different looks.
+    expect(applyWorldToHtml(INDEX, valiocon)).toContain(tag);
+    // once, and inside the head the title is in.
+    expect(out.match(/refworld:style/g)).toHaveLength(1);
+    expect(out.indexOf(tag)).toBeLessThan(out.indexOf('<title>'));
+  });
+
+  it('reads back through the app\'s own function, not a fork', () => {
+    const out = applyWorldToPhoneHtml(PHONE, valiocon);
+    const style = /<meta name="refworld:style" content="([^"]*)"/.exec(out)?.[1] ?? null;
+    expect(readWorldStyle('', style)).toBe('ghibli');
+    // and `?style=` still wins on the handset exactly as it does on the
+    // world page — that is how an operator compares the two looks on a
+    // deployed link with no build.
+    expect(readWorldStyle('?style=ink', style)).toBe('ink');
+  });
+
+  it('says NOTHING about the world, the residents or the hatch mode', () => {
+    // three tags this page has never read. A tag nobody reads is a second
+    // source of truth waiting to drift from the room code in the url.
+    const out = applyWorldToPhoneHtml(PHONE, valiocon);
+    expect(out).not.toContain('refworld:world');
+    expect(out).not.toContain('refworld:residents');
+    expect(out).not.toContain('refworld:hatch');
+    // and it is not a card either: no title rewrite, no og anything.
+    expect(out).toContain('<title>ref — companion</title>');
+    expect(out).not.toContain('og:');
+    expect(out).not.toContain('a world for valiocon');
+  });
+
+  it('leaves the file byte-identical for the public world and for meridian', () => {
+    expect(applyWorldToPhoneHtml(PHONE, null)).toBe(PHONE);
+    for (const world of [
+      { name: 'meridian', host: 'ref-world-meridian.vercel.app', residents: 'none', dev: true },
+      { name: 'harbour', host: 'h.example', residents: 'shipped', style: 'ink' },
+      // a typo falls back onto the shipped look, so it injects nothing.
+      { name: 'harbour', host: 'h.example', style: 'ghibl' },
+      { name: 'harbour', host: 'h.example', style: '' },
+    ]) {
+      expect(applyWorldToPhoneHtml(PHONE, world)).toBe(PHONE);
+    }
+  });
+
+  it('is still one html document, structurally', () => {
+    const out = applyWorldToPhoneHtml(PHONE, valiocon);
+    expect(out.match(/<title>/g)).toHaveLength(1);
+    expect(out).toContain('<script type="module" src="/src/phone/main.ts"></script>');
+    expect(out).toContain('<div class="device-well"></div>');
+    // the injected tag carries no uppercase (TASTE §5).
+    for (const tag of out.match(/<meta name="refworld:[^>]*>/g) ?? []) {
+      expect(tag).not.toMatch(/[A-Z]/);
+    }
+  });
+
+  it('is wired into the build for phone.html and no other document', () => {
+    // the plugin that injects it. index.html keeps the card, phone.html takes
+    // the style tag, and anything else vite hands the hook is passed through.
+    const config = readFileSync(join(ROOT, 'vite.config.ts'), 'utf8');
+    expect(config).toContain("if (file === 'index.html') return applyWorldToHtml(html, world);");
+    expect(config).toContain(
+      "if (file === 'phone.html') return applyWorldToPhoneHtml(html, world);",
+    );
+    // and the handset reads it back through the shared function, not a fork.
+    const phone = readFileSync(join(ROOT, 'src', 'phone', 'main.ts'), 'utf8');
+    expect(phone).toContain("import { readWorldStyle } from '../world/style';");
+    expect(phone).toContain('meta[name="refworld:style"]');
+    expect(phone).toContain('installUiTheme(');
   });
 });
 

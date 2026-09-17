@@ -250,8 +250,8 @@ function ensureStyle(): void {
   position: fixed;
   inset: 0;
   z-index: 70;
-  background: ${SURFACE.ground};
-  color: ${WORLD.ink};
+  background: var(--rw-paper, ${SURFACE.ground});
+  color: var(--rw-ink, ${WORLD.ink});
   font: 400 14px/1.4 ui-sans-serif, system-ui, sans-serif;
   display: grid;
   grid-template-rows: 1fr auto auto;
@@ -310,7 +310,9 @@ function ensureStyle(): void {
 }
 .onboard-mark {
   fill: none;
-  stroke: ${WORLD.ink};
+  /* The three icons take the theme's one accent — ink on the ink style, so the
+     shipped screen is unchanged (src/ui/theme.ts). */
+  stroke: var(--rw-accent, ${WORLD.ink});
   stroke-linejoin: round;
 }
 .onboard-line {
@@ -332,11 +334,11 @@ function ensureStyle(): void {
 }
 .onboard-tick path {
   fill: none;
-  stroke: ${WORLD.ink};
+  stroke: var(--rw-accent, ${WORLD.ink});
   stroke-width: ${((TICK_STROKE_PX * TICK_BOX) / TICK_PX).toFixed(2)};
   transition: fill ${MOTION.tertiaryMs}ms ${MOTION.settleCurve};
 }
-.onboard-tick[data-at='true'] path { fill: ${WORLD.ink}; }
+.onboard-tick[data-at='true'] path { fill: var(--rw-accent, ${WORLD.ink}); }
 /*
  * The two ways on, stacked and centred under the thumb rather than side by
  * side: starting is the thing being offered and skipping is the thing being
@@ -346,17 +348,17 @@ function ensureStyle(): void {
  * thumb when the last screen's border arrives.
  */
 .onboard-skip {
-  color: ${WORLD.ink};
+  color: var(--rw-ink, ${WORLD.ink});
   text-decoration: none;
   margin-top: 3vh;
   padding-bottom: 0.35em;
-  border-bottom: 1px solid ${WORLD.ink};
+  border-bottom: 1px solid var(--rw-ink, ${WORLD.ink});
   opacity: 0.7;
   transition: opacity ${MOTION.tertiaryMs}ms ${MOTION.settleCurve};
 }
 .onboard-start {
   position: relative;
-  color: ${WORLD.ink};
+  color: var(--rw-ink, ${WORLD.ink});
   text-decoration: none;
   padding: 0.8em 1.9em;
   opacity: 0;

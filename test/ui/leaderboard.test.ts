@@ -417,8 +417,11 @@ describe('the board mounts, ranks, and leaves cleanly', () => {
     expect([...sheet.matchAll(/border-bottom/g)].length).toBe(1);
     // …the paper, which is the recorded override: the JOIN CODE's own value,
     // and drawn as a fill on the wavering path rather than a css box.
-    expect(sheet).toContain(`fill: ${WORLD.light}`);
-    expect(sheet).toContain(`stroke: ${WORLD.ink}`);
+    // …now through the chrome palette (src/ui/theme.ts), which resolves to
+    // exactly these tokens on the shipped look — the fallback in each `var`
+    // IS the value, so this sheet paints them with no theme installed.
+    expect(sheet).toContain(`fill: var(--rw-light, ${WORLD.light})`);
+    expect(sheet).toContain(`stroke: var(--rw-ink, ${WORLD.ink})`);
     expect(sheet).toContain('stroke-width: 1.25');
     // …and the marks that are still not in this taste's vocabulary.
     expect(sheet).not.toMatch(/\bbackground\b/);

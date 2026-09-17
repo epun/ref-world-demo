@@ -191,8 +191,8 @@ function ensureStyle(): void {
   align-items: baseline;
   gap: 7px;
   padding-bottom: 0.45em;
-  border-bottom: 1px solid ${WORLD.ink};
-  color: ${WORLD.ink};
+  border-bottom: 1px solid var(--rw-ink, ${WORLD.ink});
+  color: var(--rw-ink, ${WORLD.ink});
   font: 400 14px/1.4 ui-sans-serif, system-ui, sans-serif;
   opacity: 0;
   transform: translateY(-8px);
@@ -216,7 +216,7 @@ function ensureStyle(): void {
 }
 .world-size-ring {
   fill: none;
-  stroke: ${WORLD.ink};
+  stroke: var(--rw-ink, ${WORLD.ink});
 }
 /* Tabular figures, so a rolling number does not shuffle the line it is on. */
 .world-size-value {

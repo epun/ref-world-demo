@@ -382,8 +382,8 @@ function ensureStyle(): void {
   left: 4vw;
   bottom: calc(env(safe-area-inset-bottom, 0px) + 3vw + ${Math.round(DEVICE_H_PX + RING_GAP_PX)}px);
   padding-bottom: 0.5em;
-  border-bottom: 1px solid ${WORLD.ink};
-  color: ${WORLD.ink};
+  border-bottom: 1px solid var(--rw-ink, ${WORLD.ink});
+  color: var(--rw-ink, ${WORLD.ink});
   font: 400 13px/1.3 "helvetica neue", helvetica, arial, sans-serif;
   pointer-events: none;
   opacity: 0;
@@ -409,9 +409,9 @@ function ensureStyle(): void {
   display: flex;
   gap: 2.5vw;
   padding: 2.5vw 3.5vw;
-  border: 1px solid ${WORLD.ink};
+  border: 1px solid var(--rw-ink, ${WORLD.ink});
   border-radius: 999px;
-  background: ${SURFACE.ground};
+  background: var(--rw-paper, ${SURFACE.ground});
   opacity: 0;
   pointer-events: none;
   transition:

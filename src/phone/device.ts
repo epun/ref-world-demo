@@ -218,7 +218,7 @@ function ensureStyle(): void {
   display: grid;
   place-items: center;
   overflow: hidden;
-  background: ${SURFACE.ground};
+  background: var(--rw-paper, ${SURFACE.ground});
   /* The box measures against this element, not the viewport: container
      units are exact where vh/dvh disagree with a fixed inset on mobile.
      Padding shrinks the container box, so 100cqh already excludes it. */
@@ -299,7 +299,7 @@ function ensureStyle(): void {
   /* A finger's worth of target, whatever the type metrics do. */
   min-height: 44px;
   padding: 0 1.15em;
-  color: ${WORLD.ink};
+  color: var(--rw-ink, ${WORLD.ink});
   font: 400 15px/1.3 "helvetica neue", helvetica, arial, sans-serif;
   text-decoration: none;
   opacity: 0;
@@ -437,7 +437,7 @@ ${rowPlacement}
   background: transparent;
   border: none;
   border-radius: 50%;
-  color: ${WORLD.ink};
+  color: var(--rw-ink, ${WORLD.ink});
   cursor: pointer;
   pointer-events: auto;
   touch-action: manipulation;
@@ -483,6 +483,15 @@ ${keyPlacement}
   top: ${(-RING_INSET_PCT).toFixed(4)}%;
   width: ${RING_SCALE_PCT.toFixed(4)}%;
   height: ${RING_SCALE_PCT.toFixed(4)}%;
+  /*
+   * THE ARTWORK'S OWN VALUE, not the theme's (2026-09-17). Everything inside
+   * the bezel belongs to public/device/shell.svg, a static asset shared
+   * with /draw/ and with the world's tray, and its screen is painted
+   * SURFACE.ground itself. A key face or a stage paper in the theme's paper would
+   * be a lit shape on an unlit screen — the case is a physical object with
+   * its own colour (DEVICE §1a), and what the theme paints is the page it
+   * lies on, the keys' rings, the type and the frames (src/ui/theme.ts).
+   */
   fill: ${SURFACE.ground};
   stroke: currentColor;
   stroke-width: ${DEVICE_KEYS.ringStroke};

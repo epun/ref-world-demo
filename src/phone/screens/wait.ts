@@ -281,7 +281,7 @@ function ensureStyle(): void {
   justify-content: center;
   width: 100%;
   height: 100%;
-  color: ${WORLD.ink};
+  color: var(--rw-ink, ${WORLD.ink});
   font-family: "helvetica neue", helvetica, arial, sans-serif;
   font-weight: 400;
   font-size: clamp(11px, 5cqw, 14px);
@@ -344,6 +344,9 @@ export function mountWaitScreen(
   // the wall. The quantizer needs paper behind the subject (it grades a
   // rendered frame, not an alpha cut-out), so the scene carries the
   // screen's own ground value and the canvas reads as part of the page.
+  // …and on every style: the well is the shell artwork's own value, never
+  // the theme's paper, or the egg arrives as a lit rectangle inside the
+  // bezel (src/phone/screens/alive.ts carries the measurement).
   scene.background = new Color(SURFACE.ground);
   scene.add(createLighting().group, egg.group);
   const ink = new InkPass();
