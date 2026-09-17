@@ -147,6 +147,23 @@ export interface WorldHandles {
    */
   setLandscape(on: boolean): void;
   /**
+   * TURN THE MAP'S GRAVITY OFF, OR BACK ON (user ask, 2026-09-17: *"i want a
+   * zero gravity mode where i can hit g on the keyboard and it turns off
+   * gravity for the map. characters should float in space"*).
+   *
+   * The RIGID-BODY half: the rapier world's gravity vector, plus a nudge for
+   * the bodies asleep on the ground (src/physics/world.ts `setGravity`). The
+   * creatures' own float is the manager's and runs on every page — this is
+   * the stones and the debris, so it does nothing at all on a page that holds
+   * no bodies, which is most of them (docs/PLAN.md §7.6).
+   *
+   * REMEMBERED, so it survives a load: physics arrives on host election,
+   * which can happen minutes after the bit did, and a world that came up
+   * weightless would otherwise start dropping stones the moment it elected
+   * itself.
+   */
+  setGravity(on: boolean): void;
+  /**
    * Re-roll and rebuild the SCATTER alone, on the ground exactly as it
    * stands (2026-09-09, user ask: the environment brush kit).
    *
@@ -670,6 +687,14 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
    */
   let physics: PhysicsWorld | null = null;
   let bodies: PropBodies | null = null;
+  /**
+   * Does the rigid-body world have its gravity? (2026-09-17, the zero-gravity
+   * ask.) Held HERE rather than only in rapier because rapier is not here
+   * yet: `enablePhysics` runs on host election, and a page that was told the
+   * map is weightless before that has to hand the news to the world it then
+   * builds.
+   */
+  let gravityOn = true;
   /** The last scatter rebuild the bodies were reconciled against. */
   let seenVersion = -1;
   const physicsReady: ((p: PhysicsWorld, b: PropBodies) => void)[] = [];
@@ -727,6 +752,8 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
         wind: scatter.windField(),
       });
       seenVersion = scatter.rebuildVersion();
+      // The gravity this page was already told about (see `gravityOn`).
+      if (!gravityOn) p.setGravity(false);
       for (const callback of physicsReady) callback(p, bodies);
       physicsReady.length = 0;
     });
@@ -1292,6 +1319,10 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
       water.refreshLevels();
       water.setVisible(on);
       physics?.requestTerrainRebuild();
+    },
+    setGravity: (on: boolean): void => {
+      gravityOn = on;
+      physics?.setGravity(on);
     },
     refreshScatter: (): void => {
       scatter.refreshLandscape();

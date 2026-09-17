@@ -93,6 +93,24 @@ export function heightfieldSegments(): number {
   if (isPhoneTier()) return HEIGHTFIELD_SEGMENTS;
   return Math.round(HEIGHTFIELD_SEGMENTS * mapScale());
 }
+/** Earth's gravity, the value the world is built with and the one it goes
+ * back to. Rapier's own default; named here because zero gravity is now a
+ * thing this world can be in (`setGravity`). */
+export const GRAVITY_Y = -9.81;
+
+/**
+ * [D] The upward nudge a resting body gets when the gravity leaves, world
+ * units a second (2026-09-17, the zero-gravity ask).
+ *
+ * Rapier does not wake a sleeping body because the world's gravity changed,
+ * and a field of four hundred stones asleep on the ground would stay asleep
+ * in zero gravity — the creatures would float and everything they had knocked
+ * over would not. Small enough to read as drifting loose rather than as a
+ * blast: 0.6 u/s is a body-height in a second and a half, and with nothing
+ * pulling it back a stone simply keeps going.
+ */
+export const FLOAT_NUDGE_SPEED = 0.6;
+
 /**
  * A terrain rebuild costs a collider build over ~66k samples, so an
  * interactive sculpt (the paint brush, a terrain dial being dragged) must
@@ -159,6 +177,22 @@ export interface PhysicsWorld {
    * `world.step`.
    */
   setHooks(hooks: RapierHooks | null): void;
+  /**
+   * TURN THE WORLD'S GRAVITY OFF, OR BACK ON (user ask, 2026-09-17: *"i want
+   * a zero gravity mode … characters should float in space"*).
+   *
+   * `false` sets the gravity vector to zero and gives every dynamic body a
+   * small upward nudge (`FLOAT_NUDGE_SPEED`) so the stones and the debris
+   * drift too — rapier does not wake a sleeping body for a change of
+   * gravity, and a world where only the creatures floated would read as a
+   * bug in the creatures.
+   *
+   * ONLY THE SIMULATING PAGE HAS ONE OF THESE AT ALL (docs/PLAN.md §7.6), and
+   * a phone host has no rapier even when it is deciding — so this is the
+   * rolling-stones half of zero gravity and the presentation half is the
+   * creature manager's, on every page.
+   */
+  setGravity(on: boolean): void;
   dispose(): void;
 }
 
@@ -178,7 +212,7 @@ export async function createPhysicsWorld(
   const rapier: Rapier = (mod as unknown as { default?: Rapier }).default ?? mod;
   await rapier.init();
 
-  const world = new rapier.World({ x: 0, y: -9.81, z: 0 });
+  const world = new rapier.World({ x: 0, y: GRAVITY_Y, z: 0 });
   world.timestep = FIXED_STEP_S;
   const terrainBody = world.createRigidBody(rapier.RigidBodyDesc.fixed());
   let terrainCollider: RapierCollider | null = null;
@@ -272,6 +306,23 @@ export async function createPhysicsWorld(
     },
     setHooks(next: RapierHooks | null): void {
       hooks = next;
+    },
+    setGravity(on: boolean): void {
+      // The whole vector, not `gravity.y`: rapier's `gravity` is a getter
+      // onto the wasm world and writing a component of what it hands back
+      // changes a copy.
+      world.gravity = { x: 0, y: on ? GRAVITY_Y : 0, z: 0 };
+      wakeAll();
+      if (on) return;
+      // Nothing to fall any more, so nothing would ever move again: every
+      // dynamic body gets the nudge, and a body already in motion keeps the
+      // motion it had (this ADDS to its velocity rather than replacing it, so
+      // a stone mid-roll is not stopped dead — a cut the motion law forbids).
+      world.forEachRigidBody((body) => {
+        if (!body.isDynamic()) return;
+        const v = body.linvel();
+        body.setLinvel({ x: v.x, y: v.y + FLOAT_NUDGE_SPEED, z: v.z }, true);
+      });
     },
     dispose(): void {
       terrainCollider = null;

@@ -14,6 +14,9 @@
  *   hatch                   → force that egg open at the recorded offset
  *   emote                   → play the recorded emote on that creature
  *   world                   → hand the recorded control change to the driver
+ *                             (…except `field: gravity`, which has its own
+ *                             optional method, installed on a katamari world
+ *                             and nowhere else)
  *   drive                   → steer that creature again, and let go again
  *   paint                   → re-stamp that dab of terrain
  *   stick | drop            → put that item on, or take it off, that
@@ -74,6 +77,21 @@ export interface ReplayDriver {
   remove(id: string): void;
   /** A world control the operator changed. Optional. */
   world?(field: string, value: number | string | boolean | null, kind?: string): void;
+  /**
+   * THE MAP'S GRAVITY, on or off (user ask, 2026-09-17: *"i want a zero
+   * gravity mode where i can hit g on the keyboard and it turns off gravity
+   * for the map. characters should float in space"*).
+   *
+   * A `world` event whose field is `gravity` — so it rides the scene layer,
+   * the retention and the restore that the landscape switch and the terrain
+   * dials already have — but its own driver METHOD, because the page that can
+   * do it is a narrower set than the pages that have a `world` handler:
+   * `src/main.ts` installs this one only on a katamari world, exactly like
+   * `stick` and `loose`, and everywhere else the event passes through unread
+   * rather than being faked. STATE, not motion, so `replayNow` applies it:
+   * a restored world that had its gravity turned off is still weightless.
+   */
+  gravity?(on: boolean): void;
   /** A moderation tap, for a driver that wants to mirror the operator state
    * (hold mode, the block list). Optional — replay drives removals itself. */
   operator?(action: OperatorAction, id: string | null, on?: boolean): void;
@@ -262,6 +280,16 @@ export function applyEvent(
       return;
     }
     case 'world': {
+      /*
+       * One field has a handler of its own (see `gravity` on the driver): a
+       * world that does not run the game installs none, and the bit then
+       * does nothing on that page instead of reaching a `world` handler that
+       * would have to know about it.
+       */
+      if (event.field === 'gravity') {
+        driver.gravity?.(event.value === 1 || event.value === true);
+        return;
+      }
       driver.world?.(event.field, event.value, event.kind);
       return;
     }

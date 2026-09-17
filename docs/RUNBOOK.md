@@ -56,6 +56,20 @@ One page. Read it before the demo, not during.
   handset kept a shell — **and an egg cannot be steered**, which is what the
   joysticks doing nothing turned out to be (2026-09-10).
 - `shift+R` is recovery (below). It always reports on screen.
+- `g` turns the map's **gravity** off, and on again (2026-09-17, user ask:
+  *"i want a zero gravity mode where i can hit g on the keyboard"*). Every
+  creature, every ball and every passenger lifts off the ground and floats —
+  each at its own altitude, with a slow bob and a slow lean — and the stones
+  and debris drift up with them on the machine that is simulating. The
+  joysticks still work up there, which is the fun of it. Press `g` again and
+  the whole cast slides back down onto the paper; it says which it did on
+  screen either way. It **travels like the landscape switch**, so every phone
+  in the room goes weightless with you and a phone that joins later comes up
+  weightless too. **Katamari worlds only** (`valiocon`): on meridian and on
+  the public link `g` does nothing.
+  ⚠️ With the ghost panel open AND a creature selected, `g` also starts the
+  panel's own move-the-object mode — press escape to cancel that; the gravity
+  toggle has already happened.
 - `t` toggles the camera tour. `d` opens the local draw overlay.
 - `shift+d` is the ghost panel. It has the moderation list, the session
   readout, and the recovery buttons.
