@@ -181,10 +181,56 @@ await page.waitForFunction(() => Boolean(window.__refworldCreatures), null, {
   timeout: 600_000,
 });
 
-// ① the loading line, and nothing taught over it.
+// ① the loading line, and nothing taught over it — and the line clear of
+// every control in the tray (user report, 2026-09-17: a line on the stick).
 await page.waitForSelector('.world-loading-line', { timeout: 600_000 });
 console.log('step 1 — loading:', JSON.stringify(await state()));
 await shot('hint-1-loading');
+
+/**
+ * Does the line the page is currently showing overlap any control?
+ *
+ * Measured, not eyeballed: the tray's three (the device, the stick, the map)
+ * against whatever line is up. Returns the overlapping pairs, so an empty
+ * array is the assertion passing.
+ */
+const overlaps = () =>
+  page.evaluate(() => {
+    const rect = (sel) => {
+      const n = document.querySelector(sel);
+      if (!n) return null;
+      const r = n.getBoundingClientRect();
+      return r.width > 0 && r.height > 0 ? r : null;
+    };
+    const hits = [];
+    for (const line of ['.world-loading', '.world-say.visible', '.world-hint']) {
+      const a = rect(line);
+      if (!a) continue;
+      for (const control of ['.world-stick', '.tray-device', '.world-minimap']) {
+        const b = rect(control);
+        if (!b) continue;
+        const over =
+          a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+        if (over) hits.push(`${line} over ${control}`);
+      }
+    }
+    return hits;
+  });
+
+const clear = await overlaps();
+console.log('overlap at 390x844:', JSON.stringify(clear));
+// …and at a short viewport, where the middle of the screen is nearest the tray.
+await page.setViewportSize({ width: 390, height: 600 });
+await page.waitForTimeout(1_500);
+const short = await overlaps();
+console.log('overlap at 390x600:', JSON.stringify(short));
+await page.screenshot({ path: join(HERE, 'hint-1-loading-390x600.png') });
+await page.setViewportSize({ width: 390, height: 844 });
+await page.waitForTimeout(1_500);
+if (clear.length > 0 || short.length > 0) {
+  console.log('!! a line is sitting on a control');
+  process.exitCode = 1;
+}
 
 // ② the creature stands: hint one, above the stick.
 await page.evaluate(

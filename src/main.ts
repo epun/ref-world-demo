@@ -243,6 +243,21 @@ function ensureOverlayStyle(): void {
   opacity: 1;
   transform: translate(-50%, 0);
 }
+/*
+ * ON A PHONE IT CLEARS THE TRAY (user report, 2026-09-17, from a screenshot
+ * of the world view while the room was unreachable: the line was sitting on
+ * top of the joystick, between the device and the minimap).
+ *
+ * 4vmin off the bottom is the projection's own margin and there is nothing
+ * down there on a wall. On a handset the whole bottom of the screen is the
+ * tray — whatever is yours on the left, the stick in the middle, the map on
+ * the right (src/world/tray.ts) — so the line sits above all three, at the
+ * same height the first contextual hint stands at (src/ui/hints.ts), which
+ * is the one band of a phone's screen that no control is in.
+ */
+.world-say.on-phone {
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 46vw);
+}
 `;
   document.head.appendChild(style);
 }
@@ -2212,6 +2227,8 @@ function main(): void {
     if (!el) {
       el = document.createElement('div');
       el.className = 'world-say';
+      // Above the tray on a handset, where nothing else on the screen is.
+      if (handheld) el.classList.add('on-phone');
       // Announced, so this reaches an operator who is not looking at the
       // projection when they press the key.
       el.setAttribute('role', 'status');

@@ -253,7 +253,16 @@ function ensureStyle(): void {
 .world-loading {
   position: fixed;
   left: 50%;
-  top: 44%;
+  /*
+   * DEAD CENTRE, both axes — the same spot the contextual hints stand in
+   * (src/ui/hints.ts), and for the same reason: it is the one place on a
+   * phone that is neither the readout's corner nor the tray's three
+   * controls, so a line here cannot land on the stick, the device or the map
+   * (user report, 2026-09-17, from a screenshot of this view). The two never
+   * coexist — a hint waits for the loading line to leave — so one centred
+   * line at a time is the whole arrangement.
+   */
+  top: 50%;
   z-index: 6;
   transform: translate(-50%, -50%);
   display: grid;
