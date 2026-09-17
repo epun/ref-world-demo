@@ -946,6 +946,87 @@ describe('sticking, as the viewer sees it', () => {
     host.clearAll();
     viewer.clearAll();
   }, 120_000);
+
+  /*
+   * ── AND THE VIEWER DRAWS THE BALL, not a creature in the air ───────────
+   *
+   * > User report, 2026-09-17, from a phone in the room while the projection
+   * > hosted: *"currently there is a bug where the characters are floating in
+   * > space."*
+   *
+   * The floating was a missing MESH (src/creatures/ball.ts), and the page it
+   * was reported from is a VIEWER — which decides nothing and draws
+   * everything. So the sphere has to be built on the page that ran no
+   * physics, from the same `stick` event, at the same size as the host's:
+   * `growPass` runs on every page for exactly this reason.
+   */
+  it('draws the same ball on the viewer as on the host', () => {
+    const tree: Collider = {
+      x: 0,
+      z: 0,
+      r: 1.2,
+      hard: true,
+      kind: 'tree',
+      key: 'tree:0:0.00:0.00',
+    } as Collider;
+    const host = pageWithRows([tree], true);
+    const viewer = pageWithRows([tree], false);
+    for (const m of [host, viewer]) {
+      m.spawn('mine', snowman, { hatchMs: 10, grown: true });
+      m.update(FRAME_MS, 1000);
+    }
+    viewer.pauseAi(true);
+    const baseR = host.ballDiameter('mine') / 2;
+    // Three of them, so the pile is a ball rather than a creature with a
+    // stone on it (`ROLL_MASS_ITEMS`), seated out on the surface.
+    for (let i = 0; i < 3; i++) {
+      const record = {
+        id: 'mine',
+        item: `${tree.key!}:${i}`,
+        kind: 'tree' as const,
+        variant: 0,
+        scale: 1,
+        r: tree.r,
+        ox: baseR + i * 0.01,
+        oy: 0,
+        oz: 0,
+        qx: 0,
+        qy: 0,
+        qz: 0,
+        qw: 1,
+      };
+      host.applyStick(record);
+      viewer.applyStick(record);
+    }
+    // Long enough for the roll blend to settle (`MOTION.primaryMs`).
+    for (let i = 0; i < 120; i++) {
+      host.update(FRAME_MS, 2000 + i * FRAME_MS);
+      viewer.update(FRAME_MS, 2000 + i * FRAME_MS);
+    }
+
+    for (const [name, page] of [
+      ['host', host],
+      ['viewer', viewer],
+    ] as const) {
+      const root = page.hoverTargets()[0]!.object;
+      const ball = root.getObjectByName('ball');
+      expect(ball, name).toBeDefined();
+      expect(ball!.visible, name).toBe(true);
+      root.updateWorldMatrix(true, true);
+      const bodyR = page.ballDiameter('mine') / 2;
+      expect(bodyR, name).toBeGreaterThan(baseR * 1.5);
+      // The drawn sphere IS the ball the readout reports…
+      expect(ball!.getWorldScale(new Vector3()).x, name).toBeCloseTo(bodyR, 6);
+      // …and the creature is standing on its pole rather than above nothing.
+      const rider = root.getObjectByName('rider')!;
+      const feet = rider.getWorldPosition(new Vector3()).y;
+      expect(feet - ball!.getWorldPosition(new Vector3()).y, name).toBeCloseTo(bodyR, 6);
+    }
+    // ONE ball, ONE size, on both pages — derived, never sent.
+    expect(viewer.ballDiameter('mine')).toBeCloseTo(host.ballDiameter('mine'), 6);
+    host.clearAll();
+    viewer.clearAll();
+  }, 120_000);
 });
 
 describe('an item keeps its own size on every page', () => {

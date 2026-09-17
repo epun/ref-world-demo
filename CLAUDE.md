@@ -140,7 +140,16 @@ The traps, in order of how easily they get violated:
   ignored), the creature manager's `simulating()`, clumps, kinematic bodies, growth and all
   six `apply*`, the `rider` node that keeps the drawn creature its DRAWN size while the pile
   grows (user ask 2026-09-17, PLAN §7.6 — the growth is still ONE write on the root and the
-  rider divides it back out, so don't put the creature back inside the clump), the
+  rider divides it back out, so don't put the creature back inside the clump), **the BALL'S
+  OWN BODY** (`src/creatures/ball.ts`, user report 2026-09-17: *"currently there is a bug
+  where the characters are floating in space"* — when the creature came out of the pile
+  nothing was left drawing the sphere the items are seated on, so a small character stood on
+  the north pole of nothing; one cel-shaded sphere per creature in the creature's own hue,
+  radius 1 scaled to `baseR` on the ROOT so the growth carries it to `bodyR` in the same
+  single write, centre at `baseR·(2·roll − 1)` which is exactly `baseR` under the rider's
+  `2·baseR·roll` at every value of the blend — the two are one statement, keep them adjacent
+  — and buried under the ground at `roll` 0, so a walking creature shows no ball without
+  anything being switched off), the
   ball-diameter readout on the phone's world view (`src/ui/size.ts`,
   `CreatureManager.ballDiameter`), the handset's contextual hints, loading and empty states
   (`src/ui/hints.ts`, `loading.ts`, `empty.ts` — the hints are three marks in the live world

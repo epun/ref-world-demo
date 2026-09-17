@@ -1287,6 +1287,54 @@ a passenger's root is one of the objects the carrier's clump counters, and the s
 the carrier's growth straight back onto it — the same swelling, one level up. `bodyR` and the
 blend are still written for it, because those are numbers about its own pile.
 
+**And the ball has a BODY** *(2026-09-17)* **[D]**. User report: *"currently there is a bug
+where the characters are floating in space."* It was not a placement bug — it was a missing
+mesh. The creature came out of the pile that morning (above) and what it came out standing on
+was a sphere nothing drew: the items are seated on the SURFACE of a ball of radius `bodyR`
+(`clumpLocalOffset` — `R + itemR × CLUMP_FIT` out from the clump's origin) and the creature
+rides its north pole at `2R`, so with `GROWTH_K` at 4 and a session's ball ten to twenty
+metres across, what the room saw was a small character hanging in the air over a thin shell of
+a dozen props. Reported from a phone that was a VIEWER while the projection hosted, which
+matters only in that the fix has to be on every page: `growPass` runs on all of them.
+
+**`src/creatures/ball.ts`** is that mesh. One sphere per creature, radius 1 in its own space
+and scaled to `baseR`, hung on the **ROOT** — so the root's uniform scale, which is the
+growth, carries it to `bodyR` and the growth is still ONE write (`bodyR`, the resolve circle,
+the pickup reach, the shadow stamp, `positions()`, `ballDiameter` and now the drawn sphere,
+all off the same number). `growPass` writes two things on it, beside the rider's two:
+
+- `position.y = baseR · (2 · roll − 1)` root-local — the sphere's CENTRE, which is exactly
+  `baseR` under the rider's `2 · baseR · roll` at every value of the blend. The two numbers
+  are one statement and that is the whole invariant: the creature's feet are on the ball's
+  pole whatever the roll is doing, so it can never be off its own ball. At `roll` 1 the centre
+  is the clump's own origin `(0, baseR, 0)`, which is where every seat is measured from; at
+  `roll` 0 it is `−baseR`, which puts the whole sphere under the root and therefore under the
+  ground the root is standing on. So a WALKING creature shows no ball with nothing switched
+  off, and the ramp between is the roll spring's — the ball rises out of the ground as the
+  creature rides up onto it, ζ ≥ 1, a slide and never a `scale: 0 → 1`.
+- `visible`, off under a thousandth of the blend: the top of a buried sphere is tangent to the
+  paper under the root, and on a slope that one point can clear the downhill ground.
+
+The LOOK is the creature's, not the environment's (TASTE §8): `palette.stalk` — the body hue
+pulled toward the brief's dark neutral, a tint of the one hue on the figure rather than a
+second one, and darker than the creature so the small bright character on top still reads as
+the character. Same material family as the creature (`createCharacterMaterial`) with
+`applyToon` chained last, so a ball cels with the props and the ground it is rolling over. And
+it is **not a primitive**: a low-frequency radial nudge, the egg shell's own recipe
+(`shellNoise`), because "no rectilinear or engineered geometry" is about form and a CAD sphere
+is a form. The nudge is INWARD ONLY and fades out over the top of the ball, so the north pole
+is exactly radius 1 — a bulge there would lift the creature off its own pile, and a dent would
+sink it in. Geometry is cached per SEED BUCKET (`BALL_SHAPES`, 8) at unit radius and shared,
+because a hundred creatures is a memory number (§7.1); the material is per creature and so is
+the draw call.
+
+Katamari only, in the same `becomeAlive` guard as the clump and the rider, and added AFTER the
+rider so the creature's own body is still the first Mesh under the root. `test/creatures/`
+pins the pole invariant across the whole roll ramp, the item seats against the drawn radius,
+an unladen creature standing on the ground with its ball hidden, and a world without the game
+having no such node at all; `test/net/two-page-room.test.ts` pins the viewer drawing the same
+ball as the host from the same `stick`.
+
 **Walk first, roll with mass** *(2026-09-16)* **[D]**. User ask: *"let's have them start
 walking at first and once they hit a few objects they begin to roll because they have mass."*
 The gait used to be fed a flat zero on a katamari world, so a hatchling that had picked nothing
