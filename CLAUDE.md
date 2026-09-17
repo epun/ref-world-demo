@@ -85,6 +85,17 @@ The traps, in order of how easily they get violated:
   "does this page hold rigid bodies" and "is this page the authority" are now TWO questions
   (`rapierOwns` / `deciding` in `src/creatures/manager.ts`) — don't collapse them back into
   `bodies() !== null`. One flag reverses it: `PHONE_RUNS_RAPIER` in `src/world/device.ts`.
+- **A phone in a room is a VIEWER, and that is the path to test (2026-09-17).** Its stick
+  never moves its own creature — it publishes an intent, the host applies it, the pose comes
+  back. Three rules hold that together and each was a bug: a change of role must
+  `clearDrives()` beside `clearFollow()` (a drive is a hand on a creature and the hands belong
+  to the page that simulates — left set, `isDriven` keeps the agent stood down forever and a
+  re-elected page applies every stale vector at once); the stick's uplink pacing lives in
+  `createDriveUplink` (src/net/worldsync.ts), never inline, and the RELEASE is exempt from it;
+  and a viewer leads the host's last pose by the host's own derived speed, or a walking
+  creature stutters at the 5 Hz pose rate. `test/net/two-page-room.test.ts` is two real
+  managers through an in-memory bus; `scratch/room-drive-smoke.mjs` is the same room in real
+  browsers against a local aedes broker (`?broker=` overrides EVERY socket the page opens).
 - **The katamari is a PER-WORLD GAME (user ruling, 2026-09-15). `worlds.json`
   `game: katamari` is the only switch; meridian and the public world are byte-identical and
   behaviourally unchanged by it.** The default branch builds every world's deployment at

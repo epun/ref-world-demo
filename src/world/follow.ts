@@ -27,6 +27,44 @@
  * plumbing — that is easy to get wrong.
  */
 
+/**
+ * Does THIS hatch close the camera in on THIS page's creature?
+ *
+ * > User ask, 2026-09-17: *"on hatch for mobile we should have the cam zoom
+ * > in to people's character."*
+ *
+ * Four conditions, and three of them are the ones the stick, the minimap's
+ * self mark and this module's own `enabled` already answer:
+ *
+ *   - the KATAMARI world and nowhere else (src/world/game.ts, the 2026-09-15
+ *     ruling). Every other world's camera is the one that shipped;
+ *   - a page that can follow at all, which is a handset with a creature —
+ *     `FollowOptions.enabled`. A projection frames the room, and the
+ *     presentation tour has its own answer to a hatch (src/world/tour.ts);
+ *   - the shell that opened is MINE. Sixty-seven other people's hatches are
+ *     not an invitation to move this person's camera;
+ *   - and there is a creature to name at all: an empty `mine` must not match
+ *     an empty `hatched`, or a page with no drawing would close in on the
+ *     first hatch in the room.
+ *
+ * Pure and here rather than in main.ts for the reason the whole module is:
+ * it is the RULE that is easy to get wrong, not the plumbing.
+ */
+export function shouldCloseOnHatch(a: {
+  game: string;
+  /** The creature whose shell just opened. */
+  hatched: string;
+  /** This page's own creature, or '' when it has none. */
+  mine: string;
+  /** Can this page follow at all (`FollowOptions.enabled`)? */
+  canFollow: boolean;
+}): boolean {
+  if (a.game !== 'katamari') return false;
+  if (!a.canFollow) return false;
+  if (a.mine.length === 0) return false;
+  return a.hatched === a.mine;
+}
+
 export interface FollowOptions {
   /**
    * Is following possible on this page at all?

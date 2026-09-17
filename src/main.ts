@@ -52,6 +52,7 @@ import {
   POSE_INTERVAL_MS,
   ROLE_SETTLE_MS,
   ROSTER_REPEAT_MS,
+  createDriveUplink,
   eggsOpenedByHost,
   electHost,
   type HostRole,
@@ -90,7 +91,8 @@ import { MOTION, SURFACE, WORLD } from './taste/tokens';
 import { createPhoneLink } from './net/phoneLink';
 import { epochFor, readSubmission } from './phone/identity';
 import { mountWorldTray } from './world/tray';
-import { createFollow } from './world/follow';
+import { createFollow, shouldCloseOnHatch } from './world/follow';
+import { HATCH_CLOSE_ZOOM, followZoomFor } from './world/camera';
 import { createCompanionPanel } from './world/companionpanel';
 import { feedDrawingToStrokes } from './net/drawFeed';
 import type { StrokeList } from './shape/types';
@@ -295,6 +297,20 @@ function main(): void {
    * page whose person has not drawn.
    */
   let myCreature: { id: string; manager: CreatureManager } | null = null;
+  /**
+   * THE CAMERA CLOSES IN WHEN YOUR OWN SHELL OPENS (user ask, 2026-09-17:
+   * *"on hatch for mobile we should have the cam zoom in to people's
+   * character"*).
+   *
+   * A hole for the same reason `myCreature` is one: the hatch observer is
+   * wired into the world a few lines below, and everything this needs — the
+   * tray, the follow rule, this handset's own id — does not exist until the
+   * page has built the world it is looking at. Filled in beside the stick and
+   * the follow camera (search `shouldCloseOnHatch`); left a no-op on every
+   * page that has nothing of its own to close in on, which is every
+   * projection and every world but the katamari one.
+   */
+  let closeOnMyHatch: (id: string) => void = () => {};
   const world = start(canvas, {
     style: worldStyle,
     game: worldGame,
@@ -434,6 +450,30 @@ function main(): void {
    * a link that has been sitting in somebody's messages for a month still
    * arrives in the right room.
    */
+  /**
+   * Which broker to talk to.
+   *
+   * Overridable because the default is a free public one, and a room that
+   * matters should not depend on it — a self-hosted broker is a url swap,
+   * not a code change. It is also the only way to exercise two clients
+   * against each other in a test, since the public broker is unreachable
+   * from a sandbox.
+   *
+   * Validated to a websocket scheme: this value opens a socket, and an
+   * unchecked one out of the query string is somewhere to point a page at
+   * a host of somebody else's choosing.
+   *
+   * READ HERE, at the top, because EVERY socket this page opens has to take
+   * it (2026-09-17). A handset's world view opens two — the world feed, and
+   * its own emote uplink (`createPhoneLink`) — and the uplink was built
+   * before this line was reached, so it went to the public broker whatever
+   * the address said. On a self-hosted room that meant the emotes still
+   * crossed a free public broker nobody had chosen, and in the sandbox it
+   * meant a page retrying an unreachable socket for the whole run.
+   */
+  const brokerParam = params.get('broker') ?? '';
+  const brokerOverride = /^wss?:\/\//.test(brokerParam) ? brokerParam : '';
+
   const keepLinkId = readKeepId(params);
   if (keepLinkId !== null && isPublic) {
     location.replace(
@@ -801,6 +841,22 @@ function main(): void {
        */
       hatch(id, cause) {
         recorder.hatch(id, cause);
+        /*
+         * …AND THE PHONE'S CAMERA CLOSES IN ON ITS OWN (2026-09-17).
+         *
+         * Here, and not on the four things that can open a shell, for the
+         * same reason the two publishes below are here: this is the one seam
+         * every hatch crosses — the timer, the `h` key, the panel's button,
+         * and a `hatch` arriving from the host over the wire. A viewer's
+         * creature opens through that last one, and a viewer is exactly the
+         * page a handset in a room of phones is, so hanging this anywhere
+         * else would have worked alone and nowhere else.
+         *
+         * The gate is `shouldCloseOnHatch` (src/world/follow.ts): the
+         * katamari world, a page that can follow, and this handset's own
+         * creature. Everything else falls through the no-op.
+         */
+        closeOnMyHatch(id);
         if (isHostNow()) {
           feed?.publishToPhones({ type: 'hatched', to: id, epoch: wireEpoch() });
           publishHatch(id);
@@ -2155,7 +2211,49 @@ function main(): void {
    * — is in src/world/follow.ts, with no scene in it, so it can be argued
    * with in a test rather than in a demo.
    */
-  const follow = createFollow({ enabled: Boolean(tray?.middle) && myDrawerId.length > 0 });
+  const canFollow = Boolean(tray?.middle) && myDrawerId.length > 0;
+  const follow = createFollow({ enabled: canFollow });
+
+  /*
+   * …AND WHEN YOUR SHELL OPENS, THE CAMERA COMES TO YOU (user ask,
+   * 2026-09-17: *"on hatch for mobile we should have the cam zoom in to
+   * people's character"*).
+   *
+   * The hole declared beside `myCreature` is filled here, where the follow
+   * rule and this handset's own id both exist. `closeOn` is two retargets on
+   * the rig's own ζ≥1 springs — the look-target onto the creature and the
+   * zoom to `HATCH_CLOSE_ZOOM` — so the arrival is one continuous glide from
+   * whatever the frame was and never a cut (TASTE §2.1, confidence 1.00).
+   * The frame loop below then carries on retargeting the look-target every
+   * frame, so this is the start of the follow rather than a separate move.
+   *
+   * `follow.resume()` first: somebody who tapped the minimap before the
+   * hatch asked to look elsewhere, and their own creature coming out of its
+   * shell is the one thing worth taking that back for.
+   *
+   * A pinch AFTER this retargets the same zoom spring and wins, which is why
+   * nothing here holds the zoom: the close-in is a moment, not a mode.
+   */
+  /**
+   * The size-tracking zoom this page last ASKED for.
+   *
+   * Starts at `HATCH_CLOSE_ZOOM`, which is what the hatch itself asks for, so
+   * a ball under `BALL_ZOOM_REF_R` never retargets at all and a fresh
+   * creature's camera is exactly the one the hatch left.
+   */
+  let lastFollowZoom = HATCH_CLOSE_ZOOM;
+  closeOnMyHatch = (id: string): void => {
+    if (!shouldCloseOnHatch({ game: worldGame, hatched: id, mine: myDrawerId, canFollow })) {
+      return;
+    }
+    follow.resume();
+    const at = creatures.positionOf(id);
+    // No position yet is not a reason to skip the zoom: the shell is where
+    // the creature is about to stand, and the frame loop retargets the
+    // look-target on the very next frame anyway.
+    if (at) world.cameraRig.closeOn(at);
+    else world.cameraRig.zoomTo(HATCH_CLOSE_ZOOM);
+  };
 
   const worldMap = installWorldMinimap({
     manager: creatures,
@@ -2483,6 +2581,33 @@ function main(): void {
     if (follow.active()) {
       const at = creatures.positionOf(myDrawerId);
       if (at) world.cameraRig.frameAt(at);
+      /*
+       * …AND THE FRAME WIDENS AS THE BALL GROWS (user ask, 2026-09-17: *"we
+       * should allow for larger mass sizes than 10 meters for users"* — and a
+       * 20 m ball at the hatch zoom is a wall, not a ball).
+       *
+       * `followZoomFor` keeps the ball a constant share of the screen: the
+       * frame's world height is `FRUSTUM_HEIGHT / zoom`, so a zoom inversely
+       * proportional to the radius is a frame linear in the diameter. The rig
+       * clamps it at the island's own floor, which is what stops a ball the
+       * size of the island opening a frame wider than the world.
+       *
+       * ONLY WHEN THE ANSWER CHANGES, and that is what keeps the pinch. A
+       * `zoomTo` every frame would undo a two-finger zoom on the frame after
+       * the fingers moved; retargeting only when the ball has actually grown
+       * means the person's own framing stands until their ball is a different
+       * size, and then it slides — on the same ζ≥1 spring as every other
+       * reframe here (TASTE §2.1). The epsilon is a whole percent of a zoom
+       * level: growth is a cube root, so a stone or two is well under it.
+       */
+      const ballR = creatures.ballDiameter(myDrawerId) / 2;
+      if (ballR > 0) {
+        const want = followZoomFor(ballR);
+        if (Math.abs(want - lastFollowZoom) > 0.01) {
+          lastFollowZoom = want;
+          world.cameraRig.zoomTo(want);
+        }
+      }
     }
     tour.update(dt, nowMs);
   });
@@ -2662,7 +2787,9 @@ function main(): void {
    * emotes; this is the one case where it is a sender too, because the
    * person holding it owns one of the creatures on screen.
    */
-  const uplink = myDrawerId ? createPhoneLink(room, myDrawerId) : null;
+  const uplink = myDrawerId
+    ? createPhoneLink(room, myDrawerId, brokerOverride ? { broker: brokerOverride } : {})
+    : null;
   /**
    * Call every handset's drawing back (recovery, 2026-08-20).
    *
@@ -2740,22 +2867,6 @@ function main(): void {
       epoch: wireEpoch(),
     });
   };
-
-  /**
-   * Which broker to talk to.
-   *
-   * Overridable because the default is a free public one, and a room that
-   * matters should not depend on it — a self-hosted broker is a url swap,
-   * not a code change. It is also the only way to exercise two clients
-   * against each other in a test, since the public broker is unreachable
-   * from a sandbox.
-   *
-   * Validated to a websocket scheme: this value opens a socket, and an
-   * unchecked one out of the query string is somewhere to point a page at
-   * a host of somebody else's choosing.
-   */
-  const brokerParam = params.get('broker') ?? '';
-  const brokerOverride = /^wss?:\/\//.test(brokerParam) ? brokerParam : '';
 
   void connectWorldFeed({
     room,
@@ -3172,6 +3283,29 @@ function main(): void {
       // forget the last host's — either stale answer, eased into, drags the
       // whole cast across the field.
       creatures.clearFollow();
+      /*
+       * …AND LET GO OF EVERY STICK (2026-09-17, *"some characters get stuck
+       * when trying to move and glitch on mobile"*).
+       *
+       * Same argument as `clearFollow` above and the same two directions.
+       * `slot.drive` is a hand on a creature and the hands belong to the
+       * page that is SIMULATING — this page's own stick when it is host,
+       * every phone's over the wire when it is a projection. A change of
+       * role means none of them are on anything any more.
+       *
+       * Left standing it was two bugs. `isDriven` stays true while a drive
+       * is set, so those creatures' agents stayed stood down and they stood
+       * there — the report's *"stuck when trying to move"*. And a page that
+       * wins the election back (a phone alone, a projection reopening, any
+       * flap between two phones) applied every one of those stale vectors
+       * at once and the cast set off in directions nobody had asked for —
+       * the *"glitch"*. `driveHeard` below was cleared on the way down but
+       * clearing the bookkeeping is not the same as letting go.
+       *
+       * Nothing is lost by it: a stick that is still held republishes at
+       * DRIVE_HZ, so a real thumb is back within 83ms.
+       */
+      creatures.clearDrives();
       if (hosting) {
         // Taking over. The roster this world publishes is its own, so it
         // starts from a revision no viewer can already be holding — and
@@ -3235,6 +3369,10 @@ function main(): void {
      */
     window.setInterval(() => {
       if (!hosting) {
+        // The bookkeeping only. Letting GO is `settleRole`'s, on the frame
+        // the role changed rather than up to DRIVE_STALE_MS later, and it
+        // goes through the manager because the creatures are what is holding
+        // the stale vectors (see `clearDrives`).
         driveHeard.clear();
         return;
       }
@@ -3262,27 +3400,21 @@ function main(): void {
      * only the backstop for when that packet is lost.
      */
     if (myDrawerId.length > 0) {
-      let lastDriveSent = 0;
-      let lastDriveMag = 0;
+      /*
+       * The RULES are `createDriveUplink`'s (src/net/worldsync.ts) and this
+       * is only the socket. Which of them go out, when the release is
+       * exempt from the pacing, and what precision the numbers carry are
+       * every one of them a bug somebody has already had — so they live in
+       * the pure module beside the message they produce, where a test can
+       * drive the clock (test/net/two-page-room.test.ts).
+       */
+      const uplinkDrive = createDriveUplink();
       publishDrive = (v: WorldVector): void => {
-        const now = Date.now();
-        const holding = v.mag > 0;
-        // Repeat while held, so the host's expiry never fires under a live
-        // thumb; send the release once, then fall silent.
-        if (!holding && lastDriveMag === 0) return;
-        if (holding && now - lastDriveSent < DRIVE_INTERVAL_MS) return;
-        lastDriveSent = now;
-        lastDriveMag = v.mag;
+        const out = uplinkDrive.offer(v, Date.now());
+        if (!out) return;
         client.publish?.(
           syncTopic,
-          JSON.stringify({
-            t: 'drive',
-            id: me,
-            who: myDrawerId,
-            x: Number(v.x.toFixed(3)),
-            z: Number(v.z.toFixed(3)),
-            mag: Number(v.mag.toFixed(3)),
-          }),
+          JSON.stringify({ t: 'drive', id: me, who: myDrawerId, ...out }),
           { qos: 0 },
         );
       };

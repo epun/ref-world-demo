@@ -48,7 +48,12 @@ import type { EmoteName } from '../net/protocol';
 import type { StrokeList } from '../shape/types';
 import { Spring } from '../motion/spring';
 import { MOTION } from '../taste/tokens';
-import { FOLLOW_TAU_MS, followFraction, shortestAngle } from '../net/worldsync';
+import {
+  FOLLOW_TAU_MS,
+  POSE_INTERVAL_MS,
+  followFraction,
+  shortestAngle,
+} from '../net/worldsync';
 import type { WorldHandles } from '../world/scene';
 import type { ShadowHandle } from '../world/shadows';
 import { ROLLING_SURFACE, type Surface } from '../world/surface';
@@ -127,6 +132,35 @@ export const DRIVE_SPEED = MAX_SPEED;
  * `WANDER_SPEED_DEFAULT` and the walk cycle keeps the speeds it shipped with.
  */
 export const KATAMARI_SPEED_MUL = 9;
+
+/**
+ * [D] Ceiling on the speed a VIEWER will extrapolate the host at, u/s.
+ *
+ * The host's speed is derived from two poses and this page's own frame clock
+ * (`followPoses`), and both of those can lie: two frames that land in the
+ * same millisecond, a tab that was throttled and delivered four poses at
+ * once, a roster change that moved a creature. A ceiling is what keeps every
+ * one of those from flinging a creature across the field instead of leading
+ * it by a few centimetres.
+ *
+ * `MAX_SPEED × KATAMARI_SPEED_MUL` is the fastest anything in this world can
+ * actually travel, plus a fifth for the roster's own quantisation. Above it
+ * the direction is kept and the speed is clamped, so a wrong number is a
+ * slightly early creature rather than a teleport.
+ */
+export const FOLLOW_LEAD_MAX_SPEED = MAX_SPEED * KATAMARI_SPEED_MUL * 1.2;
+
+/**
+ * [D] The furthest ahead of the host's last pose a viewer will look, ms.
+ *
+ * One pose interval. Inside it the lead is exactly the distance the creature
+ * has travelled since the frame was packed, which is what removes the 5hz
+ * stutter; past it the host has gone quiet — dropped packets, a backgrounded
+ * tab, an election in progress — and the honest thing is to stop guessing and
+ * hold at the last thing anybody said, not to keep walking on an intent that
+ * is now a second old.
+ */
+export const FOLLOW_LEAD_MAX_MS = POSE_INTERVAL_MS;
 
 /**
  * And the WALK ceiling in a katamari world. **[D]**
@@ -611,16 +645,41 @@ interface Slot {
    * outright. Null on the host, and on a viewer that has not heard about
    * this creature yet — in which case it simply stands where it spawned
    * rather than guessing.
-   */
-  /**
-   * Where the host says this creature is (src/net/worldsync.ts).
    *
    * `settled` is false until the first frame has been APPLIED. A viewer
    * spawns the whole cast at its deterministic spawn spots and only then
    * hears where the host actually has them — so the first pose is not a
    * movement, it is finding out. See the update loop.
+   *
+   * `vx`/`vz` are the host's own SPEED, in world units per millisecond,
+   * derived from the two most recent poses — and `ageMs` is how long ago
+   * this one landed.
+   *
+   * Not on the wire and never will be (poses carry x/z/heading and nothing
+   * else — src/net/worldsync.ts). A page that knows where the creature was
+   * and where it now is knows how fast it is going, exactly the way the
+   * viewer already derives the roll and the gait from its own displacement.
+   *
+   * What they are FOR (2026-09-17, *"some characters get stuck when trying
+   * to move and glitch on mobile"*): poses land five times a second, and
+   * `FOLLOW_TAU_MS` is set so a creature has substantially arrived by the
+   * time the next one does. For a creature standing still that is a settle;
+   * for a creature WALKING it means it covers the gap in the first ~90ms
+   * and then stands there for 110 — a 5hz stutter, on the one screen whose
+   * owner is watching their own creature and pushing a stick. So the viewer
+   * eases toward where the host's creature is GOING rather than where it
+   * last was. Katamari-gated: every other world's viewer eases exactly as
+   * it shipped.
    */
-  follow: { x: number; z: number; heading: number; settled: boolean } | null;
+  follow: {
+    x: number;
+    z: number;
+    heading: number;
+    settled: boolean;
+    vx: number;
+    vz: number;
+    ageMs: number;
+  } | null;
   /** When a staggered hatchAll() has scheduled this egg. null = not queued. */
   forcedHatchAtMs: number | null;
   phase: Phase;
@@ -862,6 +921,17 @@ export interface StickRecord {
   kind?: string;
   variant?: number;
   scale?: number;
+  /**
+   * Its FOOTPRINT RADIUS — the volume it adds to the pile (2026-09-17).
+   *
+   * The one number in this record that is not about drawing. Growth is
+   * derived on every page and a viewer reads the radius off the scatter's
+   * instance row, which by the time it applies a `stick` has been rebuilt
+   * away — so it fell back to the instance SCALE and the viewer's ball grew
+   * on the wrong volumes (src/session/events.ts `StickEvent.r`). Optional,
+   * so an old log reads exactly as it did.
+   */
+  r?: number;
   /** Its seat in the clump's local frame, and its attitude there. */
   ox: number;
   oy: number;
@@ -1046,6 +1116,26 @@ export interface CreatureManager {
   followPoses(poses: readonly { id: string; x: number; z: number; heading: number }[]): number;
   /** Drop every held host pose — call on any change of role. */
   clearFollow(): void;
+  /**
+   * LET GO OF EVERYTHING — call on any change of role, beside `clearFollow`
+   * (2026-09-17, the *"characters get stuck when trying to move"* report).
+   *
+   * A drive is a hand on a creature, and the hands belong to the PAGE that
+   * is simulating: a phone alone on the link applies its own stick locally,
+   * a projection applies every phone's over the wire. When that page stops
+   * being the host, none of those hands are on anything any more — but
+   * `slot.drive` stayed set on every creature it had been steering, which
+   * is two bugs at once. `isDriven` keeps answering true, so those
+   * creatures' agents stay stood down forever and they stand there; and the
+   * moment the page wins an election back, every one of those stale vectors
+   * takes effect at once and the whole cast sets off in directions nobody
+   * asked for. `effectiveDrive` sums a pile's passengers, so one stale
+   * passenger steers somebody else's ball.
+   *
+   * Returns how many it let go of, which is what lets a test see the
+   * difference between "released" and "there was nothing to release".
+   */
+  clearDrives(): number;
   /**
    * Steer one creature, or let go with `null`. Returns false when that id
    * holds no living creature. See src/world/joystick.ts.
@@ -2125,7 +2215,13 @@ export function createCreatureManager(
     clump.add({
       key: record.item,
       object,
-      r: measured?.r ?? scale,
+      /*
+       * THE RECORD'S RADIUS FIRST (2026-09-17, the sticking report). The
+       * instance row is the host's own answer and is gone by the time a
+       * viewer applies the event; `scale` was never a radius at all, it is
+       * the last resort for a log that predates the field.
+       */
+      r: record.r ?? measured?.r ?? scale,
       kind,
       variant,
       scale,
@@ -2835,6 +2931,7 @@ export function createCreatureManager(
       kind: item.kind,
       variant: item.variant,
       scale: item.scale,
+      r: item.r,
       ox: offset.x,
       oy: offset.y,
       oz: offset.z,
@@ -3043,6 +3140,7 @@ export function createCreatureManager(
       kind,
       variant,
       scale,
+      r: itemR,
       ox: offset.x,
       oy: offset.y,
       oz: offset.z,
@@ -4104,10 +4202,39 @@ export function createCreatureManager(
              */
             const k = slot.follow.settled ? followFraction(dt, FOLLOW_TAU_MS) : 1;
             slot.follow.settled = true;
+            slot.follow.ageMs += dt;
+            /*
+             * WHERE THE HOST'S CREATURE IS NOW, not where it was when the
+             * frame was packed (2026-09-17, the *"glitch on mobile"* half of
+             * the stuck report).
+             *
+             * Poses land five times a second and `FOLLOW_TAU_MS` is a little
+             * under half that gap, so a WALKING creature covered the whole
+             * distance in the first ninety milliseconds and then stood still
+             * for a hundred and ten. Five times a second. On the one screen
+             * whose owner is holding a stick and watching their own creature,
+             * which is every phone in the room.
+             *
+             * So the target is led by the host's own speed (`followPoses`
+             * derives it from two poses; nothing new is on the wire), capped
+             * at one pose interval — past that the host has gone quiet and
+             * guessing further is inventing motion rather than covering a
+             * gap. The EASE is untouched: still the same monotone
+             * exponential convergence toward it, so nothing overshoots and
+             * nothing steps (TASTE §2.1, confidence 1.00). The heading is not
+             * led at all — a turn is not a velocity, and extrapolating one
+             * makes a creature that is circling look like it is spinning.
+             *
+             * Katamari-gated, so every other world's viewer eases toward
+             * exactly the point it eased toward before.
+             */
+            const lead = katamari ? Math.min(slot.follow.ageMs, FOLLOW_LEAD_MAX_MS) : 0;
+            const aimX = slot.follow.x + slot.follow.vx * lead;
+            const aimZ = slot.follow.z + slot.follow.vz * lead;
             const beforeX = root.position.x;
             const beforeZ = root.position.z;
-            root.position.x += (slot.follow.x - beforeX) * k;
-            root.position.z += (slot.follow.z - beforeZ) * k;
+            root.position.x += (aimX - beforeX) * k;
+            root.position.z += (aimZ - beforeZ) * k;
             root.rotation.y += shortestAngle(root.rotation.y, slot.follow.heading) * k;
 
             /*
@@ -4734,13 +4861,41 @@ export function createCreatureManager(
       for (const pose of poses) {
         const slot = slots.get(pose.id);
         if (!slot || slot.phase !== 'alive') continue;
+        const was = slot.follow;
+        /*
+         * HOW FAST THE HOST HAS IT GOING, off the two most recent poses.
+         *
+         * `was.ageMs` is the gap between them as THIS page's frame loop
+         * measured it, which is the honest denominator: the wire carries no
+         * timestamps and a receiver's own clock is the only one it has. A
+         * first pose, or two poses in the same frame, has no gap to divide
+         * by and gets zero — which is the behaviour that shipped.
+         *
+         * Clamped to a walk, so one late-bunched pair cannot hand the
+         * extrapolation a speed nothing in this world can travel at.
+         */
+        let vx = 0;
+        let vz = 0;
+        if (was && was.ageMs > 1) {
+          vx = (pose.x - was.x) / was.ageMs;
+          vz = (pose.z - was.z) / was.ageMs;
+          const speed = Math.hypot(vx, vz);
+          const ceiling = FOLLOW_LEAD_MAX_SPEED / 1000;
+          if (speed > ceiling) {
+            vx = (vx / speed) * ceiling;
+            vz = (vz / speed) * ceiling;
+          }
+        }
         slot.follow = {
           x: pose.x,
           z: pose.z,
           heading: pose.heading,
           // Carried forward, never reset: only the update loop sets this,
           // on the frame it actually places the creature.
-          settled: slot.follow?.settled === true,
+          settled: was?.settled === true,
+          vx,
+          vz,
+          ageMs: 0,
         };
         matched++;
       }
@@ -4853,6 +5008,20 @@ export function createCreatureManager(
 
     clearFollow(): void {
       for (const slot of slots.values()) slot.follow = null;
+    },
+
+    clearDrives(): number {
+      let released = 0;
+      for (const slot of slots.values()) {
+        if (slot.drive !== null) released++;
+        slot.drive = null;
+        // The WINDOW goes too, not just the vector. `isDriven` is true for
+        // DRIVE_IDLE_MS past the last push, and a creature whose hand has
+        // gone away should hand itself back to its own agent now rather
+        // than in a second and a half.
+        slot.drivenAtMs = null;
+      }
+      return released;
     },
 
     liveIds(): string[] {

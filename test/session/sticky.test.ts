@@ -188,6 +188,33 @@ describe('readSceneEvent — the door', () => {
     expect(readSceneEvent({ ...SETTLE, z: 1e9 })).toMatchObject({ z: SCENE_EXTENT });
   });
 
+  it('carries the item\u2019s RADIUS, and reads without it', () => {
+    /*
+     * 2026-09-17, *"some users are having issues sticking to objects"*.
+     *
+     * Growth is DERIVED on every page, off the radii of what a pile is
+     * carrying — and a viewer read the radius off the scatter's own instance
+     * row, which is gone by the time it applies the event (the host hid the
+     * placement the moment it took it). It fell back to the instance SCALE,
+     * about 1 for everything, so a tree that added 1.73 to the host's pile
+     * added 1.00 to the phone's and the same ball was two sizes in the same
+     * room — including in the phone's own size readout.
+     *
+     * Additive: absent is still a valid event and still reads.
+     */
+    expect(readSceneEvent({ ...STICK, r: 1.2 })).toMatchObject({ r: 1.2 });
+    const without = readSceneEvent(STICK) as unknown as Record<string, unknown>;
+    expect(without).not.toBeNull();
+    expect('r' in without).toBe(false);
+    // Clamped like an offset, and refused rather than read as nothing: a
+    // zero radius is an item that adds no volume at all, which is not a
+    // thing the host can have meant.
+    expect(readSceneEvent({ ...STICK, r: 1e6 })).toMatchObject({ r: 64 });
+    for (const bad of [0, -1, Infinity, NaN, 'big', null]) {
+      expect(readSceneEvent({ ...STICK, r: bad }), String(bad)).toBeNull();
+    }
+  });
+
   it('clamps a clump offset rather than refusing it', () => {
     const read = readSceneEvent({ ...STICK, ox: 1e6, oy: -1e6, oz: 0 }) as {
       ox: number;
