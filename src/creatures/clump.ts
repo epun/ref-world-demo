@@ -174,6 +174,29 @@ export interface Clump {
    * `volumes()` already does for the growth.
    */
   reach(): number;
+  /**
+   * THE PILE'S LOWEST POINT, in the CREATURE'S own frame — world units above
+   * the creature's feet, so 0 is the paper it stands on and a negative answer
+   * is mass below its feet. 0 for an empty pile.
+   *
+   * > User report, 2026-09-17: *"now the characters are floating. their origin
+   * > should match the ground plane; they should not be floating in mid air."*
+   *
+   * This is what the ground pass sits the creature on, and the radial
+   * `reach()` is NOT: the items pack along the directions they were struck
+   * from, so a creature with three benches beside it and nothing under it has
+   * a reach of several units and a lowest point at its own feet — sitting it
+   * up by the reach held it in the air over the gap. A pile only lifts a
+   * creature by what is genuinely UNDER it.
+   */
+  floor(): number;
+  /**
+   * …and HOW WIDE it is — the furthest `|seat.xz| + itemR`, world units from
+   * the creature's axis. The footprint the ground under it is sampled over
+   * (`groundClearance`), which is a horizontal question and so takes a
+   * horizontal answer. 0 for an empty pile.
+   */
+  footprint(): number;
   /** …and ONE of them, by key: where that thing is sitting in world units
    * from the pile's centre. What the rigid-body stand-in reads, since the
    * collider has to be where the item is DRAWN. */
@@ -341,6 +364,28 @@ export function createClump(baseR: number): Clump {
         if (out > far) far = out;
       }
       return far;
+    },
+
+    floor(): number {
+      let low = 0;
+      for (const entry of entries.values()) {
+        // The seat is measured from the pile's centre and the centre is
+        // `baseR` above the creature's feet, so this is in the creature's
+        // frame — which is the frame the ground pass writes in.
+        const bottom = baseR + entry.seat.y - entry.item.r;
+        if (bottom < low) low = bottom;
+      }
+      return low;
+    },
+
+    footprint(): number {
+      let wide = 0;
+      for (const entry of entries.values()) {
+        const seat = entry.seat;
+        const out = Math.hypot(seat.x, seat.z) + entry.item.r;
+        if (out > wide) wide = out;
+      }
+      return wide;
     },
 
     seatOf(key): { x: number; y: number; z: number } | undefined {

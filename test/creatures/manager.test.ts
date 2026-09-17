@@ -49,7 +49,7 @@ import {
 } from '../../src/creatures/gravity';
 import {
   carryLimit,
-  clearanceLift,
+  footprintRise,
   CLEARANCE_DIRS,
   CLEARANCE_PAD,
   CLEARANCE_RING,
@@ -1285,16 +1285,18 @@ describe('ground clearance — a big ball rides on its whole footprint', () => {
     // chasing is the one this asserts against.
     holdAt(manager, 6, -4, 1);
     /*
-     * The target the spring is chasing, off the PILE'S OWN REACH — the drawn
-     * silhouette, not `bodyR` (2026-09-17, with the packing): the sit that
-     * puts the mass's lowest point on the ground plus the ring's rise.
+     * The target the spring is chasing, and it is TWO measurements of the
+     * drawn pile rather than one radius (2026-09-17, the *"characters are
+     * floating"* report): the sit is what is under the creature's feet
+     * (`pileFloor`, ≤ 0) and the rise is the ground under the pile's
+     * FOOTPRINT (`pileFootprint`). Neither is `bodyR`.
      */
-    const baseR = measureBodyRadius(manager.latestCharacter()!);
-    const reach = manager.pileReach('ball');
-    expect(reach).toBeGreaterThan(baseR);
+    const floor = manager.pileFloor('ball');
+    const footprint = manager.pileFootprint('ball');
+    expect(footprint).toBeGreaterThan(0);
     const target =
-      Math.max(0, reach - baseR) +
-      clearanceLift(root.position.x, root.position.z, reach, (x, z) =>
+      Math.max(0, -floor) +
+      footprintRise(root.position.x, root.position.z, footprint, (x, z) =>
         slope.sampleHeight(x, z),
       );
     expect(target).toBeGreaterThan(1);
@@ -1414,15 +1416,104 @@ describe('ground clearance — a big ball rides on its whole footprint', () => {
     manager.clearAll();
   });
 
-  it('on the flat the pile touches the paper, with only the pad under it', () => {
+  it('a pile packed to ONE SIDE leaves the creature on the ground', () => {
+    /*
+     * > User report, 2026-09-17, with a projection screenshot of two blue
+     * > creatures carrying a barrel and a crate each and hovering a body
+     * > height over the meadow: *"this is incorrect, the character should be
+     * > on the ground."*
+     *
+     * This is that picture. The items pack along the direction they were
+     * struck from, so a creature that rolled into two small things has them
+     * BESIDE it and nothing underneath — and the lift used to be the radial
+     * reach less the creature's own radius, which is exactly the gap in the
+     * screenshot. The sit reads the pile's LOWEST POINT now, so the answer
+     * here is zero: feet on the paper.
+     */
+    const manager = makeManager(FLAT_SURFACE, 'katamari');
+    const root = rootOf(manager);
+    const baseR = measureBodyRadius(manager.latestCharacter()!);
+    // Small enough to sit clear of the creature's underside: seated level
+    // with its middle, an item of radius r has its bottom at `baseR - r`.
+    const r = 0.5;
+    expect(r).toBeLessThan(baseR);
+    for (let i = 0; i < 3; i++) {
+      const out = baseR + r * CLUMP_FIT + i * r * 2;
+      manager.applyStick({
+        id: 'ball',
+        item: `rock:0:${i}.00:0.00`,
+        kind: 'rock',
+        variant: 0,
+        scale: r,
+        r,
+        // Straight out along +x, level with the creature's middle: a pile
+        // entirely to one side of it.
+        ox: out,
+        oy: 0,
+        oz: 0,
+        qx: 0,
+        qy: 0,
+        qz: 0,
+        qw: 1,
+      });
+    }
+    holdAt(manager, 4, 4, 240);
+
+    // There is a real pile…
+    expect(manager.pileFootprint('ball')).toBeGreaterThan(baseR);
+    expect(manager.ballDiameter('ball') / 2).toBeGreaterThan(baseR);
+    // …and nothing under the feet, so no lift at all.
+    expect(manager.pileFloor('ball')).toBe(0);
+    expect(manager.groundLift('ball')).toBe(0);
+    expect(root.position.y).toBe(FLAT_SURFACE.sampleHeight(4, 4));
+    manager.clearAll();
+  });
+
+  it('an item seated UNDER the feet lifts by exactly what is under them', () => {
+    const manager = makeManager(FLAT_SURFACE, 'katamari');
+    const root = rootOf(manager);
+    const baseR = measureBodyRadius(manager.latestCharacter()!);
+    const r = 0.8;
+    // Straight DOWN from the pile's centre — which is the creature's middle,
+    // so this one really is beneath it.
+    manager.applyStick({
+      id: 'ball',
+      item: 'rock:0:9.00:0.00',
+      kind: 'rock',
+      variant: 0,
+      scale: r,
+      r,
+      ox: 0,
+      oy: -(baseR + r * CLUMP_FIT),
+      oz: 0,
+      qx: 0,
+      qy: 0,
+      qz: 0,
+      qw: 1,
+    });
+    holdAt(manager, 4, 4, 240);
+
+    /*
+     * The seat is `baseR + r × CLUMP_FIT` below the creature's middle and the
+     * middle is `baseR` above its feet, so the item's bottom is
+     * `r × CLUMP_FIT + r` under them — and that is the lift, exactly.
+     */
+    const want = r * CLUMP_FIT + r;
+    expect(manager.pileFloor('ball')).toBeCloseTo(-want, 6);
+    expect(manager.groundLift('ball')).toBeCloseTo(want, 3);
+    expect(root.position.y - FLAT_SURFACE.sampleHeight(4, 4)).toBeCloseTo(want, 3);
+    manager.clearAll();
+  });
+
+  it('on the flat the pile touches the paper — its own lowest point on it', () => {
     /*
      * THE FLAT NUMBER for the sit (2026-09-17). On a slope the lift is the
-     * sit plus the ring's own rise, and on the real map that rise is metres —
-     * a shot at one spot on the island read the lowest seat 4.0 u over the
-     * ground, of which 3.6 was the hillside under the pile's uphill edge. So
-     * this is the same pile with the hill taken away: the drawn mass's lowest
-     * point comes down onto the paper and what is left under it is the pad
-     * alone, sized off the DRAWN REACH and not off the volume's `bodyR`.
+     * sit plus the ring's own rise; this is the same pile with the hill taken
+     * away, so what is left is the sit alone — and the sit is the pile's own
+     * LOWEST POINT and nothing else, no pad and no radius, so the mass lands
+     * exactly on the paper (the *"characters are floating"* report: a pad
+     * sized off a radius is a creature held up by a number with nothing
+     * under it).
      */
     const manager = makeManager(ramped, 'katamari');
     const root = rootOf(manager);
@@ -1430,27 +1521,21 @@ describe('ground clearance — a big ball rides on its whole footprint', () => {
     // Flat ground, well clear of the riser, and settled.
     holdAt(manager, -20, 0, 240);
     const ground = ramped.sampleHeight(-20, 0);
-    const reach = manager.pileReach('ball');
-    expect(reach).toBeGreaterThan(1);
+    const floor = manager.pileFloor('ball');
+    // This fixture seats its props ON the creature's centre, so there really
+    // is mass under its feet: the floor is negative and the sit is real.
+    expect(floor).toBeLessThan(0);
+    expect(manager.groundLift('ball')).toBeCloseTo(-floor, 3);
 
-    const clump = root.getObjectByName('clump');
-    expect(clump).toBeTruthy();
-    root.updateWorldMatrix(true, true);
-    const centre = clump!.getWorldPosition(new Vector3());
-
-    // The reach really is the drawn mass's bound: no seat is outside it.
-    for (const child of clump!.children) {
-      if (!child.name.startsWith('loose')) continue;
-      const at = child.getWorldPosition(new Vector3());
-      expect(at.distanceTo(centre)).toBeLessThanOrEqual(reach + 1e-6);
-      expect(at.y).toBeGreaterThanOrEqual(centre.y - reach - 1e-6);
-    }
-
-    // And the bottom of that bound rests on the ground, to the pad.
-    const under = centre.y - reach - ground;
-    expect(under).toBeCloseTo(reach * CLEARANCE_PAD, 3);
-    // Which at this pile is a few centimetres, not a hover.
-    expect(under).toBeLessThan(0.35);
+    /*
+     * …and that puts the mass's lowest point ON the paper. `pileFloor` is
+     * measured from the creature's FEET and the feet are the root, so the
+     * lowest drawn point is `root.y + floor` — which is the ground, to a
+     * millimetre, once the lift spring has settled.
+     */
+    expect(root.position.y + floor).toBeCloseTo(ground, 3);
+    // The footprint is real too, so the ring term above was not a no-op.
+    expect(manager.pileFootprint('ball')).toBeGreaterThan(0);
     manager.clearAll();
   });
 
@@ -1461,13 +1546,12 @@ describe('ground clearance — a big ball rides on its whole footprint', () => {
     // Settled well below the riser, where the ring reaches nothing.
     holdAt(manager, -20, 0, 200);
     /*
-     * On the flat, the lift is the SIT — the pile's reach less the creature's
-     * own radius, which rests the mass on the paper — plus the pad, both off
-     * the reach and not off `bodyR` (2026-09-17, with the packing).
+     * On the flat, the lift is the SIT and nothing else: what the pile puts
+     * under the creature's feet (`pileFloor`), with no pad and no radius in
+     * it (2026-09-17, the *"characters are floating"* report).
      */
-    const baseR = measureBodyRadius(manager.latestCharacter()!);
-    const reach = manager.pileReach('ball');
-    const flatLift = Math.max(0, reach - baseR) + reach * CLEARANCE_PAD;
+    const reach = manager.pileFootprint('ball');
+    const flatLift = Math.max(0, -manager.pileFloor('ball'));
     expect(manager.groundLift('ball')).toBeCloseTo(flatLift, 3);
 
     // Then walk it up and over, through the pose path at a walking pace.
