@@ -96,8 +96,8 @@ import {
   readSubmission,
 } from './phone/identity';
 import { mountWorldTray } from './world/tray';
-import { createFollow, shouldCloseOnHatch } from './world/follow';
-import { HATCH_CLOSE_ZOOM, followZoomFor } from './world/camera';
+import { createFollow, createFollowAim, shouldCloseOnHatch } from './world/follow';
+import { HATCH_CLOSE_ZOOM, PHONE_FOLLOW_ZOOM, PHONE_ZOOM_MAX } from './world/camera';
 import { createCompanionPanel } from './world/companionpanel';
 import { feedDrawingToStrokes } from './net/drawFeed';
 import type { StrokeList } from './shape/types';
@@ -2444,6 +2444,45 @@ function main(): void {
   const follow = createFollow({ enabled: canFollow });
 
   /*
+   * …AND ON THE KATAMARI IT SITS ON THE CREATURE (user ask, 2026-09-17: *"on
+   * mobile the camera perspective is too zoomed out on the character. we
+   * should be focused on the user's character and always have it in frame. if
+   * a user wants to zoom out and pan around they still can, but at the start
+   * and when the user uses the joystick we should smoothly focus back on the
+   * character."*).
+   *
+   * ONE flag for the whole of it, and it is the game's plus the follow's:
+   * every other world's handset keeps the camera it shipped with — the frame
+   * opens at zoom 1, only the hatch ever closes it in, and no gesture lets go
+   * of anything (the 2026-09-15 ruling, CLAUDE.md). The projection is already
+   * out by `canFollow`.
+   *
+   * Three things hang off it and none of them is a new duration:
+   *
+   *   - the CEILING goes up (`PHONE_ZOOM_MAX`), because the resting framing is
+   *     tighter than the 2.6 this world pinches to and a frame that opens at
+   *     its own ceiling can only be pinched one way;
+   *   - the frame's aim and its width come from `createFollowAim` — the
+   *     creature LED by the reframe spring's own lag, and a zoom that widens
+   *     by whatever the frame is still behind by (src/world/follow.ts);
+   *   - and a pinch, a wheel or a pan LETS GO of the creature, which is the
+   *     "zoom out and pan around" half of the ask. The stick takes it back.
+   */
+  const followTight = worldGame === 'katamari' && canFollow;
+  if (followTight) world.cameraRig.raiseZoomCeiling(PHONE_ZOOM_MAX);
+  const followAim = createFollowAim({
+    close: followTight ? PHONE_FOLLOW_ZOOM : HATCH_CLOSE_ZOOM,
+  });
+  /** Scratch for the point the follow aims at — one allocation, ever. */
+  const followPoint = new Vector3();
+  if (followTight) {
+    // The gestures live in src/world/scene.ts; the RULE lives in
+    // src/world/follow.ts. `suspend` is itself a no-op while the stick is
+    // held, so a drag made mid-drive orbits without letting go.
+    world.setFreeLook(() => follow.suspend());
+  }
+
+  /*
    * …AND WHEN YOUR SHELL OPENS, THE CAMERA COMES TO YOU (user ask,
    * 2026-09-17: *"on hatch for mobile we should have the cam zoom in to
    * people's character"*).
@@ -2464,13 +2503,21 @@ function main(): void {
    * nothing here holds the zoom: the close-in is a moment, not a mode.
    */
   /**
-   * The size-tracking zoom this page last ASKED for.
+   * The follow zoom this page last ASKED for.
    *
-   * Starts at `HATCH_CLOSE_ZOOM`, which is what the hatch itself asks for, so
-   * a ball under `BALL_ZOOM_REF_R` never retargets at all and a fresh
-   * creature's camera is exactly the one the hatch left.
+   * ZERO on the katamari handset, which is not a framing but "nothing has
+   * been asked for yet" — so the FIRST frame that follows a creature slides
+   * to the follow framing on the rig's own ζ≥1 zoom spring, however the page
+   * arrived at it. That is the "at the start" half of the 2026-09-17 ask and
+   * it covers the case the hatch close-in never could: somebody who opens the
+   * world view after their own shell has already opened (a reload, a rejoin)
+   * used to sit at zoom 1 looking at a speck.
+   *
+   * On every other world it starts at `HATCH_CLOSE_ZOOM` exactly as it did,
+   * so a ball under `BALL_ZOOM_REF_R` never retargets at all — and there are
+   * no balls outside the game, so nothing there retargets ever.
    */
-  let lastFollowZoom = HATCH_CLOSE_ZOOM;
+  let lastFollowZoom = followTight ? 0 : HATCH_CLOSE_ZOOM;
   closeOnMyHatch = (id: string): void => {
     if (!shouldCloseOnHatch({ game: worldGame, hatched: id, mine: myDrawerId, canFollow })) {
       return;
@@ -2480,8 +2527,8 @@ function main(): void {
     // No position yet is not a reason to skip the zoom: the shell is where
     // the creature is about to stand, and the frame loop retargets the
     // look-target on the very next frame anyway.
-    if (at) world.cameraRig.closeOn(at);
-    else world.cameraRig.zoomTo(HATCH_CLOSE_ZOOM);
+    if (at) world.cameraRig.closeOn(at, PHONE_FOLLOW_ZOOM);
+    else world.cameraRig.zoomTo(PHONE_FOLLOW_ZOOM);
   };
 
   const worldMap = installWorldMinimap({
@@ -2532,15 +2579,39 @@ function main(): void {
    * creature curves away from the way it is being asked to go.
    */
   let stickVec = STICK_REST;
+  /** Is the thumb past the deadzone right now — the edge the recentre rides. */
+  let stickHeld = false;
   const stick =
     tray?.middle && myDrawerId.length > 0
       ? mountJoystick({
           onChange: (v) => {
             stickVec = v;
-            // Walking IS the ask to be followed again — the only way this
-            // view has of saying "come with me". Orbiting never does this:
-            // turning the camera around your creature is looking at it.
-            if (v.mag > 0) follow.resume();
+            /*
+             * Walking IS the ask to be followed again — the only way this
+             * view has of saying "come with me". Orbiting never does this:
+             * turning the camera around your creature is looking at it.
+             *
+             * And the RECENTRE, on the push past the deadzone and not on
+             * every frame of the hold (user ask, 2026-09-17: *"when the user
+             * uses the joystick we should smoothly focus back on the
+             * character"*): dropping `lastFollowZoom` makes the next followed
+             * frame retarget the follow framing, so a person who had pinched
+             * out slides back in on the rig's own ζ≥1 zoom spring —
+             * t.secondary, which is where every zoom retarget on this rig
+             * lives because a zoom answers a hand, while the look-target's
+             * slide is a reframe at t.primary. Neither is a new duration and
+             * neither can cut.
+             *
+             * `driving` is both edges: while the thumb is down no gesture can
+             * let go of the creature (src/world/follow.ts).
+             */
+            const held = v.mag > 0;
+            if (held && !stickHeld) {
+              follow.resume();
+              lastFollowZoom = 0;
+            }
+            stickHeld = held;
+            follow.driving(held);
           },
         })
       : null;
@@ -2900,33 +2971,50 @@ function main(): void {
      */
     if (follow.active()) {
       const at = creatures.positionOf(myDrawerId);
-      if (at) world.cameraRig.frameAt(at);
-      /*
-       * …AND THE FRAME WIDENS AS THE BALL GROWS (user ask, 2026-09-17: *"we
-       * should allow for larger mass sizes than 10 meters for users"* — and a
-       * 20 m ball at the hatch zoom is a wall, not a ball).
-       *
-       * `followZoomFor` keeps the ball a constant share of the screen: the
-       * frame's world height is `FRUSTUM_HEIGHT / zoom`, so a zoom inversely
-       * proportional to the radius is a frame linear in the diameter. The rig
-       * clamps it at the island's own floor, which is what stops a ball the
-       * size of the island opening a frame wider than the world.
-       *
-       * ONLY WHEN THE ANSWER CHANGES, and that is what keeps the pinch. A
-       * `zoomTo` every frame would undo a two-finger zoom on the frame after
-       * the fingers moved; retargeting only when the ball has actually grown
-       * means the person's own framing stands until their ball is a different
-       * size, and then it slides — on the same ζ≥1 spring as every other
-       * reframe here (TASTE §2.1). The epsilon is a whole percent of a zoom
-       * level: growth is a cube root, so a stone or two is well under it.
-       */
       const ballR = creatures.ballDiameter(myDrawerId) / 2;
-      if (ballR > 0) {
-        const want = followZoomFor(ballR);
+      if (at && followTight) {
+        /*
+         * THE TIGHT FOLLOW, katamari handset only (2026-09-17).
+         *
+         * `followAim` is the whole decision and it is pure
+         * (src/world/follow.ts): the point it hands back is the creature LED
+         * by the reframe spring's own lag, so the spring settles ON the
+         * creature instead of trailing it by two to six units, and the zoom
+         * it hands back is `PHONE_FOLLOW_ZOOM` widened by three things — the
+         * pile (*"we should allow for larger mass sizes than 10 meters for
+         * users"*, 2026-09-16: a 20 m ball at the close framing is a wall),
+         * the creature's own height, and however far the frame actually is
+         * behind. Which is what keeps a fast roll and a big pile in frame
+         * without opening the view up on every push of the stick.
+         *
+         * THE ZOOM RETARGETS ONLY WHEN THE ANSWER CHANGES, and that is what
+         * keeps the pinch: a `zoomTo` every frame would undo a two-finger
+         * zoom on the frame after the fingers moved. When it does change it
+         * SLIDES, on the rig's own ζ≥1 spring (TASTE §2.1). The epsilon is a
+         * whole percent of a zoom level — growth is a cube root, so a stone
+         * or two is well under it, and so is a millimetre of tracking.
+         */
+        const look = world.cameraRig.lookAtPoint();
+        const aim = followAim({
+          x: at.x,
+          z: at.z,
+          bodyR: ballR,
+          lookX: look.x,
+          lookZ: look.z,
+          aspect: world.cameraRig.aspect,
+          dtMs: dt,
+        });
+        world.cameraRig.frameAt(followPoint.set(aim.x, 0, aim.z));
+        const want = aim.zoom;
         if (Math.abs(want - lastFollowZoom) > 0.01) {
           lastFollowZoom = want;
           world.cameraRig.zoomTo(want);
         }
+      } else if (at) {
+        // Every other world: the look-target and nothing else, exactly as it
+        // shipped. There is no ball outside the game, so there is nothing for
+        // the frame to widen for.
+        world.cameraRig.frameAt(at);
       }
     }
     tour.update(dt, nowMs);

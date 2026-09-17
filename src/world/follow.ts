@@ -27,6 +27,9 @@
  * plumbing — that is easy to get wrong.
  */
 
+import { followSpringLag, followZoomFor } from './camera';
+import { MOTION } from '../taste/tokens';
+
 /**
  * Does THIS hatch close the camera in on THIS page's creature?
  *
@@ -82,10 +85,27 @@ export interface FollowOptions {
 export interface Follow {
   /** Should this frame retarget the camera onto the creature? */
   active(): boolean;
-  /** Look somewhere else for a while — the minimap's tap. */
+  /**
+   * Look somewhere else for a while — the minimap's tap, a pinch, a pan.
+   *
+   * A NO-OP WHILE THE STICK IS HELD (2026-09-17, the ask that the camera
+   * focus back on the creature when the joystick is used): a thumb on the
+   * stick is a continuous statement that the creature is the subject, and a
+   * gesture made with the other hand must not be able to contradict it
+   * mid-drive. The gesture still does its own job — a drag still orbits, a
+   * pinch still zooms — it just does not let go. The moment the stick is
+   * released the next gesture suspends again.
+   */
   suspend(): void;
   /** Come back to me — any non-zero stick input. */
   resume(): void;
+  /**
+   * Is a thumb on the stick right now? Set from the stick's own `onChange`,
+   * both edges, and read by `suspend`.
+   */
+  driving(held: boolean): void;
+  /** Is the stick held (a readout, for the tests and for nothing else). */
+  held(): boolean;
 }
 
 /**
@@ -99,13 +119,128 @@ export interface Follow {
 export function createFollow(options: FollowOptions = {}): Follow {
   const enabled = options.enabled ?? true;
   let suspended = false;
+  let holding = false;
   return {
     active: () => enabled && !suspended,
     suspend(): void {
+      // A gesture made mid-drive is ignored, not queued: the stick is the
+      // subject for as long as it is held (see the interface).
+      if (holding) return;
       suspended = true;
     },
     resume(): void {
       suspended = false;
     },
+    driving(held: boolean): void {
+      holding = held;
+    },
+    held: () => holding,
+  };
+}
+
+/**
+ * WHERE THE FRAME AIMS AND HOW WIDE IT SITS, while it is following.
+ *
+ * > User ask, 2026-09-17: *"on mobile the camera perspective is too zoomed out
+ * > on the character. we should be focused on the user's character and always
+ * > have it in frame."*
+ *
+ * Two answers, and both of them are about the same thing: the rig's reframe
+ * spring takes t.primary to arrive, so a frame that simply retargets onto a
+ * moving creature sits `followSpringLag` BEHIND it — 2.47 u at the katamari
+ * walk ceiling and 5.93 u at the rolling one, against a half-frame of 2.9 u
+ * at `PHONE_FOLLOW_ZOOM`. Tight framing and a walking creature are therefore
+ * the same problem, and it is not one the zoom should solve alone (a frame
+ * that opens to five times its size every time somebody moves is the report
+ * this work came from, upside down).
+ *
+ *   - THE AIM LEADS. The point handed to `frameAt` is the creature plus the
+ *     lag its own speed earns, so the spring's steady state IS the creature:
+ *     retarget a ζ=1 spring at `p + 2v/ω` and it settles at `p`. Nothing is
+ *     made faster and no duration is invented — the lead is read off the
+ *     spring's own settle time (`followSpringLag`).
+ *   - THE ZOOM IS THE SAFETY NET. Acceleration, a turn and a pile that grew
+ *     are all transients the lead does not cover, so the zoom widens by
+ *     whatever the frame is ACTUALLY behind by (`behind`, measured against the
+ *     live look-target), which is a reading and not a model. There is no
+ *     feedback in it: how far the spring is behind does not depend on how wide
+ *     the frame is.
+ *
+ * The velocity is SMOOTHED over t.tertiary. A viewer's creature is placed
+ * from the host's 5 Hz poses (already led — `followPoses`), and the frame
+ * clock is not the pose clock, so the raw per-frame difference is a staircase;
+ * the aim would jitter by the lead's whole length at every step. Exponential,
+ * with the token as its time constant, so it cannot overshoot the speed it is
+ * following.
+ *
+ * Pure: no scene, no rig, no DOM — a position in, a point and a zoom out. The
+ * two framing rules it reads (`followSpringLag`, `followZoomFor`) are pure
+ * functions in src/world/camera.ts, where the frustum they are about is
+ * defined; nothing here touches a camera. That is what lets the whole rule be
+ * argued with in a test.
+ */
+export interface FollowAimInput {
+  /** Where the creature is, this frame. */
+  x: number;
+  z: number;
+  /** The pile's radius (`ballDiameter/2`), 0 before the shell opens. */
+  bodyR: number;
+  /** Where the rig is looking right now (`CameraRig.lookAtPoint`). */
+  lookX: number;
+  lookZ: number;
+  /** The frame's aspect (`CameraRig.aspect`). */
+  aspect: number;
+  /** This frame's delta, ms. */
+  dtMs: number;
+}
+
+export interface FollowAim {
+  /** The point to retarget the look-target at — the creature, led. */
+  x: number;
+  z: number;
+  /** The zoom this framing wants. */
+  zoom: number;
+  /** How far the frame is behind the creature, world units (a readout). */
+  behind: number;
+}
+
+export interface FollowAimOptions {
+  /** The tight end of the framing — `PHONE_FOLLOW_ZOOM` on a handset. */
+  close: number;
+}
+
+/**
+ * A little state — the last position and the smoothed velocity — and the two
+ * pure rules above. One per page, made where the follow is (src/main.ts).
+ */
+export function createFollowAim(options: FollowAimOptions): (a: FollowAimInput) => FollowAim {
+  let lastX: number | null = null;
+  let lastZ = 0;
+  let vx = 0;
+  let vz = 0;
+  return (a: FollowAimInput): FollowAim => {
+    const dt = Math.max(1, Math.min(250, a.dtMs));
+    if (lastX === null) {
+      lastX = a.x;
+      lastZ = a.z;
+    }
+    const rawX = ((a.x - lastX) / dt) * 1000;
+    const rawZ = ((a.z - lastZ) / dt) * 1000;
+    lastX = a.x;
+    lastZ = a.z;
+    // Exponential approach with t.tertiary as its time constant — it cannot
+    // cross the speed it is following, so no overshoot is representable.
+    const k = 1 - Math.exp(-dt / MOTION.tertiaryMs);
+    vx += (rawX - vx) * k;
+    vz += (rawZ - vz) * k;
+    const speed = Math.hypot(vx, vz);
+    const lead = speed > 1e-6 ? followSpringLag(speed) / speed : 0;
+    const behind = Math.hypot(a.x - a.lookX, a.z - a.lookZ);
+    return {
+      x: a.x + vx * lead,
+      z: a.z + vz * lead,
+      zoom: followZoomFor(a.bodyR, { close: options.close, aspect: a.aspect, behind }),
+      behind,
+    };
   };
 }

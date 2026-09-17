@@ -35,14 +35,26 @@ import {
   CAMERA_FAR,
   CAMERA_NEAR,
   CameraRig,
+  FOLLOW_FRAME_FILL,
+  FOLLOW_HEADROOM,
+  FOLLOW_STAND_HEIGHT,
   FRUSTUM_HEIGHT,
+  HATCH_CLOSE_ZOOM,
   ISLAND_VIEW_MARGIN,
+  PHONE_FOLLOW_ZOOM,
+  PHONE_ZOOM_MAX,
   ZOOM_WRITE_EPSILON,
   cameraDistance,
   cameraFar,
+  followSpringLag,
+  followZoomFor,
+  frameHalfGround,
+  headroomZoom,
   panLimitFor,
   zoomMinFor,
 } from '../../src/world/camera';
+import { createFollowAim } from '../../src/world/follow';
+import { MOTION } from '../../src/taste/tokens';
 import { GROUND_RADIUS, groundRadius } from '../../src/world/ground';
 import { coastRadius, mapScale, setIslandMode } from '../../src/world/landscape';
 
@@ -359,5 +371,260 @@ describe('CameraRig depth range', () => {
       .clone()
       .multiplyScalar((groundRadius() + 200 * mapScale()) / groundRadius());
     expect(depthOf(panned)).toBeGreaterThan(rig.camera.near);
+  });
+});
+
+/**
+ * THE PHONE'S FRAME SITS ON ITS OWN CREATURE (user ask, 2026-09-17: *"on
+ * mobile the camera perspective is too zoomed out on the character. we should
+ * be focused on the user's character and always have it in frame. if a user
+ * wants to zoom out and pan around they still can, but at the start and when
+ * the user uses the joystick we should smoothly focus back on the
+ * character."*).
+ *
+ * Four claims, and the fourth is the one that is easy to get wrong: a tight
+ * frame is 5.4 world units across and the rig's reframe spring takes
+ * t.primary to arrive, so a creature at the rolling ceiling would be almost
+ * six units behind the middle of it — off the screen. The lead is what fixes
+ * that and the zoom is the net under it; both are measured here against the
+ * REAL rig, projecting the creature through the real camera.
+ */
+describe('the phone follow framing', () => {
+  /** The phone that filed the report: 390x844 CSS pixels. */
+  const PHONE = 390 / 844;
+  /** The katamari ceilings (src/creatures/manager.ts): walk and roll. */
+  const WALK = 4.5;
+  const ROLL = 10.8;
+
+  it('is tighter than the hatch close-in, and not at the pinch ceiling', () => {
+    expect(PHONE_FOLLOW_ZOOM).toBeGreaterThan(HATCH_CLOSE_ZOOM);
+    // A page whose resting frame IS its ceiling can only be pinched one way.
+    expect(PHONE_FOLLOW_ZOOM).toBeLessThan(PHONE_ZOOM_MAX);
+    expect(PHONE_ZOOM_MAX / PHONE_FOLLOW_ZOOM).toBeGreaterThan(1.2);
+  });
+
+  it('frames a hatchling as a third of the narrow axis of the frame', () => {
+    // A hatchling is about 1.9 u across. The frame's narrower GROUND axis is
+    // what a portrait phone is bound by, and this is the number the constant
+    // was tuned against on the render (scratch/follow-frame-smoke.mjs).
+    const half = frameHalfGround(PHONE, PHONE_FOLLOW_ZOOM);
+    expect(1.9 / (2 * half)).toBeGreaterThan(0.3);
+    expect(1.9 / (2 * half)).toBeLessThan(0.45);
+    // …and the framing the hatch used to leave was less than half as tight.
+    expect(frameHalfGround(PHONE, HATCH_CLOSE_ZOOM)).toBeGreaterThan(half * 1.5);
+  });
+
+  it('is the FLOOR of the follow zoom — nothing asks for tighter', () => {
+    for (let r = 0; r < 60; r = r * 1.3 + 0.05) {
+      for (const behind of [0, 1, 3, 12]) {
+        expect(
+          followZoomFor(r, { close: PHONE_FOLLOW_ZOOM, aspect: PHONE, behind }),
+        ).toBeLessThanOrEqual(PHONE_FOLLOW_ZOOM);
+      }
+    }
+    // With nothing to hold and no frame given it IS the framing.
+    expect(followZoomFor(0, { close: PHONE_FOLLOW_ZOOM })).toBe(PHONE_FOLLOW_ZOOM);
+    expect(followZoomFor(0.4, { close: PHONE_FOLLOW_ZOOM, aspect: PHONE })).toBe(
+      PHONE_FOLLOW_ZOOM,
+    );
+  });
+
+  it('widens just enough to hold the subject, and monotonically', () => {
+    const at = (bodyR: number, behind: number): number =>
+      followZoomFor(bodyR, { close: PHONE_FOLLOW_ZOOM, aspect: PHONE, behind });
+    // The statement: whatever it hands back, the thing it is holding fits
+    // inside the frame's narrower ground half-extent with the fill's margin.
+    for (const bodyR of [0.9, 2, 5, 9, 15]) {
+      for (const behind of [0, 2, 5, 9]) {
+        const reach = bodyR + behind;
+        const half = frameHalfGround(PHONE, at(bodyR, behind));
+        expect(half).toBeGreaterThanOrEqual(reach - 1e-9);
+        // …and it is not wider than it needs to be: either the fill is met
+        // exactly or the tight framing is what bound it.
+        const exact = Math.abs(half * FOLLOW_FRAME_FILL - reach) < 1e-6;
+        expect(exact || at(bodyR, behind) === PHONE_FOLLOW_ZOOM).toBe(true);
+      }
+    }
+    // Monotone in both inputs — a frame that stepped would be a cut.
+    let previous = Infinity;
+    for (const behind of [0, 1, 2, 4, 8, 16]) {
+      const zoom = at(2, behind);
+      expect(zoom).toBeLessThanOrEqual(previous);
+      previous = zoom;
+    }
+  });
+
+  it('reads the spring’s own lag rather than inventing a number', () => {
+    // A ζ=1 spring tracking a ramp sits 2v/ω behind, ω = 6.64/settleMs.
+    const omega = 6.64 / MOTION.primaryMs;
+    expect(followSpringLag(WALK)).toBeCloseTo((2 * (WALK / 1000)) / omega, 6);
+    expect(followSpringLag(WALK)).toBeCloseTo(2.47, 2);
+    expect(followSpringLag(ROLL)).toBeCloseTo(5.93, 2);
+    expect(followSpringLag(0)).toBe(0);
+    // Which is the whole reason the aim leads: the lag at the rolling ceiling
+    // is more than twice the tight frame's half-extent.
+    expect(followSpringLag(ROLL)).toBeGreaterThan(frameHalfGround(PHONE, PHONE_FOLLOW_ZOOM));
+  });
+
+  /**
+   * One rig, one `followAim`, and a creature walked across the ground — the
+   * arrangement src/main.ts's frame loop is, with the scene taken out.
+   */
+  const drive = (
+    steps: number,
+    velocity: (step: number) => { vx: number; vz: number },
+    bodyR = 0.95,
+  ): { worst: number; zooms: number[]; misses: number[] } => {
+    const rig = new CameraRig(PHONE);
+    // The ceiling the handset raises for itself (src/main.ts), or the tight
+    // framing would be clamped at the 2.6 every other page keeps.
+    rig.raiseZoomCeiling(PHONE_ZOOM_MAX);
+    const aim = createFollowAim({ close: PHONE_FOLLOW_ZOOM });
+    let x = 0;
+    let z = 0;
+    let lastZoom = 0;
+    let worst = 0;
+    const zooms: number[] = [];
+    const misses: number[] = [];
+    for (let i = 0; i < steps; i++) {
+      const { vx, vz } = velocity(i);
+      x += (vx * 16) / 1000;
+      z += (vz * 16) / 1000;
+      const look = rig.lookAtPoint();
+      const a = aim({
+        x,
+        z,
+        bodyR,
+        lookX: look.x,
+        lookZ: look.z,
+        aspect: rig.aspect,
+        dtMs: 16,
+      });
+      rig.frameAt(new Vector3(a.x, 0, a.z));
+      if (Math.abs(a.zoom - lastZoom) > 0.01) {
+        lastZoom = a.zoom;
+        rig.zoomTo(a.zoom);
+      }
+      rig.update(16, i * 16);
+      zooms.push(rig.camera.zoom);
+      misses.push(Math.hypot(x - rig.lookAtPoint().x, z - rig.lookAtPoint().z));
+      // WHERE THE CREATURE LANDS ON THE SCREEN, through the real camera —
+      // its FEET and its TOPPER, because the frame is centred on the ground
+      // point and the whole creature is drawn upwards from there.
+      rig.camera.updateMatrixWorld();
+      for (const y of [0, FOLLOW_STAND_HEIGHT]) {
+        const ndc = new Vector3(x, y, z).project(rig.camera);
+        worst = Math.max(worst, Math.abs(ndc.x), Math.abs(ndc.y));
+      }
+    }
+    return { worst, zooms, misses };
+  };
+
+  it('opens on the creature at the tight framing, sliding not cutting', () => {
+    const { worst, zooms } = drive(400, () => ({ vx: 0, vz: 0 }));
+    // In frame the whole way in, and it ARRIVES at the tight framing.
+    expect(worst).toBeLessThan(1);
+    expect(zooms[zooms.length - 1]).toBeCloseTo(PHONE_FOLLOW_ZOOM, 3);
+    // The slide is monotone and never passes the framing (no overshoot, ζ≥1).
+    let last = zooms[0] ?? 0;
+    expect(last).toBeLessThan(PHONE_FOLLOW_ZOOM);
+    for (const zoom of zooms) {
+      expect(zoom).toBeGreaterThanOrEqual(last - 1e-9);
+      expect(zoom).toBeLessThanOrEqual(PHONE_FOLLOW_ZOOM + 1e-9);
+      last = zoom;
+    }
+  });
+
+  it('keeps a creature at the WALK ceiling inside the viewport', () => {
+    const { worst, misses } = drive(600, (i) => {
+      const ramp = Math.min(1, i / 30);
+      return { vx: WALK * ramp, vz: 0 };
+    });
+    expect(worst).toBeLessThan(1);
+    // The lead is what does it: once the speed is steady the frame is ON the
+    // creature rather than `followSpringLag(WALK)` = 2.47 u behind it.
+    expect(misses[misses.length - 1]).toBeLessThan(0.3);
+  });
+
+  it('keeps a creature at the ROLLING ceiling inside the viewport, turning', () => {
+    // A full-speed roll with a turn in it — the case the lead alone does not
+    // cover, and the one the zoom's net is for.
+    const { worst, misses } = drive(900, (i) => {
+      const ramp = Math.min(1, i / 30);
+      const th = (i / 900) * Math.PI * 2;
+      return { vx: ROLL * ramp * Math.cos(th), vz: ROLL * ramp * Math.sin(th) };
+    });
+    expect(worst).toBeLessThan(1);
+    // …and it is a real drive, not a creature that never left the middle.
+    expect(Math.max(...misses)).toBeGreaterThan(0.5);
+  });
+
+  it('leaves the creature’s own HEIGHT room, which is what sets the ceiling', () => {
+    // The look-target is on the GROUND, so the creature stands above the
+    // middle of the frame and its topper is the thing that leaves it first.
+    // The statement: at whatever zoom the rule hands back, the top of the
+    // creature is inside `FOLLOW_HEADROOM` of the half-frame.
+    for (const bodyR of [0, 0.95, 2, 7.5, 20]) {
+      for (const behind of [0, 1, 4, 9]) {
+        const zoom = followZoomFor(bodyR, {
+          close: PHONE_FOLLOW_ZOOM,
+          aspect: PHONE,
+          behind,
+        });
+        const up = Math.max(FOLLOW_STAND_HEIGHT, 2 * bodyR);
+        const onScreen =
+          up * Math.cos(Math.atan(1 / Math.SQRT2)) + behind * ISO_SIN;
+        expect(onScreen).toBeLessThanOrEqual(
+          (FRUSTUM_HEIGHT / 2 / zoom) * FOLLOW_HEADROOM + 1e-9,
+        );
+      }
+    }
+    // …and the RESTING framing is the constant rather than the accident of
+    // this bound: a hatchling at rest sits just inside it.
+    expect(headroomZoom(0.95)).toBeGreaterThan(PHONE_FOLLOW_ZOOM);
+    expect(headroomZoom(0.95)).toBeLessThan(PHONE_FOLLOW_ZOOM * 1.15);
+    // It tightens with the lag and with the pile, and never the other way.
+    expect(headroomZoom(0.95, 3)).toBeLessThan(headroomZoom(0.95));
+    expect(headroomZoom(9)).toBeLessThan(headroomZoom(0.95));
+  });
+
+  it('holds a 15 m pile in frame at the same time', () => {
+    const bodyR = 15 / 2;
+    const { worst } = drive(
+      600,
+      (i) => ({ vx: ROLL * Math.min(1, i / 30), vz: 0 }),
+      bodyR,
+    );
+    expect(worst).toBeLessThan(1);
+  });
+});
+
+describe('the pinch ceiling', () => {
+  it('is 2.6 on every page that never raises it — the projection', () => {
+    const rig = new CameraRig(1280 / 800);
+    for (let i = 0; i < 200; i++) rig.zoomBy(1.2);
+    rig.zoomTo(99);
+    rig.zoomDirect(99);
+    expect(rig.zoomAim()).toBe(2.6);
+  });
+
+  it('goes up for the handset that follows, and only up', () => {
+    const rig = new CameraRig(390 / 844);
+    rig.raiseZoomCeiling(PHONE_ZOOM_MAX);
+    rig.zoomTo(99);
+    expect(rig.zoomAim()).toBe(PHONE_ZOOM_MAX);
+    // A lower ask cannot take the range away again.
+    rig.raiseZoomCeiling(1.2);
+    rig.zoomTo(99);
+    expect(rig.zoomAim()).toBe(PHONE_ZOOM_MAX);
+  });
+
+  it('raising it moves nothing by itself — it cannot be a cut', () => {
+    const rig = new CameraRig(390 / 844);
+    for (let i = 0; i < 400; i++) rig.update(16, i * 16);
+    const before = rig.camera.zoom;
+    rig.raiseZoomCeiling(PHONE_ZOOM_MAX);
+    rig.update(16, 6400);
+    expect(rig.camera.zoom).toBeCloseTo(before, 6);
   });
 });

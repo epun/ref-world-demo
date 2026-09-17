@@ -254,6 +254,24 @@ export interface WorldHandles {
    */
   setSoloDrag(enabled: boolean): void;
   /**
+   * TELL ME WHEN THE PERSON FRAMES THE VIEW THEMSELVES — a pinch, a wheel, a
+   * shift-drag pan (user ask, 2026-09-17: *"if a user wants to zoom out and
+   * pan around they still can"*).
+   *
+   * The handset's follow camera has to let go of the creature when somebody
+   * asks to look at something else, and the gestures live here while the
+   * follow rule lives in src/world/follow.ts. So this is the seam and not a
+   * second copy of the rule: the world says WHAT HAPPENED and the page
+   * decides what it means (`follow.suspend()`, which is itself a no-op while
+   * the stick is held).
+   *
+   * The ORBIT deliberately does not report: turning the camera around your
+   * own creature is looking AT it, and a drag that dropped the follow is the
+   * complaint this exists to fix in a different costume. Optional and null by
+   * default, so every page that never sets it behaves exactly as it did.
+   */
+  setFreeLook(listener: (() => void) | null): void;
+  /**
    * The rigid-body world (src/physics/world.ts), or null on a page that is
    * not simulating — which is MOST pages (see `enablePhysics`).
    *
@@ -858,6 +876,10 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
    * owns the single pointer never costs the operator their zoom.
    */
   let soloDrag = true;
+  /** Who to tell when the person reframes the view themselves — see
+   * `setFreeLook`. Null on every page that does not follow anything. */
+  let freeLook: (() => void) | null = null;
+  const reframedByHand = (): void => freeLook?.();
   canvas.addEventListener('pointerdown', (event) => {
     pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
     // Shift+drag pans; plain drag orbits (user scheme, cellshader feel).
@@ -875,8 +897,12 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
       // delta, which is a cut, and there are none of those (TASTE §2.1).
       pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
       if (soloDrag) {
-        if (panning) cameraRig.panBy(dx, dy, window.innerHeight);
-        else cameraRig.rotateBy(dx, dy, window.innerHeight);
+        if (panning) {
+          // A pan MOVES the frame off whatever it was on — the one drag that
+          // is asking to look somewhere else.
+          reframedByHand();
+          cameraRig.panBy(dx, dy, window.innerHeight);
+        } else cameraRig.rotateBy(dx, dy, window.innerHeight);
       }
     } else if (pointers.size === 2) {
       // Pinch: zoom by distance ratio; twist: rotate by angle delta.
@@ -888,7 +914,11 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
         const beforeA = Math.atan2(prev.y - o.y, prev.x - o.x);
         const afterD = Math.hypot(event.clientX - o.x, event.clientY - o.y);
         const afterA = Math.atan2(event.clientY - o.y, event.clientX - o.x);
-        if (beforeD > 12) cameraRig.zoomDirect(afterD / beforeD);
+        if (beforeD > 12) {
+          // Two fingers on the glass: this frame's size is theirs now.
+          reframedByHand();
+          cameraRig.zoomDirect(afterD / beforeD);
+        }
         cameraRig.rotateBy(((afterA - beforeA) * 180) / Math.PI, 0, window.innerHeight);
         pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
       }
@@ -907,6 +937,7 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
       // The wheel zooms (user scheme). Trackpad pinch arrives as ctrl+wheel
       // with finer deltas, so it gets a stronger factor to feel 1:1.
       const k = event.ctrlKey || event.metaKey ? 0.01 : 0.0016;
+      reframedByHand();
       cameraRig.zoomBy(Math.exp(-event.deltaY * k));
     },
     { passive: false },
@@ -1415,6 +1446,9 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
     landscape: (): boolean => landscapeMode() === 'landscape',
     setSoloDrag: (enabled: boolean): void => {
       soloDrag = enabled;
+    },
+    setFreeLook: (listener: (() => void) | null): void => {
+      freeLook = listener;
     },
     tier,
     physics: (): PhysicsWorld | null => physics,
