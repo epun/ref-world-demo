@@ -232,12 +232,21 @@ async function lifecycle(p, state) {
   }
 }
 
+/*
+ * HOW MANY PHONES. Two is the full room and is what the report is about;
+ * ONE is the minimum that still exercises the whole viewer path — its stick
+ * out, the host's decision, the pose back — and on a machine whose only gpu
+ * is swiftshader it is the difference between a run that finishes and a run
+ * that does not (measured: 11s to boot one phone alone, over ten minutes
+ * with two other live worlds sharing the same software renderer).
+ */
+const PHONES = Number(process.env['PHONES'] ?? 2);
+
 const host = await openPage('H', { phone: false, extra: '&host=1' });
 await lifecycle(host, 'frozen');
 const one = await openPage('A', { phone: true, id: A });
-await lifecycle(one, 'frozen');
-const two = await openPage('B', { phone: true, id: B });
-const pages = [host, one, two];
+const two = PHONES > 1 ? (await lifecycle(one, 'frozen'), await openPage('B', { phone: true, id: B })) : null;
+const pages = [host, one, ...(two ? [two] : [])];
 for (const p of pages) await lifecycle(p, 'active');
 // Let the election settle and the first rosters go round with everybody
 // drawing again.
@@ -395,6 +404,7 @@ await step('3. projection closed, a phone hosts, phone A drives', async (mark) =
 });
 
 await step('4. both phones drive at once', async (mark) => {
+  if (!two) return { skipped: 'one phone in this run' };
   const before = {};
   for (const p of pages) {
     if (p.closed) continue;
@@ -416,6 +426,41 @@ await step('4. both phones drive at once', async (mark) => {
     }
   }
   return { before, after, moved, roles: await roles(), driveMessages: sinceThen(mark, 'drive').length };
+});
+
+/*
+ * AND WHAT IT PICKED UP ON THE WAY (2026-09-17: *"some users are having
+ * issues sticking to objects"*).
+ *
+ * The decision is the host's and travels as a `stick` scene event; what the
+ * VIEWER then has to end up with is the same pile and the same BALL SIZE,
+ * which is derived on each page from the radii of what it is carrying. So:
+ * whatever the driving above rolled over, every page has to agree about how
+ * big the ball now is.
+ */
+await step('5. what stuck, and whether the room agrees about it', async (mark) => {
+  const sticks = traffic
+    .filter((m) => m.topic === SYNC_TOPIC && m.payload.includes('"k":"stick"'))
+    .map((m) => m.payload);
+  const size = {};
+  const items = {};
+  for (const p of pages) {
+    if (p.closed) continue;
+    size[p.label] = await p.page.evaluate((who) => window.__refworldCreatures.ballDiameter(who), A);
+    items[p.label] = await p.page.evaluate(
+      (who) => window.__refworldCreatures.poses().filter((q) => q.id === who).length,
+      A,
+    );
+  }
+  const values = Object.values(size).filter((v) => typeof v === 'number');
+  const spread = values.length > 1 ? Math.max(...values) - Math.min(...values) : 0;
+  if (values.some((v) => v > 0) && spread > 0.02) {
+    fail.push(`step 5: the pages disagree about the ball size (${JSON.stringify(size)})`);
+  }
+  if (sticks.length === 0) {
+    console.log('step 5: nothing stuck during this run — the pickup path is NOT verified here');
+  }
+  return { stickEvents: sticks.length, stickSample: sticks.slice(0, 2), size, items, mark };
 });
 
 // ── what happened ───────────────────────────────────────────────────────────

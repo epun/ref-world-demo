@@ -1616,6 +1616,35 @@ look by `style`. Neither the loader nor the cel material is in any other world's
 (both imports are dynamic and behind the game), and `public/katamari/` is dropped from a build
 whose world did not ask for the game (`vite.config.ts`).
 
+**HOW BIG THE BALL GETS, and what the room has to agree about** — *(2026-09-17, user ask:
+"we should allow for larger mass sizes than 10 meters for users")*. There is no cap and never
+was: `growth` is a cube root with nothing clamping it, and `decideContact` has put **size
+first** since 2026-09-16, so a ball whose radius has passed a building's takes the building out
+of the ground whole. `breakStrength: Infinity` on that row is about the carrier that is TOO
+SMALL — the staged collapse — and is unchanged. What was wrong was the pace: **`GROWTH_K`
+0.35 → 4**, which puts a 10 m ball at ~15 tree-sized items, 20 m at ~13 houses and 40 m at ~39
+buildings, from a 0.9 u hatchling. The ceiling on that number is the FIRST pickup — a stone at
+the very top of the carry limit multiplies a creature by `cbrt(1 + K)`, which has to stay under
+2 — so 7 is the wall and 4 leaves 1.71. The ladder, the seat arithmetic at itemR 4–8 on a 19 u
+ball, and the readout past 100 m are pinned in `test/creatures/growth-ladder.test.ts`.
+
+Two things ride the size. The phone's follow camera widens with it
+(`followZoomFor` in src/world/camera.ts: `HATCH_CLOSE_ZOOM / max(1, bodyR / BALL_ZOOM_REF_R)`,
+clamped by the rig at the island's own floor, retargeted only when the answer changes so a
+pinch stands). And a `stick` event now carries the item's **radius** — growth is derived on
+every page, and a viewer read the radius off the scatter's instance row, which the host hid the
+moment it took the placement; it fell back to the instance *scale* and the same ball was two
+sizes in the same room (docs/SESSION.md §2).
+
+**A CHANGE OF ROLE LETS GO OF EVERY STICK** — *(2026-09-17, "some characters get stuck when
+trying to move and glitch on mobile")*. `slot.drive` is a hand on a creature and the hands
+belong to the page that is simulating. `settleRole` forgot the poses (`clearFollow`) and paused
+the agents but left every drive set, which is two bugs: `isDriven` stays true so those
+creatures' agents stay stood down and they stand there, and the moment the page wins an
+election back every stale vector takes effect at once. `CreatureManager.clearDrives()` goes
+beside `clearFollow` on **both** directions of every role change. Nothing is lost by it — a
+stick that is genuinely held republishes within one `DRIVE_INTERVAL_MS`.
+
 ---
 
 ## 8. Networking (`src/net/`, `worker/`)
