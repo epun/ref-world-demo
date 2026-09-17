@@ -969,10 +969,15 @@ describe('an item keeps its own size on every page', () => {
   function page(colliders: Collider[], rows: boolean): {
     manager: CreatureManager;
     loose: LooseMeshes;
+    /** The scatter this page is drawing — for reading its own instance row. */
+    scatter: {
+      instanceRefs(kind: string): { key: string; scale: number; radius: number }[];
+    };
   } {
     const scene = new Scene();
     const loose = stubLoose(scene);
-    const manager = createCreatureManager(phoneWorld(scene, colliders, rows), {
+    const world = phoneWorld(scene, colliders, rows);
+    const manager = createCreatureManager(world, {
       autoHatch: false,
       surface: ROLLING_SURFACE,
       game: 'katamari',
@@ -991,7 +996,34 @@ describe('an item keeps its own size on every page', () => {
         shatter: () => {},
       } as never,
     });
-    return { manager, loose };
+    return {
+      manager,
+      loose,
+      scatter: (world as unknown as { scatter: { instanceRefs(kind: string): never } })
+        .scatter as never,
+    };
+  }
+
+  /**
+   * THE SIZE THE SCATTER IS DRAWING THIS PROP AT — read off the instance row,
+   * not off a constant in this file.
+   *
+   * > Coordinator, 2026-09-17, with the user's own screenshot: *"measure a
+   * > stuck prop's world scale on the viewer against the same prop's scale in
+   * > the scatter."*
+   *
+   * Which is the whole claim: a prop that has been rolled up is drawn at the
+   * size it stood at, and the page that DECIDED nothing is not allowed to
+   * have a different opinion about it than the page that decided.
+   */
+  function scatterScale(
+    p: { scatter: { instanceRefs(kind: string): { key: string; scale: number }[] } },
+    kind: string,
+    key: string,
+  ): number {
+    const row = p.scatter.instanceRefs(kind).find((r) => r.key === key);
+    if (!row) throw new Error(`no instance row for ${key}`);
+    return row.scale;
   }
 
   const prop = (): Collider =>
@@ -1049,6 +1081,15 @@ describe('an item keeps its own size on every page', () => {
      * — and the same record over the wire. This is exactly what
      * `uprootOntoPile` builds and what `readStickScene` carries.
      */
+    /*
+     * Read the row BEFORE the pickup, because taking the prop is what loses
+     * it — on the host too. That is the whole shape of this bug: the number
+     * only exists while the thing is still standing, so it has to be said
+     * out loud at the moment of the decision or it is gone for good.
+     */
+    const standing = scatterScale(host, 'small', stone.key!);
+    expect(standing).toBeCloseTo(LIBRARY_SCALE, 6);
+
     const record = {
       id: 'mine',
       item: stone.key!,
@@ -1071,9 +1112,17 @@ describe('an item keeps its own size on every page', () => {
       viewer.manager.update(FRAME_MS, 3000 + i * FRAME_MS);
     }
 
-    // The stone is the size it was standing on the ground, on both pages.
-    expect(worldScale(host.loose, stone.key!)).toBeCloseTo(LIBRARY_SCALE, 6);
-    expect(worldScale(viewer.loose, stone.key!)).toBeCloseTo(LIBRARY_SCALE, 6);
+    /*
+     * The stone is the size the SCATTER is drawing that placement at, on both
+     * pages — read off the host's own instance row, which is the only thing
+     * in the world that knows it and the thing a viewer has lost.
+     */
+    expect(worldScale(host.loose, stone.key!)).toBeCloseTo(standing, 6);
+    expect(worldScale(viewer.loose, stone.key!)).toBeCloseTo(standing, 6);
+    // And not merely equal to each other: a pair of pages that both drew it
+    // at 1 would pass an equality and be wrong together. `growth` is well
+    // over 1 here, so the two multiplications had to cancel to land on it.
+    expect(worldScale(viewer.loose, stone.key!)).not.toBeCloseTo(1, 2);
     host.manager.clearAll();
     viewer.manager.clearAll();
   }, 120_000);
@@ -1098,6 +1147,12 @@ describe('an item keeps its own size on every page', () => {
     viewer.manager.pauseAi(true);
     viewer.manager.applyLoose(stone.key!, 3, 4, LIBRARY_SCALE);
     expect(worldScale(viewer.loose, stone.key!)).toBeCloseTo(LIBRARY_SCALE, 6);
+    // Nowhere near the fallback, in either direction: the instance scale is
+    // the placement's times the kind's dial, so a fallback of 1 draws a prop
+    // whose dial is under 1 far too BIG and one whose dial is over 1 too
+    // small. Which way it goes is not the point; that it is not the scale the
+    // scatter drew is.
+    expect(worldScale(viewer.loose, stone.key!)).not.toBeCloseTo(1, 2);
     viewer.manager.clearAll();
   }, 120_000);
 
