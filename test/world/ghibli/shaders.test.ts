@@ -161,8 +161,13 @@ describe('ghibli element shaders', () => {
       'toonShadowColor',
       'toonLight',
       // The aliasing band limit every world-space noise term above rides
-      // (2026-09-17, src/world/toon.ts).
+      // (2026-09-17, src/world/toon.ts), and the per-fragment sampling rate it
+      // reads — measured from the screen-space derivative once per fragment,
+      // because the ground's depth axis foreshortens with the tilt and a
+      // per-frame scalar cannot say so.
       'toonBandLimit',
+      'toonUnitsPerPxAt',
+      'toonMeasurePixel',
     ];
     const wind = ['windHash21', 'windVnoise', 'windFbm', 'refWindAt'];
     const own = [

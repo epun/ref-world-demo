@@ -215,6 +215,15 @@ float ggGroundNoise(vec2 p) {
 }
 
 void main() {
+  // HOW COARSELY THIS FRAGMENT SAMPLES THE GROUND — first line of main, on
+  // the raw varying, outside every branch, because a screen-space derivative
+  // is undefined in non-uniform control flow. Every toonBandLimit below
+  // (the stipple, its speck, the path's two inks, the scorch's) reads it, and
+  // so does the cel chain's own terminator wobble. Without it the limit only
+  // knows the frame's screen-plane scale, which on a tilted ground plane
+  // under-reads the real sampling step by 1/sin(tilt) and let the meadow
+  // blotch into camo at a low orbit (src/world/toon.ts toonUnitsPerPxAt).
+  toonMeasurePixel(vToonWorldPos.xz);
   vec2 uv = vToonWorldPos.xz / GG_SIZE + 0.5;
   // The BAKE's own square (see GG_MAP_SIZE above). uv stays the painted
   // layers' — the grass weight, the dirt path and the scorch.
