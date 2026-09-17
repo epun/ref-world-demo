@@ -317,11 +317,38 @@ export const CREATURE_CARRY_RATIO = 1.35;
  *
  * `growth` is a cube root of accumulated volume, so without a coefficient a
  * creature that swallowed its own volume would be 2^(1/3) ≈ 1.26× — barely
- * visible after a dozen pickups. 0.35 makes the first ten seconds cute
- * (a few stones, a noticeable bulge) and twenty seconds of trees enormous,
- * which is the shape of the brief.
+ * visible after a dozen pickups.
+ *
+ * 0.35 → **4** *(2026-09-17)*, user ask: *"we should allow for larger mass
+ * sizes than 10 meters for users."*
+ *
+ * There was never a CAP — `growth` is a cube root with no ceiling in it and
+ * `decideContact` has put size first since 2026-09-16, so a ball big enough
+ * to carry a building already carries it whole. What there was, was a PACE.
+ * At 0.35 a typical 0.9 u hatchling needed 294 units of absorbed volume to
+ * reach a 10 m ball — about 170 tree-sized items — and about 2400, some
+ * 1400 of them, to reach 20 m. Nobody meets 1400 trees, so the top of the
+ * ladder was decoration for the same reason `breakStrength: 14` was
+ * (see `monolith` above): a threshold no pile ever meets is dead.
+ *
+ * At 4 the ladder is, from a 0.9 u hatchling (volume is `r³`; the radii are
+ * the ones the scatter and the object library actually place):
+ *
+ *   one stone (r 0.5)      → 2.3 m     one pickup is visible
+ *   24 stones / 2 trees    → 5 m
+ *   15 trees (r 1.2)       → 10 m      "a few minutes"
+ *   13 houses (r 2.5)      → 20 m      the rest of a session
+ *   39 buildings (r 3.5)   → 40 m      and there is no wall past it
+ *
+ * The CEILING on the number is the first pickup: a stone at the very top of
+ * a hatchling's carry limit (r = `carrierR`, `PICKUP_RATIO` being 1) puts
+ * `Σr³ / baseR³` at exactly 1, so the first stone multiplies the creature by
+ * `cbrt(1 + K)`. That must stay under 2 — a creature that doubles on its
+ * first pickup has no ladder left to climb — which caps K at 7. 4 gives
+ * 1.71 for that worst case and 1.19 for the ordinary one, and the test
+ * pins both (test/creatures/growth-ladder.test.ts).
  */
-export const GROWTH_K = 0.35;
+export const GROWTH_K = 4;
 
 /**
  * [D] How far an item beds INTO the pile, as a fraction of its own radius.
@@ -662,7 +689,19 @@ export function decideContact(a: {
   impact: number;
   carrierR: number;
 }): Outcome {
-  // SIZE FIRST, and rootedness is not consulted: small enough is stuck.
+  /*
+   * SIZE FIRST, and rootedness is not consulted: small enough is stuck.
+   *
+   * NOR IS `breakStrength`, AND THAT INCLUDES A BUILDING (2026-09-17). A
+   * building's `breakStrength` is `Infinity` and its `stages` are how it
+   * comes down for a carrier too small to lift it — but a ball whose radius
+   * has passed the building's takes it out of the ground whole, like
+   * anything else inside the limit. Nothing here is a tier check: the rule
+   * is the ruling (*"objects should stick to it as it moves or rolls over
+   * the object"*), and a `building` row that opted out of it would be the
+   * ceiling the 2026-09-17 ask is about. Its rubble, once it HAS partly
+   * collapsed, arrives as loose items and sticks the way loose items do.
+   */
   if (a.itemR <= carryLimit(a.carrierR) && a.props.stickiness > 0) return 'stick';
   // Too big, and loose: it gets out of the way rather than standing in it.
   if (!a.rooted) return 'shove';
