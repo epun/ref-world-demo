@@ -292,9 +292,36 @@ const seen = await page.evaluate(
       if (!body && o.isMesh) body = o;
     });
     const topper = root.getObjectByName('topper');
+    /*
+     * WHERE THE ITEMS SIT and WHERE THE GROUND IS (2026-09-17, the floating
+     * report). The ball has no body of its own to measure, so the pile's own
+     * children are the only witnesses to where the sphere the creature is
+     * standing on actually is: their world Y range, against the ground under
+     * the creature's centre (`root.y - groundLift` is exactly the height the
+     * frame's one ground pass sampled) and against the creature's feet.
+     */
+    const seats = (clump?.children ?? [])
+      .filter((o) => typeof o.name === 'string' && o.name.startsWith('loose'))
+      .map((o) => posOf(o));
+    const ys = seats.map((s) => s.y);
+    const items = {
+      n: seats.length,
+      minY: ys.length ? Number(Math.min(...ys).toFixed(3)) : null,
+      maxY: ys.length ? Number(Math.max(...ys).toFixed(3)) : null,
+      spreadXZ: seats.length
+        ? Number(
+            Math.max(...seats.map((s) => Math.hypot(s.x - posOf(root).x, s.z - posOf(root).z))).toFixed(3),
+          )
+        : null,
+    };
     return {
       ...out,
       found: true,
+      bodyR: Number((out.ballDiameter / 2).toFixed(3)),
+      // The Surface's own height under the centre: the ground pass writes
+      // `sampleHeight + groundLift`, so this subtracts the lift back off.
+      groundY: Number((posOf(root).y - out.groundLift).toFixed(3)),
+      items,
       rootScale: Number(root.scale.x.toFixed(4)),
       rootPos: posOf(root),
       nodeName: node?.name ?? null,

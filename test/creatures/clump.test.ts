@@ -12,6 +12,11 @@
 import { describe, expect, it } from 'vitest';
 import { Group, Object3D, Vector3 } from 'three';
 import { createClump } from '../../src/creatures/clump';
+import {
+  CLUMP_FIT,
+  clumpLocalOffset,
+  growth as growthOf,
+} from '../../src/creatures/sticky';
 
 const identityQ = { x: 0, y: 0, z: 0, w: 1 };
 
@@ -91,5 +96,72 @@ describe('a stuck thing keeps its own size', () => {
     clump.add({ key: 'a', object: thing, r: 0.8, offset: { x: 1, y: 0, z: 0 }, rotation: identityQ });
     grow();
     expect(worldScale(thing)).toBeCloseTo(1, 6);
+  });
+});
+
+/**
+ * WHERE THE BALL'S SURFACE IS — the geometry the drawn sphere has to match.
+ *
+ * > User report, 2026-09-17: *"currently there is a bug where the characters
+ * > are floating in space."*
+ *
+ * The pile is the ball: `clumpLocalOffset` seats every item at
+ * `(R + itemR × CLUMP_FIT) / growth` out from the clump's origin, and the
+ * root's uniform scale is that growth — so in the WORLD every item sits a
+ * radius out from the clump's origin, bedded in by `CLUMP_FIT`. That makes
+ * the sphere the mesh has to be exact rather than a matter of taste: centre
+ * at the clump's origin, world radius `clump.R()`. `src/creatures/ball.ts`
+ * draws radius 1 scaled by `baseR` under a root scaled by the growth, which
+ * is the same number; the manager's own pins assert the drawn one.
+ */
+describe('the ball the items are seated on', () => {
+  it('puts every seat a world radius out from the clump’s origin', () => {
+    const baseR = 0.9;
+    const itemR = 1.4;
+    const { root, clump, grow } = ballOn(baseR);
+    // Three items, all seated at the growth the pile ENDS at — the same
+    // shape of record the manager's `applyStick` path produces.
+    const objects = [new Object3D(), new Object3D(), new Object3D()];
+    const volumes = objects.map(() => itemR * itemR * itemR);
+    const growth = growthOf(baseR, volumes);
+    const R = baseR * growth;
+    objects.forEach((object, i) => {
+      const th = (i / objects.length) * Math.PI * 2;
+      const seat = clumpLocalOffset({
+        // A contact out on the ball's equator, in world units.
+        itemX: Math.cos(th) * (R + itemR),
+        itemY: baseR * growth,
+        itemZ: Math.sin(th) * (R + itemR),
+        centreX: 0,
+        centreY: baseR * growth,
+        centreZ: 0,
+        headingX: 1,
+        headingZ: 0,
+        R,
+        itemR,
+        clumpWorldQ: identityQ,
+        growth,
+      });
+      clump.add({
+        key: `k${i}`,
+        object,
+        r: itemR,
+        scale: 1,
+        offset: seat,
+        rotation: identityQ,
+      });
+    });
+    grow();
+    expect(clump.R()).toBeCloseTo(R, 9);
+    // Settle the entrance slides, then measure in the world.
+    for (let f = 0; f < 400; f++) clump.update(33);
+    root.updateWorldMatrix(true, true);
+    const origin = clump.group.getWorldPosition(new Vector3());
+    for (const object of objects) {
+      const out = object.getWorldPosition(new Vector3()).distanceTo(origin);
+      // ON the surface of a sphere of radius R, sunk in by CLUMP_FIT — which
+      // is the sphere src/creatures/ball.ts draws.
+      expect(out).toBeCloseTo(R + itemR * CLUMP_FIT, 6);
+    }
   });
 });
