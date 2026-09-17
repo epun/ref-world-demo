@@ -1136,8 +1136,17 @@ export function start(canvas: HTMLCanvasElement, opts: WorldOptions = {}): World
        * every toon-injected material shares `toonUniforms` by reference — and
        * it runs whether or not this tier laid a blade, because a handset with
        * no field is exactly the page whose ground carries the whole meadow.
+       *
+       * WITH THE RIG'S TILT, which the blade field's `setPixelScale` above
+       * deliberately does NOT take: a blade's pixel floor is a width on
+       * screen, and the screen plane is where that number belongs. The cel
+       * chain's terms are on the GROUND, whose depth axis foreshortens by
+       * `1/sin(tilt)` — so a low orbit coarsens them at an unchanged zoom,
+       * which is the second half of the 2026-09-17 camo report ("when I rotate
+       * the view too much on mobile"). At the iso tilt this is the same number
+       * as above, exactly (src/world/toon.ts `setToonPixelScale`).
        */
-      setToonPixelScale(unitsPerPx);
+      setToonPixelScale(unitsPerPx, cameraRig.elevation);
       // …and the window follows the eye. Three uniform writes: the field's
       // layout is window-local and its heights come from the bake, so there is
       // nothing on the CPU to re-lay (src/world/ghibli/height.ts).

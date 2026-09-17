@@ -140,7 +140,16 @@ The traps, in order of how easily they get violated:
   ignored), the creature manager's `simulating()`, clumps, kinematic bodies, growth and all
   six `apply*`, the `rider` node that keeps the drawn creature its DRAWN size while the pile
   grows (user ask 2026-09-17, PLAN §7.6 — the growth is still ONE write on the root and the
-  rider divides it back out, so don't put the creature back inside the clump), the
+  rider divides it back out, so don't put the creature back inside the clump), **the BALL'S
+  OWN BODY** (`src/creatures/ball.ts`, user report 2026-09-17: *"currently there is a bug
+  where the characters are floating in space"* — when the creature came out of the pile
+  nothing was left drawing the sphere the items are seated on, so a small character stood on
+  the north pole of nothing; one cel-shaded sphere per creature in the creature's own hue,
+  radius 1 scaled to `baseR` on the ROOT so the growth carries it to `bodyR` in the same
+  single write, centre at `baseR·(2·roll − 1)` which is exactly `baseR` under the rider's
+  `2·baseR·roll` at every value of the blend — the two are one statement, keep them adjacent
+  — and buried under the ground at `roll` 0, so a walking creature shows no ball without
+  anything being switched off), the
   ball-diameter readout on the phone's world view (`src/ui/size.ts`,
   `CreatureManager.ballDiameter`), the handset's contextual hints, loading and empty states
   (`src/ui/hints.ts`, `loading.ts`, `empty.ts` — the hints are three marks in the live world
@@ -229,6 +238,36 @@ The traps, in order of how easily they get violated:
   is 0.05 u/px, where the finest term still has 2.9, so nothing at the default framing
   changes. **A new world-space noise dial takes a `toonBandLimit` of its own base frequency**
   (`test/world/ghibli/band-limit.test.ts` pins the ones that exist).
+  **And the rate is PER FRAGMENT, not per frame (2026-09-17, *"when I rotate the view too
+  much on mobile"*).** `uToonUnitsPerPx` is the SCREEN-PLANE units per pixel, and the ground
+  is not in the screen plane: its depth axis foreshortens by `1/sin(tilt)`, so the rig's
+  lowest orbit (`ELEVATION_MIN` 0.3) samples it 3.4x more coarsely than that number says —
+  and a lattice stepped near its own cell spacing BEATS into large soft blotches rather than
+  speckling, which is the screenshot. So `toonUnitsPerPxAt` measures the real rate from the
+  screen-space derivative (`max(length(dFdx(p)), length(dFdy(p)))`, not `fwidth`, which mixes
+  the screen axes and so swings with the azimuth), `toonMeasurePixel(vToonWorldPos.xz)` is
+  called ONCE per fragment at the top of `main` (a derivative is undefined in non-uniform
+  control flow), and the frame's scalar stays as the FLOOR — nothing is ever band-limited
+  less than before. The measure is calibrated by `sin(iso elevation)` so a default-framed
+  flat ground reads back exactly the scalar and the tuned 2.5 → 1.5 ramp keeps its meaning.
+  `setToonPixelScale` also takes the rig's tilt as a ratio to the iso tilt, which is the half
+  a scalar CAN carry and the only fix a shader that measures nothing per fragment gets (the
+  rocks, the canopies, the clouds, the katamari props). **The WATER had no band limit at all**
+  until then and was the worse half of the picture: all seven `toonFbm` terms in
+  `src/world/ghibli/water.ts` now ride one at their own base frequency and each fades to its
+  own MEAN (`fbmMean`) rather than to zero, so the sea at the floor is the flat wash the
+  marks average to instead of blotches — fading a wobble to zero would move the colour band
+  it wobbles, and fading a threshold's noise to zero would erase the mark instead of
+  averaging it.
+  ⚠️ **The low-tilt blotching is NOT all noise, and the rest of it is upstream of every
+  dial.** Measured at the floor at `ELEVATION_MIN`, the shared uniform reads 2.53 u/px and
+  every term above 0.5 cycles a unit is limited to exactly 0 — and the sea's mottle barely
+  moves (sd 3.07 → 3.01). With the water hidden the GROUND carries the same blob field over
+  the whole frame (`scratch/camo-source.mjs`): the cel ramp is a hard two-tone step over a
+  terrain normal field the frame cannot resolve, because the ground field's quad is 1.25 u
+  and that is half a CSS pixel at the zoom floor. Widening the ramp by the NORMAL's own
+  screen-space derivative is the fix for that, not another band limit — and softening the cel
+  bands is a look decision under TASTE §9, so it waits to be asked for.
 - **No `FloatType` texture is ever `LinearFilter`ed.** 32-bit float is not
   texture-filterable in core WebGL 2 — that is `OES_texture_float_linear`, which iOS Safari
   does not expose — and a `LINEAR` sampler on one makes the texture INCOMPLETE, so it samples

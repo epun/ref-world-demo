@@ -88,8 +88,11 @@ describe('katamari material', () => {
       'toonShadowColor',
       'toonLight',
       // The aliasing band limit every world-space noise term above rides
-      // (2026-09-17, src/world/toon.ts).
+      // (2026-09-17, src/world/toon.ts), and the per-fragment sampling rate it
+      // reads off the screen-space derivative.
       'toonBandLimit',
+      'toonUnitsPerPxAt',
+      'toonMeasurePixel',
     ];
     const shared = ['ggWindHash', 'ggWindNoise', 'ggVariation'];
     const own = ['katPosterize', 'katSrgbToLinear'];

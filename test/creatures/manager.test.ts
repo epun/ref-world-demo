@@ -45,6 +45,8 @@ import {
   CLEARANCE_DIRS,
   CLEARANCE_PAD,
   CLEARANCE_RING,
+  CLUMP_FIT,
+  GROWTH_K,
   passLimit,
   STICKY,
 } from '../../src/creatures/sticky';
@@ -1496,6 +1498,185 @@ describe('ground clearance — a big ball rides on its whole footprint', () => {
     host.clearAll();
     viewer.clearAll();
   });
+
+  /*
+   * ── THE BALL HAS A BODY ────────────────────────────────────────────────
+   *
+   * > User report, 2026-09-17: *"currently there is a bug where the
+   * > characters are floating in space."*
+   *
+   * The creature came out of the pile that morning (the `rider` node: it
+   * keeps its drawn size and stands on the pile's north pole at `2R`), and
+   * what it came out standing on was a sphere nothing drew — the items are
+   * seated on the surface of a ball of radius `bodyR` and the creature is a
+   * diameter above the ground, with a dozen props and nothing else in
+   * between. These pin the mesh that was missing (src/creatures/ball.ts):
+   * where it is, how big it is, that the feet are on its pole at every value
+   * of the roll blend, and that a walking creature has none.
+   */
+
+  /** The ball mesh on this creature's root, or undefined. */
+  function ballOf(manager: ReturnType<typeof createCreatureManager>): Object3D | undefined {
+    return rootOf(manager).getObjectByName('ball');
+  }
+
+  /** A world-space radius: the mesh's own scale through every parent, which
+   * for the ball is `baseR × growth` = `bodyR` and nothing else. */
+  function worldRadius(object: Object3D): number {
+    object.updateWorldMatrix(true, false);
+    return object.getWorldScale(new Vector3()).x;
+  }
+
+  function worldPos(object: Object3D): Vector3 {
+    object.updateWorldMatrix(true, false);
+    return object.getWorldPosition(new Vector3());
+  }
+
+  /**
+   * Seat `count` items of radius `r` ON THE BALL'S SURFACE, the way
+   * `clumpLocalOffset` seats them: `(R + r × CLUMP_FIT) / growth` out from
+   * the clump's origin, at the growth the pile ENDS at — so once all of them
+   * are on, every one is exactly where the pure rule would have put it.
+   * `feedProps` above seats everything at the origin, which is fine for a
+   * size but says nothing about a surface.
+   */
+  function seatOnBall(
+    manager: ReturnType<typeof createCreatureManager>,
+    count: number,
+    r: number,
+  ): { R: number; r: number } {
+    const baseR = manager.ballDiameter('ball') / 2;
+    const growth = Math.cbrt(1 + (GROWTH_K * count * r * r * r) / (baseR * baseR * baseR));
+    const R = baseR * growth;
+    const reach = (R + r * CLUMP_FIT) / growth;
+    for (let i = 0; i < count; i++) {
+      // Spread around the equator, so no two share a seat and none of them
+      // lands on the pole the creature is standing on.
+      const th = (i / count) * Math.PI * 2;
+      manager.applyStick({
+        id: 'ball',
+        item: `rock:0:${i}.00:0.00`,
+        kind: 'rock',
+        variant: 0,
+        scale: r,
+        r,
+        ox: Math.cos(th) * reach,
+        oy: 0,
+        oz: Math.sin(th) * reach,
+        qx: 0,
+        qy: 0,
+        qz: 0,
+        qw: 1,
+      });
+    }
+    return { R, r };
+  }
+
+  it('draws a ball where the items are, with the creature on its pole', () => {
+    const manager = makeManager(FLAT_SURFACE, 'katamari');
+    const root = rootOf(manager);
+    const seated = seatOnBall(manager, 3, 3);
+    holdAt(manager, 4, 4, 400);
+
+    const bodyR = manager.ballDiameter('ball') / 2;
+    expect(bodyR).toBeGreaterThan(2.5);
+    // The growth ended where the seats were computed for.
+    expect(bodyR).toBeCloseTo(seated.R, 6);
+
+    const ball = ballOf(manager);
+    expect(ball).toBeDefined();
+    expect(ball!.visible).toBe(true);
+    // ONE WRITE: the mesh is radius 1 scaled to `baseR`, and the growth on
+    // the root carries it to `bodyR` — the same number `ballDiameter`
+    // reports and the resolve circle runs on.
+    expect(worldRadius(ball!)).toBeCloseTo(bodyR, 6);
+
+    // ITS CENTRE IS THE PILE'S ORIGIN, which is where every seat is measured
+    // from (`clumpLocalOffset`) — so the items are ON its surface.
+    const clump = root.getObjectByName('clump');
+    expect(clump).toBeDefined();
+    expect(worldPos(ball!).distanceTo(worldPos(clump!))).toBeLessThan(1e-6);
+
+    // …and each seated item is a radius out, bedded in by CLUMP_FIT.
+    expect(clump!.children.length).toBe(3);
+    for (const item of clump!.children) {
+      const out = worldPos(item).distanceTo(worldPos(ball!));
+      expect(out).toBeCloseTo(bodyR + seated.r * CLUMP_FIT, 4);
+    }
+
+    // THE FEET ARE ON THE POLE: the creature's own group sits exactly one
+    // radius above the ball's centre. Not "about" — the two heights are the
+    // same statement (`growPass` writes `2 · baseR · roll` and
+    // `baseR · (2 · roll − 1)`), and a floating creature is what it looks
+    // like when they are not.
+    const rider = root.getObjectByName('rider');
+    expect(rider).toBeDefined();
+    const feet = worldPos(rider!);
+    expect(feet.y - worldPos(ball!).y).toBeCloseTo(bodyR, 6);
+    // And it is a BALL off the ground, not a creature in the air: the whole
+    // sphere is above the paper and the creature is a diameter up.
+    expect(root.position.y).toBeGreaterThanOrEqual(FLAT_SURFACE.sampleHeight(4, 4));
+    expect(feet.y - root.position.y).toBeCloseTo(2 * bodyR, 5);
+    // The drawn creature is still its drawn size through all of it (the
+    // 2026-09-17 rider ask — this fix must not undo it).
+    expect(worldRadius(rider!)).toBeCloseTo(1, 6);
+    manager.clearAll();
+  });
+
+  it('keeps the feet on the pole through the whole roll ramp', () => {
+    // The ramp is the roll spring, ζ ≥ 1 over `MOTION.primaryMs`: the ball
+    // rises out of the ground as the creature rides up onto it, and on EVERY
+    // frame of that the sphere's north pole is under its feet.
+    const manager = makeManager(FLAT_SURFACE, 'katamari');
+    const root = rootOf(manager);
+    seatOnBall(manager, 3, 3);
+    let rose = 0;
+    let previous = -Infinity;
+    holdAt(manager, 4, 4, 200, () => {
+      const ball = ballOf(manager)!;
+      const rider = root.getObjectByName('rider')!;
+      const bodyR = manager.ballDiameter('ball') / 2;
+      expect(worldPos(rider).y - worldPos(ball).y).toBeCloseTo(bodyR, 6);
+      // …and the ball itself only ever rises out of the ground — a slide,
+      // never a pop, and never past the pile's own origin.
+      const centre = worldPos(ball).y - root.position.y;
+      expect(centre).toBeGreaterThanOrEqual(previous - 1e-9);
+      expect(centre).toBeLessThanOrEqual(bodyR + 1e-9);
+      previous = centre;
+      rose++;
+    });
+    expect(rose).toBe(200);
+    expect(manager.rollBlend('ball')).toBeGreaterThan(0.99);
+    manager.clearAll();
+  });
+
+  it('a creature carrying nothing stands on the ground and shows no ball', () => {
+    const manager = makeManager(FLAT_SURFACE, 'katamari');
+    const root = rootOf(manager);
+    holdAt(manager, 4, 4, 200);
+    // Nothing on it, so nothing rolls: the blend is 0 and the sphere is
+    // parked a radius under the root, where the ground it is standing on
+    // hides it. Hidden as well, so no slope can show a dome.
+    expect(manager.rollBlend('ball')).toBe(0);
+    const ball = ballOf(manager)!;
+    expect(ball.visible).toBe(false);
+    expect(ball.position.y).toBeCloseTo(-manager.ballDiameter('ball') / 2, 6);
+    // Its FEET are on the surface — the placement that shipped, to the float.
+    const rider = root.getObjectByName('rider')!;
+    expect(worldPos(rider).y).toBeCloseTo(FLAT_SURFACE.sampleHeight(4, 4), 9);
+    expect(root.position.y).toBe(FLAT_SURFACE.sampleHeight(4, 4));
+    manager.clearAll();
+  });
+
+  it('and every other world has no ball at all', () => {
+    const plain = makeManager(FLAT_SURFACE, 'none');
+    seatOnBall(plain, 3, 3);
+    holdAt(plain, 4, 4, 200);
+    // No clump, no rider, no ball — the game's own gate, unchanged.
+    expect(rootOf(plain).getObjectByName('ball')).toBeUndefined();
+    expect(rootOf(plain).getObjectByName('clump')).toBeUndefined();
+    plain.clearAll();
+  });
 });
 
 describe('drive — a creature under somebody’s thumb', () => {
@@ -2520,6 +2701,12 @@ describe('the creature rolls — katamari locomotion', () => {
      * it. It is a `rider` on the root now: the pile is the ball, the creature
      * is its passenger, and the node divides the root's growth back out of it
      * (docs/PLAN.md §7.6).
+     *
+     * REVISED AGAIN THE SAME DAY (*"currently there is a bug where the
+     * characters are floating in space"*): the name `ball` now belongs to the
+     * DRAWN SPHERE (src/creatures/ball.ts), a sibling of the rider on the
+     * root — so the assertion is no longer that nothing is called that, it is
+     * that the creature does not hang inside it.
      */
     const { world, manager } = rolling('katamari');
     const root = rootOf(world);
@@ -2531,7 +2718,12 @@ describe('the creature rolls — katamari locomotion', () => {
     expect(rider).not.toBeNull();
     // Beside the pile's rolling group, not in it.
     expect(rider!.parent).toBe(root);
-    expect(named(root, 'ball')).toBeNull();
+    // The drawn sphere is a SIBLING: on the root, beside the rider and the
+    // pile, and holding no part of the creature.
+    const ball = named(root, 'ball');
+    expect(ball).not.toBeNull();
+    expect(ball!.parent).toBe(root);
+    expect(ball!.children.length).toBe(0);
     // The clump still sits at the middle of the creature — the roll centre is
     // unchanged, and so is the radius the roll divides by.
     expect(clump!.position.y).toBeCloseTo(baseR, 10);
@@ -2547,13 +2739,16 @@ describe('the creature rolls — katamari locomotion', () => {
     let hop: Object3D | null = mesh;
     let viaRider = false;
     let viaClump = false;
+    let viaBall = false;
     while (hop) {
       if (hop === rider) viaRider = true;
       if (hop === clump) viaClump = true;
+      if (hop === ball) viaBall = true;
       hop = hop.parent;
     }
     expect(viaRider).toBe(true);
     expect(viaClump).toBe(false);
+    expect(viaBall).toBe(false);
     manager.clearAll();
   });
 
