@@ -32,6 +32,7 @@ import {
 import { createSession } from './session';
 import { healStore } from './heal';
 import { framed, leaveForWorld, mountWorldLink } from './worldlink';
+import { installSwipeDown, type SwipeTarget } from './swipedown';
 import { readWorldGame } from '../world/game';
 import { readKeepId } from './keeplink';
 import { FAILED_MESSAGE } from '../world/companionpanel';
@@ -602,6 +603,33 @@ async function boot(): Promise<void> {
    * the stash is consumed; a restore from storage does not set it at all.
    */
   if (handedOff) onToTheWorld();
+
+  /*
+   * …AND A SWIPE DOWN FROM THE TOP GOES BACK (user ask, 2026-09-17: *"on
+   * mobile if you swipe down at the top of the screen on the device view it
+   * should take you back to the world"*).
+   *
+   * The same exit as the `view world` button and the landing path — one seam,
+   * so the case slides the same way whichever of the three asked
+   * (`leaveForWorld`). Only where there IS a world to go back to: an
+   * installation handset's world is a projection in the same room, and a
+   * gesture that did nothing would be worse than no gesture.
+   *
+   * Mounted on every world, not only the katamari one: this is a way between
+   * two screens that both already exist everywhere, and the ask was about the
+   * device view rather than about the game. It recognises the pull;
+   * src/phone/swipedown.ts is where the band, the direction and the
+   * pull-to-refresh are argued with.
+   */
+  if (publicWorld.length > 0) {
+    installSwipeDown({
+      // The document: the case fills the viewport and the band is the paper
+      // above its screen well, so there is no smaller element to watch.
+      target: document as unknown as SwipeTarget,
+      height: () => window.innerHeight || document.documentElement.clientHeight || 0,
+      onSwipe: () => intoTheWorld(),
+    });
+  }
 
   // The stage is mounted; feed the session whatever the flow opened with,
   // so the egg timer and the local echo agree with what is on screen. The
