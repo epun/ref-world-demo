@@ -8,11 +8,12 @@
  * is in the moment the pad hands them over — opens the world view and is
  * walked through the three lessons the way a person is:
  *
- *   ① the loading line, with NO hint over it
- *   ② the creature stands  → hint one, above the joystick
- *   ③ the thumb holds the stick → hint one slides out, the creature rolls
- *   ④ a few units later   → hint two, under the ball readout
- *   ⑤ a pickup            → hint three, beside the number it is about
+ *   ① the loading line, with NO label over it
+ *   ② the creature stands  → `move using the joystick`, centred, and the
+ *                            stick wearing its four chevrons
+ *   ③ the thumb holds the stick → that label goes, and the chevrons with it
+ *   ④ a few units later   → `roll over objects to collect`
+ *   ⑤ a pickup            → `become the biggest`
  *   ⑥ …and then nothing, forever
  *
  * A screenshot per step lands next to this file (gitignored — evidence for
@@ -149,15 +150,27 @@ const state = () =>
       const r = n.getBoundingClientRect();
       return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width) };
     };
+    const arrows = document.querySelector('.world-hint-arrows');
     return {
       loading: document.querySelector('.world-loading-line')?.textContent ?? null,
-      hint: hint?.querySelector('.world-hint-line')?.textContent ?? null,
-      anchor: hint?.closest('.world-hint')?.className ?? null,
+      label: hint?.querySelector('.world-hint-line')?.textContent ?? null,
       at: box(hint?.closest('.world-hint') ?? null),
+      centred: (() => {
+        const host = hint?.closest('.world-hint');
+        if (!host) return null;
+        const r = host.getBoundingClientRect();
+        return {
+          dx: Math.round(r.x + r.width / 2 - window.innerWidth / 2),
+          dy: Math.round(r.y + r.height / 2 - window.innerHeight / 2),
+        };
+      })(),
+      paper: hint?.querySelector('.world-hint-paper')?.getAttribute('d')?.slice(0, 12) ?? null,
+      arrows: arrows ? document.querySelectorAll('.world-hint-arrow').length : 0,
+      arrowsOn: arrows ? Number.parseFloat(getComputedStyle(arrows).opacity) > 0.5 : false,
+      arrowsInStick: Boolean(arrows?.closest('.world-stick')),
       stick: box(document.querySelector('.world-stick')),
       readout: box(document.querySelector('.world-size')),
-      icon: hint?.querySelectorAll('.world-hint-mark').length ?? 0,
-      skip: hint?.querySelector('.world-hint-skip')?.textContent ?? null,
+      skip: document.querySelector('.world-hint-skip') ? 'present' : null,
     };
   });
 
@@ -183,31 +196,27 @@ await page.waitForTimeout(3_000);
 console.log('step 2 — hint one:', JSON.stringify(await state()));
 await shot('hint-2-move');
 
-// ③ the thumb holds the stick: hint one leaves.
+// ③ the thumb holds the stick just past DRIVE_HELD_MS: label one goes, the
+// chevrons go with it, and the creature has rolled far enough for label two.
+// (A long drive would run the WHOLE tour — the meadow is full of props — so
+// the hold is deliberately the shortest one that counts as a drive.)
 const stickBox = await (await page.$('.world-stick')).boundingBox();
 const cx = stickBox.x + stickBox.width / 2;
 const cy = stickBox.y + stickBox.height / 2;
 await page.mouse.move(cx, cy);
 await page.mouse.down();
 await page.mouse.move(cx + stickBox.width * 0.4, cy, { steps: 6 });
-await page.waitForTimeout(4_000);
-console.log('step 3 — driving:', JSON.stringify(await state()));
-await shot('hint-3-driving');
+await page.waitForTimeout(1_600);
 await page.mouse.up();
+console.log('step 3 — after the drive:', JSON.stringify(await state()));
+await shot('hint-3-driving');
 
-// ④ …and a few units later, hint two under the readout. Under swiftshader a
-// phone walks slowly, so the creature is given the distance by the same
-// pose path a host would (`followPoses` is the viewer's own seam).
-await page.evaluate((id) => {
-  const m = window.__refworldCreatures;
-  const at = m.positionOf(id);
-  if (at) m.followPoses([{ id, x: at.x + 9, z: at.z + 9, heading: 0.8 }]);
-}, ID);
-await page.waitForTimeout(4_000);
+// ④ label two, centred, with no chevrons on the stick.
 console.log('step 4 — hint two:', JSON.stringify(await state()));
 await shot('hint-4-pickup');
 
-// ⑤ a pickup: hint three, beside the number.
+// ⑤ a pickup: the last label, photographed straight away — it only stays
+// GROW_MS, and that is the point of it.
 await page.evaluate(
   ([id, s]) => {
     const m = window.__refworldCreatures;
@@ -226,9 +235,20 @@ await page.evaluate(
   },
   [ID, snack],
 );
-await page.waitForTimeout(5_000);
+// The pile's growth eases in, so "has the ball grown" becomes true a moment
+// after the item sticks — wait for the label rather than for a clock.
+await page
+  .waitForFunction(
+    () => document.querySelector('.world-hint-line')?.textContent === 'become the biggest',
+    null,
+    { timeout: 60_000 },
+  )
+  .catch(() => console.log('!! the last label never arrived'));
+await page.waitForTimeout(1_200);
 console.log('step 5 — hint three:', JSON.stringify(await state()));
-await shot('hint-5-grow');
+const lastShot = join(HERE, 'hint-5-grow-390x844.png');
+await page.screenshot({ path: lastShot });
+console.log('  ->', lastShot);
 
 // ⑥ and then nothing, forever.
 await page.waitForTimeout(12_000);

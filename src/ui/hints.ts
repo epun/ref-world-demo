@@ -1,90 +1,103 @@
 /**
  * HOW TO PLAY, WHILE PLAYING — the contextual hints on the world view.
  *
- * > User ask, 2026-09-17, with three screenshots of the live slides: *"For
- * > mobile I want the onboarding to be contextual within the device."*
+ * > User ask, 2026-09-17, from a three-screen mock: *"For mobile I want the
+ * > onboarding to be contextual within the device"* — and, with the mock in
+ * > hand, *"retain our existing style for components"*.
  *
- * The three lessons that were three grey screens in front of the game are now
- * three marks IN it. Each one is anchored to the thing it is about and is
- * dismissed by DOING that thing, which is the difference between being told
+ * Three labels, one at a time, CENTRED in the screen over the live world, each
+ * dismissed by DOING what it says. That is the difference between being told
  * how to play and being taught:
  *
- *   move    above the joystick, the moment the stick can actually move the
- *           creature — and gone once the thumb has HELD it past the deadzone
- *           for `DRIVE_HELD_MS`, which is the first real drive intent rather
- *           than a brush against the glass;
- *   pickup  under the ball readout, once the creature has travelled
- *           `MOVE_UNITS` — so it arrives to somebody who is already rolling —
- *           and gone on their first pickup;
- *   grow    beside the readout, from that first pickup, so the number it is
- *           about is the number beside it. Gone on the next pickup, or after
- *           `GROW_MS` if that is somebody taking their time.
+ *   move      `move using the joystick`, and the stick wears four hairline
+ *             chevrons while it is up so a person who has never seen a stick
+ *             can see that it is one. Gone once the thumb has HELD it past the
+ *             stick's own deadzone for `DRIVE_HELD_MS` — the first real drive
+ *             intent rather than a brush against the glass — and the chevrons
+ *             go with it;
+ *   pickup    `roll over objects to collect`, once the creature has travelled
+ *             `MOVE_UNITS`, so it arrives to somebody already rolling. Gone on
+ *             their first pickup;
+ *   grow      `become the biggest`, from that first pickup. Gone on the next
+ *             one, or after `GROW_MS` for somebody taking their time.
  *
  * Then nothing, forever: the flag is written and this device is done being
- * taught. A `skip` rule-link ends the tour from any of the three.
+ * taught. There is no skip control and no progress dots — the mock has
+ * neither, and a step that dismisses itself on the action it teaches does not
+ * need a way out.
  *
- * THE MARKS, and there are three kinds, all of them in the mark set (TASTE §4
- * — `icon` + `ruleLine` + `border`, the world brief's #1 defining signal at
- * confidence 1.00):
+ * THE MARKS. The mock draws the label as a grey filled pill with a drop
+ * shadow. That is NOT what ships: *"retain our existing style"* means this
+ * project's own marks, so the label is
  *
+ * - PAPER INSIDE THE PROJECT'S WAVERING HAND-DRAWN HAIRLINE — the same
+ *   generator, smoothing, inset expression and 1.25 hairline as the join code,
+ *   the minimap and the projection's leaderboard (`wavyBorderPoints` +
+ *   `wavyBorderPath` off src/phone/minimap.ts, `mapBorderInset(mapMarkScale)`
+ *   for the inset). The paper is the recorded USER OVERRIDE of §4's "no filled
+ *   panels" — docs/TASTE.md §9a, 2026-09-17: three things on the world view
+ *   stand on paper inside that hairline, and nothing else comes with it. No
+ *   shadow, no radius, no second fill — a css box would also be a rectangle,
+ *   and nothing in this world is rectilinear (TASTE §2.5), which is why the
+ *   shape is a drawn path and not a border;
  * - the LINE, in the world view's own type — the same face and size as the
- *   ball readout, `.world-say` and the draw hint, because this is another
- *   line of the world's own chrome and a second face here would be a second
- *   voice. Ink on the meadow, lowercase throughout (TASTE §5); the copy is a
- *   table in src/ui/hintcopy.ts so it can be edited without touching layout;
- * - one ICON per hint, drawn by the same hand as every other border in this
- *   world (`wavyRingPoints` + `wavyBorderPath`, shared with the stick, the
- *   minimap and the readout's ring);
- * - a HAIRLINE RULE under the line — the brief's *"reserve a single hairline
- *   rule to divide the frame"*, the same border-bottom the readout, the
- *   tray's hint and the operator line already carry.
+ *   ball readout, `.world-say` and the draw hint, because this is another line
+ *   of the world's own chrome and a second face here would be a second voice.
+ *   Lowercase throughout (TASTE §5); the copy is a table in
+ *   src/ui/hintcopy.ts so it can be edited without touching this file;
+ * - the CHEVRONS, hairline strokes on the stick's own ring and nothing else:
+ *   four arrow marks, no fill, no plate under them.
  *
- * No filled panel, no card, no background, no shadow: a hint is a line of
- * type on the world, not a tooltip on a surface.
- *
- * THE MOTION. Every entrance and every exit SLIDES on the settle curve over
- * `MOTION.secondaryMs` — the css-side equivalent of the ζ≥1 spring, so no
- * bounce by construction — and never a `scale: 0 → 1` (TASTE §2.1,
- * confidence 1.00). The ambient drift floor runs under each hint the whole
- * time it is up, like everything else on screen (TASTE §3).
+ * THE MOTION. Every entrance and every exit is a ζ ≥ 1 spring
+ * (src/motion/spring.ts, where underdamped is unrepresentable), written per
+ * frame as an opacity and a translate — in from a little below, out upwards.
+ * Measured reason for not using a css transition: on the built page the
+ * class-driven one never ran at all, and the row sat at opacity 0 with its
+ * class applied for as long as it was up. Never a `scale: 0 → 1` (TASTE §2.1,
+ * confidence 1.00), and the ambient drift floor runs under whatever is on
+ * screen (TASTE §3).
  *
  * NOTHING SHOWS WHILE THE WORLD IS STILL COMING UP. The loading line owns the
  * screen until this handset's own creature is standing (src/ui/loading.ts),
- * and a hint about a joystick over `finding the room` would be two voices
+ * and a label about a joystick over `finding the room` would be two voices
  * about two different things.
  *
- * SEEN ONCE PER DEVICE, under a NEW key: everybody who saw the old slideshow
- * sees these hints once, which is the point of replacing it. Wrapped in
- * try/catch like every store read in this project, and `?hints=1` re-shows
- * them for testing on a real phone.
+ * SEEN ONCE PER DEVICE, under `refworld:hinted`, wrapped in try/catch like
+ * every store read in this project; `?hints=1` re-shows them for testing on a
+ * real phone.
  *
- * KATAMARI-ONLY and reached through a DYNAMIC import behind the flag, like
- * the ball readout and the loading line: there is no stick, no pickup and no
- * ball in a world without the game, so every word here would be a lie about
- * it, and no other deployment carries the chunk.
+ * KATAMARI-ONLY and reached through a DYNAMIC import behind the flag, like the
+ * ball readout and the loading line: there is no stick, no pickup and no ball
+ * in a world without the game, so every word here would be a lie about it, and
+ * no other deployment carries the chunk.
  *
- * The state machine is a pure function of five signals at the top of this
- * file, with no DOM in it, so what is actually easy to get wrong — the order,
- * and what dismisses what — is pinned in node.
+ * The state machine is a pure function of five signals, with no DOM in it, so
+ * what is actually easy to get wrong — the order, and what dismisses what — is
+ * pinned in node.
  */
 
 import { MOTION, WORLD } from '../taste/tokens';
 import { Spring } from '../motion/spring';
 import { sampleDrift } from '../motion/ambient';
-import { wavyBorderPath } from '../phone/minimap';
-import { wavyRingPoints, DEADZONE } from '../world/joystick';
+import {
+  mapBorderInset,
+  mapMarkScale,
+  wavyBorderPath,
+  wavyBorderPoints,
+} from '../phone/minimap';
+import { DEADZONE } from '../world/joystick';
 import type { StorageLike } from '../phone/identity';
-import { HINTS, SKIP_LABEL, hintFor, type HintIcon } from './hintcopy';
+import { HINTS, hintFor, showsArrows } from './hintcopy';
 
 // ── pure: seen once per device ───────────────────────────────────────────────
 
 /**
  * The flag's key.
  *
- * NEW, and deliberately not the slideshow's `refworld:onboarded`: a phone
- * that was taught by the screens has not been taught by these, and the whole
- * reason the hints exist is that the screens did not teach anybody
- * (2026-09-17). Namespaced like every other key this project writes.
+ * Not the slideshow's `refworld:onboarded`: a phone that was taught by the
+ * screens has not been taught by these, and the whole reason the hints exist
+ * is that the screens did not teach anybody (2026-09-17). Namespaced like
+ * every other key this project writes.
  */
 export const HINTS_KEY = 'refworld:hinted';
 
@@ -133,9 +146,9 @@ export function shouldHint(search: string, store: StorageLike | null): boolean {
 /**
  * What the page can see about this person's own creature, per frame.
  *
- * Every one of these is read through a seam that already exists — the
- * creature manager's own answers and the stick's own vector (src/main.ts) —
- * so none of it is a second event path.
+ * Every one of these is read through a seam that already exists — the creature
+ * manager's own answers and the stick's own vector (src/main.ts) — so none of
+ * it is a second event path.
  */
 export interface HintSignals {
   /**
@@ -153,7 +166,7 @@ export interface HintSignals {
   picked: number;
 }
 
-/** `none` and `moved` show nothing; the other three are the three lessons. */
+/** `none` and `moved` show nothing; the other three are the three labels. */
 export type HintPhase = 'none' | 'move' | 'moved' | 'pickup' | 'grow' | 'done';
 
 export interface HintState {
@@ -182,18 +195,18 @@ export const HINT_START: HintState = { phase: 'none', heldMs: 0, shownMs: 0, pic
 export const DRIVE_HELD_MS = MOTION.secondaryMs;
 
 /**
- * How far the creature travels before the second hint arrives, world units.
+ * How far the creature travels before the second label arrives, world units.
  * **[D]** Five is a couple of its own body lengths at the size it hatches —
- * far enough that the person is rolling rather than nudging, close enough
- * that the props it should be running into are still the ones around it.
+ * far enough that the person is rolling rather than nudging, close enough that
+ * the props it should be rolling over are still the ones around it.
  */
 export const MOVE_UNITS = 5;
 
 /**
- * How long the last hint stays if nothing else happens. **[D]** Three
+ * How long the last label stays if nothing else happens. **[D]** Three
  * `MOTION.primaryMs`: long enough to read twice, and it is the only one of the
- * three with no action of its own to be dismissed by — "grow as big as you
- * can" is the whole rest of the game.
+ * three with no action of its own to be dismissed by — "become the biggest" is
+ * the whole rest of the game.
  */
 export const GROW_MS = MOTION.primaryMs * 3;
 
@@ -235,7 +248,7 @@ export function stepHints(state: HintState, signals: HintSignals, dtMs: number):
       return { ...state, heldMs: held, shownMs: shown };
     case 'moved':
       // A gap with nothing on screen: the person is driving, and the next
-      // lesson is about what to drive INTO.
+      // lesson is about what to drive OVER.
       if (signals.travelled >= MOVE_UNITS) {
         return { phase: 'pickup', heldMs: held, shownMs: 0, pickedAt: signals.picked };
       }
@@ -260,57 +273,71 @@ export function hintsFinished(state: HintState): boolean {
   return state.phase === 'done';
 }
 
-// ── the marks ────────────────────────────────────────────────────────────────
+// ── pure: the label's frame ──────────────────────────────────────────────────
 
-/** The icon's user-space box. Fixed, so the wavering is computed once. */
-const ICON_BOX = 100;
-/** The icon's box on screen, css px — small, beside a line of type. */
-const ICON_PX = 26;
-/** Stroke weight on screen, css px — a hairline, like every other border. */
-const ICON_STROKE_PX = 1.25;
+/** This label's own hand — not the map's seed, not the leaderboard's. */
+const LABEL_SEED = 63.4;
 
 /**
- * The rings one icon is made of. **[D]**
+ * The hairline's inset for a box this size.
  *
- * Every mark in this set is a RING, because every mark in this world is: the
- * stick is a ring with a knob in it, the readout is a ring, the minimap is a
- * wavering loop. Three rings arranged three ways say "the stick", "a thing
- * joining your ball" and "small becomes big" without a second vocabulary
- * having to be invented for three lines of type.
+ * `mapBorderInset(mapMarkScale(min))` — the identical expression the join
+ * code, the minimap and the leaderboard's `frameInset` use, so all four
+ * hairlines sit the same distance inside their own edges. Written out here
+ * rather than imported from src/ui/leaderboard.ts because that module is the
+ * projection's and must not be pulled into the handset's chunk; a test pins
+ * the two answers equal at every size that matters.
  */
-export function iconRings(kind: HintIcon): { cx: number; cy: number; r: number; seed: number }[] {
-  switch (kind) {
-    case 'stick':
-      return [
-        { cx: 46, cy: 52, r: 34, seed: 31 },
-        { cx: 66, cy: 62, r: 12, seed: 74 },
-      ];
-    case 'pickup':
-      return [
-        { cx: 40, cy: 60, r: 28, seed: 18.5 },
-        { cx: 78, cy: 34, r: 11, seed: 62.1 },
-      ];
-    case 'grow':
-      return [
-        { cx: 22, cy: 66, r: 12, seed: 47.3 },
-        { cx: 62, cy: 52, r: 30, seed: 58.2 },
-      ];
-  }
+export function labelInset(w: number, h: number): number {
+  return mapBorderInset(mapMarkScale(Math.min(w, h)));
 }
 
-function iconEl(kind: HintIcon): SVGSVGElement {
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('class', 'world-hint-icon');
-  svg.setAttribute('viewBox', `0 0 ${ICON_BOX} ${ICON_BOX}`);
-  svg.setAttribute('aria-hidden', 'true');
-  for (const r of iconRings(kind)) {
-    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    path.setAttribute('class', 'world-hint-mark');
-    path.setAttribute('d', wavyBorderPath(wavyRingPoints(r.cx, r.cy, r.r, r.seed)));
-    path.setAttribute('stroke-width', ((ICON_STROKE_PX * ICON_BOX) / ICON_PX).toFixed(3));
-    svg.appendChild(path);
-  }
-  return svg;
+/**
+ * The label's frame, as svg path data: the project's own wavering loop at this
+ * size. Deterministic per size and seed, so the same box is the same hand on
+ * every device.
+ */
+export function labelFramePath(w: number, h: number, seed = LABEL_SEED): string {
+  if (!(w > 2) || !(h > 2)) return '';
+  return wavyBorderPath(wavyBorderPoints(Math.round(w), Math.round(h), labelInset(w, h), seed));
+}
+
+// ── pure: the chevrons on the stick ──────────────────────────────────────────
+
+/** The chevron ring's user-space box, so the arrows are computed once. */
+export const ARROW_BOX = 100;
+
+/**
+ * Where the four chevrons point, and how big they are in that box. **[D]**
+ *
+ * `out` is how far the chevron's tip sits from the centre and `size` is the
+ * half-width of its two strokes. Four marks at the compass points, just
+ * outside the stick's own ring (the ring is drawn at radius 44 of the same
+ * 100-box, src/world/joystick.ts), so they read as "this thing goes these four
+ * ways" without touching the ring itself.
+ */
+export const ARROW_OUT = 47;
+export const ARROW_SIZE = 6.5;
+
+/** The four chevrons as svg path data, one string each. Pure. */
+export function arrowPaths(): string[] {
+  const c = ARROW_BOX / 2;
+  const r = (v: number): string => v.toFixed(2);
+  /** One chevron, pointing along (dx, dy): a tip and two strokes back. */
+  const chevron = (dx: number, dy: number): string => {
+    const tipX = c + dx * ARROW_OUT;
+    const tipY = c + dy * ARROW_OUT;
+    // Back along the direction, and out to each side of it.
+    const backX = tipX - dx * ARROW_SIZE;
+    const backY = tipY - dy * ARROW_SIZE;
+    const sx = -dy * ARROW_SIZE;
+    const sy = dx * ARROW_SIZE;
+    return (
+      `M ${r(backX + sx)} ${r(backY + sy)} L ${r(tipX)} ${r(tipY)} ` +
+      `L ${r(backX - sx)} ${r(backY - sy)}`
+    );
+  };
+  return [chevron(0, -1), chevron(1, 0), chevron(0, 1), chevron(-1, 0)];
 }
 
 // ── the layer ────────────────────────────────────────────────────────────────
@@ -321,10 +348,15 @@ const HINT_SEED = 86.3;
 const DRIFT_SCALE = 150;
 /** Draw cadence — a line of type, not a viewport. */
 const DRAW_INTERVAL_MS = 1000 / 30;
-/** How far a hint travels as it arrives or leaves, css px. **[D]** */
+/** How far a label travels as it arrives or leaves, css px. **[D]** */
 const SLIDE_PX = 8;
-/** Presence under which a leaving hint is off the page for good. **[D]** */
+/** Presence under which a leaving mark is off the page for good. **[D]** */
 const GONE = 0.01;
+/** The paper's padding, css px. **[D]** Air enough that the hairline is a
+ * frame around the words rather than an outline of them. */
+const LABEL_PAD_PX = 14;
+/** Stroke weight on screen, css px — the project's one hairline. */
+const HAIRLINE_PX = 1.25;
 
 const STYLE_ID = 'world-hints-style';
 
@@ -334,103 +366,93 @@ function ensureStyle(): void {
   style.id = STYLE_ID;
   style.textContent = `
 /*
- * Two anchors, both of them things already on screen. Neither is a surface:
- * no field, no scrim, no card — the meadow shows through between the marks
- * (TASTE §4).
+ * THE LABEL, centred in the screen on both axes — the mock's placement, and
+ * the one place on a phone that is neither the readout's corner, the tray nor
+ * the minimap's. The centring transform lives HERE because the layers below
+ * own transforms of their own: drift on one, the spring's slide on the next.
  */
 .world-hint {
   position: fixed;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
   z-index: 31;
+  max-width: 78vw;
   color: var(--rw-ink, ${WORLD.ink});
   font: 400 14px/1.4 ui-sans-serif, system-ui, sans-serif;
+  text-align: center;
   pointer-events: none;
 }
-/*
- * Above the joystick and CLEAR OF THE TRAY, centred over the thing it is
- * about however wide the phone is. The offset is the tray's own height plus
- * air — the device thumbnail and the minimap are as tall as the stick, and a
- * line of type across them would be type on top of two other marks.
- */
-.world-hint.at-stick {
-  left: 0;
-  right: 0;
-  bottom: calc(env(safe-area-inset-bottom, 0px) + 40vw);
-  display: grid;
-  justify-items: center;
-}
-/* The rule underlines the SENTENCE, not the screen: the row hugs its own
-   content, so the hairline is the width of the words above it. */
-.world-hint.at-stick .world-hint-drift { justify-self: center; }
-.world-hint.at-stick .world-hint-row {
-  width: max-content;
-  max-width: 74vw;
-}
-/* Under the ball readout at the top left — clear of the stick and clear of
-   the minimap, on the side of the screen the number lives on. */
-.world-hint.at-readout {
-  left: calc(env(safe-area-inset-left, 0px) + 4vw);
-  top: calc(env(safe-area-inset-top, 0px) + 4vw + 42px);
-  max-width: 62vw;
-}
-/* The drift layer: its own element, because the slide owns a transform and
-   two of them cannot share one (TASTE §3). */
+/* The drift layer. Nothing fully arrests (TASTE §3). */
 .world-hint-drift { display: block; }
 /*
- * The row itself carries the rule mark and nothing else about its motion:
- * the SLIDE is written per frame from a ζ ≥ 1 spring below (opacity and a
- * translate, in from below and out upwards), rather than from a css
- * transition. Measured reason, 2026-09-17: on the built page the class-driven
- * transition never ran — the row sat at opacity 0 with its class applied,
- * forever — and a hint nobody can see is worse than no hint. The spring is
- * also what the rest of this project animates with (src/motion/spring.ts,
- * where underdamped is unrepresentable), so this is one mechanism instead of
- * two.
+ * The box: paper inside the wavering hairline (docs/TASTE.md §9a — the
+ * recorded paper-card ruling the join code, the minimap and the leaderboard
+ * already stand in). The fill is the svg path below, never a css background,
+ * because the shape is a drawn loop and a css box would be a rectangle.
  */
 .world-hint-row {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding-bottom: 0.45em;
-  border-bottom: 1px solid var(--rw-ink, ${WORLD.ink});
+  position: relative;
+  display: block;
+  box-sizing: border-box;
+  padding: ${LABEL_PAD_PX}px ${LABEL_PAD_PX + 4}px;
   opacity: 0;
 }
-.world-hint-icon {
+.world-hint-frame {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
   display: block;
-  width: ${ICON_PX}px;
-  height: ${ICON_PX}px;
-  flex: none;
   overflow: visible;
 }
-.world-hint-mark {
-  fill: none;
+.world-hint-paper {
+  fill: var(--rw-light, ${WORLD.light});
   stroke: var(--rw-ink, ${WORLD.ink});
+  stroke-width: ${HAIRLINE_PX};
   stroke-linejoin: round;
 }
-.world-hint-line { display: block; }
-/* The way past the whole tour: a word under a rule, and the one thing on
-   this layer a thumb can reach. */
-.world-hint-skip {
-  align-self: center;
-  flex: none;
-  margin-left: 6px;
-  color: var(--rw-muted, ${WORLD.neutral});
-  text-decoration: none;
-  opacity: 0.6;
-  pointer-events: auto;
+/* The words, over their own paper. */
+.world-hint-line {
+  position: relative;
+  display: block;
+  white-space: nowrap;
+}
+/*
+ * THE CHEVRONS, on the stick's own box: four hairline arrow marks just outside
+ * its ring, and nothing else — no plate, no fill, no ring of their own (the
+ * stick already draws one).
+ */
+.world-hint-arrows {
+  position: absolute;
+  inset: -13%;
+  display: block;
+  overflow: visible;
+  pointer-events: none;
+  opacity: 0;
+}
+.world-hint-arrow {
+  fill: none;
+  stroke: var(--rw-ink, ${WORLD.ink});
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
 }
 `;
   document.head.appendChild(style);
 }
 
 export interface HintsOptions {
-  /** Where a `readout`-anchored hint hangs — normally `document.body`. */
+  /** Where the centred label hangs — normally `document.body`. */
   mount: HTMLElement;
   /**
-   * Where a `stick`-anchored hint hangs. The tray, so the hint sits over the
-   * joystick it is about; without one it falls back to `mount` and the css
-   * puts it above the tray anyway.
+   * The joystick's own element, so the chevrons can sit on its ring while the
+   * first label is up. Without one the label still shows and the chevrons
+   * simply do not (a page with no stick has nothing to point at).
    */
-  stickMount?: HTMLElement | null;
+  stickEl?: HTMLElement | null;
   /** The five signals, read per frame (see `HintSignals`). */
   signals(): HintSignals;
   /** Injectable for the tests; the real one is `localStorage`. */
@@ -443,8 +465,8 @@ export interface HintsHandle {
   /** What it says right now — '' when nothing is up. */
   line(): string;
   phase(): HintPhase;
-  /** End the tour, as the skip link does. */
-  skip(): void;
+  /** Are the stick's chevrons on screen? */
+  arrows(): boolean;
   dispose(): void;
 }
 
@@ -457,8 +479,9 @@ export function installWorldHints(opts: HintsOptions): HintsHandle {
 
   const store = opts.store === undefined ? defaultStore() : opts.store;
   let state = HINT_START;
+
   /**
-   * A hint on screen, with its own entrance. One ζ ≥ 1 spring on a 0…1
+   * A mark on screen, with its own entrance. One ζ ≥ 1 spring on a 0…1
    * PRESENCE: the opacity is that number and the slide is what is left of
    * `SLIDE_PX` — so an entrance and an exit are the same motion in opposite
    * directions and neither can overshoot (TASTE §2.1, confidence 1.00).
@@ -466,54 +489,74 @@ export function installWorldHints(opts: HintsOptions): HintsHandle {
   interface Live {
     phase: HintPhase;
     el: HTMLElement;
+    /** The element the presence is written onto. */
     row: HTMLElement;
-    drift: HTMLElement;
+    /** The drift layer, or null for the chevrons (they drift with the stick). */
+    drift: HTMLElement | null;
     presence: Spring;
-    /** Which way it travels: down (+1) on the way in, up (-1) on the way out. */
     leaving: boolean;
+    /** Redraw the frame at its real size, if it has one. */
+    resize?: () => void;
   }
   let shown: Live | null = null;
-  /** Hints that are on their way out, still being drawn. */
+  let arrows: Live | null = null;
   const leaving: Live[] = [];
-  let last = 0;
-  let skipped = false;
 
-  /** Write one hint's presence onto its row. */
+  let last = 0;
+
+  /** Write one mark's presence onto its row. */
   const place = (live: Live): void => {
     const v = Math.max(0, Math.min(1, live.presence.value));
     live.row.style.opacity = v.toFixed(3);
+    if (live.drift === null) return; // the chevrons do not slide; they fade
     const off = (1 - v) * SLIDE_PX * (live.leaving ? -1 : 1);
     live.row.style.transform = `translateY(${off.toFixed(2)}px)`;
   };
 
+  /** Build the centred label for a phase that has one. */
   const build = (phase: HintPhase): void => {
     const hint = hintFor(phase);
     if (!hint) return;
+
     const el = document.createElement('div');
-    el.className = `world-hint at-${hint.anchor}`;
+    el.className = 'world-hint';
     el.setAttribute('role', 'status');
 
     const drift = document.createElement('div');
     drift.className = 'world-hint-drift';
     const row = document.createElement('div');
     row.className = 'world-hint-row';
+
+    const frame = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    frame.setAttribute('class', 'world-hint-frame');
+    frame.setAttribute('aria-hidden', 'true');
+    const paper = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    paper.setAttribute('class', 'world-hint-paper');
+    frame.appendChild(paper);
+
     const line = document.createElement('span');
     line.className = 'world-hint-line';
     line.textContent = hint.line;
 
-    const skip = document.createElement('a');
-    skip.className = 'world-hint-skip';
-    skip.href = '#';
-    skip.textContent = SKIP_LABEL;
-    skip.addEventListener('click', (event) => {
-      event.preventDefault();
-      end();
-    });
-
-    row.append(iconEl(hint.icon), line, skip);
+    row.append(frame, line);
     drift.appendChild(row);
     el.appendChild(drift);
-    (hint.anchor === 'stick' ? opts.stickMount ?? opts.mount : opts.mount).appendChild(el);
+    opts.mount.appendChild(el);
+
+    /** Redraw the wavering frame at the box's real size. Idempotent. */
+    let drawnAt = '';
+    const resize = (): void => {
+      const w = Math.round(row.offsetWidth);
+      const h = Math.round(row.offsetHeight);
+      if (w < 3 || h < 3) return;
+      const key = `${w}x${h}`;
+      if (key === drawnAt) return;
+      drawnAt = key;
+      frame.setAttribute('viewBox', `0 0 ${w} ${h}`);
+      paper.setAttribute('d', labelFramePath(w, h));
+    };
+    resize();
+
     const live: Live = {
       phase,
       el,
@@ -521,12 +564,47 @@ export function installWorldHints(opts: HintsOptions): HintsHandle {
       drift,
       presence: new Spring(0, { settleMs: MOTION.secondaryMs }),
       leaving: false,
+      resize,
     };
-    // It arrives by sliding UP into place from a little below, never by
-    // appearing and never by scaling.
     live.presence.retarget(1);
     place(live);
     shown = live;
+  };
+
+  /** Put the four chevrons on the stick, or take them off again. */
+  const setArrows = (on: boolean): void => {
+    if (on) {
+      if (arrows || !opts.stickEl) return;
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.setAttribute('class', 'world-hint-arrows');
+      svg.setAttribute('viewBox', `0 0 ${ARROW_BOX} ${ARROW_BOX}`);
+      svg.setAttribute('aria-hidden', 'true');
+      for (const d of arrowPaths()) {
+        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        path.setAttribute('class', 'world-hint-arrow');
+        path.setAttribute('d', d);
+        svg.appendChild(path);
+      }
+      opts.stickEl.appendChild(svg);
+      const live: Live = {
+        phase: 'move',
+        el: svg as unknown as HTMLElement,
+        row: svg as unknown as HTMLElement,
+        drift: null,
+        presence: new Spring(0, { settleMs: MOTION.secondaryMs }),
+        leaving: false,
+      };
+      live.presence.retarget(1);
+      place(live);
+      arrows = live;
+      return;
+    }
+    if (!arrows) return;
+    const going = arrows;
+    arrows = null;
+    going.leaving = true;
+    going.presence.retarget(0);
+    leaving.push(going);
   };
 
   const retire = (): void => {
@@ -538,45 +616,42 @@ export function installWorldHints(opts: HintsOptions): HintsHandle {
     leaving.push(going);
   };
 
-  const end = (): void => {
-    if (skipped) return;
-    skipped = true;
-    state = { ...state, phase: 'done' };
-    retire();
-    markHinted(store);
-  };
-
   const paint = (now: number): void => {
     const dt = last === 0 ? DRAW_INTERVAL_MS : Math.max(0, now - last);
     last = now;
 
-    if (!skipped) {
-      const before = state.phase;
-      state = stepHints(state, opts.signals(), dt);
-      if (state.phase !== before) {
-        retire();
-        build(state.phase);
-        // The tour is over the moment the last hint is retired: a device that
-        // has been taught is not taught again (and a reload mid-tour picks it
-        // up from wherever it got to, which is the honest place).
-        if (hintsFinished(state)) markHinted(store);
-      }
+    const before = state.phase;
+    state = stepHints(state, opts.signals(), dt);
+    if (state.phase !== before) {
+      retire();
+      build(state.phase);
+      setArrows(showsArrows(state.phase));
+      // The tour is over the moment the last label is retired: a device that
+      // has been taught is not taught again (and a reload mid-tour picks it up
+      // from wherever it got to, which is the honest place).
+      if (hintsFinished(state)) markHinted(store);
     }
 
     // The drift floor, under whatever is on screen, forever (TASTE §3).
     const d = sampleDrift(now, HINT_SEED, DRIFT_SCALE);
+    const driftTo = `translate(${d.x.toFixed(3)}px, ${d.y.toFixed(3)}px)`;
     if (shown) {
       shown.presence.update(dt);
       place(shown);
-      shown.drift.style.transform = `translate(${d.x.toFixed(3)}px, ${d.y.toFixed(3)}px)`;
+      shown.resize?.();
+      if (shown.drift) shown.drift.style.transform = driftTo;
+    }
+    if (arrows) {
+      arrows.presence.update(dt);
+      place(arrows);
     }
     // …and the ones on their way out, until they are gone. Off the page only
-    // once the slide is over: not before, or a hint would vanish mid-move.
+    // once the slide is over: not before, or a mark would vanish mid-move.
     for (let i = leaving.length - 1; i >= 0; i--) {
       const going = leaving[i]!;
       going.presence.update(dt);
       place(going);
-      going.drift.style.transform = `translate(${d.x.toFixed(3)}px, ${d.y.toFixed(3)}px)`;
+      if (going.drift) going.drift.style.transform = driftTo;
       if (going.presence.value <= GONE) {
         going.presence.dispose();
         going.el.remove();
@@ -607,7 +682,7 @@ export function installWorldHints(opts: HintsOptions): HintsHandle {
     if (document.hidden) stop();
     else {
       // A tab that was away must not hand the machine that whole absence as
-      // one step — a hint would be dismissed by a thumb that was never there.
+      // one step — a label would be dismissed by a thumb that was never there.
       last = 0;
       start();
     }
@@ -619,13 +694,16 @@ export function installWorldHints(opts: HintsOptions): HintsHandle {
     showing: () => (shown ? shown.phase : ''),
     line: () => (shown ? hintFor(shown.phase)?.line ?? '' : ''),
     phase: () => state.phase,
-    skip: end,
+    arrows: () => arrows !== null,
     dispose(): void {
       stop();
       document.removeEventListener('visibilitychange', onVisibility);
       shown?.presence.dispose();
       shown?.el.remove();
       shown = null;
+      arrows?.presence.dispose();
+      arrows?.el.remove();
+      arrows = null;
       for (const going of leaving.splice(0)) {
         going.presence.dispose();
         going.el.remove();
