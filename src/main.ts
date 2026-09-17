@@ -2253,6 +2253,94 @@ function main(): void {
     );
   }
 
+  /*
+   * HOW TO PLAY, WHAT IS LOADING, AND WHAT TO DO WITH AN EMPTY VIEW
+   * (user ask, 2026-09-17, mobile: *"there should be better empty/loading
+   * states. we should have an onboarding stage to tell people how to play the
+   * game, before they load into the world."*).
+   *
+   * Three modules, one mount site, and the same three conditions the ball
+   * readout above is already under:
+   *
+   * - the KATAMARI world and nowhere else (src/world/game.ts, 2026-09-15 user
+   *   ruling). Every word of the onboarding is about a stick, a pickup and a
+   *   ball, none of which exist in a world without the game — and each module
+   *   is reached through a DYNAMIC import, so meridian and the public world
+   *   never carry the chunks;
+   * - a HANDSET. A projection is a wall in a room with a person standing in
+   *   front of it explaining the thing; it needs no screens and has no
+   *   creature of its own to wait for;
+   * - and then the two halves of "is any of this yours": `myDrawerId` is the
+   *   one answer this page has to that (the minimap's self mark, the follow
+   *   camera, the stick and the ball readout all read it), so it decides
+   *   between the loading line and the empty prompt rather than a second
+   *   test doing it differently.
+   */
+  /**
+   * Has the room's socket said `on` yet — the first of the loading line's
+   * four milestones.
+   *
+   * A latch rather than a callback into the line, because the line reads all
+   * four milestones per frame and three of them are already state somebody
+   * else owns (the performance timeline, the creature manager). One shape for
+   * all four; see src/ui/loading.ts.
+   */
+  let roomOn = false;
+  if (worldGame === 'katamari' && handheld) {
+    if (myDrawerId.length > 0) {
+      /*
+       * THE ONBOARDING, over everything, before the world is played.
+       *
+       * Mounted here rather than on the handset's own page for one reason:
+       * the game flag is a `<meta>` the build injects into THIS document
+       * only (scripts/world-build.mjs — phone.html gets no game tag), so
+       * this is the only page that knows a katamari is what is being loaded
+       * into. It covers the view while the world comes up behind it, which
+       * is also the wait it is spending.
+       */
+      void import('./ui/onboard').then((m) => {
+        if (!m.shouldOnboard(location.search, m.deviceStore())) return;
+        m.installOnboarding({
+          mount: document.body,
+          onDone: () => {
+            /* nothing to undo: the field takes itself off the page */
+          },
+        });
+      });
+      /*
+       * …and under it, the loading line: what this wait IS, until this
+       * handset's own creature is standing.
+       */
+      void import('./ui/loading').then((m) =>
+        m.installWorldLoading({
+          mount: document.body,
+          milestones: () => ({
+            reached: roomOn,
+            built: m.terrainBuilt(),
+            // An egg with this id is already the creature arriving — it is
+            // where the creature IS for its first minute (positionOf).
+            present: creatures.positionOf(myDrawerId) !== null,
+            // …and it is standing once the shell has opened, which is the
+            // manager's own answer and not a second reading of the clock.
+            standing:
+              creatures.positionOf(myDrawerId) !== null &&
+              !creatures.eggIds().includes(myDrawerId),
+          }),
+        }),
+      );
+    } else {
+      // No drawing on this device: a view of a game that cannot be played.
+      // Say so, and point at the pad — the same address every other hop
+      // between the pad, the companion and the world carries.
+      void import('./ui/empty').then((m) =>
+        m.installEmptyState({
+          mount: document.body,
+          href: `/draw/?room=${room}${worldParam}`,
+        }),
+      );
+    }
+  }
+
   /** The stick as a direction on the ground, under the camera right now. */
   const worldDrive = (): WorldVector =>
     stick ? stickToWorld(stickVec, world.cameraRig.azimuth) : WORLD_REST;
@@ -2625,6 +2713,8 @@ function main(): void {
     // again, because a retained message lives on the broker and a new one
     // has never heard of this world.
     onStatus: (state) => {
+      // The loading line's first milestone: the room answered (src/ui/loading.ts).
+      if (state === 'on') roomOn = true;
       if (state === 'on' && isHostNow()) announceEpochRetained(feed, wireEpoch(), phoneHatchMs);
     },
     onDrawing: (d) => {
