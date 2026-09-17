@@ -365,6 +365,11 @@ const MARK_LINT_TARGETS: { selector: string; name: string; exemptReason?: string
     exemptReason: 'qr modules are a machine-read mark, not ui chrome',
   },
   { selector: '.hover-name', name: 'hover name' },
+  /* The projection's top ten (src/ui/leaderboard.ts, 2026-09-17 user ask).
+   * Type and ONE hairline rule under the header — a constraint that is not
+   * a button does not survive a build, so the new block is sampled like
+   * every other piece of chrome rather than reviewed once. */
+  { selector: '.world-leaderboard', name: 'leaderboard' },
   {
     selector: '.world-minimap',
     name: 'minimap',
