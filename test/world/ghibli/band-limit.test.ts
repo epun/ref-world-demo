@@ -255,4 +255,116 @@ describe('the stock toon injection', () => {
     expect(measure).toBeGreaterThan(0);
     expect(measure).toBeLessThan(branch);
   });
+
+  it('does NOT widen a stock material cel ramp', () => {
+    // The ramp widening is opt-in per fragment, and the ground is the only
+    // shader that opts in. A creature's terminator, a prop's and an egg's are
+    // the character (TASTE §8) and stay exactly as hard as they ship — and a
+    // creature is never the thing that goes to camo.
+    const source = readFileSync(join(process.cwd(), 'src', 'world', 'toon.ts'), 'utf8');
+    const injection = source.slice(source.indexOf('const TOON_OPAQUE_GLSL'));
+    expect(injection).not.toContain('toonMeasureRamp');
+  });
+});
+
+describe('the cel ramp widens where the MESH outruns the frame', () => {
+  /**
+   * 2026-09-17, the third pass at the camo. Band-limiting every noise dial to
+   * zero did not empty the low-tilt frame, because the ramp itself is a hard
+   * two-tone step on `dot(normal, sun)` and the ground field's quad is 1.25
+   * world units — half a CSS pixel at the zoom floor. The step's own gradient
+   * is the only thing that can reach that, and it is the standard analytic
+   * antialias (three's own `geometryRoughness` measures the same quantity).
+   */
+  const chain = TOON_LIGHTING_GLSL;
+
+  it('measures the ramp input and the normal, off the derivative, once', () => {
+    expect(chain).toContain('void toonMeasureRamp(vec3 n)');
+    expect(chain.match(/void toonMeasureRamp\(/g)).toHaveLength(1);
+    // The ramp's own gradient, exactly — d(dot(n,s)) is dot(dn,s) — on both
+    // screen axes, worst one wins.
+    expect(chain).toContain('abs(dot(dFdx(n), uSunDir))');
+    expect(chain).toContain('abs(dot(dFdy(n), uSunDir))');
+  });
+
+  it('floors the band edge at the pixel, and is inert where nobody measured', () => {
+    expect(chain).toContain('float w = max(uBandSoft, gToonNdlPerPx);');
+    // Zero until a fragment opts in, so every other shader — and every
+    // framing where the quads resolve — gets `uBandSoft` exactly.
+    expect(chain).toContain('float gToonNdlPerPx = 0.0;');
+  });
+
+  it('caps the widening, because a widened threshold LEAKS', () => {
+    // Tried and reverted at 2.0 (scratch/tilt-after2): a threshold widened
+    // past the distance from its own input to its edge returns a partial
+    // everywhere, which washed the frame rather than cleaning it. 0.5 against
+    // a band edge of 0.22 is already a full gradient across the lit side.
+    expect(chain).toContain('const float TOON_RAMP_MAX = 0.5;');
+    expect(chain).toContain('min(ndl, TOON_RAMP_MAX)');
+  });
+
+  it('spans about two pixels, as one named number', () => {
+    expect(chain).toContain('const float TOON_RAMP_PX = 1.0;');
+  });
+
+  it('is opted into by the ground, and by nothing else', () => {
+    const dir = join(process.cwd(), 'src', 'world');
+    const every: [string, string][] = [
+      ['ghibli', 'ground.ts'],
+      ['ghibli', 'water.ts'],
+      ['ghibli', 'rocks.ts'],
+      ['ghibli', 'trees.ts'],
+      ['ghibli', 'clouds.ts'],
+      ['ghibli', 'grass.ts'],
+      ['ghibli', 'flowers.ts'],
+      ['katamari', 'material.ts'],
+    ];
+    const opted = every
+      .filter(([where, file]) =>
+        code(readFileSync(join(dir, where, file), 'utf8')).includes('toonMeasureRamp('),
+      )
+      .map(([, file]) => file);
+    expect(opted).toEqual(['ground.ts']);
+  });
+
+  it('leaves the ground rock swap a HARD cut — widening it was measured worse', () => {
+    // The same trick on `step(rockEdge, n.y)` washed four tenths of a grey
+    // rock over the whole map at the zoom floor (sea sd 3.07 -> 13.39,
+    // scratch/tilt-after2-phone-lowtilt.png): rock is rare, so the average of
+    // its threshold over a pixel is not the answer. Pinned so the next hand
+    // does not re-try it without reading why.
+    const source = createGroundMaterial().material.fragmentShader;
+    expect(source).toContain('1.0 - step(rockEdge, n.y)');
+    expect(source).not.toContain('gToonNormalPerPx');
+  });
+});
+
+describe('the props that were still unlimited', () => {
+  /**
+   * A walking creature's zoomed-out frame has all three of these in it, and
+   * each was a `toonFbm` with no band limit at all until 2026-09-17.
+   */
+  it('the rocks moss edge, the canopy break-up and the cloud belly', () => {
+    for (const [file, cycles, octaves] of [
+      ['rocks.ts', 2.5, 3],
+      ['trees.ts', 1.6, 2],
+      ['clouds.ts', 0.24, 3],
+    ] as [string, number, number][]) {
+      const source = code(
+        readFileSync(join(process.cwd(), 'src', 'world', 'ghibli', file), 'utf8'),
+      );
+      expect(source, `${file} band limit`).toContain(`toonBandLimit(${cycles})`);
+      // …and it fades to the fbm's own mean, which is what leaves the mark
+      // where it was drawn (src/world/ghibli/shared.ts `fbmMean`).
+      expect(source, `${file} mean`).toContain(`fbmMean(${octaves})`);
+      // …off a rate it measured itself, not just the frame's scalar.
+      expect(source, `${file} measures`).toContain('toonMeasurePixel(vToonWorldPos.xz);');
+      // Every `toonFbm` statement in the file rides a limit, same rule as the
+      // water's — so the next mark cannot arrive without one.
+      const naked = source
+        .split(';')
+        .filter((s) => s.includes('toonFbm(') && !s.includes('toonBandLimit('));
+      expect(naked, `${file} unlimited terms`).toEqual([]);
+    }
+  });
 });

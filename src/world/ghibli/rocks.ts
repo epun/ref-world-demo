@@ -33,7 +33,7 @@
 import { Color, ShaderMaterial } from 'three';
 import { GHIBLI } from '../../taste/tokens';
 import { TOON_LIGHTING_GLSL, TOON_VARYINGS_GLSL, toonUniforms } from '../toon';
-import { GG_VARIATION_GLSL } from './shared';
+import { GG_VARIATION_GLSL, fbmMean, ggFloat } from './shared';
 
 /** [D] Fleck strength — envpaint's own `speckle` default. */
 const SPECKLE = 0.55;
@@ -103,6 +103,12 @@ float ggVoronoiF1(vec2 p) {
 }
 
 void main() {
+  // How coarsely this fragment samples the world — first line, raw varying,
+  // outside every branch, because a derivative is undefined in non-uniform
+  // control flow (src/world/toon.ts toonUnitsPerPxAt). A scattered rock is a
+  // few pixels across at the zoom floor, so its own marks go past nyquist
+  // long before the ground's do.
+  toonMeasurePixel(vToonWorldPos.xz);
   vec3 n = normalize(vToonNormal);
 
   // Warm, sun-bleached top; cool blue-grey on the faces turned away.
@@ -118,7 +124,13 @@ void main() {
 
   // Moss caps the up-facing part of a rock standing in grass, with a broken,
   // hand-painted edge.
-  float mossEdge = toonFbm(vToonWorldPos.xz * 2.5, 3);
+  // Band-limited at its own 2.5 cycles a world unit, fading to its 3-octave
+  // MEAN (2026-09-17): a rock a few pixels across cannot show a broken edge,
+  // and past nyquist the step below flips per pixel instead. At the mean the
+  // cap keeps the average reach it was drawn with and simply stops being
+  // ragged (src/world/ghibli/shared.ts fbmMean).
+  float mossEdge = mix(${ggFloat(fbmMean(3))}, toonFbm(vToonWorldPos.xz * 2.5, 3),
+    toonBandLimit(2.5));
   float moss = step(0.5, vMoss * smoothstep(0.2, 0.7, n.y) * (0.55 + 0.95 * mossEdge));
   albedo = mix(albedo, uMoss, moss * 0.9);
 

@@ -93,6 +93,9 @@ describe('katamari material', () => {
       'toonBandLimit',
       'toonUnitsPerPxAt',
       'toonMeasurePixel',
+      // …and the widening the cel ramp takes where the MESH outruns the frame
+      // (2026-09-17, the ground's quad is half a pixel at the zoom floor).
+      'toonMeasureRamp',
     ];
     const shared = ['ggWindHash', 'ggWindNoise', 'ggVariation'];
     const own = ['katPosterize', 'katSrgbToLinear'];

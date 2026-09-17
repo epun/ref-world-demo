@@ -224,6 +224,14 @@ void main() {
   // under-reads the real sampling step by 1/sin(tilt) and let the meadow
   // blotch into camo at a low orbit (src/world/toon.ts toonUnitsPerPxAt).
   toonMeasurePixel(vToonWorldPos.xz);
+  // …AND HOW FAR THE CEL RAMP'S OWN INPUT MOVES ACROSS IT. The ground is the
+  // one surface in this world whose MESH outruns the frame: its field quad is
+  // 1.25 world units, which at the zoom floor is half a CSS pixel, so a
+  // two-tone step on dot(normal, sun) lands on opposite sides of its own edge
+  // in neighbouring pixels and beats into camo. This is the only shader that
+  // opts in — a creature's terminator and a prop's stay exactly as hard as
+  // they ship (src/world/toon.ts toonMeasureRamp).
+  toonMeasureRamp(normalize(vToonNormal));
   vec2 uv = vToonWorldPos.xz / GG_SIZE + 0.5;
   // The BAKE's own square (see GG_MAP_SIZE above). uv stays the painted
   // layers' — the grass weight, the dirt path and the scorch.
@@ -337,6 +345,16 @@ void main() {
   // Rock only on genuinely steep slopes, with a hard but noisy edge so gentle
   // hills stay green.
   float rockEdge = 0.55 + (ggGroundNoise(uv * 30.0) - 0.5) * 0.15;
+  // DELIBERATELY STILL A HARD STEP (2026-09-17, tried and reverted). Widening
+  // this cut to the pixel the way the cel ramp above is widened made the frame
+  // WORSE, measured: the average of a threshold over a pixel is only the right
+  // answer when both sides of it are equally likely, and rock is RARE -- at
+  // the zoom floor the widened step returned four tenths of a rock everywhere,
+  // which washed grey over the whole map (sea sd 3.07 -> 13.39,
+  // scratch/tilt-after2). A hard cut that flickers on a few steep faces is a
+  // better picture than a grey wash over all of them. If it is ever worth
+  // fixing, the fix is to fade the rock MIX toward its far-field value where
+  // the surface does not resolve, not to soften the edge.
   float rock = 1.0 - step(rockEdge, n.y);
   albedo = mix(albedo, uRock, rock * 0.85);
 

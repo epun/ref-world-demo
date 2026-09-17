@@ -39,7 +39,7 @@ import { PAINTED_SIZE } from '../painted';
 import { TOON_LIGHTING_GLSL, TOON_VARYINGS_GLSL, toonUniforms } from '../toon';
 import { WIND_FIELD_GLSL } from '../wind';
 import { ggShoreGlsl } from './shore';
-import { createWindUniforms, emptyLayerTexture, ggFloat } from './shared';
+import { createWindUniforms, emptyLayerTexture, FBM_GAIN, fbmMean, ggFloat } from './shared';
 
 /**
  * [D] World units of depth per world unit of distance from the shore. A
@@ -106,44 +106,6 @@ const LINE_KEEP = 0.78;
  * travel shoreward. */
 const SWELL_SPACING = 34;
 const SWELL_SPEED = 1.5;
-
-/**
- * THE MEAN OF `toonFbm(p, octaves)` — what a band-limited term FADES TO
- * (2026-09-17, the second camo report).
- *
- * Every octave is value noise on a uniform hash, so each averages 0.5 and the
- * fbm averages half its amplitude sum: 0.375 at two octaves, 0.4375 at three.
- *
- * WHY THE MEAN AND NOT ZERO. Each of the marks below is a wobble ON something
- * or a threshold OF something. Fading a wobble to zero would straighten the
- * edge it wobbles and MOVE it — the shallows' grade and the deep's step both
- * ride `wob`, so the sea would change colour as the camera pulled out. Fading
- * a threshold's noise to zero would erase the mark it thresholds rather than
- * average it — the foam rim's erosion at zero is a rim eroded by its full
- * `FOAM_ERODE`, a thin ring where the painted rim should be. At the mean, the
- * shallows keep their average width, the deep's step keeps its average place
- * and the rim keeps its average erosion: what is left at the zoom floor is
- * the flat wash the marks average to, which is what a painted sea two
- * centimetres across on the projection wall is anyway.
- *
- * The one exception is a SPARSE mark, whose threshold sits far above the mean
- * (`LINE_KEEP` 0.78, `FOAM_STREAK_KEEP` 0.62): at the mean it is below the
- * threshold everywhere and the mark fades out altogether, which is right — a
- * few short strokes that no longer cover a pixel should leave, not spread.
- */
-function fbmMean(octaves: number): number {
-  let amp = 0.5;
-  let sum = 0;
-  for (let i = 0; i < octaves; i++) {
-    sum += amp;
-    amp *= 0.5;
-  }
-  return sum * 0.5;
-}
-
-/** The `* 1.3333` every mark below applies to `toonFbm`, so the 2-octave form
- * spans 0–1. Named because the MEANS are derived from it. */
-const FBM_GAIN = 1.3333;
 
 const VERTEX = /* glsl */ `
 ${TOON_VARYINGS_GLSL}
@@ -369,6 +331,17 @@ void main() {
   float rim = 1.0 - smoothstep(0.0, ${ggFloat(FOAM_BAND)}, shore);
   // The erosion: the further out, the more noise a texel needs to still be
   // foam, so the rim is solid at the waterline and ragged at its inner edge.
+  //
+  // THE SEA'S CEL RAMP CANNOT ALIAS, and this edge is left alone. A fill is
+  // one flat plane, so dot(n, sun) is the same number over the whole body and
+  // the ground's ramp widening (src/world/toon.ts toonMeasureRamp) measures
+  // zero here — there is nothing for it to do. Widening THIS edge to the pixel
+  // instead was tried and reverted for the same reason the ground's rock cut
+  // was: a widened threshold leaks wherever its input sits within the new
+  // width of the edge, and out on the open sea that is everywhere, so a tenth
+  // of a foam went over the whole ocean and lifted it (sea mean 40.8 -> 53.8,
+  // scratch/tilt-after2). The rim is one pixel wide at the zoom floor and its
+  // jaggedness is a pixel's worth; the wash was the whole frame.
   float foam = smoothstep(0.0, 0.35, rim - ${ggFloat(FOAM_ERODE)} * (1.0 - foamPen));
   // The streaks: long thin tongues of the same pen, reaching out past the rim.
   // 1.6 cycles a unit ACROSS the flow against 0.22 along it — the streaks are
