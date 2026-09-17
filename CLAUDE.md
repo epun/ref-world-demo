@@ -142,8 +142,9 @@ The traps, in order of how easily they get violated:
   grows (user ask 2026-09-17, PLAN §7.6 — the growth is still ONE write on the root and the
   rider divides it back out, so don't put the creature back inside the clump), the
   ball-diameter readout on the phone's world view (`src/ui/size.ts`,
-  `CreatureManager.ballDiameter`), the handset's onboarding, loading and empty states
-  (`src/ui/onboard.ts`, `loading.ts`, `empty.ts`), and **the island** — `setIslandMode` in
+  `CreatureManager.ballDiameter`), the handset's contextual hints, loading and empty states
+  (`src/ui/hints.ts`, `loading.ts`, `empty.ts` — the hints are three marks in the live world
+  view, each dismissed by doing what it says; user ask 2026-09-17, no slideshow), and **the island** — `setIslandMode` in
   `src/world/landscape.ts`, off by default, so the coast, the sea and the beach do not exist
   on any other world. Don't make any of it unconditional again. The creature LOOK is not
   part of this gate.
