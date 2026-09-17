@@ -66,10 +66,15 @@ export const toonUniforms = {
   /** Albedo a steep slope takes under `TOON_SLOPE_ROCK` (the ground only). */
   uToonSlope: { value: new Color(GHIBLI.rock) },
   /**
-   * WORLD UNITS A SCREEN PIXEL at this framing — the band limit every
-   * world-space noise term in the chain rides (`toonBandLimit` below),
-   * written once a frame by `setToonPixelScale` from the camera rig's own
-   * frustum over the viewport height.
+   * WORLD UNITS A SCREEN PIXEL at this framing — the FLOOR under the band
+   * limit every world-space noise term in the chain rides (`toonBandLimit`
+   * below), written once a frame by `setToonPixelScale` from the camera rig's
+   * own frustum over the viewport height and the rig's own tilt.
+   *
+   * A per-frame scalar cannot say how coarsely THIS fragment is sampled —
+   * that is `toonUnitsPerPxAt`, off the screen-space derivative — so this is
+   * the floor and not the answer: it is what a shader that never measures
+   * reads, and the most a measured fragment can be band-limited LESS than.
    *
    * Defaulted to the default view's 0.05, so a frame drawn before the first
    * write — and every unit test — sees the framing the look was tuned at,
@@ -79,7 +84,37 @@ export const toonUniforms = {
 };
 
 /** Cache-key suffix. Bump with the glsl below, never with a uniform value. */
-const TOON_CACHE_SUFFIX = '+toon-v2';
+const TOON_CACHE_SUFFIX = '+toon-v3';
+
+/**
+ * [D] THE TILT THE BAND LIMIT'S RAMP WAS TUNED AT — true isometric elevation,
+ * `atan(1/√2)`, which is `ELEVATION` in src/world/camera.ts. Duplicated rather
+ * than imported: camera.ts pulls in the landscape and the motion tokens and
+ * this module is pasted into every shader in the world.
+ * `test/world/ghibli/band-limit.test.ts` pins that the two agree.
+ */
+const ISO_ELEVATION = Math.atan(1 / Math.SQRT2);
+
+/**
+ * [D] WHAT THE PER-FRAGMENT MEASURE READS AT THE DEFAULT FRAMING, in units of
+ * the screen-plane scalar — so dividing by it calibrates the measure and the
+ * documented 2.5 → 1.5 ramp keeps the meaning it was tuned with (2026-09-17).
+ *
+ * `uToonUnitsPerPx` is the SCREEN-PLANE units per pixel: correct for a surface
+ * facing the camera, and an under-estimate for the GROUND, whose depth axis is
+ * foreshortened by `1/sin(tilt)`. At the true iso tilt that is `√3` — so the
+ * ground has always been sampled 1.73× more coarsely along depth than the
+ * scalar says, and the ramp was tuned against the scalar with that already in
+ * it. Measuring the real rate per fragment and feeding it to the same ramp
+ * unchanged would therefore fade every term 1.73× too early, EVERYWHERE,
+ * including at the default view where the look is exactly what the user wants.
+ *
+ * So the measure is expressed as a RATIO to the default framing's: multiply the
+ * measured rate by this and a flat ground at the iso tilt reads back exactly
+ * `uToonUnitsPerPx`, a lower tilt reads proportionally more, and the default
+ * view is unchanged by construction rather than by a tolerance.
+ */
+const TOON_PX_CALIBRATION = Math.sin(ISO_ELEVATION);
 
 /** userData flag — a second `applyToon` on one material is a no-op, so a
  * caller that cannot tell whether a material has been through here (the
@@ -121,9 +156,67 @@ export const TOON_NOISE_GLSL = /* glsl */ `
  * second octave is 2.02x that at a quarter of the amplitude, so it crosses
  * nyquist half an octave earlier -- inside this fade rather than before it,
  * and a smooth fade has no cliff for that to fall off.
+ *
+ * ── AND THE RATE IS PER FRAGMENT, NOT PER FRAME (2026-09-17, second report) ─
+ *
+ * > User report, with a screenshot: "when I rotate the view too much on
+ * > mobile" the frame is covered in large soft blotches -- dark navy over the
+ * > sea, grey-lavender over the green land -- at the zoom floor, while the
+ * > default framing is fine.
+ *
+ * uToonUnitsPerPx is the SCREEN-PLANE rate, and the ground is not in the
+ * screen plane: its depth axis is foreshortened by 1/sin(tilt), so the real
+ * step between neighbouring samples along depth is that much longer than the
+ * scalar says -- 1.73x at the true iso tilt, 3.4x at the rig's lowest
+ * (ELEVATION_MIN 0.3, src/world/camera.ts). A lattice noise stepped at a
+ * little under its own cell spacing does not speckle, it BEATS: the fractional
+ * part of (step / cell) is a slow phase across the screen, and slow phase over
+ * a hard two-tone ramp is a large soft blotch. Which is the picture.
+ *
+ * No per-frame scalar can express that -- it is anisotropic, it depends on the
+ * tilt, and on a hillside or a prop face it differs fragment by fragment. So
+ * the rate is MEASURED where it is used, from the screen-space derivative of
+ * the world position, and the scalar is kept as the floor underneath it:
+ * nothing is ever band-limited LESS than it was before this block changed.
+ *
+ * dFdx/dFdy AND length(), not fwidth(). fwidth is |dFdx| + |dFdy| per
+ * COMPONENT, which mixes the two screen axes together: on the iso diagonal it
+ * reads 1.93x the scalar where the true worst axis is 1.73x, and it swings
+ * with the azimuth, so a camera merely ORBITING at a fixed zoom would fade
+ * terms in and out. The length of each axis' derivative is the actual world
+ * distance a pixel step covers, the max of the two is the worst axis, and both
+ * are azimuth-invariant on flat ground. (three's own alphahash chunk measures
+ * exactly this way.)
+ *
+ * DERIVATIVES ARE UNDEFINED IN NON-UNIFORM CONTROL FLOW, so this is called on
+ * the raw varying, once per fragment, at the top of main -- never inside a
+ * branch and never on an advected or wobbled copy of the position. The
+ * comparison below is the guard: a quad straddling a silhouette or a discarded
+ * neighbour can report a derivative that is not a number, and a > comparison is false for
+ * a NaN, so such a fragment falls back to the frame's scalar instead of
+ * carrying a NaN into the colour.
  */
+const float TOON_PX_CAL = ${TOON_PX_CALIBRATION.toFixed(6)};
+
+/** The measured rate for this fragment, or 0 before anything measured it.
+ * Zero is the honest default: toonBandLimit floors it at the uniform, so a
+ * shader that never measures behaves exactly as it did. */
+float gToonUnitsPerPx = 0.0;
+
+float toonUnitsPerPxAt(vec2 p) {
+  float worst = max(length(dFdx(p)), length(dFdy(p))) * TOON_PX_CAL;
+  // Floored at the frame's scalar and capped well above any real framing, so
+  // neither a NaN nor a silhouette quad's blow-up can reach the ramp.
+  return worst > uToonUnitsPerPx ? min(worst, uToonUnitsPerPx * 64.0) : uToonUnitsPerPx;
+}
+
+void toonMeasurePixel(vec2 p) {
+  gToonUnitsPerPx = toonUnitsPerPxAt(p);
+}
+
 float toonBandLimit(float cyclesPerUnit) {
-  float pxPerCycle = 1.0 / max(cyclesPerUnit * uToonUnitsPerPx, 1e-6);
+  float unitsPerPx = max(gToonUnitsPerPx, uToonUnitsPerPx);
+  float pxPerCycle = 1.0 / max(cyclesPerUnit * unitsPerPx, 1e-6);
   return smoothstep(1.5, 2.5, pxPerCycle);
 }
 
@@ -280,6 +373,11 @@ const TOON_VERTEX_GLSL = /* glsl */ `
 /** The one replacement — `outgoingLight` is overwritten just before three
  * writes it out, so nothing about the stock chain has to be understood. */
 const TOON_OPAQUE_GLSL = /* glsl */ `
+// How coarsely this fragment samples the world, BEFORE the branch: a
+// derivative is undefined in non-uniform control flow, and while uToonOn is
+// uniform this is the one line that has to be outside every branch whatever
+// the stock chain around it grows into (src/world/toon.ts toonUnitsPerPxAt).
+toonMeasurePixel(vToonWorldPos.xz);
 if (uToonOn > 0.5) {
   vec3 toonAlbedo = diffuseColor.rgb;
   #ifdef TOON_SLOPE_ROCK
@@ -362,16 +460,32 @@ export function setToonSun(dir: Vector3, color: Color, sky: Color): void {
 }
 
 /**
- * How many world units a screen pixel covers at this framing — the band limit
- * every world-space noise term in the cel chain rides (`toonBandLimit`), and
- * the one the ghibli ground's blade stipple rides too, since that shader
- * pastes this block and spreads these uniforms.
+ * How many world units a screen pixel covers at this framing — the FLOOR under
+ * the band limit every world-space noise term in the cel chain rides
+ * (`toonBandLimit`), and the one the ghibli ground's blade stipple rides too,
+ * since that shader pastes this block and spreads these uniforms.
  *
  * ONE value write for the whole frame, because every toon-injected material
  * shares `toonUniforms` by reference. scene.ts calls it beside the blade
  * field's own `setPixelScale`, from the same number: the camera rig's frustum
  * height over the viewport height.
+ *
+ * AND THE TILT, which is the half a scalar CAN carry (2026-09-17). The ground
+ * is sampled `1/sin(tilt)` more coarsely along the depth axis than across the
+ * screen, so a low orbit coarsens the whole frame without changing the zoom —
+ * and a shader that measures nothing per fragment (the rocks, the canopies,
+ * the clouds, the blades, the katamari props) has no other way to know. It is
+ * expressed as the RATIO to the tilt the ramp was tuned at, so the default
+ * view writes exactly the number it wrote before this argument existed:
+ * `sin(iso) / sin(tilt)` is 1 there, 1.95 at the rig's lowest orbit. The
+ * per-fragment derivative (`toonUnitsPerPxAt`) is the real fix; this is the
+ * floor, and on flat ground at the iso azimuth the two agree exactly.
+ *
+ * The default keeps every existing caller and every test honest: no tilt given
+ * is the iso tilt, which is a ratio of 1.
  */
-export function setToonPixelScale(unitsPerPx: number): void {
-  toonUniforms.uToonUnitsPerPx.value = Math.max(1e-4, unitsPerPx);
+export function setToonPixelScale(unitsPerPx: number, elevationRad: number = ISO_ELEVATION): void {
+  const tilt = Math.max(0.05, Math.sin(Math.max(1e-3, elevationRad)));
+  const foreshortened = unitsPerPx * (Math.sin(ISO_ELEVATION) / tilt);
+  toonUniforms.uToonUnitsPerPx.value = Math.max(1e-4, foreshortened);
 }

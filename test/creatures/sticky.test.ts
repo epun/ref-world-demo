@@ -123,7 +123,9 @@ describe('carryLimit / impactOf', () => {
    */
   it('lets a fresh creature take a stone its own size — the pile has to start', () => {
     const hatchling = 0.9;
-    expect(carryLimit(hatchling)).toBeCloseTo(hatchling, 12);
+    // A little over its own radius since 2026-09-17 (PICKUP_RATIO 1.15).
+    expect(carryLimit(hatchling)).toBeCloseTo(PICKUP_RATIO * hatchling, 12);
+    expect(carryLimit(hatchling)).toBeGreaterThan(hatchling);
     for (const stone of [0.5, 0.7, 0.9]) {
       expect(
         decideContact({

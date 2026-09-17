@@ -107,6 +107,44 @@ const LINE_KEEP = 0.78;
 const SWELL_SPACING = 34;
 const SWELL_SPEED = 1.5;
 
+/**
+ * THE MEAN OF `toonFbm(p, octaves)` — what a band-limited term FADES TO
+ * (2026-09-17, the second camo report).
+ *
+ * Every octave is value noise on a uniform hash, so each averages 0.5 and the
+ * fbm averages half its amplitude sum: 0.375 at two octaves, 0.4375 at three.
+ *
+ * WHY THE MEAN AND NOT ZERO. Each of the marks below is a wobble ON something
+ * or a threshold OF something. Fading a wobble to zero would straighten the
+ * edge it wobbles and MOVE it — the shallows' grade and the deep's step both
+ * ride `wob`, so the sea would change colour as the camera pulled out. Fading
+ * a threshold's noise to zero would erase the mark it thresholds rather than
+ * average it — the foam rim's erosion at zero is a rim eroded by its full
+ * `FOAM_ERODE`, a thin ring where the painted rim should be. At the mean, the
+ * shallows keep their average width, the deep's step keeps its average place
+ * and the rim keeps its average erosion: what is left at the zoom floor is
+ * the flat wash the marks average to, which is what a painted sea two
+ * centimetres across on the projection wall is anyway.
+ *
+ * The one exception is a SPARSE mark, whose threshold sits far above the mean
+ * (`LINE_KEEP` 0.78, `FOAM_STREAK_KEEP` 0.62): at the mean it is below the
+ * threshold everywhere and the mark fades out altogether, which is right — a
+ * few short strokes that no longer cover a pixel should leave, not spread.
+ */
+function fbmMean(octaves: number): number {
+  let amp = 0.5;
+  let sum = 0;
+  for (let i = 0; i < octaves; i++) {
+    sum += amp;
+    amp *= 0.5;
+  }
+  return sum * 0.5;
+}
+
+/** The `* 1.3333` every mark below applies to `toonFbm`, so the 2-octave form
+ * spans 0–1. Named because the MEANS are derived from it. */
+const FBM_GAIN = 1.3333;
+
 const VERTEX = /* glsl */ `
 ${TOON_VARYINGS_GLSL}
 
@@ -152,6 +190,31 @@ uniform float uWindStrength;
 uniform float uWindGust;
 
 void main() {
+  /*
+   * HOW COARSELY THIS FRAGMENT SAMPLES THE SURFACE [D] (2026-09-17).
+   *
+   * > User report, with a screenshot: at the phone's zoom floor with the view
+   * > rotated to a low angle, "dark navy blobs across the sea".
+   *
+   * Every mark below is anchored to the WORLD (see the note above the
+   * constants), which is the whole reason the surface does not spin against
+   * the view — and it is also why each of them has a fixed frequency in world
+   * units that the screen samples ever more coarsely as the camera pulls back
+   * and tilts down. Nothing here was band-limited at all before today: the
+   * 2026-09-17 ramp covered the cel chain and the ghibli ground, and the sea
+   * kept its blotches. The foam pen runs at 1.9 cycles a world unit and its
+   * top octave near 7.6, which at the floor's measured rate is a fifth of a
+   * pixel a cycle — a lattice stepped just under its own cell spacing, which
+   * beats into large soft blobs rather than speckling.
+   *
+   * FIRST LINE OF MAIN, on the RAW varying, outside every branch: a
+   * screen-space derivative is undefined in non-uniform control flow, and p
+   * is advected by the wind two lines down (src/world/toon.ts
+   * toonUnitsPerPxAt). Each term then fades to its own MEAN at its own base
+   * frequency (fbmMean), so the sea at the floor is the flat wash the marks
+   * average to instead of a camo pattern.
+   */
+  toonMeasurePixel(vToonWorldPos.xz);
   vec2 p = vToonWorldPos.xz;
   vec2 uv = p / GG_SIZE + 0.5;
   vec3 n = normalize(vToonNormal);
@@ -185,8 +248,13 @@ void main() {
 
   // The pen: two low-frequency wobbles, one still and one crawling with the
   // flow, so every hard edge below is hand-drawn rather than ruled.
-  float wob = toonFbm(p * 0.55, 2) * 1.3333 - 0.5;
-  float wobF = toonFbm(p * 0.8 - dir * (uWindTime * ${ggFloat(ADVECT)}), 2) * 1.3333 - 0.5;
+  // Both are ZERO-MEAN already (a 2-octave fbm averages 0.375, x1.3333 - 0.5
+  // is 0), so their band limit is a plain multiply: as the pen crosses nyquist
+  // every edge it wobbles straightens onto the contour it was drawn around
+  // rather than moving off it.
+  float wob = (toonFbm(p * 0.55, 2) * ${ggFloat(FBM_GAIN)} - 0.5) * toonBandLimit(0.55);
+  float wobF = (toonFbm(p * 0.8 - dir * (uWindTime * ${ggFloat(ADVECT)}), 2)
+    * ${ggFloat(FBM_GAIN)} - 0.5) * toonBandLimit(0.8);
 
   // ── the body: a translucent shallow over a dark teal deep ────────────────
   // THE SHALLOWS GRADE and the deep STEPS. Near a shore the bed shows through
@@ -211,7 +279,14 @@ void main() {
   // Big soft blotches of value drifting slowly across the whole surface: the
   // undulation a painted sea has instead of a normal map. Nothing here is a
   // step, and nothing arrests (TASTE §2.1).
-  float blotch = toonFbm(p / ${ggFloat(SWELL_SCALE)} - dir * (uWindTime * 0.06), 2) * 1.3333;
+  // A 15-unit blotch is the COARSEST term here — nearly five pixels a cycle
+  // even at the floor's measured rate — so its limit is inert at every framing
+  // the rig can reach and it is written for the same reason the others are:
+  // the next hand to change SWELL_SCALE does not have to notice.
+  float blotch = mix(
+    ${ggFloat(fbmMean(2) * FBM_GAIN)},
+    toonFbm(p / ${ggFloat(SWELL_SCALE)} - dir * (uWindTime * 0.06), 2) * ${ggFloat(FBM_GAIN)},
+    toonBandLimit(${ggFloat(1 / SWELL_SCALE)}));
   albedo *= 1.0 + (blotch - 0.5) * ${ggFloat(SWELL_VALUE * 2.0)};
   // …and, on the open sea only, the long shoreward swell on top of it.
   float swellPhase = (shore + uWindTime * ${ggFloat(SWELL_SPEED)}) / ${ggFloat(SWELL_SPACING)};
@@ -221,13 +296,30 @@ void main() {
   // Short, sparse strokes lying across the flow and drifting with it: a
   // stripe field cut into lengths, with most of the lanes thrown away so the
   // result is a few marks rather than a pattern.
-  float across = dot(p, perp) + toonFbm(p * 0.18, 2) * 7.0;
+  // The lanes' own wander fades to its MEAN, so a lane stays where it
+  // averages to be instead of straightening onto the perpendicular.
+  float across = dot(p, perp) + mix(
+    ${ggFloat(fbmMean(2) * 7.0)},
+    toonFbm(p * 0.18, 2) * 7.0,
+    toonBandLimit(0.18));
   float along = dot(p, dir) - uWindTime * ${ggFloat(LINE_DRIFT)};
   float laneId = floor(across / ${ggFloat(LINE_SPACING)});
   float lane = fract(across / ${ggFloat(LINE_SPACING)});
   float lineBody = 1.0 - smoothstep(0.0, ${ggFloat(LINE_THICK / LINE_SPACING)},
     abs(lane - 0.5 - wob * 0.06));
-  float dash = toonFbm(vec2(along / ${ggFloat(LINE_LENGTH)}, laneId * 3.7), 2) * 1.3333;
+  // THE DASH IS SAMPLED ACROSS THE LANES FASTER THAN ALONG THEM. Its first
+  // axis walks along / LINE_LENGTH — a fifth of a cycle a world unit — but
+  // its second steps 3.7 per lane, and a lane is LINE_SPACING wide, so
+  // crossing the lanes is 0.53 cycles a unit and goes first. The limit takes
+  // the worse of the two, and because LINE_KEEP is far above the mean the
+  // whole sparse stripe field fades OUT with it rather than closing up into a
+  // solid pattern — which also takes the 7-unit lane lattice itself out of the
+  // frame at the floor, where it is two pixels wide with a tenth-of-a-pixel
+  // stroke in it.
+  float dash = mix(
+    ${ggFloat(fbmMean(2) * FBM_GAIN)},
+    toonFbm(vec2(along / ${ggFloat(LINE_LENGTH)}, laneId * 3.7), 2) * ${ggFloat(FBM_GAIN)},
+    toonBandLimit(${ggFloat(3.7 / LINE_SPACING)}));
   float lines = lineBody * smoothstep(${ggFloat(LINE_KEEP)}, ${ggFloat(LINE_KEEP + 0.12)}, dash);
   lines *= smoothstep(${ggFloat(SHALLOW_OUT)}, ${ggFloat(SHALLOW_OUT * 2.0)}, shore);
   albedo = mix(albedo, uLine, lines * 0.7);
@@ -251,20 +343,43 @@ void main() {
   // Denser out on the deep water than in the shallows, which is where the
   // reference puts them.
   fleck *= mix(0.25, 1.0, smoothstep(2.0, ${ggFloat(DEEP_IN)}, shore));
+  // The one lattice term here that is not an fbm, under the same rule: the
+  // cells are SPARKLE_CELL apart, so a pixel at the floor steps over several
+  // of them and a pinpoint a twentieth of a unit across either lands in one or
+  // does not. That is salt, not a twinkle. It fades OUT rather than to a mean,
+  // because a sparse mark's mean is no mark (see fbmMean).
+  fleck *= toonBandLimit(${ggFloat(1 / SPARKLE_CELL)});
   albedo = mix(albedo, uHighlight, fleck);
 
   // ── the foam rim ─────────────────────────────────────────────────────────
   // A soft white rim hugging every land edge, its INNER edge eroded by noise
   // so it breaks up irregularly, plus a few thin streaks trailing off it into
   // the water. Both crawl with the flow; neither is a contour.
-  float foamPen = toonFbm(p * 1.9 - dir * (uWindTime * 0.3), 3) * 1.3333;
+  // THE FOAM PEN IS THE FINEST TERM ON THE SURFACE — 1.9 cycles a world unit
+  // with three octaves, so its top runs near 7.6 — and it is the one the
+  // screenshot shows: past nyquist the erosion below flips a HARD threshold
+  // per pixel and the rim's inner edge becomes a field of blobs rather than a
+  // ragged line. Faded to its 3-octave mean the erosion becomes a constant, so
+  // the rim keeps the average width it was drawn with and simply stops being
+  // ragged, which is all a rim two pixels wide can say anyway.
+  float foamPen = mix(
+    ${ggFloat(fbmMean(3) * FBM_GAIN)},
+    toonFbm(p * 1.9 - dir * (uWindTime * 0.3), 3) * ${ggFloat(FBM_GAIN)},
+    toonBandLimit(1.9));
   float rim = 1.0 - smoothstep(0.0, ${ggFloat(FOAM_BAND)}, shore);
   // The erosion: the further out, the more noise a texel needs to still be
   // foam, so the rim is solid at the waterline and ragged at its inner edge.
   float foam = smoothstep(0.0, 0.35, rim - ${ggFloat(FOAM_ERODE)} * (1.0 - foamPen));
   // The streaks: long thin tongues of the same pen, reaching out past the rim.
-  float streakPen = toonFbm(vec2(dot(p, perp) * 1.6, dot(p, dir) * 0.22
-    - uWindTime * 0.12), 2) * 1.3333;
+  // 1.6 cycles a unit ACROSS the flow against 0.22 along it — the streaks are
+  // long because they are sampled slowly one way and quickly the other, so the
+  // across axis is the one that crosses nyquist and the one the limit takes.
+  // FOAM_STREAK_KEEP is above the mean, so the tongues fade out with it.
+  float streakPen = mix(
+    ${ggFloat(fbmMean(2) * FBM_GAIN)},
+    toonFbm(vec2(dot(p, perp) * 1.6, dot(p, dir) * 0.22
+      - uWindTime * 0.12), 2) * ${ggFloat(FBM_GAIN)},
+    toonBandLimit(1.6));
   float streak = smoothstep(${ggFloat(FOAM_STREAK_KEEP)}, ${ggFloat(FOAM_STREAK_KEEP + 0.1)},
     streakPen) * (1.0 - smoothstep(${ggFloat(FOAM_BAND)}, ${ggFloat(FOAM_STREAK_OUT)}, shore));
   albedo = mix(albedo, uLace, clamp(foam + streak * 0.35, 0.0, 1.0));

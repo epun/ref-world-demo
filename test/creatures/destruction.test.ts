@@ -284,11 +284,13 @@ describe('chain reactions through the impact seam', () => {
   it('a falling chunk loosens the bush it lands on — nothing to do with a creature', () => {
     // Measured against the CHUNK's radius, not against anybody's pile: the
     // currency is `speed x radius` and the chunk is the thing that arrived.
+    // The chunk is smaller than the bush by more than PICKUP_RATIO's headroom,
+    // so the contact reads as an impact and not as a pickup.
     const { bodies, events } = simulatingWorld();
     const chunk: ImpactSide = {
       key: `${BUILDING}#2`,
       kind: 'chunk',
-      r: 0.8,
+      r: 0.7,
       x: -19.5,
       z: 0,
       rooted: false,

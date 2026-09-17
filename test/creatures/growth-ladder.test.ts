@@ -88,8 +88,8 @@ describe('the pickup ladder', () => {
   it('climbs: each rung is reachable by the carry limit alone', () => {
     /*
      * The rung is "reachable" when a ball grown on the rung BELOW it is big
-     * enough to carry this one. `PICKUP_RATIO` is 1, so that is simply
-     * `bodyR >= itemR` — no impact, no tier, no threshold.
+     * enough to carry this one: `bodyR * PICKUP_RATIO >= itemR` — no impact,
+     * no tier, no threshold.
      */
     let bodyR = BASE_R;
     const climbed: { what: string; items: number; metres: number }[] = [];
@@ -144,11 +144,12 @@ describe('the pickup ladder', () => {
   it('does not double a hatchling on its first stone', () => {
     // The ceiling on GROWTH_K, and the reason it is 4 rather than 7: the
     // biggest first pickup is a stone at the very top of the carry limit,
-    // which is the carrier's own radius (PICKUP_RATIO is 1).
+    // which is PICKUP_RATIO times the carrier's own radius (1.15 since the
+    // 2026-09-17 sticking reports — a little headroom, still not a doubling).
     const worst = growth(BASE_R, [vol(carryLimit(BASE_R))]);
-    expect(PICKUP_RATIO).toBe(1);
+    expect(PICKUP_RATIO).toBeCloseTo(1.15, 12);
     expect(worst).toBeLessThan(2);
-    expect(worst).toBeCloseTo(Math.cbrt(1 + GROWTH_K), 10);
+    expect(worst).toBeCloseTo(Math.cbrt(1 + GROWTH_K * PICKUP_RATIO ** 3), 10);
     // …and the ordinary first stone is a bulge, not a transformation.
     expect(growth(BASE_R, [vol(0.5)])).toBeLessThan(1.35);
     // But it IS visible — the whole point of raising the number.
