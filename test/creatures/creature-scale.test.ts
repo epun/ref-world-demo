@@ -260,7 +260,7 @@ describe('a creature does not grow with its pile', () => {
     manager.clearAll();
   });
 
-  it('rides the ball, un-rotated by the roll', () => {
+  it('rides at the ball’s centre, un-rotated by the roll', () => {
     const { scene, manager } = harness();
     manager.spawn('grower', fish, { hatchMs: 60_000, grown: true });
     manager.update(16, 1000);
@@ -276,10 +276,15 @@ describe('a creature does not grow with its pile', () => {
     const rider = riderOf(root);
     // The node hangs on the ROOT, above the pile — not inside the clump.
     expect(rider.parent).toBe(root);
-    // The creature's base is at the ball's top: `2R` above the root, which is
-    // the ball's underside (docs/PLAN.md §7.6).
+    /*
+     * The creature's base is at the ball's CENTRE: `R` above the root, which
+     * is the ball's underside (docs/PLAN.md §7.6). It was `2R`, the pole,
+     * until the user direction of 2026-09-17 — *"they should be at the center
+     * of the sphere of the objects"* — and the pole is what made a creature
+     * look like it was standing on top of everything it had collected.
+     */
     const lifted = worldPos(charGroupOf(root)).y - root.position.y;
-    expect(lifted).toBeCloseTo(2 * R * manager.rollBlend('grower'), 4);
+    expect(lifted).toBeCloseTo(R * manager.rollBlend('grower'), 4);
     expect(manager.rollBlend('grower')).toBeGreaterThan(0.9);
 
     /*
@@ -298,7 +303,7 @@ describe('a creature does not grow with its pile', () => {
     manager.clearAll();
   });
 
-  it('seats a PASSENGER on its carrier’s pile, not on the pole', () => {
+  it('seats a PASSENGER on its carrier’s pile, not inside a ball of its own', () => {
     const { scene, manager } = harness();
     manager.spawn('big', fish, { hatchMs: 60_000, grown: true });
     manager.spawn('small', snowman, { hatchMs: 60_000, grown: true });
@@ -323,7 +328,7 @@ describe('a creature does not grow with its pile', () => {
     expect(small.parent?.name).toBe('clump');
     expect(small.parent?.parent).toBe(big);
     // Its own pile is empty, so its own rider offset is zero: it sits in its
-    // seat rather than a body-length above it.
+    // seat rather than at the centre of a ball it is not carrying.
     expect(riderOf(small).position.y).toBeCloseTo(0, 6);
     // And it is still drawn at its own size — the carrier's growth is
     // countered for it by the clump (`localScaleOf`), and its own root is

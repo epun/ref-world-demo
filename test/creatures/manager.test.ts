@@ -58,6 +58,7 @@ import {
   passLimit,
   STICKY,
 } from '../../src/creatures/sticky';
+import { BALL_SIDE } from '../../src/creatures/ball';
 import { EGG_RADIUS } from '../../src/egg/egg';
 import type { Collider } from '../../src/physics/colliders';
 import {
@@ -1518,13 +1519,24 @@ describe('ground clearance — a big ball rides on its whole footprint', () => {
    * > characters are floating in space."*
    *
    * The creature came out of the pile that morning (the `rider` node: it
-   * keeps its drawn size and stands on the pile's north pole at `2R`), and
-   * what it came out standing on was a sphere nothing drew — the items are
-   * seated on the surface of a ball of radius `bodyR` and the creature is a
-   * diameter above the ground, with a dozen props and nothing else in
-   * between. These pin the mesh that was missing (src/creatures/ball.ts):
-   * where it is, how big it is, that the feet are on its pole at every value
-   * of the roll blend, and that a walking creature has none.
+   * keeps its drawn size), and what it came out standing on was a sphere
+   * nothing drew — the items are seated on the surface of a ball of radius
+   * `bodyR` and the creature was a diameter above the ground, with a dozen
+   * props and nothing else in between.
+   *
+   * > And then, the same day: *"the objects that collect around the creatures
+   * > sit under the creature. I think the creature should be at the center,
+   * > and then it should just be a giant rolling mass. We still have a glitch
+   * > where the creature is sitting on the Z-index above whatever objects they
+   * > collect. They should be at the center of the sphere of the objects."*
+   *
+   * So the pole seat is gone: the creature is at the ball's CENTRE, the shell
+   * is drawn `BackSide` so the near hemisphere never occludes it (no depth or
+   * render-order hack — that was the *"z-index"*), and an item on the near
+   * side of the pile is genuinely in front of it. These pin the mesh that was
+   * missing (src/creatures/ball.ts): where it is, how big it is, that the
+   * creature is at its middle at every value of the roll blend, and that a
+   * walking creature has none.
    */
 
   /** The manager's own `behaviorSeed`, which is what the float reads — the
@@ -1595,7 +1607,7 @@ describe('ground clearance — a big ball rides on its whole footprint', () => {
     return { R, r };
   }
 
-  it('draws a ball where the items are, with the creature on its pole', () => {
+  it('draws a ball where the items are, with the creature at its centre', () => {
     const manager = makeManager(FLAT_SURFACE, 'katamari');
     const root = rootOf(manager);
     const seated = seatOnBall(manager, 3, 3);
@@ -1627,29 +1639,57 @@ describe('ground clearance — a big ball rides on its whole footprint', () => {
       expect(out).toBeCloseTo(bodyR + seated.r * CLUMP_FIT, 4);
     }
 
-    // THE FEET ARE ON THE POLE: the creature's own group sits exactly one
-    // radius above the ball's centre. Not "about" — the two heights are the
-    // same statement (`growPass` writes `2 · baseR · roll` and
-    // `baseR · (2 · roll − 1)`), and a floating creature is what it looks
-    // like when they are not.
+    // THE CREATURE IS AT THE CENTRE: its own group sits exactly where the
+    // ball's centre is, which is also the point every seat above was measured
+    // from. Not "about" — the two heights are the same statement (`growPass`
+    // writes `baseR · roll` and `baseR · (2 · roll − 1)`, which meet at
+    // `roll` 1) — and being a diameter above it instead is the thing the
+    // report called a creature standing on top of its own pile.
     const rider = root.getObjectByName('rider');
     expect(rider).toBeDefined();
-    const feet = worldPos(rider!);
-    expect(feet.y - worldPos(ball!).y).toBeCloseTo(bodyR, 6);
-    // And it is a BALL off the ground, not a creature in the air: the whole
-    // sphere is above the paper and the creature is a diameter up.
+    const middle = worldPos(rider!);
+    expect(middle.distanceTo(worldPos(ball!))).toBeLessThan(1e-6);
+    // It is a BALL off the ground with something inside it: the sphere's
+    // underside is the root, so the creature is a radius up and every seat is
+    // a radius out from it.
     expect(root.position.y).toBeGreaterThanOrEqual(FLAT_SURFACE.sampleHeight(4, 4));
-    expect(feet.y - root.position.y).toBeCloseTo(2 * bodyR, 5);
+    expect(middle.y - root.position.y).toBeCloseTo(bodyR, 5);
+    /*
+     * AND NOTHING IS DRAWN OVER ANYTHING (the *"z-index"* half of the report).
+     * The near hemisphere is not drawn at all — the shell is `BALL_SIDE`,
+     * `BackSide` — so the creature at the centre needs no depth trick to be
+     * seen, and an item in front of it is in front of it. Every material in
+     * the rig keeps the depth test and the default render order.
+     */
+    expect(((ball as Mesh).material as { side: number }).side).toBe(BALL_SIDE);
+    const drawn: { depthTest: boolean; depthWrite: boolean; renderOrder: number }[] = [];
+    root.traverse((o) => {
+      const mesh = o as Mesh & { material?: { depthTest?: boolean; depthWrite?: boolean } };
+      if (!mesh.material) return;
+      drawn.push({
+        depthTest: mesh.material.depthTest !== false,
+        depthWrite: mesh.material.depthWrite !== false,
+        renderOrder: o.renderOrder,
+      });
+    });
+    expect(drawn.length).toBeGreaterThan(1);
+    for (const entry of drawn) {
+      expect(entry.depthTest).toBe(true);
+      expect(entry.depthWrite).toBe(true);
+      expect(entry.renderOrder).toBe(0);
+    }
     // The drawn creature is still its drawn size through all of it (the
     // 2026-09-17 rider ask — this fix must not undo it).
     expect(worldRadius(rider!)).toBeCloseTo(1, 6);
     manager.clearAll();
   });
 
-  it('keeps the feet on the pole through the whole roll ramp', () => {
-    // The ramp is the roll spring, ζ ≥ 1 over `MOTION.primaryMs`: the ball
-    // rises out of the ground as the creature rides up onto it, and on EVERY
-    // frame of that the sphere's north pole is under its feet.
+  it('keeps the creature inside the mass through the whole roll ramp', () => {
+    // The ramp is the roll spring, ζ ≥ 1 over `MOTION.primaryMs`: the mass
+    // rises out of the ground around the creature as the creature rides up
+    // into it, and on EVERY frame of that the creature is inside the shell —
+    // never outside it for a frame, which would be a creature briefly
+    // standing on its own pile again.
     const manager = makeManager(FLAT_SURFACE, 'katamari');
     const root = rootOf(manager);
     seatOnBall(manager, 3, 3);
@@ -1659,7 +1699,11 @@ describe('ground clearance — a big ball rides on its whole footprint', () => {
       const ball = ballOf(manager)!;
       const rider = root.getObjectByName('rider')!;
       const bodyR = manager.ballDiameter('ball') / 2;
-      expect(worldPos(rider).y - worldPos(ball).y).toBeCloseTo(bodyR, 6);
+      // Inside the sphere, by the arithmetic in `growPass`: the gap is
+      // `R · (1 − roll)` and the radius is `R`.
+      const gap = worldPos(rider).distanceTo(worldPos(ball));
+      expect(gap).toBeLessThanOrEqual(bodyR + 1e-9);
+      expect(gap).toBeCloseTo(bodyR * (1 - manager.rollBlend('ball')), 5);
       // …and the ball itself only ever rises out of the ground — a slide,
       // never a pop, and never past the pile's own origin.
       const centre = worldPos(ball).y - root.position.y;
@@ -1670,6 +1714,10 @@ describe('ground clearance — a big ball rides on its whole footprint', () => {
     });
     expect(rose).toBe(200);
     expect(manager.rollBlend('ball')).toBeGreaterThan(0.99);
+    // Settled: the creature is AT the centre, not merely inside.
+    expect(
+      worldPos(root.getObjectByName('rider')!).distanceTo(worldPos(ballOf(manager)!)),
+    ).toBeLessThan(0.01);
     manager.clearAll();
   });
 
@@ -1785,7 +1833,7 @@ describe('ground clearance — a big ball rides on its whole footprint', () => {
     manager.clearAll();
   });
 
-  it('floats the BALL, clearance and all, and the creature stays on its pole', () => {
+  it('floats the BALL, clearance and all, with the creature upright inside it', () => {
     const manager = makeManager(slope, 'katamari');
     const root = rootOf(manager);
     seatOnBall(manager, 3, 3);
@@ -1807,18 +1855,29 @@ describe('ground clearance — a big ball rides on its whole footprint', () => {
     );
     expect(root.position.y).toBeGreaterThan(grounded + FLOAT_LIFT_MIN - FLOAT_BOB);
     /*
-     * …and the rig is unchanged by any of it: the creature is still exactly a
-     * radius from the ball's centre — its DISTANCE now, not its height,
-     * because the tumble tilts the whole assembly together (the root's x and
-     * z). That is the point of putting the tumble there: the creature stays
-     * on the pole of its own ball while the pair of them leans, rather than
-     * the creature sliding off a ball that turned underneath it.
+     * …and the rig is unchanged by any of it: the creature is still at the
+     * ball's centre, which the tumble cannot move it off — the mass leans
+     * about a point the creature is standing on.
      */
     const ball = ballOf(manager)!;
     const rider = root.getObjectByName('rider')!;
-    expect(worldPos(rider).distanceTo(worldPos(ball))).toBeCloseTo(bodyR, 6);
-    // Really tilted, or the line above would be the grounded case again.
+    expect(worldPos(rider).distanceTo(worldPos(ball))).toBeLessThan(1e-6);
+    expect(bodyR).toBeGreaterThan(2.5);
+    // Really tilted, or the lines below would be the grounded case again.
     expect(Math.hypot(root.rotation.x, root.rotation.z)).toBeGreaterThan(0.01);
+    /*
+     * AND THE CREATURE IS UPRIGHT INSIDE IT. The mass leans; the thing at its
+     * middle does not, because a creature that rolled with the mass it is
+     * inside would be upside down half the time (`growPass` counters the
+     * root's orientation on the rider and puts the heading back).
+     */
+    rider.updateWorldMatrix(true, false);
+    const up = new Vector3(0, 1, 0).applyQuaternion(
+      rider.getWorldQuaternion(new Quaternion()),
+    );
+    expect(up.y).toBeCloseTo(1, 6);
+    expect(Math.hypot(up.x, up.z)).toBeLessThan
+      (1e-6);
     manager.clearAll();
   });
 

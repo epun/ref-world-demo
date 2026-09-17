@@ -146,10 +146,20 @@ The traps, in order of how easily they get violated:
   nothing was left drawing the sphere the items are seated on, so a small character stood on
   the north pole of nothing; one cel-shaded sphere per creature in the creature's own hue,
   radius 1 scaled to `baseR` on the ROOT so the growth carries it to `bodyR` in the same
-  single write, centre at `baseR·(2·roll − 1)` which is exactly `baseR` under the rider's
-  `2·baseR·roll` at every value of the blend — the two are one statement, keep them adjacent
-  — and buried under the ground at `roll` 0, so a walking creature shows no ball without
-  anything being switched off), the
+  single write, centre at `baseR·(2·roll − 1)`, and buried under the ground at `roll` 0 so a
+  walking creature shows no ball without anything being switched off.
+  ⚠️ **And the creature is INSIDE it, at the centre** — user direction the same day: *"I think
+  the creature should be at the center, and then it should just be a giant rolling mass … we
+  still have a glitch where the creature is sitting on the Z-index above whatever objects they
+  collect"*. So the rider's height is `baseR·roll` (the ball's centre = `clump.group`'s origin
+  = the point every seat is measured from), and the shell is drawn **`BackSide`**
+  (`BALL_SIDE`): the far inside is the fill behind the creature, the silhouette is still the
+  full circle, and nothing is ever drawn in front of the centre — that is what makes the
+  creature visible with NO depth or render-order hack, which is the glitch that was reported.
+  An item on the near side of the pile occludes the creature, and that is correct. Don't add
+  `depthTest: false`, don't touch `renderOrder`, and don't put the creature back on the pole.
+  The rider also counters the ROOT's lean (the zero-gravity tumble) so the mass tumbles and the
+  thing inside it stays upright), the
   **the map's GRAVITY** (`g` on the keyboard page, user ask 2026-09-17: *"i want a zero
   gravity mode … characters should float in space"* — a `world` event with `field: 'gravity'`
   on the scene layer, so it retains and restores like the landscape switch, with its own

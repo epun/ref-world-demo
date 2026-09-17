@@ -21,6 +21,12 @@
  *   VITE_WORLD=valiocon npm run build
  *   node scratch/ball-scale-shot.mjs            # scratch/ball-scale-1280x800.png
  *   SHOT=ball-centred node scratch/ball-scale-shot.mjs
+ *   SEAT=0 SHOT=walker node scratch/ball-scale-shot.mjs   # the UNLADEN twin
+ *
+ * `SEAT=0` seats nothing: the same creature on the same spot carrying
+ * nothing, which is the control frame for every claim about the ball — no
+ * pile, `roll` 0, the sphere parked under the ground, a creature standing on
+ * the paper (2026-09-17).
  */
 
 import { createRequire } from 'node:module';
@@ -161,7 +167,8 @@ await page.waitForTimeout(8_000);
  * of this script, and `r` is set to it. The measurement is repeated after the
  * fact and printed beside the table, so a change in the library says so.
  */
-const seated = await page.evaluate(
+const SEAT = process.env['SEAT'] !== '0';
+const seated = !SEAT ? { skipped: true } : await page.evaluate(
   ([id]) => {
     const m = window.__refworldCreatures;
     const baseR = m.ballDiameter(id) / 2;
@@ -252,8 +259,9 @@ const seated = await page.evaluate(
 );
 console.log('seated', seated);
 // The growth, the roll blend and the clearance are springs over
-// MOTION.primaryMs — and this is swiftshader, so give it a long settle.
-await page.waitForTimeout(45_000);
+// MOTION.primaryMs — and this is swiftshader, so give it a long settle. The
+// unladen twin has nothing to settle, so it takes the shorter wait.
+await page.waitForTimeout(SEAT ? 45_000 : 10_000);
 
 const seen = await page.evaluate(
   ([id]) => {

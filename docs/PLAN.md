@@ -1272,15 +1272,20 @@ frame by `growPass`:
 
 - `scale = 1 / growth`, so the creature's WORLD size is its drawn size at every pile size. The
   stalk, the topper and the eyes ride that because they are children of the character root;
-- `position.y = 2 · baseR · roll` in root-local units, which is `2R · roll` in the world: the
-  ball's north pole for a creature that is rolling — the root IS the ball's underside, see the
-  clearance below — and the ground for one that is still walking, since `roll` is 0 with an
-  empty pile and the offset is then exactly zero. The ramp between is the roll spring's, ζ ≥ 1,
-  so a creature slides up onto its own pile and never steps.
+- `position.y = baseR · roll` in root-local units, which is `R · roll` in the world: the
+  ball's CENTRE for a creature that is rolling — the root IS the ball's underside, see the
+  clearance below, and `clump.group` sits at `(0, baseR, 0)`, which is that centre and the point
+  every seat is measured from — and the ground for one that is still walking, since `roll` is 0
+  with an empty pile and the offset is then exactly zero. It was `2 · baseR · roll`, the POLE,
+  for a few hours on 2026-09-17; see **And the ball has a BODY** below for why the creature
+  moved to the middle and what that cost the shell. The ramp between is the roll spring's,
+  ζ ≥ 1, so a creature slides up into its own pile and never steps.
 
 It hangs on the root and **not** in the clump, so the roll does not turn it: a creature tumbling
 with the mass it is standing on would be upside down half the time, and the topper faces the
-heading instead, which is the root's and always was. The blend it reads is `slot.roll`, its OWN,
+heading instead, which is the root's and always was. (And since the creature moved to the
+CENTRE of the mass, the rider also counters the root's own lean — the zero-gravity tumble —
+for the same reason one level up.) The blend it reads is `slot.roll`, its OWN,
 never `rollOf` — a PASSENGER must sit in its seat on somebody else's pile rather than a
 body-length above it. And the same pass no longer writes `root.scale` for a carried slot at all:
 a passenger's root is one of the objects the carrier's clump counters, and the second write put
@@ -1292,10 +1297,32 @@ where the characters are floating in space."* It was not a placement bug — it 
 mesh. The creature came out of the pile that morning (above) and what it came out standing on
 was a sphere nothing drew: the items are seated on the SURFACE of a ball of radius `bodyR`
 (`clumpLocalOffset` — `R + itemR × CLUMP_FIT` out from the clump's origin) and the creature
-rides its north pole at `2R`, so with `GROWTH_K` at 4 and a session's ball ten to twenty
+rode its north pole at `2R`, so with `GROWTH_K` at 4 and a session's ball ten to twenty
 metres across, what the room saw was a small character hanging in the air over a thin shell of
 a dozen props. Reported from a phone that was a VIEWER while the projection hosted, which
 matters only in that the fix has to be on every page: `growPass` runs on all of them.
+
+**And the creature is at the ball's CENTRE** *(the same day, user direction)*: *"the objects
+that collect around the creatures sit under the creature. I think the creature should be at the
+center, and then it should just be a giant rolling mass. We still have a glitch where the
+creature is sitting on the Z-index above whatever objects they collect. They should be at the
+center of the sphere of the objects."* The pole seat is gone. Three things follow from it and
+they are the interesting part of this whole block:
+
+- the rider's height is `baseR · roll` rather than `2 · baseR · roll` — the ball's own centre,
+  which is also `clump.group`'s origin and therefore the point every seat is measured from;
+- an opaque sphere at `bodyR` would then swallow the creature, and the two ways out are a depth
+  or render-order hack (which is exactly the *"z-index"* the report is about) or a shell with
+  no near hemisphere. So the ball is drawn **`BackSide`** (`BALL_SIDE`): the far inside of the
+  mass is the fill behind the creature, the silhouette is still the full circle, nothing is
+  drawn in front of the centre, and an item seated on the NEAR side of the pile genuinely
+  occludes the creature — which is what being inside a mass looks like. Every material in the
+  rig keeps `depthTest`, `depthWrite` and `renderOrder` 0, and a test asserts that, because the
+  hack is the thing being avoided;
+- a creature at the centre is a creature that any lean of the ROOT turns with it, and the root
+  leans in zero gravity. So the rider carries the exact inverse of the root's orientation with
+  the heading put back (one quaternion, skipped entirely while the root is level): the mass
+  tumbles, the thing inside it stays upright.
 
 **`src/creatures/ball.ts`** is that mesh. One sphere per creature, radius 1 in its own space
 and scaled to `baseR`, hung on the **ROOT** — so the root's uniform scale, which is the
@@ -1303,36 +1330,37 @@ growth, carries it to `bodyR` and the growth is still ONE write (`bodyR`, the re
 the pickup reach, the shadow stamp, `positions()`, `ballDiameter` and now the drawn sphere,
 all off the same number). `growPass` writes two things on it, beside the rider's two:
 
-- `position.y = baseR · (2 · roll − 1)` root-local — the sphere's CENTRE, which is exactly
-  `baseR` under the rider's `2 · baseR · roll` at every value of the blend. The two numbers
-  are one statement and that is the whole invariant: the creature's feet are on the ball's
-  pole whatever the roll is doing, so it can never be off its own ball. At `roll` 1 the centre
-  is the clump's own origin `(0, baseR, 0)`, which is where every seat is measured from; at
-  `roll` 0 it is `−baseR`, which puts the whole sphere under the root and therefore under the
-  ground the root is standing on. So a WALKING creature shows no ball with nothing switched
-  off, and the ramp between is the roll spring's — the ball rises out of the ground as the
-  creature rides up onto it, ζ ≥ 1, a slide and never a `scale: 0 → 1`.
+- `position.y = baseR · (2 · roll − 1)` root-local — the sphere's CENTRE. At `roll` 1 that is
+  the clump's own origin `(0, baseR, 0)`, which is where every seat is measured from and, since
+  the centre direction, exactly where the rider is too: the creature is at the middle of the
+  mass and the two numbers meet there. At `roll` 0 it is `−baseR`, which puts the whole sphere
+  under the root and therefore under the ground the root is standing on — so a WALKING creature
+  shows no ball with nothing switched off. The ramp between is the roll spring's: the mass rises
+  out of the ground around the creature as the creature rides up into it, ζ ≥ 1, a slide and
+  never a `scale: 0 → 1`. The creature is inside the shell at every value of the blend, because
+  the gap between the two heights is `baseR · (1 − roll)` and the radius is `baseR`.
 - `visible`, off under a thousandth of the blend: the top of a buried sphere is tangent to the
   paper under the root, and on a slope that one point can clear the downhill ground.
 
 The LOOK is the creature's, not the environment's (TASTE §8): `palette.stalk` — the body hue
 pulled toward the brief's dark neutral, a tint of the one hue on the figure rather than a
-second one, and darker than the creature so the small bright character on top still reads as
-the character. Same material family as the creature (`createCharacterMaterial`) with
-`applyToon` chained last, so a ball cels with the props and the ground it is rolling over. And
-it is **not a primitive**: a low-frequency radial nudge, the egg shell's own recipe
-(`shellNoise`), because "no rectilinear or engineered geometry" is about form and a CAD sphere
-is a form. The nudge is INWARD ONLY and fades out over the top of the ball, so the north pole
-is exactly radius 1 — a bulge there would lift the creature off its own pile, and a dent would
-sink it in. Geometry is cached per SEED BUCKET (`BALL_SHAPES`, 8) at unit radius and shared,
-because a hundred creatures is a memory number (§7.1); the material is per creature and so is
-the draw call.
+second one, and darker than the creature so the character inside it reads against it. Same
+material family as the creature (`createCharacterMaterial`) with `applyToon` chained last, so a
+ball cels with the props and the ground it is rolling over. And it is **not a primitive**: a
+low-frequency radial nudge, the egg shell's own recipe (`shellNoise`), because "no rectilinear
+or engineered geometry" is about form and a CAD sphere is a form. The nudge is INWARD ONLY, so
+the radius never exceeds 1 and every seat is still on or outside the surface; it used to fade
+out over the north pole because the creature stood there, and since the centre direction it
+does not, so the whole mass is lumpy. Geometry is cached per SEED BUCKET (`BALL_SHAPES`, 8) at
+unit radius and shared, because a hundred creatures is a memory number (§7.1); the material is
+per creature and so is the draw call.
 
 Katamari only, in the same `becomeAlive` guard as the clump and the rider, and added AFTER the
 rider so the creature's own body is still the first Mesh under the root. `test/creatures/`
-pins the pole invariant across the whole roll ramp, the item seats against the drawn radius,
-an unladen creature standing on the ground with its ball hidden, and a world without the game
-having no such node at all; `test/net/two-page-room.test.ts` pins the viewer drawing the same
+pins the creature at the centre and inside the shell across the whole roll ramp, the item seats
+against the drawn radius, the depth state of every material in the rig, an unladen creature
+standing on the ground with its ball hidden, and a world without the game having no such node
+at all; `test/net/two-page-room.test.ts` pins the viewer drawing the same
 ball as the host from the same `stick`.
 
 **Walk first, roll with mass** *(2026-09-16)* **[D]**. User ask: *"let's have them start

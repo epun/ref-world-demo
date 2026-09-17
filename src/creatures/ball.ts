@@ -10,11 +10,19 @@
  * pile that day (*"we should not scale up the characters as they stick to
  * things"*, docs/PLAN.md §7.6, the `rider` node), and it came out standing on
  * a sphere that nothing draws: the items are seated on the surface of a ball
- * of radius `bodyR` (`clumpLocalOffset`, src/creatures/sticky.ts) and the
- * creature rides its north pole at `2R`, so at a `GROWTH_K` of 4 and a ball
- * ten to twenty metres across what the room saw was a small character hanging
- * in the air over a thin shell of a dozen props. Not a misplaced creature — a
- * MISSING MESH.
+ * of radius `bodyR` (`clumpLocalOffset`, src/creatures/sticky.ts), so at a
+ * `GROWTH_K` of 4 and a ball ten to twenty metres across what the room saw
+ * was a small character hanging in the air over a thin shell of a dozen
+ * props. Not a misplaced creature — a MISSING MESH.
+ *
+ * AND THE CREATURE IS AT ITS CENTRE (user direction, 2026-09-17: *"the objects
+ * that collect around the creatures sit under the creature. I think the
+ * creature should be at the center, and then it should just be a giant rolling
+ * mass. We still have a glitch where the creature is sitting on the Z-index
+ * above whatever objects they collect. They should be at the center of the
+ * sphere of the objects."*). The pole seat is gone — `growPass` puts the rider
+ * at the ball's CENTRE — which is what makes the shell's SIDE the load-bearing
+ * choice in this file: see `BALL_SIDE`.
  *
  * So this is the mesh: one sphere per creature, radius 1 in its own space and
  * scaled to `baseR`, hung on the ROOT so the root's growth carries it to
@@ -30,9 +38,9 @@
  *    (src/character/palette.ts), and specifically `palette.stalk` — the body
  *    hue pulled toward the brief's dark neutral. A tint of the one hue on the
  *    figure rather than a second one (*"color rarely mixes on one figure"*),
- *    and darker than the body so the small bright creature standing on top of
- *    it still reads as the character. The environment rule is untouched:
- *    nothing environmental takes a hue, and this is a creature.
+ *    and darker than the body so the creature inside it still reads as the
+ *    character against it. The environment rule is untouched: nothing
+ *    environmental takes a hue, and this is a creature.
  *  - the same material family as the creature (`createCharacterMaterial`)
  *    with the cel chain applied LAST (`applyToon`, src/world/toon.ts), so a
  *    ball lights with the props and the ground it is rolling over.
@@ -40,9 +48,11 @@
  *    makes it hand-formed, the same recipe the egg shell uses (src/egg/egg.ts
  *    `shellNoise`) and for the same reason — "no rectilinear or engineered
  *    geometry" (TASTE §2.6) is about form, and a CAD sphere is a form. The
- *    nudge is INWARD ONLY and fades out over the top of the ball, so the
- *    north pole is exactly radius 1: that is where the creature's feet are,
- *    and a bulge there would lift it off its own pile.
+ *    nudge is INWARD ONLY, so the radius never exceeds 1 and every seat
+ *    (`R + itemR × CLUMP_FIT`) is still on or outside the surface. It used to
+ *    fade out over the north pole because the creature stood there; it no
+ *    longer does, so the whole mass is lumpy — one shape rather than a shape
+ *    with a flat spot on top.
  *
  * KATAMARI ONLY. `becomeAlive` builds it inside the same `game === 'katamari'`
  * guard as the clump and the rider, so no other world has a ball to draw
@@ -52,11 +62,42 @@
  * without anything being switched off.
  */
 
-import { Mesh, SphereGeometry } from 'three';
+import { BackSide, Mesh, SphereGeometry } from 'three';
 import type { BufferGeometry, Material } from 'three';
 import { createCharacterMaterial } from '../character/mesh';
 import type { CreaturePalette } from '../character/palette';
 import { applyToon } from '../world/toon';
+
+/**
+ * [D] THE SHELL IS DRAWN FROM THE INSIDE — `BackSide`, and this is the whole
+ * answer to the user's *"z-index"* complaint (2026-09-17).
+ *
+ * With the creature at the ball's CENTRE, an opaque sphere of radius `bodyR`
+ * would simply swallow it: the near hemisphere is between the camera and the
+ * creature at every angle. The two ways out of that are a depth or
+ * render-order hack — draw the creature last, or turn its depth test off,
+ * which is exactly the glitch that was reported — or a shell that has no near
+ * hemisphere. `BackSide` culls the front faces, so what is drawn is the FAR
+ * inside of the mass: the fill behind the creature, the full circle of the
+ * silhouette (the far shell reaches the rim), and nothing at all in front.
+ *
+ * Everything else then falls out correctly with no special cases:
+ *
+ *  - the creature is nearer than the far shell, so it draws over it by the
+ *    ordinary depth test;
+ *  - an item seated on the NEAR side of the pile is genuinely in front of the
+ *    creature and genuinely occludes it, which is the part the report asked
+ *    for — a creature inside a mass is behind the near half of that mass;
+ *  - an item on the far side is behind the shell where the shell covers it and
+ *    pokes out past the rim where it does not, which is what a thing stuck
+ *    into the back of a ball looks like.
+ *
+ * The lighting reads the geometry's own outward normals (the cel chain's
+ * `vToonNormal`), which on the far inside face away from the camera — so the
+ * interior takes the shade tone and sits behind the creature as depth rather
+ * than competing with it. That is the look, not an accident of the cull.
+ */
+export const BALL_SIDE = BackSide;
 
 /**
  * [D] Segments. 32 × 20 is 1280 triangles a ball — a fifth of one prop's
@@ -77,14 +118,6 @@ export const BALL_SEGMENTS_H = 20;
  * radius out).
  */
 export const BALL_NUDGE = 0.06;
-
-/**
- * [D] Where the nudge has faded out entirely, as a fraction of the radius up
- * the ball. Above this the sphere is exact, because the creature's feet stand
- * on the north pole (`growPass`: the rider's height is `2 · baseR · roll`) and
- * a lump under them would read as a creature sunk into its own pile.
- */
-export const BALL_POLE_CLEAR = 0.8;
 
 /**
  * [D] How many distinct shapes exist, and the one reason there is a cache:
@@ -127,12 +160,11 @@ export function ballGeometry(seed: number): BufferGeometry {
     const x = position.getX(i);
     const y = position.getY(i);
     const z = position.getZ(i);
-    // INWARD ONLY: the radius never exceeds 1, so the seated items and the
-    // creature on the pole are on or outside the surface, never inside it.
-    // And faded out over the top, so the pole itself is exactly 1.
-    const pole = Math.min(1, Math.max(0, (y - BALL_POLE_CLEAR) / (1 - BALL_POLE_CLEAR)));
-    const fade = 1 - pole * pole * (3 - 2 * pole);
-    const s = 1 - BALL_NUDGE * ballNoise(x, y, z, bucket) * fade;
+    // INWARD ONLY: the radius never exceeds 1, so every seated item is on or
+    // outside the surface (`R + itemR × CLUMP_FIT`) rather than sunk into it.
+    // Over the whole ball, with no exemption at the pole — the creature is at
+    // the CENTRE now (2026-09-17), so nothing stands on the top of the shell.
+    const s = 1 - BALL_NUDGE * ballNoise(x, y, z, bucket);
     position.setXYZ(i, x * s, y * s, z * s);
   }
   position.needsUpdate = true;
@@ -158,6 +190,10 @@ export interface BallBody {
  */
 export function createBallBody(baseR: number, palette: CreaturePalette, seed: number): BallBody {
   const material: Material = createCharacterMaterial(palette.stalk);
+  // FROM THE INSIDE (see `BALL_SIDE`): the near hemisphere is never drawn, so
+  // the creature at the ball's centre is visible with no depth or
+  // render-order hack of any kind.
+  material.side = BALL_SIDE;
   // LAST, after nothing — this material owns no other injection — but through
   // the same call every other mesh in the world goes through, so one style
   // write reaches the ball with the props (src/world/toon.ts: chain, never

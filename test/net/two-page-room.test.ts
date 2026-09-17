@@ -959,6 +959,10 @@ describe('sticking, as the viewer sees it', () => {
    * everything. So the sphere has to be built on the page that ran no
    * physics, from the same `stick` event, at the same size as the host's:
    * `growPass` runs on every page for exactly this reason.
+   *
+   * Revised the same day with the centre direction (*"they should be at the
+   * center of the sphere of the objects"*): what both pages have to agree
+   * about is the creature sitting at the MIDDLE of the mass, not on its pole.
    */
   it('draws the same ball on the viewer as on the host', () => {
     const tree: Collider = {
@@ -1017,10 +1021,20 @@ describe('sticking, as the viewer sees it', () => {
       expect(bodyR, name).toBeGreaterThan(baseR * 1.5);
       // The drawn sphere IS the ball the readout reports…
       expect(ball!.getWorldScale(new Vector3()).x, name).toBeCloseTo(bodyR, 6);
-      // …and the creature is standing on its pole rather than above nothing.
+      // …and the creature is at the MIDDLE of it rather than above nothing.
       const rider = root.getObjectByName('rider')!;
-      const feet = rider.getWorldPosition(new Vector3()).y;
-      expect(feet - ball!.getWorldPosition(new Vector3()).y, name).toBeCloseTo(bodyR, 6);
+      const middle = rider.getWorldPosition(new Vector3());
+      // A tenth of a millimetre: the roll blend is a ζ ≥ 1 spring and at 120
+      // frames it is 0.99999 of the way in, so the gap is
+      // `bodyR × (1 − roll)` and not literally zero (the manager's own pins
+      // assert that relation exactly).
+      expect(
+        middle.distanceTo(ball!.getWorldPosition(new Vector3())),
+        name,
+      ).toBeLessThan(1e-3);
+      // A radius above the root, which is the ball's underside (to the same
+      // tenth of a millimetre, for the same reason).
+      expect(middle.y - root.position.y, name).toBeCloseTo(bodyR, 3);
     }
     // ONE ball, ONE size, on both pages — derived, never sent.
     expect(viewer.ballDiameter('mine')).toBeCloseTo(host.ballDiameter('mine'), 6);

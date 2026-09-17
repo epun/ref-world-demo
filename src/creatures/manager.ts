@@ -13,7 +13,7 @@
  * creature sinks and fades out over t.primary, then disposes.
  */
 
-import { Frustum, Group, Matrix4, Mesh, Quaternion, Sphere, Vector3 } from 'three';
+import { Euler, Frustum, Group, Matrix4, Mesh, Quaternion, Sphere, Vector3 } from 'three';
 import type { Object3D } from 'three';
 import {
   BehaviorAgent,
@@ -2125,6 +2125,13 @@ export function createCreatureManager(
   let lastNowMs = 0;
   const scratchVec = new Vector3();
   const scratchQ = new Quaternion();
+  /**
+   * Scratch for the rider's upright counter-rotation (`growPass`) — its own,
+   * not `scratchQ`, because that one is the sticky pass's and this runs in a
+   * different pass over the same frame.
+   */
+  const riderQ = new Quaternion();
+  const riderEuler = new Euler();
 
   /**
    * Placements THIS page has hidden, on a page with no `PropBodies`.
@@ -4028,12 +4035,15 @@ export function createCreatureManager(
         slot.roll = Math.min(1, Math.max(0, spring.update(dt)));
       }
       /*
-       * AND THE CREATURE ITSELF STAYS ITS DRAWN SIZE, on top of the pile
-       * (user ask, 2026-09-17: *"we should not scale up the characters as
-       * they stick to things"*).
+       * AND THE CREATURE ITSELF STAYS ITS DRAWN SIZE, at the CENTRE of the
+       * pile (user ask, 2026-09-17: *"we should not scale up the characters
+       * as they stick to things"*, then the same day: *"I think the creature
+       * should be at the center, and then it should just be a giant rolling
+       * mass … they should be at the center of the sphere of the objects"*).
        *
-       * Two writes on the one node `becomeAlive` built for it, and both are
-       * every frame because both read the growth, which is a spring:
+       * Three writes on the one node `becomeAlive` built for it, and all of
+       * them every frame because they read the growth and the blend, which
+       * are springs:
        *
        *   - the SCALE is `1 / growth`, which is `localScaleOf`'s arithmetic
        *     (src/creatures/clump.ts) applied to the creature instead of to a
@@ -4041,33 +4051,55 @@ export function createCreatureManager(
        *     circle, the pickup reach, the shadow stamp below, `positions()`
        *     and the size readout are all still that one write — and this
        *     divides it back out of the one thing that must not grow;
-       *   - the HEIGHT is `2 · baseR · roll` root-local, so `2R · roll` in
-       *     the world: the ball's north pole for a creature that is rolling
-       *     (the root IS the ball's underside, see `groundClearance`), the
-       *     ground for one that is still walking, and a ζ ≥ 1 slide between.
-       *     `slot.roll` and not `rollOf(slot)`: a PASSENGER reads its own
-       *     pile here, so a creature carried on somebody else's ball sits in
-       *     its seat rather than a body-length above it.
+       *   - the HEIGHT is `baseR · roll` root-local, so `R · roll` in the
+       *     world: the ball's CENTRE for a creature that is rolling (the root
+       *     is the ball's underside and `clump.group` sits at `(0, baseR, 0)`,
+       *     which is the point every seat is measured from), the ground for
+       *     one that is still walking, and a ζ ≥ 1 slide between. It used to
+       *     be `2 · baseR · roll`, the ball's north POLE — which is what the
+       *     report above is about: a creature standing on top of the mass has
+       *     the mass under it and has to be drawn over everything it collects.
+       *     `slot.roll` and not `rollOf(slot)`: a PASSENGER reads its own pile
+       *     here, so a creature carried on somebody else's ball sits in its
+       *     seat rather than inside a ball it is not carrying;
+       *   - and it stays UPRIGHT. A creature at the centre of the mass is a
+       *     creature that any lean of the ROOT would turn with it — and the
+       *     root leans in zero gravity (`floatLift`). So the rider carries the
+       *     exact inverse of the root's orientation with the heading put back,
+       *     leaving the creature's world rotation the pure yaw it has always
+       *     had: the mass tumbles, the thing inside it does not. Skipped
+       *     entirely when the root is level, which is every frame of every
+       *     world that is not weightless.
        */
       const rider = slot.rider;
       if (rider) {
         rider.scale.setScalar(1 / Math.max(1e-6, g));
-        rider.position.y = 2 * slot.baseR * slot.roll;
+        rider.position.y = slot.baseR * slot.roll;
+        if (root.rotation.x !== 0 || root.rotation.z !== 0) {
+          riderEuler.set(0, root.rotation.y, 0);
+          riderQ.setFromEuler(riderEuler);
+          rider.quaternion.copy(root.quaternion).invert().multiply(riderQ);
+        } else if (rider.quaternion.w !== 1) {
+          rider.quaternion.identity();
+        }
       }
       /*
-       * …AND THE BALL IT IS STANDING ON, which is the same statement seen
-       * from a radius lower down (2026-09-17, the floating report).
+       * …AND THE MASS THE CREATURE IS INSIDE (2026-09-17, the floating report
+       * and then the centre direction).
        *
-       * The sphere's CENTRE is `baseR · (2 · roll − 1)` root-local, exactly
-       * `baseR` under the creature's feet at every value of the blend — so
-       * the two numbers are one number and the creature can never be off its
-       * own ball. At `roll` 1 that is the clump's own origin, `(0, baseR, 0)`,
-       * which is where the items are seated; at `roll` 0 it is `−baseR`,
-       * which puts the whole sphere under the root and therefore under the
-       * ground the root is standing on. So a WALKING creature shows no ball
-       * without anything being switched off, and the ramp between is the roll
-       * spring's — the ball rises out of the ground as the creature rides up
-       * onto it, a slide and never a pop (TASTE §2.1, and never `scale: 0→1`).
+       * The sphere's CENTRE is `baseR · (2 · roll − 1)` root-local. At `roll`
+       * 1 that is the clump's own origin, `(0, baseR, 0)` — the point every
+       * seat is measured from and, since the centre direction, exactly where
+       * the rider is too: the creature is at the middle of the mass and the
+       * two numbers meet there. At `roll` 0 it is `−baseR`, which puts the
+       * whole sphere under the root and therefore under the ground the root is
+       * standing on, so a WALKING creature shows no ball without anything
+       * being switched off. The ramp between is the roll spring's — the mass
+       * rises out of the ground around the creature as the creature rides up
+       * into it, a slide and never a pop (TASTE §2.1, and never `scale: 0→1`)
+       * — and the creature is inside the shell at every value of it, because
+       * the gap between the two heights is `baseR · (1 − roll)` and the shell's
+       * radius is `baseR`.
        *
        * `visible` is belt and braces for the one place the ground cannot
        * hide it — the very top of a buried sphere is tangent to the paper
