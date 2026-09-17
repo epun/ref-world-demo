@@ -96,7 +96,8 @@ The traps, in order of how easily they get violated:
   `stick`/`drop`/`loose`/`settle`/`crack`/`shatter` (not installed, so those scene events are
   ignored), the creature manager's `simulating()`, clumps, kinematic bodies, growth and all
   six `apply*`, the ball-diameter readout on the phone's world view (`src/ui/size.ts`,
-  `CreatureManager.ballDiameter`), and **the island** — `setIslandMode` in
+  `CreatureManager.ballDiameter`), the handset's onboarding, loading and empty states
+  (`src/ui/onboard.ts`, `loading.ts`, `empty.ts`), and **the island** — `setIslandMode` in
   `src/world/landscape.ts`, off by default, so the coast, the sea and the beach do not exist
   on any other world. Don't make any of it unconditional again. The creature LOOK is not
   part of this gate.
