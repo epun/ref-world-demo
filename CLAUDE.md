@@ -51,11 +51,23 @@ The traps, in order of how easily they get violated:
   character's fill or the silhouette stops reading as one solid shape.
 - **UI is `icon` + `ruleLine` + `border` only.** No filled panels, no cards, no shadows under
   UI. That mark set is the world brief's #1 defining signal.
+  ⚠️ **Standing user override (2026-09-17):** three things on the world view stand on PAPER
+  inside the project's wavering hand-drawn hairline — the join code, the minimap, and now the
+  projection's leaderboard (`src/ui/leaderboard.ts`, TASTE §9a). One generator for all three
+  (`wavyBorderPoints` + `wavyBorderPath`), one inset (`mapBorderInset`), one 1.25 hairline,
+  and nothing else comes with it: still no shadow, still no radius, still no second fill. The
+  mark-set lint reports those fills as ruled exemptions rather than failures. And the
+  leaderboard's title is the ONE recorded capital in the product (`Leaderboard`, asked for
+  twice) — everything else, room codes and creature names included, is still lowercase.
 - **Shadows are hard-edged and flat-filled.** Single value, cut sharp, no penumbra, no PCF,
   no AO. Not Three.js default shadow mapping.
 - **No rectilinear or engineered geometry.** The isometric grid governs *placement*, never
   *form*.
 - **No uppercase type. Anywhere.** Room codes render `xkcd`, not `XKCD`.
+  ⚠️ One recorded exception since 2026-09-17: the leaderboard's title, `LEADERBOARD_TITLE`
+  in `src/ui/leaderboard.ts`, carrying the static gate's scoped `gate-allow-uppercase` hatch
+  on its own line (TASTE §9a). The scan itself is unchanged — don't widen it, and don't
+  spend the exception twice.
 
 ## Architecture
 
