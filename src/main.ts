@@ -978,8 +978,32 @@ function main(): void {
    */
   const katamariDriver: Pick<
     ReplayDriver,
-    'stick' | 'drop' | 'loose' | 'settle' | 'crack' | 'shatter'
+    'stick' | 'drop' | 'loose' | 'settle' | 'crack' | 'shatter' | 'gravity'
   > = {
+    /*
+     * THE MAP'S GRAVITY (user ask, 2026-09-17: *"i want a zero gravity mode
+     * where i can hit g on the keyboard and it turns off gravity for the map.
+     * characters should float in space"*).
+     *
+     * A `world` event with `field: 'gravity'`, so it already has the scene
+     * layer's retention and restore — but its own method, installed HERE with
+     * the other six and therefore only in the katamari world. On meridian and
+     * on the public world the bit arrives, finds no handler and does nothing:
+     * the same rule a `stick` follows.
+     *
+     * TWO SIDES, and both of them are presentation:
+     *   - the CREATURES, on every page, derived locally from this bit, the
+     *     slot id and the page's own clock (`CreatureManager.setGravity`,
+     *     src/creatures/gravity.ts). No height is ever sent.
+     *   - the STONES, only where there are any: `world.setGravity` reaches
+     *     the rapier world if this page has one and remembers the answer if
+     *     it does not have one yet (docs/PLAN.md §7.6 — a viewer holds no
+     *     bodies, and a phone host holds none either).
+     */
+    gravity: (on) => {
+      creatures.setGravity(on);
+      world.setGravity(on);
+    },
     /*
      * THE KATAMARI FOUR, applied (src/creatures/sticky.ts).
      *
@@ -1638,6 +1662,12 @@ function main(): void {
    * a reset, so a `reset` off the wire and the panel's own button do exactly
    * the same thing. */
   const clearSceneHere = (): void => {
+    // The world as it ships has its gravity (2026-09-17): a reset that left
+    // the room weightless would leave a state nothing in the log explains.
+    // Through the same driver method the event goes through, so there is one
+    // apply path and it is the katamari's — on every other world the method
+    // is not installed and this line does nothing.
+    replayDriver.gravity?.(true);
     world.setLandscape(false);
     writeLandscapeParam(false);
     world.setTerrain({ ...TERRAIN_DEFAULTS });
@@ -3512,6 +3542,21 @@ function main(): void {
   // The overlay is unchanged and still opens on `d` for local use.
   document.body.append(overlay);
 
+  /**
+   * Is the keyboard busy in a text field? (2026-09-17, with the `g` key.)
+   *
+   * The panel's own handlers ask this before they take a letter, and a
+   * one-letter binding that flips the whole room's gravity has to ask it too
+   * — typing a room name into a dev field must not lift the cast off the
+   * ground. The older bindings here (`d`, `t`, `h`, the emote digits) predate
+   * this and are left exactly as they are.
+   */
+  const isTypingInto = (target: EventTarget | null): boolean => {
+    const el = target as { tagName?: string; isContentEditable?: boolean } | null;
+    const tag = (el?.tagName ?? '').toLowerCase();
+    return tag === 'input' || tag === 'textarea' || el?.isContentEditable === true;
+  };
+
   let overlayOpen = false;
   const openOverlay = (): void => {
     overlayOpen = true;
@@ -3586,6 +3631,46 @@ function main(): void {
     if (event.key === 'd') {
       if (overlayOpen) closeOverlay();
       else openOverlay();
+      return;
+    }
+    /*
+     * ZERO GRAVITY (user ask, 2026-09-17: *"i want a zero gravity mode where
+     * i can hit g on the keyboard and it turns off gravity for the map.
+     * characters should float in space"*).
+     *
+     * A DEMO CONTROL, so it is not `isDev`-gated — it is meant to be pressed
+     * in front of a room, like `h` above and `shift+R` — but it IS
+     * katamari-gated: on meridian and on the public world `g` does nothing at
+     * all, because there is no game to be weightless (src/world/game.ts).
+     *
+     * IT TRAVELS AS A SCENE EVENT and is applied through the one driver. The
+     * recorder's tap is what puts it on the wire and in the store
+     * (`isSceneEvent`, src/session/scene.ts — `gravity` is one of
+     * `SCENE_WORLD_FIELDS`, so the retention and the restore that carry the
+     * landscape switch carry this too), and the local half is the driver's
+     * own method rather than a second write: one apply path, exactly as the
+     * invariant asks.
+     *
+     * The state it toggles is the MANAGER's, read back rather than kept here,
+     * so a bit that arrived off the wire and a key press cannot disagree
+     * about what the next press means.
+     *
+     * ⚠️ The ghost panel binds plain `g` too — its modal transform starts a
+     * blender-style TRANSLATE on a selected object (node_modules/ghost-panel/
+     * modal-transform.js), the same collision that made recovery `shift+R`.
+     * It only fires with the panel open AND a creature selected, and the ask
+     * named this key, so it stands: press escape to cancel the panel's move,
+     * and the gravity toggle has already happened.
+     */
+    if (event.key === 'g' && !overlayOpen && !isTypingInto(event.target)) {
+      if (katamari) {
+        const next = !creatures.gravity();
+        replayDriver.gravity?.(next);
+        // RECORDED, which is also what SENDS it: the recorder's one scene tap
+        // (see `session`'s `onEvent`) pushes it to the outbox and the store.
+        session.world('gravity', next ? 1 : 0);
+        say(next ? 'gravity on' : 'zero gravity — creatures adrift');
+      }
       return;
     }
     // Camera tour toggle. Manual stays the default on load.

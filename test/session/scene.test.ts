@@ -83,8 +83,12 @@ describe('which events are the scene', () => {
     expect(isSceneEvent({ k: 'drive', t: 0, id: 'a', mag: 0 })).toBe(false);
   });
 
-  it('the field list is the two that shape the ground', () => {
-    expect([...SCENE_WORLD_FIELDS]).toEqual(['landscape', 'terrain']);
+  it('the field list is the ones the whole room has to agree on', () => {
+    // `gravity` joined the two on 2026-09-17 (the zero-gravity ask): a room
+    // where one screen's creatures are in the air and another's are on the
+    // ground is two worlds, exactly like a landscape switch. Its own pins are
+    // in test/session/gravity.test.ts.
+    expect([...SCENE_WORLD_FIELDS]).toEqual(['landscape', 'terrain', 'gravity']);
   });
 });
 

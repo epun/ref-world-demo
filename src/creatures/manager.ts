@@ -62,6 +62,7 @@ import { sanitizeGame, type WorldGame } from '../world/game';
 import { resolveName } from './naming';
 import { createClump, type Clump, type StuckItem } from './clump';
 import { createBallBody, type BallBody } from './ball';
+import { FLOAT_SETTLED, floatBob, floatHeight, floatTumble } from './gravity';
 import {
   carryLimit,
   clearanceLift,
@@ -796,6 +797,37 @@ interface Slot {
    * edge is a slide and not a step. Null until alive, and in every world but
    * the katamari. */
   liftSpring: Spring | null;
+  /**
+   * HOW FAR THIS CREATURE IS FLOATING, world units (user ask, 2026-09-17:
+   * *"i want a zero gravity mode … characters should float in space"*).
+   *
+   * The second presentation offset on the same one Y write, beside `lift`:
+   * `blend × (floatHeight(seed) + floatBob(t, seed))`
+   * (src/creatures/gravity.ts). 0 while the world has its gravity, and 0 to
+   * the float in every world without the game.
+   *
+   * NEVER ON THE WIRE, exactly like `lift` and the roll blend: what travels
+   * is the one bit that says the map is weightless, as a scene event
+   * (docs/PLAN.md §7.6), and every page derives its own float from it.
+   */
+  float: number;
+  /**
+   * The ζ ≥ 1 blend `float` rides, over `MOTION.primaryMs` — 0 grounded, 1
+   * weightless. Lift-off is a slide up and `g` again is a slow settle back
+   * down; the spring is the only thing with a target, so neither can
+   * overshoot or bounce (TASTE §2.1, confidence 1.00). Null until alive, and
+   * in every world but the katamari.
+   */
+  floatSpring: Spring | null;
+  /**
+   * The blend itself, 0…1 — a readout of the spring above.
+   *
+   * Separate from `float` on purpose: `float` carries the ambient bob, so it
+   * rises and falls once the creature is up there, while THIS is monotone
+   * from the moment `g` is pressed to the moment it settles. It is what a
+   * test asserts the slide on and what the panel would show.
+   */
+  floatBlend: number;
   /** When this carrier last shed something, on the loop's clock. Null until
    * it has. The `DROP_MIN_GAP_MS` gate, so a pile does not unravel in one
    * frame against a tree. */
@@ -1304,6 +1336,47 @@ export interface CreatureManager {
    */
   groundLift(id: string): number;
   /**
+   * TURN THE MAP'S GRAVITY OFF, OR BACK ON (user ask, 2026-09-17: *"i want a
+   * zero gravity mode where i can hit g on the keyboard and it turns off
+   * gravity for the map. characters should float in space"*).
+   *
+   * `false` = weightless. The one control in this pair — every creature's
+   * float is DERIVED from it (`floatOffset`), never set from outside, so a
+   * page cannot be told where a creature is hanging and Y stays off the wire
+   * (docs/PLAN.md §7.6).
+   *
+   * What sets it is the `gravity` scene event, applied through the replay
+   * driver on every page exactly like a landscape switch — so a phone that
+   * joins later, and a refreshed projection healing itself, come up in the
+   * same gravity. Nothing else may call it.
+   *
+   * KATAMARI ONLY (2026-09-15 ruling, src/world/game.ts): in a world with no
+   * game this is a no-op and `gravity()` stays true, so no other world can
+   * have its creatures lifted off the ground by an event off a shared broker.
+   */
+  setGravity(on: boolean): void;
+  /** Does this world have its gravity? True unless something turned it off —
+   * and always true in a world without the game. */
+  gravity(): boolean;
+  /**
+   * How far this creature is FLOATING above where it would otherwise stand,
+   * world units — the zero-gravity presentation, derived on every page from
+   * the flag, the slot id and this page's own clock
+   * (src/creatures/gravity.ts).
+   *
+   * A readout of the same family as `groundLift`, and it carries the ambient
+   * bob: it rises and falls slowly while a creature is up there. 0 with the
+   * world's gravity on, 0 for an id nobody holds, and 0 for the whole of any
+   * world without the game.
+   */
+  floatOffset(id: string): number;
+  /**
+   * …and the blend behind it, 0…1 — monotone from the press to the settle,
+   * because it is a ζ ≥ 1 spring and nothing else writes it. What a test
+   * asserts the slide on (the offset above bobs, so it cannot be).
+   */
+  floatBlend(id: string): number;
+  /**
    * Top ground speed this creature would reach under a full push, u/s.
    *
    * A readout of `DRIVE_SPEED × driveMult(blend)`: the walk ceiling for a
@@ -1427,6 +1500,22 @@ export function createCreatureManager(
   let orderCounter = 0;
   let timersPaused = false;
   let aiPaused = false;
+  /*
+   * IS THE MAP WEIGHTLESS? (user ask, 2026-09-17: *"i want a zero gravity
+   * mode where i can hit g on the keyboard and it turns off gravity for the
+   * map. characters should float in space"*).
+   *
+   * One bit for the whole world, set by `setGravity` from the scene event and
+   * from nowhere else — never derived here, because a room where one page
+   * decided this for itself would be two worlds (docs/PLAN.md §7.6). Every
+   * creature's float is then derived FROM it locally, which is what keeps Y
+   * off the wire (`floatLift`, src/creatures/gravity.ts).
+   *
+   * False in every world without the game: `setGravity` refuses to set it,
+   * so the float springs sit at rest at 0 forever and nothing in the frame
+   * changes by a float.
+   */
+  let zeroGravity = false;
   /**
    * THE TOP of this world's speed range — the number the ghost panel's
    * wander/speed slider holds and `wanderSpeed()` reports.
@@ -1700,6 +1789,10 @@ export function createCreatureManager(
     slot.liftSpring?.dispose();
     slot.liftSpring = null;
     slot.lift = 0;
+    slot.floatSpring?.dispose();
+    slot.floatSpring = null;
+    slot.float = 0;
+    slot.floatBlend = 0;
     slot.clump?.dispose();
     slot.clump = null;
     slot.rider = null;
@@ -1796,6 +1889,18 @@ export function createCreatureManager(
        * confidence 1.00 whether the ground made it or we did.
        */
       slot.liftSpring = new Spring(0, { settleMs: MOTION.primaryMs });
+      /*
+       * AND WHETHER THE MAP HAS ITS GRAVITY, from rest (user ask, 2026-09-17:
+       * *"i want a zero gravity mode where i can hit g on the keyboard and it
+       * turns off gravity for the map. characters should float in space"*).
+       *
+       * From 0 — the ground — and retargeted at 1 for as long as the shared
+       * flag says the world is weightless, so a creature that hatches into a
+       * zero-gravity room SLIDES up off the paper rather than appearing in
+       * mid-air, and one that is already up there settles back down the same
+       * way round. ζ ≥ 1 like every spring here (src/creatures/gravity.ts).
+       */
+      slot.floatSpring = new Spring(0, { settleMs: MOTION.primaryMs });
       slot.clump = createClump(slot.baseR);
       root.add(slot.clump.group);
       /*
@@ -2789,7 +2894,18 @@ export function createCreatureManager(
      * pass stands off while it runs), and the stand-in wants the ground it is
      * rising to rather than a body sinking under the field for a second.
      */
-    const y = surface.sampleHeight(root.position.x, root.position.z) + slot.lift + slot.bodyR;
+    /*
+     * …AND THE FLOAT, for the same reason the clearance is in here
+     * (2026-09-17, zero gravity): the stand-in's centre is the DRAWN ball's
+     * centre, and a floating ball whose collider stayed on the ground would
+     * be picking things up with a body several metres under the sphere on
+     * screen. 0 with the world's gravity on.
+     */
+    const y =
+      surface.sampleHeight(root.position.x, root.position.z) +
+      slot.lift +
+      slot.float +
+      slot.bodyR;
     if (!slot.kinematic) {
       const body = physics.addRigidBody(
         rapier.RigidBodyDesc.kinematicPositionBased().setTranslation(
@@ -3816,6 +3932,66 @@ export function createCreatureManager(
     return slot.lift;
   }
 
+  /**
+   * ZERO GRAVITY — how far above everything else this creature is floating
+   * this frame, and the tumble that goes with it.
+   *
+   * > User ask, 2026-09-17: *"i want a zero gravity mode where i can hit g on
+   * > the keyboard and it turns off gravity for the map. characters should
+   * > float in space."*
+   *
+   * THE SECOND OFFSET ON THE ONE Y WRITE, beside `groundClearance` and for
+   * the same reason: the Surface seam owns where the ground is (PLAN §7.2),
+   * locomotion never touches Y, and "something other than the ground moved
+   * this creature up" belongs in the frame's single ground pass rather than
+   * in a second writer. x/z, the resolve and the pure pickup overlap are all
+   * untouched — the joystick still drives a floating creature about and it
+   * still rolls things up by overlap, which is the fun.
+   *
+   * DERIVED, NEVER SENT. What travels is one bit on a scene event; the
+   * altitude is `floatHeight(behaviorSeed(id))` so every page puts the same
+   * creature at the same height, and the bob and the tumble are that page's
+   * own clock (src/creatures/gravity.ts). The blend is a ζ ≥ 1 spring, so
+   * lift-off slides and the settle back down slides, and because the WHOLE
+   * offset is multiplied by it a grounded world is exactly 0 again — the
+   * placement that shipped, to the float.
+   *
+   * The tumble is written HERE rather than returned because it is two more
+   * numbers about the same one presentation, and the root's x and z are the
+   * only rotations nothing else owns (its y is the heading).
+   */
+  function floatLift(slot: Slot, dt: number, nowMs: number): number {
+    const spring = slot.floatSpring;
+    const root = slot.characterRoot;
+    if (!spring || !root) return 0;
+    spring.retarget(zeroGravity ? 1 : 0);
+    const blend = Math.min(1, Math.max(0, spring.update(dt)));
+    if (blend <= FLOAT_SETTLED) {
+      /*
+       * Exactly level and exactly on the ground: a world with its gravity on
+       * is the world that shipped, to the float, and a residual milliradian
+       * of tilt on every creature would be a change nobody asked for. A
+       * ζ ≥ 1 spring never actually arrives, so `FLOAT_SETTLED` is where
+       * arriving is called arriving (src/creatures/gravity.ts) — a
+       * ten-thousandth of the blend, which is 0.0008 world units of height.
+       */
+      slot.floatBlend = 0;
+      slot.float = 0;
+      root.rotation.x = 0;
+      root.rotation.z = 0;
+      return 0;
+    }
+    slot.floatBlend = blend;
+    const seed = behaviorSeed(slot.id);
+    const tumble = floatTumble(nowMs, seed);
+    root.rotation.x = tumble.x * blend;
+    root.rotation.z = tumble.z * blend;
+    // The bob rides ON the height, so the ambient drift fades in and out with
+    // the blend and nothing arrests at either end (TASTE §3).
+    slot.float = Math.max(0, blend * (floatHeight(seed) + floatBob(nowMs, seed)));
+    return slot.float;
+  }
+
   function growPass(dt: number): void {
     for (const slot of slots.values()) {
       const clump = slot.clump;
@@ -4005,6 +4181,9 @@ export function createCreatureManager(
         rollSpring: null,
         lift: 0,
         liftSpring: null,
+        float: 0,
+        floatSpring: null,
+        floatBlend: 0,
         passengers: new Set<string>(),
         lastDropMs: null,
         kinematic: null,
@@ -4763,8 +4942,16 @@ export function createCreatureManager(
             // (`groundClearance`), so a big ball starts sinking from where it
             // was rather than dropping its own clearance on the first frame
             // of the slide. 0 for an egg and in every world without the game.
+            // …plus the float, so a creature that retires in zero gravity
+            // sinks from where it was HANGING rather than dropping its whole
+            // altitude on the first frame of the slide (2026-09-17). 0 with
+            // the gravity on, and 0 for an egg and every world without the
+            // game, exactly like the clearance beside it.
             root.position.y =
-              surface.sampleHeight(root.position.x, root.position.z) + slot.lift - 2.6 * ease;
+              surface.sampleHeight(root.position.x, root.position.z) +
+              slot.lift +
+              slot.float -
+              2.6 * ease;
           }
           if (t >= 1) disposeSlot(slot);
         }
@@ -4965,8 +5152,18 @@ export function createCreatureManager(
          * hatchling and every creature in the public world stand on exactly
          * the height they always did.
          */
+        /*
+         * …AND THE FLOAT, which is the OTHER thing added to this write and
+         * the only other one (`floatLift`, 2026-09-17 — the zero-gravity
+         * ask). Same rules as the clearance: derived on every page, never
+         * sent, 0 to the float while the world has its gravity and 0 in every
+         * world without the game. A creature drifting in zero gravity is
+         * still placed by the one pass that owns Y.
+         */
         root.position.y =
-          surface.sampleHeight(root.position.x, root.position.z) + groundClearance(slot, dt);
+          surface.sampleHeight(root.position.x, root.position.z) +
+          groundClearance(slot, dt) +
+          floatLift(slot, dt, nowMs);
       }
 
       /*
@@ -5248,6 +5445,29 @@ export function createCreatureManager(
     groundLift(id): number {
       const slot = slots.get(id);
       return slot ? slot.lift : 0;
+    },
+
+    setGravity(on): void {
+      // THE GAME FIRST, like every other presentation in this file: a world
+      // with no pickups is a world nobody asked to make weightless, and a
+      // `gravity` event off the shared topic must not be able to lift
+      // meridian's creatures off the ground.
+      if (!katamari) return;
+      zeroGravity = !on;
+    },
+
+    gravity(): boolean {
+      return !zeroGravity;
+    },
+
+    floatOffset(id): number {
+      const slot = slots.get(id);
+      return slot ? slot.float : 0;
+    },
+
+    floatBlend(id): number {
+      const slot = slots.get(id);
+      return slot ? slot.floatBlend : 0;
     },
 
     driveCeiling(id): number {

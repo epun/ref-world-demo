@@ -47,8 +47,17 @@ import type {
  * here: they are look, they are cheap to set on each page, and a room where
  * one person's phone re-tints everybody else's is a worse room. What has to
  * agree is the shape of the land people's creatures are standing on.
+ *
+ * `gravity` IS ONE OF THEM (2026-09-17, user ask: *"i want a zero gravity mode
+ * where i can hit g on the keyboard and it turns off gravity for the map"*).
+ * It is not look — a room where one screen's creatures are in the air and
+ * another's are on the ground is two worlds, exactly like a landscape switch,
+ * and it is a DIAL in the sense this layer means: a state with a last value,
+ * so `compactScene` gives it retention for free and a phone that joins an
+ * hour later comes up weightless. What each page then does with the bit is
+ * local and derived (`src/creatures/gravity.ts`): no height is ever sent.
  */
-export const SCENE_WORLD_FIELDS = ['landscape', 'terrain'] as const;
+export const SCENE_WORLD_FIELDS = ['landscape', 'terrain', 'gravity'] as const;
 
 export type SceneWorldField = (typeof SCENE_WORLD_FIELDS)[number];
 
@@ -283,6 +292,22 @@ function offset(value: unknown): number | null {
 
 function readWorldScene(rec: Record<string, unknown>, t: number): SceneEvent | null {
   const field = rec['field'];
+  /*
+   * THE MAP'S GRAVITY, on or off — read exactly like the landscape switch
+   * below it, down to accepting a boolean so a hand-written log reads the way
+   * it looks. 1 is the world with its gravity; 0 is weightless.
+   *
+   * Narrowed here and IGNORED on every world but the katamari: the replay
+   * driver installs a `gravity` handler only there (src/main.ts), the same
+   * rule `stick`/`drop`/`loose` follow, so a bit off a public broker cannot
+   * lift meridian's creatures off the ground.
+   */
+  if (field === 'gravity') {
+    const value = rec['value'];
+    if (value === true || value === 1) return { k: 'world', t, field: 'gravity', value: 1 };
+    if (value === false || value === 0) return { k: 'world', t, field: 'gravity', value: 0 };
+    return null;
+  }
   if (field === 'landscape') {
     // Recorded as 1/0 by the panel; a boolean is accepted too, so a
     // hand-written log reads the way it looks (same rule as the replay

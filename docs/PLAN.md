@@ -1568,6 +1568,78 @@ behind its own target — the drawn sphere still clears the paper (at the ring i
 `0.4 × bodyR` above the underside), and arriving instantly would be the step the motion law
 forbids.
 
+#### zero gravity — *(2026-09-17)*
+
+> User ask: *"i want a zero gravity mode where i can hit g on the keyboard and it turns off
+> gravity for the map. characters should float in space."*
+
+**One bit on the wire, and everything else derived.** Gravity is a scene change, so it travels
+the way the landscape switch and the terrain dials travel and through nothing else: a `world`
+event with `field: 'gravity'` and a value of 1 or 0, recorded by the session recorder, pushed
+by the recorder's one scene tap to the outbox, out over the sync topic and into
+`refworld:<world>:scene`, and applied on every page through the replay driver
+(src/session/scene.ts, src/main.ts). Being a `world` field is what buys the retention: a DIAL
+only has its last value in `compactScene`, so a phone that joins an hour later and a refreshed
+projection healing itself both come up in the gravity the room is in.
+
+**Its own driver method, installed only on a katamari world.** `ReplayDriver.gravity?(on)` sits
+with `stick`/`drop`/`loose` in `katamariDriver` (src/main.ts), so on meridian and on the public
+world the bit arrives, finds no handler and does nothing at all — `applyEvent` routes
+`field: 'gravity'` to that method and never to the general `world` handler, so no page has to
+know about a field it cannot drive. `CreatureManager.setGravity` refuses it a second time on
+the game, because a world with no pickups is a world nobody asked to make weightless.
+
+**The look is LOCAL and derived** (src/creatures/gravity.ts, pure). No height is ever sent —
+poses carry x/z/heading and Y is always local, the same rule the ball's ground clearance and
+the walk/roll blend follow. Each page computes, per creature:
+
+- `floatHeight(behaviorSeed(id))` — 3 to 8 world units, seeded by the slot id so a room of
+  eighty hangs at eighty altitudes rather than on a shelf, and so every page puts the same
+  creature at the same height without a byte about it;
+- `floatBob(t, seed)` — ±0.55 u of ambient drift, two incommensurate sines over
+  `MOTION.ambientMs × 2`, because nothing fully arrests (TASTE §3) and a creature hanging
+  perfectly still in the air is the arrest the taste forbids;
+- `floatTumble(t, seed)` — ±0.32 rad on the root's **x and z**, the only rotations nothing else
+  owns (its y is the heading). On the root, so the whole assembly leans together — ball, pile,
+  passengers and the creature on the pole — rather than the creature sliding off a ball that
+  turned under it. A sway and not a somersault: the topper faces the heading, and a creature
+  upside down reads as broken rather than weightless.
+
+All three are multiplied by a ζ ≥ 1 blend spring over `MOTION.primaryMs`, so lift-off is a
+slide up and `g` again is a slow settle back down — no bounce, no pop, and at rest the product
+is exactly 0 (`FLOAT_SETTLED`, because a critically damped spring never actually arrives), which
+is the placement the world shipped with to the float. **It is applied in the frame's one ground
+pass**, beside `groundClearance`, on top of the height the Surface sampled: the seam for
+"something other than the ground moved this creature in Y" is that write and nowhere else, so
+§7.2 stands. x/z are untouched — the joystick still drives a floating creature about, the pure
+resolve is still XZ so pickups still happen by overlap, and the ball readout and the leaderboard
+are unaffected.
+
+**The stones, only where there are any.** `PhysicsWorld.setGravity` (src/physics/world.ts) sets
+the rapier world's gravity vector to zero and gives every dynamic body a `FLOAT_NUDGE_SPEED`
+(0.6 u/s) nudge upward — added to whatever velocity it had, so a stone mid-roll is not stopped
+dead — because rapier does not wake a sleeping body for a change of gravity and a world where
+only the creatures floated would read as a bug in the creatures. `WorldHandles.setGravity`
+remembers the answer, since physics arrives on host election and can arrive minutes after the
+bit did. A viewer and a phone host hold no bodies and simply present (§7.6's host-only rule is
+untouched: the decisions still come only from the deciding page).
+
+**The key.** Plain `g` on the keyboard page (src/main.ts), beside `h` and `shift+R` — a demo
+control, so it is NOT `isDev`-gated, and katamari-gated so it does nothing on any other world.
+It reads the state back off the manager rather than keeping a second copy, applies through the
+driver's own method (one apply path), records the event (which is what sends it), and says on
+screen what it did. ⚠️ The ghost panel binds plain `g` too (a blender-style modal translate on a
+selected object, node_modules/ghost-panel/modal-transform.js) — the same collision that made
+recovery `shift+R`; it only fires with the panel open AND a creature selected, and the ask named
+this key.
+
+Pinned by `test/session/gravity.test.ts` (the door, the retention, the routing, a driver with no
+handler, a restore, and the key's contract read off src/main.ts), `test/creatures/gravity.test.ts`
+(the pure derivation), `test/creatures/manager.test.ts` (the lift and the settle, monotone, the
+drift that never stops, the float on top of a big ball's clearance, ζ ≥ 1, and a world without
+the game that cannot be made weightless) and `test/physics/world.test.ts` (nothing falls, the
+sleepers wake, the nudge is a sum).
+
 #### the host-only rule
 
 **Physics loads on host election and nowhere else.** `WorldHandles.enablePhysics()` is

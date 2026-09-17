@@ -39,6 +39,14 @@ import {
 import { BehaviorAgent, MAX_SPEED } from '../../src/behavior/agent';
 import { generatedName } from '../../src/creatures/naming';
 import { MOTION } from '../../src/taste/tokens';
+import { springRegistry } from '../../src/motion/spring';
+import {
+  FLOAT_BOB,
+  FLOAT_LIFT_MIN,
+  FLOAT_LIFT_RANGE,
+  FLOAT_TUMBLE,
+  floatHeight,
+} from '../../src/creatures/gravity';
 import {
   carryLimit,
   clearanceLift,
@@ -1515,6 +1523,17 @@ describe('ground clearance — a big ball rides on its whole footprint', () => {
    * of the roll blend, and that a walking creature has none.
    */
 
+  /** The manager's own `behaviorSeed`, which is what the float reads — the
+   * hash is private, so this is the same four lines. */
+  function seedOf(id: string): number {
+    let h = 2166136261;
+    for (let i = 0; i < id.length; i++) {
+      h ^= id.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return h >>> 0;
+  }
+
   /** The ball mesh on this creature's root, or undefined. */
   function ballOf(manager: ReturnType<typeof createCreatureManager>): Object3D | undefined {
     return rootOf(manager).getObjectByName('ball');
@@ -1676,6 +1695,152 @@ describe('ground clearance — a big ball rides on its whole footprint', () => {
     expect(rootOf(plain).getObjectByName('ball')).toBeUndefined();
     expect(rootOf(plain).getObjectByName('clump')).toBeUndefined();
     plain.clearAll();
+  });
+
+
+  /*
+   * ── ZERO GRAVITY, as the manager presents it ───────────────────────────
+   *
+   * > User ask, 2026-09-17: *"i want a zero gravity mode where i can hit g on
+   * > the keyboard and it turns off gravity for the map. characters should
+   * > float in space."*
+   *
+   * One bit arrives (a `gravity` scene event, through the replay driver); the
+   * height is DERIVED here, on every page, from the bit, the slot id and this
+   * page's own clock (src/creatures/gravity.ts). So these pin the same three
+   * things the ground clearance above is pinned on: it is applied in the one
+   * ground pass, it arrives and leaves by sliding, and it does not exist in a
+   * world without the game.
+   */
+  it('lifts a creature off the ground, and settles it back', () => {
+    const manager = makeManager(FLAT_SURFACE, 'katamari');
+    const root = rootOf(manager);
+    holdAt(manager, 4, 4, 60);
+    // On the ground, exactly as it shipped.
+    expect(manager.gravity()).toBe(true);
+    expect(manager.floatOffset('ball')).toBe(0);
+    expect(root.position.y).toBe(0);
+
+    manager.setGravity(false);
+    expect(manager.gravity()).toBe(false);
+    // …and it is a SLIDE: the blend only ever rises toward 1, never past it.
+    let previous = manager.floatBlend('ball');
+    holdAt(manager, 4, 4, 200, () => {
+      const blend = manager.floatBlend('ball');
+      expect(blend).toBeGreaterThanOrEqual(previous - 1e-12);
+      expect(blend).toBeLessThanOrEqual(1 + 1e-9);
+      previous = blend;
+    });
+    expect(previous).toBeGreaterThan(0.99);
+    // Up in the air, at its own altitude, and the root is where the float put
+    // it — the ground pass, not a second writer.
+    const seed = seedOf('ball');
+    const offset = manager.floatOffset('ball');
+    expect(offset).toBeGreaterThan(FLOAT_LIFT_MIN - FLOAT_BOB);
+    expect(offset).toBeLessThan(FLOAT_LIFT_MIN + FLOAT_LIFT_RANGE + FLOAT_BOB);
+    expect(offset).toBeGreaterThan(floatHeight(seed) - FLOAT_BOB - 1e-9);
+    expect(offset).toBeLessThan(floatHeight(seed) + FLOAT_BOB + 1e-9);
+    expect(root.position.y).toBeCloseTo(offset, 9);
+
+    // Then `g` again: back down, by sliding, to exactly zero.
+    manager.setGravity(true);
+    let falling = manager.floatBlend('ball');
+    holdAt(manager, 4, 4, 300, () => {
+      const blend = manager.floatBlend('ball');
+      expect(blend).toBeLessThanOrEqual(falling + 1e-12);
+      expect(blend).toBeGreaterThanOrEqual(0);
+      falling = blend;
+    });
+    // Exactly the placement that shipped, to the float — not "about" zero.
+    expect(manager.floatOffset('ball')).toBe(0);
+    expect(root.position.y).toBe(0);
+    expect(root.rotation.x).toBe(0);
+    expect(root.rotation.z).toBe(0);
+    manager.clearAll();
+  });
+
+  it('drifts and tumbles up there instead of hanging still', () => {
+    const manager = makeManager(FLAT_SURFACE, 'katamari');
+    const root = rootOf(manager);
+    manager.setGravity(false);
+    holdAt(manager, 4, 4, 200);
+    // Settled at its altitude — and still moving (TASTE §3: nothing fully
+    // arrests). Sampled over a few seconds of frames, well past the spring.
+    const heights = new Set<number>();
+    const tilts = new Set<number>();
+    holdAt(manager, 4, 4, 150, () => {
+      heights.add(Math.round(manager.floatOffset('ball') * 1e4));
+      tilts.add(Math.round(root.rotation.x * 1e4));
+    });
+    expect(heights.size).toBeGreaterThan(50);
+    expect(tilts.size).toBeGreaterThan(50);
+    // The tumble is on the axes nothing else owns: the heading is still the
+    // root's y, and the tilt is bounded.
+    expect(Math.abs(root.rotation.x)).toBeLessThanOrEqual(FLOAT_TUMBLE);
+    expect(Math.abs(root.rotation.z)).toBeLessThanOrEqual(FLOAT_TUMBLE);
+    manager.clearAll();
+  });
+
+  it('floats the BALL, clearance and all, and the creature stays on its pole', () => {
+    const manager = makeManager(slope, 'katamari');
+    const root = rootOf(manager);
+    seatOnBall(manager, 3, 3);
+    holdAt(manager, 6, -4, 300);
+    const grounded = root.position.y;
+    const lift = manager.groundLift('ball');
+    expect(lift).toBeGreaterThan(1);
+
+    manager.setGravity(false);
+    holdAt(manager, 6, -4, 300);
+    const bodyR = manager.ballDiameter('ball') / 2;
+    // The float is ON TOP of the clearance — both offsets, one write.
+    expect(manager.groundLift('ball')).toBeCloseTo(lift, 6);
+    expect(root.position.y).toBeCloseTo(
+      slope.sampleHeight(root.position.x, root.position.z) +
+        manager.groundLift('ball') +
+        manager.floatOffset('ball'),
+      9,
+    );
+    expect(root.position.y).toBeGreaterThan(grounded + FLOAT_LIFT_MIN - FLOAT_BOB);
+    /*
+     * …and the rig is unchanged by any of it: the creature is still exactly a
+     * radius from the ball's centre — its DISTANCE now, not its height,
+     * because the tumble tilts the whole assembly together (the root's x and
+     * z). That is the point of putting the tumble there: the creature stays
+     * on the pole of its own ball while the pair of them leans, rather than
+     * the creature sliding off a ball that turned underneath it.
+     */
+    const ball = ballOf(manager)!;
+    const rider = root.getObjectByName('rider')!;
+    expect(worldPos(rider).distanceTo(worldPos(ball))).toBeCloseTo(bodyR, 6);
+    // Really tilted, or the line above would be the grounded case again.
+    expect(Math.hypot(root.rotation.x, root.rotation.z)).toBeGreaterThan(0.01);
+    manager.clearAll();
+  });
+
+  it('is katamari only — no other world can be made weightless', () => {
+    const plain = makeManager(FLAT_SURFACE, 'none');
+    const root = rootOf(plain);
+    holdAt(plain, 4, 4, 60);
+    // The same call the driver would make, on a world with no game.
+    plain.setGravity(false);
+    expect(plain.gravity()).toBe(true);
+    holdAt(plain, 4, 4, 200);
+    expect(plain.floatOffset('ball')).toBe(0);
+    expect(plain.floatBlend('ball')).toBe(0);
+    expect(root.position.y).toBe(FLAT_SURFACE.sampleHeight(4, 4));
+    expect(root.rotation.x).toBe(0);
+    plain.clearAll();
+  });
+
+  it('every float spring is ζ ≥ 1, like everything else that moves', () => {
+    // The damping-audit gate (TASTE §7) reads the same registry; this is the
+    // local statement that the new spring is in it and is not underdamped.
+    const manager = makeManager(FLAT_SURFACE, 'katamari');
+    manager.setGravity(false);
+    holdAt(manager, 4, 4, 30);
+    for (const entry of springRegistry) expect(entry.zeta).toBeGreaterThanOrEqual(1);
+    manager.clearAll();
   });
 });
 

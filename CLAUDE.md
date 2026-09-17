@@ -150,6 +150,14 @@ The traps, in order of how easily they get violated:
   `2·baseR·roll` at every value of the blend — the two are one statement, keep them adjacent
   — and buried under the ground at `roll` 0, so a walking creature shows no ball without
   anything being switched off), the
+  **the map's GRAVITY** (`g` on the keyboard page, user ask 2026-09-17: *"i want a zero
+  gravity mode … characters should float in space"* — a `world` event with `field: 'gravity'`
+  on the scene layer, so it retains and restores like the landscape switch, with its own
+  replay-driver method installed beside `stick`/`drop`/`loose` and therefore ignored on every
+  other world; the FLOAT is local and derived on every page from that one bit, the slot id and
+  the page's own clock (`src/creatures/gravity.ts`) and is applied in the same ground pass as
+  `groundLift`, so Y never goes on the wire and the Surface seam stands; rapier's own gravity
+  and the nudge for the sleepers are the simulating page's alone, PLAN §7.6), the
   ball-diameter readout on the phone's world view (`src/ui/size.ts`,
   `CreatureManager.ballDiameter`), the handset's contextual hints, loading and empty states
   (`src/ui/hints.ts`, `loading.ts`, `empty.ts` — the hints are three marks in the live world
