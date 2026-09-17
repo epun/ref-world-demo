@@ -1078,6 +1078,32 @@
     enforceSingleDrawing();
     // Fires on first load AND on every bfcache restore (event.persisted).
     window.addEventListener('pageshow', () => { enforceSingleDrawing(); });
+    /*
+     * AND LEARN THE GENERATION EVEN WITH NOTHING TO HEAL (2026-09-17).
+     *
+     * `healThenGo` above reads the log — and therefore the world's
+     * generation — only when this handset already has a record. A FIRST-TIME
+     * drawer has none, so on a world that has been reset its only source is
+     * the retained mqtt announcement; and a drawing that cannot say which
+     * run it was made in is now refused (src/main.ts `onDrawing`). One
+     * packet held by one broker is not a good enough single point for
+     * somebody's drawing, so the pad also asks the store.
+     *
+     * Cheap, silent, and it only ever makes this pad more correct: the
+     * number is used to stamp what this person is about to draw, and to free
+     * a pad the reset has already freed.
+     */
+    if (WORLD && !storedSubmission()) {
+      fetch('/api/drawings?world=' + encodeURIComponent(WORLD), { cache: 'no-store' })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (body) {
+          var gen = body && body.config && typeof body.config.generation === 'number'
+            ? body.config.generation
+            : null;
+          if (gen !== null) learnGeneration(gen);
+        })
+        .catch(function () { /* offline — the announcement is still the fast path */ });
+    }
     // Some browsers only surface a restore as a visibility change.
     document.addEventListener('visibilitychange', () => {
       if (!document.hidden) enforceSingleDrawing();

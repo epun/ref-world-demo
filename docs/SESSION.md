@@ -423,6 +423,11 @@ Every path asks the same question:
 - the **pad's recall answer** (`answerRecall`);
 - and the handset's **heal**, which has refused an older generation since 2026-09-09.
 
+A first-time drawer has no record, so the pad's own heal never reads the log — and on a
+world that has been reset the retained announcement would be its only source. One packet
+held by one broker is not a good enough single point for somebody's drawing, so the pad
+also `hello`s the world and asks the store for its generation on load.
+
 `?recover=1` is the one deliberate exception: it publishes under the run that is RUNNING,
 because it is an operator pulling a lost population into whatever world is open.
 

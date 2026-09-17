@@ -209,6 +209,18 @@ describe('the pad says which run it is drawing into', () => {
     expect(src).toMatch(/epoch: wire \|\| null/);
   });
 
+  it('learns the generation from the store even with nothing to heal', () => {
+    // `healThenGo` reads the log only when this handset already has a
+    // record, so a FIRST-TIME drawer's only source was the retained mqtt
+    // announcement — one packet held by one broker, which is not a good
+    // enough single point for somebody's drawing now that a drawing with no
+    // epoch is refused by a reset world.
+    const src = padSrc();
+    expect(src).toMatch(/if \(WORLD && !storedSubmission\(\)\) \{/);
+    const fn = src.slice(src.indexOf('if (WORLD && !storedSubmission())'));
+    expect(fn.slice(0, 900)).toMatch(/learnGeneration\(gen\)/);
+  });
+
   it('asks the world for its epoch as well as waiting to be told', () => {
     // The retained announcement is one packet held by one broker, and the
     // pad now NEEDS the answer: a drawing that cannot say which run it was
