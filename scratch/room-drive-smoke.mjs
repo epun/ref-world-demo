@@ -193,7 +193,13 @@ const strokes = [
  */
 const url = (extra) =>
   `http://127.0.0.1:${PORT}/?view=world&world=valiocon&game=katamari&room=${ROOM}` +
-  `&broker=${encodeURIComponent(BROKER)}${extra}`;
+  // `onboard=0`: a RETURNING phone. The first-run screens are a full-screen
+  // fixed overlay at z-index 70 (src/ui/onboard.ts) and they are meant to be
+  // — but a fresh browser context has never seen them, so without this the
+  // touch drag below lands on the onboarding's own `skip` link, which sits
+  // over the middle of the stick, and every step reports a creature that
+  // will not move. That is the harness, not the product.
+  `&onboard=0&broker=${encodeURIComponent(BROKER)}${extra}`;
 
 async function openPage(label, { phone, id, extra = '' }) {
   const context = await browser.newContext(
@@ -221,6 +227,13 @@ async function openPage(label, { phone, id, extra = '' }) {
   const page = await context.newPage();
   page.setDefaultTimeout(600_000);
   page.on('pageerror', (e) => console.log(`[${label} pageerror]`, String(e).slice(0, 300)));
+  // A software renderer running two live worlds is a place where a tab dies.
+  // Say which, because playwright reports a crash and a close identically.
+  page.on('crash', () => console.log(`[${label}] RENDERER CRASHED`));
+  page.on('close', () => console.log(`[${label}] page closed`));
+  page.on('framenavigated', (f) => {
+    if (f === page.mainFrame()) console.log(`[${label}] nav ${f.url()}`);
+  });
   page.on('console', (m) => {
     if (m.type() === 'error') console.log(`[${label} console]`, m.text().slice(0, 200));
   });
@@ -371,6 +384,82 @@ async function holdStick(p, ms, dir = { dx: 0, dy: -1 }) {
   return held;
 }
 
+/**
+ * WHAT THIS CREATURE COULD ROLL OVER — the nearest keyed collider, off the
+ * page that is deciding.
+ *
+ * Keyed, because a placement key is the only handle the sticky layer can
+ * address a prop by; nearest, because the run has to reach it inside a drag;
+ * and read on the HOST, because the host's collider set is the one its own
+ * pickup pass consults (a viewer holds no opinion about what is stuck).
+ */
+async function nearestProp(p, who) {
+  return p.page.evaluate((id) => {
+    const mine = window.__refworldCreatures.poses().find((q) => q.id === id);
+    if (!mine) return null;
+    const cols = window.__refworldColliders?.() ?? [];
+    let best = null;
+    for (const c of cols) {
+      if (c.key === undefined) continue;
+      const d = Math.hypot(c.x - mine.x, c.z - mine.z);
+      if (!best || d < best.d) {
+        best = { key: c.key, kind: c.kind ?? null, r: c.r, x: c.x, z: c.z, hard: c.hard === true, d };
+      }
+    }
+    return {
+      at: { x: mine.x, z: mine.z },
+      bodyR: window.__refworldCreatures.ballDiameter(id) / 2,
+      colliders: cols.length,
+      rapier: Boolean(window.__refworldPhysics?.()),
+      target: best,
+    };
+  }, who);
+}
+
+/**
+ * WHICH WAY TO PUSH — found by pushing, not by arithmetic.
+ *
+ * The obvious way is to invert `stickToWorld` through the live azimuth
+ * (src/world/joystick.ts). The first version of this file did, and drove the
+ * creature at right angles to the prop it was aiming at for five attempts
+ * running — a sign error somewhere between the camera's basis and the stick's
+ * screen axes that is not worth finding, because the harness can simply
+ * MEASURE instead.
+ *
+ * So: eight compass directions, a short push on each, and keep whichever one
+ * actually closed the distance. That is robust against every convention in
+ * the chain — the camera's azimuth, the screen's y, the deadzone, the
+ * response curve — and it is what a person does with a new stick anyway.
+ */
+const COMPASS = Array.from({ length: 8 }, (_unused, i) => {
+  const a = (i / 8) * Math.PI * 2;
+  return { dx: Math.sin(a), dy: -Math.cos(a) };
+});
+
+/** How far this creature is from that point, on the deciding page. */
+async function gapTo(p, who, to) {
+  return p.page.evaluate(
+    ([id, tx, tz]) => {
+      const mine = window.__refworldCreatures.poses().find((q) => q.id === id);
+      if (!mine) return null;
+      return {
+        d: Math.hypot(tx - mine.x, tz - mine.z),
+        at: { x: +mine.x.toFixed(2), z: +mine.z.toFixed(2) },
+        bodyR: window.__refworldCreatures.ballDiameter(id) / 2,
+      };
+    },
+    [who, to.x, to.z],
+  );
+}
+
+/** Is this placement still standing in the deciding page's collider set? */
+async function hasCollider(p, key) {
+  return p.page.evaluate(
+    (k) => (window.__refworldColliders?.() ?? []).some((c) => c.key === k),
+    key,
+  );
+}
+
 const fail = [];
 const steps = [];
 
@@ -495,29 +584,93 @@ await step('4. both phones drive at once', async (mark) => {
  * whatever the driving above rolled over, every page has to agree about how
  * big the ball now is.
  */
-await step('5. what stuck, and whether the room agrees about it', async (mark) => {
-  const sticks = traffic
-    .filter((m) => m.topic === SYNC_TOPIC && m.payload.includes('"k":"stick"'))
-    .map((m) => m.payload);
+await step('5. drive into a prop and see whether it sticks', async (mark) => {
+  /*
+   * > User report, 2026-09-17: *"on mobile currently when a user walks into
+   * > things it doesn't stick to them."*
+   *
+   * The earlier runs never met a prop — the island is mostly grass and a
+   * software renderer only covers a few units a drag — so the pickup path
+   * went unverified while every other step passed. This one goes looking: it
+   * takes the nearest keyed collider off the page that is DECIDING, then
+   * closes on it by trying the eight compass directions and keeping whichever
+   * one actually shortens the distance (see `COMPASS`).
+   */
+  const deciding = pages.find((p) => !p.closed);
+  const before = await nearestProp(deciding, A);
+  if (!before?.target) return { skipped: 'no keyed collider anywhere near the creature' };
+  const target = before.target;
+
+  const samples = [];
+  let stuck = null;
+  let best = { dx: 0, dy: -1 };
+  for (let round = 0; round < 10 && !stuck; round++) {
+    // Every few rounds, re-find the way: the creature turns, the camera
+    // drifts, and a direction that was closing can stop closing.
+    const tries = round % 3 === 0 ? COMPASS : [best];
+    let bestGain = -Infinity;
+    for (const dir of tries) {
+      const from = await gapTo(deciding, A, target);
+      await holdStick(one, tries.length === 1 ? 4000 : 1200, dir);
+      const to = await gapTo(deciding, A, target);
+      if (!from || !to) continue;
+      const gain = from.d - to.d;
+      if (gain > bestGain) {
+        bestGain = gain;
+        best = dir;
+      }
+      const sticks = traffic
+        .filter((m) => m.topic === SYNC_TOPIC && m.payload.includes('"k":"stick"'))
+        .map((m) => m.payload);
+      const looses = traffic
+        .filter((m) => m.topic === SYNC_TOPIC && m.payload.includes('"k":"loose"'))
+        .map((m) => m.payload);
+      samples.push({
+        round,
+        dir: { dx: +dir.dx.toFixed(2), dy: +dir.dy.toFixed(2) },
+        at: to.at,
+        // The distance the pickup pass actually tests against: centre to
+        // centre, minus the two radii, minus the contact pad.
+        gap: +(to.d - (to.bodyR + target.r) - 0.25).toFixed(3),
+        gain: +gain.toFixed(3),
+        sticks: sticks.length,
+        looses: looses.length,
+      });
+      if (sticks.length > 0) {
+        stuck = sticks;
+        break;
+      }
+    }
+  }
+
   const size = {};
-  const items = {};
   for (const p of pages) {
     if (p.closed) continue;
     size[p.label] = await p.page.evaluate((who) => window.__refworldCreatures.ballDiameter(who), A);
-    items[p.label] = await p.page.evaluate(
-      (who) => window.__refworldCreatures.poses().filter((q) => q.id === who).length,
-      A,
-    );
   }
   const values = Object.values(size).filter((v) => typeof v === 'number');
   const spread = values.length > 1 ? Math.max(...values) - Math.min(...values) : 0;
   if (values.some((v) => v > 0) && spread > 0.02) {
     fail.push(`step 5: the pages disagree about the ball size (${JSON.stringify(size)})`);
   }
-  if (sticks.length === 0) {
-    console.log('step 5: nothing stuck during this run — the pickup path is NOT verified here');
+  const closest = Math.min(...samples.map((q) => q.gap));
+  if (!stuck) {
+    fail.push(
+      `step 5: nothing stuck; the creature got within ${closest.toFixed(2)}u of the prop`,
+    );
   }
-  return { stickEvents: sticks.length, stickSample: sticks.slice(0, 2), size, items, mark };
+  return {
+    host: deciding.label,
+    rapier: before.rapier,
+    colliders: before.colliders,
+    target,
+    bodyR: +before.bodyR.toFixed(3),
+    closest: +closest.toFixed(3),
+    samples,
+    stickSample: (stuck ?? []).slice(0, 2),
+    size,
+    mark,
+  };
 });
 
 // ── what happened ───────────────────────────────────────────────────────────

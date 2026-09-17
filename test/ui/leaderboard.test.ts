@@ -62,6 +62,7 @@ import {
   wavyBorderPoints,
 } from '../../src/phone/minimap';
 import { WORLD } from '../../src/taste/tokens';
+import { QR_INSET_PX } from '../../src/ui/joinqr';
 import { formatLength, metresOf } from '../../src/ui/size';
 import { MOTION } from '../../src/taste/tokens';
 
@@ -500,7 +501,10 @@ describe('the board mounts, ranks, and leaves cleanly', () => {
     });
     const sheet = dom.head.children[0]!.textContent;
     expect(sheet).toContain(`width: ${BOARD_W_PX}px`);
-    expect(sheet).toContain('top: calc(env(safe-area-inset-top, 0px) + 4vw)');
+    // Left-aligned to the join code: the same inset, so the two share a column.
+    expect(sheet).toContain(`left: calc(env(safe-area-inset-left, 0px) + ${QR_INSET_PX}px)`);
+    expect(sheet).toContain(`top: calc(env(safe-area-inset-top, 0px) + ${QR_INSET_PX}px)`);
+    expect(sheet).not.toContain('4vw');
     // Ten rows is the cap AND the tallest the paper can ever be.
     expect(boardHeight(LEADERBOARD_ROWS)).toBe(
       BOARD_PAD_PX * 2 + TITLE_BLOCK_PX + LEADERBOARD_ROWS * ROW_PX,
