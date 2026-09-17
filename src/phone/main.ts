@@ -29,7 +29,8 @@ import {
 } from './identity';
 import { createSession } from './session';
 import { healStore } from './heal';
-import { mountWorldLink } from './worldlink';
+import { framed, leaveForWorld, mountWorldLink } from './worldlink';
+import { readWorldGame } from '../world/game';
 import { readKeepId } from './keeplink';
 import { FAILED_MESSAGE } from '../world/companionpanel';
 import { readSessionLog } from '../session/events';
@@ -387,6 +388,34 @@ async function boot(): Promise<void> {
     .replace(/[^a-z0-9-]/g, '')
     .slice(0, 24);
 
+  /**
+   * WHICH GAME this handset is a handset for (src/world/game.ts).
+   *
+   * > User report, 2026-09-17: *"on mobile I'm not seeing the loading
+   * > screen"*, and *"the mobile experience is really bad."*
+   *
+   * The phone never reached the world view. A handset opening the world link
+   * is redirected to the pad (src/main.ts), the pad sends it here when the
+   * drawing is submitted, and NOTHING on this page went on to the world
+   * unless the person found the `view world` button under the case. So on a
+   * katamari world every person who drew stayed in a case holding a picture
+   * of the creature they could have been rolling.
+   *
+   * Two sources, `?game=` then `<meta name="refworld:game">` — the identical
+   * read the world page does, off a tag `scripts/world-build.mjs` now injects
+   * into phone.html as well (`applyGameToPhoneHtml`, gated exactly as
+   * index.html's is). The world itself still travels in the url; a game is a
+   * property of the world's configuration and cannot.
+   *
+   * `none` is every other deployment, and there this whole seam is absent:
+   * the flow that shipped is the flow — draw, wait, watch it hatch in your
+   * hand, tap through to the world if you want to.
+   */
+  const worldGame = readWorldGame(
+    location.search,
+    document.querySelector<HTMLMetaElement>('meta[name="refworld:game"]')?.content ?? null,
+  );
+
   const mounts: Record<PhoneState, ScreenMount> = {
     draw: (slots) =>
       mountDraw(slots, {
@@ -394,6 +423,10 @@ async function boot(): Promise<void> {
           strokes = done;
           session.sendDrawing(done);
           machine.goTo('wait');
+          // …and on a katamari world, on to the world itself (see
+          // `onToTheWorld`). The egg is already on its way over mqtt; what
+          // this person needs now is the stick.
+          onToTheWorld();
         },
       }),
     wait: (slots) => {
@@ -479,11 +512,81 @@ async function boot(): Promise<void> {
   // 2026-08-25). The well is the container, and the foot of the screen is
   // just below the creature.
   const wellForLink = document.querySelector<HTMLElement>('.device-well');
+  const deviceEl = document.querySelector<HTMLElement>('.device');
   mountWorldLink(wellForLink ?? document.body, {
     room,
     world: publicWorld,
-    device: document.querySelector<HTMLElement>('.device'),
+    device: deviceEl,
   });
+
+  /*
+   * ── ON A KATAMARI WORLD, THE WORLD IS WHERE YOU LAND ────────────────────
+   *
+   * > User report, 2026-09-17: *"the mobile experience is really bad."* And
+   * > the ask behind it: *"we should give the user a tutorial on how to
+   * > control their character using the joystick and the goal to roll over
+   * > things and grow your mass."*
+   *
+   * The game is played in the world view — that is where the stick, the ball
+   * readout, the minimap and the loading line are — and until now nothing
+   * took a person there. The pad redirects here, and here is a case. So on a
+   * katamari world a FRESH SUBMISSION goes on to the world by itself, through
+   * the onboarding screens the first time (src/ui/onboard.ts) and straight
+   * through on every visit after that.
+   *
+   * Four conditions, and each one is somebody who must NOT be moved:
+   *
+   * - the KATAMARI world and nowhere else. Every other deployment keeps the
+   *   flow that shipped, where the egg hatching in your hand is the point;
+   * - a PUBLIC world, or there is no shared place to go (an installation
+   *   handset's world is a projection in the same room);
+   * - not INSIDE the world's own panel (`framed()`): that person is already
+   *   in the world and opened the case on purpose — navigating would throw
+   *   away the loaded world behind the frame;
+   * - a FRESH SUBMISSION only. A handset reopening this page keeps the case
+   *   it asked for; it still has the `view world` button and the swipe down.
+   *
+   * The screens are reached through a DYNAMIC import behind the flag, the
+   * same discipline the world page's mount is under, so no other deployment
+   * carries the chunk. Any failure to load them still goes to the world: a
+   * person who cannot be taught must not be stranded.
+   */
+  let goingToWorld = false;
+  const intoTheWorld = (): void => {
+    if (goingToWorld) return;
+    goingToWorld = true;
+    leaveForWorld({ room, world: publicWorld, device: deviceEl });
+  };
+  let offeredOnboarding = false;
+  const onToTheWorld = (): void => {
+    if (offeredOnboarding) return;
+    if (worldGame !== 'katamari' || publicWorld.length === 0 || framed()) return;
+    offeredOnboarding = true;
+    void import('../ui/onboard').then(
+      (m) => {
+        if (!m.shouldOnboard(location.search, m.deviceStore())) {
+          intoTheWorld();
+          return;
+        }
+        m.installOnboarding({
+          mount: document.body,
+          // Both ways through are ways ON: `skip` skips the reading, not the
+          // game, and a tutorial that ended by leaving somebody in a case
+          // would be the bug this exists to fix.
+          onDone: () => intoTheWorld(),
+        });
+      },
+      () => intoTheWorld(),
+    );
+  };
+
+  /*
+   * The pad hands a fresh drawing over with `?handoff=1` and a one-shot
+   * stash (`readHandoff`), which is exactly "this person has just submitted"
+   * — so that is the visit that goes on. A reload cannot replay it, because
+   * the stash is consumed; a restore from storage does not set it at all.
+   */
+  if (handedOff) onToTheWorld();
 
   // The stage is mounted; feed the session whatever the flow opened with,
   // so the egg timer and the local echo agree with what is on screen. The

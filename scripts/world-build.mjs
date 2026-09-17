@@ -265,3 +265,37 @@ export function applyWorldToHtml(html, world) {
   out = setMeta(out, 'name', 'twitter:description', description);
   return out;
 }
+
+/**
+ * Tell the COMPANION HANDSET which game it is a handset for.
+ *
+ * phone.html has no card and no world tag — the world it belongs to travels
+ * in the url (`?world=`), which is how a handset can be handed a room by a
+ * link rather than by a build (see vite.config.ts). The GAME cannot travel
+ * that way: it is a property of the world's own configuration, not of the
+ * address, and a handset that guessed it from a query would be a second
+ * source for something `worlds.json` already decides.
+ *
+ * So one tag, and only ever that one (2026-09-17, user report: *"on mobile
+ * I'm not seeing the loading screen"* — the phone lands on the companion
+ * after drawing and never on the world page, so the page that has to know
+ * about the katamari is this one). `src/phone/main.ts` reads it through the
+ * same `readWorldGame` the world page uses, so the tag a build injects and
+ * the app's reading of it can never name two different games.
+ *
+ * Gated IDENTICALLY to index.html's: written only for a world that asked for
+ * a game, so every other deployment's phone.html — the public one first —
+ * comes out byte-identical and does not mention a setting it does not have.
+ */
+export function applyGameToPhoneHtml(html, world) {
+  if (!world) return html;
+  const game = sanitizeGame(world.game);
+  if (game === 'none') return html;
+  return html.replace(
+    /([ \t]*)<title>/i,
+    (_m, indent) =>
+      `${indent}<!-- injected at build time by scripts/world-build.mjs — this deployment's game -->\n` +
+      `${indent}<meta name="refworld:game" content="${escapeAttr(game)}" />\n` +
+      `${indent}<title>`,
+  );
+}
