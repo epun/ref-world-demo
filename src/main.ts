@@ -26,6 +26,9 @@ import {
 import { createBlueprintPool, MAX_WORKERS } from './character/blueprintPool';
 import { createIngestQueue } from './moderation/ingestQueue';
 import { identitySeedOf } from './character/interpret';
+// The drawn creature's own height, for the corner's live view: it frames the
+// whole mass, and the creature is part of that mass (src/world/portrait.ts).
+import { CHARACTER_HEIGHT } from './character/character';
 import { createLooseMeshes } from './world/loose';
 import { buildChunkGeometries, type Chunk, type ChunkKind } from './world/chunks';
 import { createDebris } from './world/debris';
@@ -2606,10 +2609,27 @@ function main(): void {
             const id = owner.length > 0 ? owner : myDrawerId;
             const root = creatures.rootOf(id);
             if (!root) return null;
+            /*
+             * THE DRAWN MASS'S OWN BOUNDS FRAME IT, never `ballDiameter / 2`:
+             * that is the accumulated VOLUME and runs ahead of the lump on
+             * screen, so fitting the circle to it left the mass rattling
+             * around inside it. And the picture is CENTRED on those bounds
+             * (user direction, 2026-09-17: *"the 3d representation of the
+             * character and mass should be vertically and horizontally
+             * centred in the circle"*) — with a pile packed to one side the
+             * creature is nowhere near the middle of its own lump, which is
+             * why this is five numbers and not one radius
+             * (src/world/portrait.ts).
+             */
             return {
               root,
-              bodyR: creatures.ballDiameter(id) / 2,
-              roll: creatures.rollBlend(id),
+              bounds: {
+                height: CHARACTER_HEIGHT,
+                radius: creatures.drawnRadius(id),
+                floor: creatures.pileFloor(id),
+                ceiling: creatures.pileCeiling(id),
+                footprint: creatures.pileFootprint(id),
+              },
             };
           },
           rect: () => size.rect(),

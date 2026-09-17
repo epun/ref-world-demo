@@ -48,10 +48,11 @@
  *    land outside the circle's box whatever the camera is doing — the hard
  *    bound the ask names;
  *  - and the FIT, which is the soft one: the orthographic half-extent is a
- *    function of `bodyR` every frame (`portraitHalfExtent`), eased by a ζ ≥ 1
- *    spring, so as the ball grows the view pulls back and the mass keeps the
- *    same share of the circle instead of bursting it. A creature carrying
- *    nothing is framed by its own drawn height.
+ *    function of the DRAWN pile's own reach every frame
+ *    (`portraitHalfExtent`), eased by a ζ ≥ 1 spring, so as the pile grows
+ *    the view pulls back and the mass keeps the same share of the circle
+ *    instead of bursting it. A creature carrying nothing is framed by its own
+ *    drawn height.
  *
  * The direction is FIXED at the world's own isometric pair rather than the
  * live camera's: a portrait that swung as the person orbited the world would
@@ -89,8 +90,8 @@ export const PORTRAIT_MARGIN = 0.12;
 /**
  * [D] The smallest half-extent the view will use, world units.
  *
- * A creature carrying nothing has a `bodyR` of about a unit but stands
- * `CHARACTER_HEIGHT` (3.5) tall with its stalk, so framing it by its
+ * A creature carrying nothing reaches nothing and is about a unit across, but
+ * it stands `CHARACTER_HEIGHT` (3.5) tall with its stalk, so framing it by its
  * FOOTPRINT would crop its head off. Half its height plus a little is the
  * number that frames the drawn creature, and it is also the floor of every
  * ball's fit — which is what makes a hatchling's portrait and a hatchling's
@@ -99,10 +100,12 @@ export const PORTRAIT_MARGIN = 0.12;
 export const PORTRAIT_MIN_HALF = 2;
 
 /**
- * [D] Where the camera looks when there is no ball yet, as a fraction of
- * `PORTRAIT_MIN_HALF` above the creature's feet. A creature's mass is in its
- * lower half, so the middle of the frame is a little under the middle of its
- * height.
+ * [D] Where the camera looks, as a fraction of `PORTRAIT_MIN_HALF` above the
+ * creature's feet. A creature's mass is in its lower half, so the middle of
+ * the frame is a little under the middle of its height — and since the items
+ * pack onto the CHARACTER (2026-09-17) that is the middle of the whole pile
+ * too, at every size — which is why the frame is centred on the MASS's own
+ * bounds (`portraitCentreY`) and this is only the floor's own share.
  */
 export const PORTRAIT_AIM_FRACTION = 0.55;
 
@@ -113,31 +116,87 @@ const PORTRAIT_NEAR = 1;
 const PORTRAIT_FAR = 200;
 
 /**
- * Half-height of the orthographic frustum that frames this subject, world
- * units. PURE.
+ * WHAT THE DRAWN MASS OCCUPIES, in the creature's own frame — feet at 0.
  *
- * `bodyR` is the drawn ball's radius (`ballDiameter / 2`, the one number the
- * manager already publishes), and the ball's diameter is what has to fit — so
- * the half-extent is that radius plus the margin, never under the floor that
- * frames the creature itself.
+ * Four numbers and they all come off the pile the person can see: the
+ * creature's own drawn height and footprint radius, and the pile's own
+ * `floor` (≤ 0), `ceiling` (above the feet) and `footprint`
+ * (`CreatureManager.pileFloor` / `pileCeiling` / `pileFootprint`).
  */
-export function portraitHalfExtent(bodyR: number): number {
-  const r = Number.isFinite(bodyR) && bodyR > 0 ? bodyR : 0;
-  return Math.max(r, PORTRAIT_MIN_HALF) * (1 + PORTRAIT_MARGIN);
+export interface PortraitBounds {
+  /** How tall the drawn creature is — `CHARACTER_HEIGHT` in world units. */
+  height: number;
+  /** Its own footprint radius. */
+  radius: number;
+  /** The pile's lowest point above the feet: 0 or negative. */
+  floor: number;
+  /** …and its highest. 0 for a creature carrying nothing. */
+  ceiling: number;
+  /** …and how far it reaches sideways from the creature's axis. */
+  footprint: number;
 }
 
 /**
- * How far above the subject's ROOT the camera looks, world units. PURE.
+ * THE MIDDLE OF THAT MASS, world units above the creature's feet. PURE.
  *
- * The root is the ball's underside (docs/PLAN.md §7.6), so the mass's centre
- * is `bodyR · roll` above it — the same height the rider is written at, which
- * is why a rolling creature and its ball are both in the middle of the frame.
- * With no roll it is the creature's own middle.
+ * > User direction, 2026-09-17, with a crop of the live inset showing a 52 m
+ * > mass sitting low-left in the circle and the top half empty: *"the 3d
+ * > representation of the character and mass should be vertically and
+ * > horizontally centred in the circle."*
+ *
+ * The midpoint of the whole thing's vertical bounds — the creature from its
+ * feet to its stalk, and the pile from its floor to its ceiling — and not the
+ * creature's own middle, because with a pile packed to one side and up over
+ * its head the creature is nowhere near the middle of the lump.
  */
-export function portraitAimY(bodyR: number, roll: number): number {
-  const r = Number.isFinite(bodyR) && bodyR > 0 ? bodyR : 0;
-  const blend = Math.min(1, Math.max(0, Number.isFinite(roll) ? roll : 0));
-  return Math.max(r * blend, PORTRAIT_MIN_HALF * PORTRAIT_AIM_FRACTION * (1 - blend));
+export function portraitCentreY(bounds: PortraitBounds): number {
+  const low = Math.min(0, Number.isFinite(bounds.floor) ? bounds.floor : 0);
+  const height = Number.isFinite(bounds.height) && bounds.height > 0 ? bounds.height : 0;
+  const ceiling = Number.isFinite(bounds.ceiling) ? bounds.ceiling : 0;
+  const high = Math.max(height, ceiling);
+  return (low + high) / 2;
+}
+
+/**
+ * …and HOW BIG A FRAME holds it, world units. PURE.
+ *
+ * Half of whichever bound is larger — the mass's own height, or twice its
+ * widest horizontal reach about the creature's axis — plus the margin, and
+ * never under the floor that frames a creature carrying nothing. Horizontally
+ * a sideways pile is off-centre about the axis, so the half-width that has to
+ * fit is the reach on the far side: the footprint itself.
+ */
+export function portraitBoundsHalf(bounds: PortraitBounds): number {
+  const low = Math.min(0, Number.isFinite(bounds.floor) ? bounds.floor : 0);
+  const height = Number.isFinite(bounds.height) && bounds.height > 0 ? bounds.height : 0;
+  const ceiling = Number.isFinite(bounds.ceiling) ? bounds.ceiling : 0;
+  const high = Math.max(height, ceiling);
+  const vertical = (high - low) / 2;
+  const radius = Number.isFinite(bounds.radius) && bounds.radius > 0 ? bounds.radius : 0;
+  const footprint = Number.isFinite(bounds.footprint) && bounds.footprint > 0 ? bounds.footprint : 0;
+  return portraitHalfExtent(Math.max(vertical, radius, footprint));
+}
+
+/**
+ * Half-height of the orthographic frustum that frames this subject, world
+ * units. PURE.
+ *
+ * `reach` IS THE DRAWN MASS'S OWN RADIUS — `CreatureManager.pileReach`, the
+ * furthest seat plus that item's radius — and NOT `ballDiameter / 2`. The two
+ * were the same number when the items sat on the surface of a sphere of that
+ * radius; since they pack onto the character (2026-09-17, *"the character
+ * should be the object that the items stick to"*) `bodyR` is the accumulated
+ * VOLUME and runs well ahead of the lump anybody can see — measured at
+ * fifteen props, packed 4.6 u against a `bodyR` of 7.1, which framed the
+ * picture on a sphere half again as wide as its subject and left the lump
+ * rattling around in the middle of the circle. So the fit reads the reach and
+ * the mass fills the circle at every size.
+ *
+ * Plus the margin, and never under the floor that frames the creature itself.
+ */
+export function portraitHalfExtent(reach: number): number {
+  const r = Number.isFinite(reach) && reach > 0 ? reach : 0;
+  return Math.max(r, PORTRAIT_MIN_HALF) * (1 + PORTRAIT_MARGIN);
 }
 
 /** Where the inset is on screen, CSS pixels from the top-left of the page. */
@@ -148,14 +207,18 @@ export interface PortraitRect {
   h: number;
 }
 
-/** What to draw: one creature's rig, and the two numbers that frame it. */
+/** What to draw: one creature's rig, and what the mass on it occupies. */
 export interface PortraitSubject {
   /** The creature ROOT — `renderer.render` walks this and nothing else. */
   root: Object3D;
-  /** The drawn ball's radius (`ballDiameter / 2`). 0 for no ball yet. */
-  bodyR: number;
-  /** Its walk→roll blend (`rollBlend`), for where the mass's centre is. */
-  roll: number;
+  /**
+   * What the DRAWN mass occupies in the creature's own frame — never
+   * `ballDiameter / 2`, which is the accumulated volume and is larger than
+   * anything on screen (see `portraitHalfExtent`). A creature carrying
+   * nothing has a floor, a ceiling and a footprint of 0 and is framed by its
+   * own height.
+   */
+  bounds: PortraitBounds;
 }
 
 export interface PortraitSource {
@@ -233,7 +296,9 @@ export function createPortraitPass(opts: {
       // The spring runs whether or not there is anything to draw, so a
       // portrait that comes back after a retire comes back at the size it
       // left rather than jumping to it.
-      fitSpring.retarget(portraitHalfExtent(subject?.bodyR ?? 0));
+      fitSpring.retarget(
+        subject ? portraitBoundsHalf(subject.bounds) : portraitHalfExtent(0),
+      );
       half = fitSpring.update(dtMs);
       if (!rect || !subject) return;
       if (!(rect.w > 1) || !(rect.h > 1)) return;
@@ -244,7 +309,9 @@ export function createPortraitPass(opts: {
       camera.bottom = -half;
       camera.updateProjectionMatrix();
       subject.root.getWorldPosition(aim);
-      aim.y += portraitAimY(subject.bodyR, subject.roll);
+      // The middle of the mass, not the middle of the creature: with a pile
+      // packed to one side the two are not the same point (2026-09-17).
+      aim.y += portraitCentreY(subject.bounds);
       camera.position.copy(aim).addScaledVector(dir, PORTRAIT_DIST);
       camera.lookAt(aim);
 

@@ -33,12 +33,14 @@ import { describe, expect, it } from 'vitest';
 import {
   ICON_CAP_M,
   ICON_MIN_SCALE,
-  INSET_MAX_PX,
-  INSET_MIN_PX,
+  INSET_GAP_PX,
+  INSET_PX,
   formatLength,
   iconScale,
   installBallSize,
   metresOf,
+  rowFramePath,
+  rowOffsetPx,
 } from '../../src/ui/size';
 import { WORLD_SCALE } from '../../src/world/katamari/rules';
 
@@ -149,6 +151,9 @@ interface StubEl {
   /** What a layout would have measured. The recording DOM has no layout, so
    * a test that cares sets it (the inset's diameter is the row's width). */
   offsetWidth: number;
+  /** …and what it would have measured tall. The box's wavering frame is
+   * drawn at the row's real size, so a test about the frame sets both. */
+  offsetHeight: number;
   getBoundingClientRect(): { left: number; top: number; width: number; height: number };
   appendChild(child: StubEl): StubEl;
   append(...kids: StubEl[]): void;
@@ -177,6 +182,7 @@ function makeEl(tag: string): StubEl {
     children: [],
     parent: null,
     offsetWidth: 0,
+    offsetHeight: 0,
     getBoundingClientRect(): {
       left: number;
       top: number;
@@ -450,8 +456,16 @@ describe('the corner mounts, waits for a ball, and leaves cleanly', () => {
       mount: dom.mount as unknown as HTMLElement,
     });
     const sheet = dom.head.children[0]!.textContent;
-    // The ruleLine mark is there…
-    expect(sheet).toContain('border-bottom: 1px solid');
+    /*
+     * The marks: the icon's ring, and — since the 2026-09-17 direction — the
+     * readout's PAPER BOX in place of the hairline rule it used to carry
+     * (*"a rectangular container with a black outline and white fill, in the
+     * style of ref world"*, the recorded paper-card ruling, TASTE §9a). One
+     * fill, one hairline, drawn by the project's own hand.
+     */
+    expect(sheet).toContain('.world-size-paper');
+    expect(sheet).toContain('fill: var(--rw-light');
+    expect(sheet).toContain('stroke-width: 1.25');
     // …and the marks that are not in this taste's vocabulary are not.
     expect(sheet).not.toMatch(/\bbackground\b/);
     expect(sheet).not.toMatch(/box-shadow/);
@@ -477,7 +491,7 @@ describe('the inset — the live view’s frame and its rect', () => {
    * This module owns the MARK and the RECT; the picture inside it is
    * src/world/portrait.ts's, and the rect is the whole contract between them.
    */
-  it('is a square circle whose diameter is the row’s width', () => {
+  it('is one fixed circle at the top of the corner', () => {
     const dom = stubDom();
     const handle = installBallSize({
       diameter: () => 2,
@@ -487,14 +501,20 @@ describe('the inset — the live view’s frame and its rect', () => {
     const row = find(el, 'world-size-row')!;
     // What a layout would have measured for `15m 16cm` beside the icon.
     row.offsetWidth = 118;
+    row.offsetHeight = 32;
     for (let f = 1; f <= 120; f++) dom.step(f * 40);
 
     const inset = find(el, 'world-size-inset')!;
-    expect(inset.attrs['width']).toBeDefined();
-    expect(Number(inset.attrs['width'])).toBeCloseTo(118, 0);
+    /*
+     * ONE SIZE, and not the row's width any more (user direction,
+     * 2026-09-17): the picture and the number are two marks in a column now,
+     * so a circle measured off the type moved the whole corner every time a
+     * digit landed.
+     */
+    expect(Number(inset.attrs['width'])).toBe(INSET_PX);
     // Square, because the mark is a circle.
     expect(inset.attrs['height']).toBe(inset.attrs['width']);
-    // …and it paints BEHIND the row: an earlier sibling, no z-index of its own.
+    // It takes the TOP of the corner; the readout hangs under it.
     expect(el.children.indexOf(inset)).toBeLessThan(
       el.children.findIndex((kid) => kid.className === 'world-size-drift'),
     );
@@ -502,11 +522,23 @@ describe('the inset — the live view’s frame and its rect', () => {
     dom.restore();
   });
 
-  it('holds the corner’s bounds whatever the row measures', () => {
-    for (const [measured, want] of [
-      [0, INSET_MIN_PX],
-      [40, INSET_MIN_PX],
-      [400, INSET_MAX_PX],
+  it('keeps the readout’s box wholly below the circle, left edges aligned', () => {
+    /*
+     * > User direction, 2026-09-17, with two phone screenshots of a 52 m
+     * > ball: *"move the size of the ball BELOW the actual visual
+     * > representation so that it's not overlapped … It should sit on the
+     * > left-hand side, just below the circle."*
+     *
+     * The rule is geometric and it is one expression — `rowOffsetPx()` — so
+     * this is what pins it: the box begins a whole circle plus the gap below
+     * the corner's top, and the corner's top IS the circle's top (the circle
+     * is out of the flow at 0, 0), at every width the number comes out to.
+     */
+    for (const [w, h] of [
+      [96, 32],
+      [118, 32],
+      [240, 32],
+      [118, 44],
     ] as const) {
       const dom = stubDom();
       const handle = installBallSize({
@@ -514,15 +546,38 @@ describe('the inset — the live view’s frame and its rect', () => {
         mount: dom.mount as unknown as HTMLElement,
       });
       const el = handle.el as unknown as StubEl;
-      find(el, 'world-size-row')!.offsetWidth = measured;
+      const row = find(el, 'world-size-row')!;
+      row.offsetWidth = w;
+      row.offsetHeight = h;
       for (let f = 1; f <= 200; f++) dom.step(f * 40);
-      expect(Number(find(el, 'world-size-inset')!.attrs['width'])).toBeCloseTo(want, 0);
+
+      const circle = handle.rect()!;
+      expect(circle.w).toBe(INSET_PX);
+      const offset = rowOffsetPx();
+      const boxTop = circle.y + offset;
+      // Below the circle's bottom edge, by the gap and nothing else.
+      expect(boxTop).toBeGreaterThanOrEqual(circle.y + circle.h);
+      expect(boxTop - (circle.y + circle.h)).toBeCloseTo(INSET_GAP_PX, 6);
+      // The sheet puts that offset on the drift layer, which is what carries
+      // the box — so the two cannot overlap however wide the number is.
+      const sheet = dom.head.children[0]!.textContent;
+      expect(sheet).toContain(`margin-top: ${offset}px`);
+      // …and neither mark is inset from the corner, so the left edges align.
+      expect(sheet).toContain('.world-size-inset {\n  position: absolute;\n  left: 0;');
       handle.dispose();
       dom.restore();
     }
   });
 
-  it('grows to it by sliding — the number steps, the circle does not', () => {
+  it('draws the readout on paper inside one wavering hairline', () => {
+    /*
+     * > *"Put it in a rectangular container with a black outline and white
+     * > fill, in the style of ref world."*
+     *
+     * Which is the recorded paper-card mark (TASTE §9a): the join code's own
+     * fill and the join code's own hand, one hairline at 1.25, and nothing
+     * else — no shadow, no radius, no second fill.
+     */
     const dom = stubDom();
     const handle = installBallSize({
       diameter: () => 2,
@@ -530,31 +585,58 @@ describe('the inset — the live view’s frame and its rect', () => {
     });
     const el = handle.el as unknown as StubEl;
     const row = find(el, 'world-size-row')!;
-    const inset = find(el, 'world-size-inset')!;
-    row.offsetWidth = INSET_MIN_PX;
-    for (let f = 1; f <= 60; f++) dom.step(f * 40);
-    expect(Number(inset.attrs['width'])).toBeCloseTo(INSET_MIN_PX, 0);
+    row.offsetWidth = 118;
+    row.offsetHeight = 32;
+    for (let f = 1; f <= 120; f++) dom.step(f * 40);
 
-    // A digit lands and the row jumps twenty pixels wider.
-    row.offsetWidth = INSET_MIN_PX + 20;
-    let previous = Number(inset.attrs['width']);
-    let steps = 0;
-    for (let f = 61; f <= 160; f++) {
-      dom.step(f * 40);
-      const now = Number(inset.attrs['width']);
-      // Monotone, and never past the target: ζ ≥ 1 (TASTE §2.1).
-      expect(now).toBeGreaterThanOrEqual(previous - 1e-9);
-      expect(now).toBeLessThanOrEqual(INSET_MIN_PX + 20 + 1e-9);
-      steps = Math.max(steps, now - previous);
-      previous = now;
-    }
-    // It got there, and no single frame moved it a quarter of the way — the
-    // twenty pixels arrive over the secondary beat, not in one jump.
-    expect(previous).toBeCloseTo(INSET_MIN_PX + 20, 0);
-    expect(steps).toBeLessThan(5);
+    const paper = find(el, 'world-size-paper')!;
+    expect(paper.tag).toBe('path');
+    // The frame is the box's own size, and the path is the project's loop.
+    expect(find(el, 'world-size-frame')!.attrs['viewBox']).toBe('0 0 118 32');
+    expect(paper.attrs['d']).toBe(rowFramePath(118, 32));
+    expect((paper.attrs['d'] ?? '').length).toBeGreaterThan(80);
+    // Behind the type: the first child of the row.
+    expect(row.children[0]!.attrs['class']).toBe('world-size-frame');
+
+    const sheet = dom.head.children[0]!.textContent;
+    const rules = sheet.slice(sheet.indexOf('.world-size-paper'));
+    expect(rules).toContain('--rw-light');
+    expect(rules).toContain('--rw-ink');
+    expect(rules).toContain('stroke-width: 1.25');
+    expect(sheet).not.toContain('box-shadow');
+    expect(sheet).not.toContain('border-radius');
+    // The rule the box replaced is gone: one mark, not a box AND a rule.
+    expect(sheet).not.toContain('border-bottom');
     handle.dispose();
     dom.restore();
   });
+
+  it('redraws that frame only when the box’s size changes', () => {
+    const dom = stubDom();
+    const handle = installBallSize({
+      diameter: () => 2,
+      mount: dom.mount as unknown as HTMLElement,
+    });
+    const el = handle.el as unknown as StubEl;
+    const row = find(el, 'world-size-row')!;
+    row.offsetWidth = 100;
+    row.offsetHeight = 32;
+    for (let f = 1; f <= 60; f++) dom.step(f * 40);
+    const first = find(el, 'world-size-paper')!.attrs['d'];
+    expect(first).toBe(rowFramePath(100, 32));
+
+    // Sixty more paints at the same size: the same hand, not a new one.
+    for (let f = 61; f <= 120; f++) dom.step(f * 40);
+    expect(find(el, 'world-size-paper')!.attrs['d']).toBe(first);
+
+    // A wider number, and the box follows it.
+    row.offsetWidth = 132;
+    for (let f = 121; f <= 160; f++) dom.step(f * 40);
+    expect(find(el, 'world-size-paper')!.attrs['d']).toBe(rowFramePath(132, 32));
+    handle.dispose();
+    dom.restore();
+  });
+
 
   it('publishes no rect until there is something to show', () => {
     const dom = stubDom();
@@ -581,7 +663,8 @@ describe('the inset — the live view’s frame and its rect', () => {
     for (let f = 1; f <= 200; f++) dom.step(f * 40);
     const rect = handle.rect()!;
     expect(rect).not.toBeNull();
-    expect(rect.w).toBeCloseTo(110, 0);
+    // The circle's own fixed diameter, whatever the number measured.
+    expect(rect.w).toBe(INSET_PX);
     // Square and at the corner the sheet puts it.
     expect(rect.h).toBeCloseTo(rect.w, 6);
     expect(rect.x).toBe(16);

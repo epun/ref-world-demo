@@ -247,25 +247,52 @@ describe('a creature does not grow with its pile', () => {
     manager.clearAll();
   });
 
-  it('still lets the MASS cast the shadow', () => {
+  it('casts the MASS’s own silhouette — one stamp per item, not a disc', () => {
+    /*
+     * > User ask, 2026-09-17: *"we should also not show the shadow of the
+     * > sphere … we should be showing the shadow of the objects that are
+     * > attached to the character and the actual silhouette of the mass of
+     * > objects + character."*
+     *
+     * And with it: *"at the beginning, the character shouldn't have that big
+     * of a radius. it should scale as the objects collect around the
+     * character."* The creature's own stamp is its DRAWN radius and stays
+     * there — it used to be `character.radius × growth`, a disc the size of a
+     * sphere nothing draws, which is what made a hatchling read as a big
+     * creature the moment it picked up one stone.
+     */
     const { scene, manager, shadows } = harness();
     manager.spawn('grower', fish, { hatchMs: 60_000, grown: true });
     manager.update(16, 1000);
     const root = rootOf(scene, manager, 'grower');
     const base = shadows.radius.get('char-grower')!;
     expect(base).toBeGreaterThan(0);
+    // Carrying nothing: its own stamp and nothing else on the ground.
+    expect([...shadows.radius.keys()].filter((k) => k.startsWith('stuck-'))).toEqual([]);
+
     const each = manager.ballDiameter('grower') / 2;
-    for (let n = 0; n < 8; n++) stick(manager, 'grower', n, each);
+    const items = 8;
+    for (let n = 0; n < items; n++) stick(manager, 'grower', n, each);
     let now = 1000;
     for (let f = 0; f < 60; f++) {
       now += 16;
       manager.update(16, now);
     }
-    const stamp = shadows.radius.get('char-grower')!;
-    // The stamp is the BALL's, not the creature's: `character.radius × g`.
-    expect(stamp / base).toBeCloseTo(root.scale.x, 6);
-    expect(stamp).toBeGreaterThan(base * 2);
+
+    // The creature's own stamp is UNCHANGED, though the ball grew.
+    expect(root.scale.x).toBeGreaterThan(2);
+    expect(shadows.radius.get('char-grower')!).toBeCloseTo(base, 10);
+    // …and the rest of the silhouette is one stamp per seated item, each at
+    // the item's own footprint radius.
+    const stuck = [...shadows.radius.entries()].filter(([k]) => k.startsWith('stuck-grower-'));
+    expect(stuck.length).toBe(items);
+    for (const [, r] of stuck) expect(r).toBeCloseTo(each, 6);
+    // The whole mark set on the ground: the creature plus its pile.
+    expect(shadows.radius.size).toBe(items + 1);
+
+    // And it goes with the creature: nothing is left stamped on the paper.
     manager.clearAll();
+    expect(shadows.radius.size).toBe(0);
   });
 
   it('stands on the ground at its drawn size, un-rotated by the roll', () => {

@@ -155,6 +155,14 @@ The traps, in order of how easily they get violated:
   along the direction it was struck from. `packSeatDistance` is that search (pure, greedy,
   one-dimensional, `PACK_PASSES` bounded) and it runs ONCE on the deciding page: the packed
   seat travels on the `stick` event, so no two pages can pack differently.
+  ⚠️ **A pile lifts a creature only by what is UNDER it** (user report 2026-09-17: *"now the
+  characters are floating … they should not be floating in mid air"* / *"the character should
+  be on the ground"*): `groundClearance` sits the root on `Clump.floor()`, the pile's lowest
+  point in the creature's own frame, and the footprint ring rides `Clump.footprint()` through
+  `footprintRise` with NO pad. The RADIAL `reach()` was the wrong measurement — items pack
+  along the directions they were struck from, so a sideways pile reaches metres with nothing
+  beneath the feet — and `bodyR` was wrong before that. Don't put a radius back into either
+  half.
   ⚠️ **The seats are held in WORLD units** (`Clump.seats()`/`seatOf`): an event's ox/oy/oz are
   clump-local — world over the growth the pile had ON ARRIVAL, which is why `add` reads the
   growth BEFORE inserting — and the frame divides the live growth back out. Hold them
@@ -179,9 +187,28 @@ The traps, in order of how easily they get violated:
   draws that creature's ROOT SUBTREE alone (`renderer.render(root, ortho)`, one pass, no
   shadows and no post, after grain has composed) into a scissor on the rect `size.ts`
   publishes, so the picture cannot land outside the circle; the ortho half-extent is
-  `portraitHalfExtent(bodyR)` on a ζ ≥ 1 spring, so the mass keeps its share of the circle as
-  the ball grows. The subtree carries no lights because the cel chain is self-lit — a katamari
-  world on the `ink` style would need a light rig), the handset's contextual hints, loading and empty states
+  `portraitBoundsHalf` of the DRAWN MASS's own bounds on a ζ ≥ 1 spring, and the frame is
+  CENTRED on them (`portraitCentreY`) — never `bodyR`, which is the accumulated volume and
+  runs ahead of the lump, and never the creature's own middle, because a pile packed to one
+  side leaves the creature nowhere near the centre of its lump (three asks on 2026-09-17, the
+  last *"the 3d representation of the character and mass should be vertically and horizontally
+  centred in the circle"*). The bounds are five numbers off the pile itself —
+  `CHARACTER_HEIGHT`, `drawnRadius`, `pileFloor`, `pileCeiling`, `pileFootprint`.
+  The corner is a COLUMN: the circle is ONE fixed size (`INSET_PX`) at the top and the readout
+  hangs under it by `INSET_GAP_PX` (`rowOffsetPx`) in its own PAPER BOX — the join code's
+  wavering hairline on `--rw-light` (user direction: *"put it in a rectangular container with
+  a black outline and white fill, in the style of ref world"*), which is the recorded
+  paper-card ruling and carries its own mark-lint exemption. Stacked, the readout's rule cut
+  straight across the picture.
+  **And the SHADOW is the mass's own silhouette** (user ask 2026-09-17: *"we should not show
+  the shadow of the sphere … the actual silhouette of the mass of objects + character"*): the
+  creature's stamp is its DRAWN radius — no longer `× growth`, which is also what made a fresh
+  creature read as large — plus one flat stamp per seated item at its seat's xz and its own
+  `r`, bounded at `PILE_SHADOWS_MAX` outermost-first. One instanced pass at one value, so a
+  union of stamps is still one flat shadow (TASTE §2.3). Nothing PRESENTED reads `bodyR` any
+  more. The subtree carries no lights because the cel
+  chain is self-lit — a katamari world on the `ink` style would need a light rig), the
+  handset's contextual hints, loading and empty states
   (`src/ui/hints.ts`, `loading.ts`, `empty.ts` — the hints are three marks in the live world
   view, each dismissed by doing what it says; user ask 2026-09-17, no slideshow), and **the island** — `setIslandMode` in
   `src/world/landscape.ts`, off by default, so the coast, the sea and the beach do not exist

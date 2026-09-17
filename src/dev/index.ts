@@ -387,6 +387,16 @@ const MARK_LINT_TARGETS: { selector: string; name: string; exemptReason?: string
     name: 'hint label',
     exemptReason: 'paper-card ruling — user override 2026-09-17, the join code’s own fill',
   },
+  /* The handset's ball readout (src/ui/size.ts). Since the 2026-09-17
+   * direction — *"put it in a rectangular container with a black outline and
+   * white fill, in the style of ref world"* — the number stands in the same
+   * paper box as the four above instead of under a hairline rule, so its
+   * fill is the identical recorded ruling (docs/TASTE.md §9a). */
+  {
+    selector: '.world-size-row',
+    name: 'ball readout',
+    exemptReason: 'paper-card ruling — user override 2026-09-17, the join code’s own fill',
+  },
   {
     selector: '.world-minimap',
     name: 'minimap',

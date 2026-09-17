@@ -705,6 +705,15 @@ interface Slot {
   character: Character | null;
   characterRoot: Group | null;
   characterShadow: ShadowHandle | null;
+  /**
+   * ONE FLAT STAMP PER SEATED ITEM, by item key — the pile's own silhouette
+   * on the paper (user ask, 2026-09-17: *"we should not show the shadow of the
+   * sphere … we should be showing the shadow of the objects that are attached
+   * to the character and the actual silhouette of the mass of objects +
+   * character"*). Empty for a creature carrying nothing, which keeps its own
+   * stamp and nothing else.
+   */
+  pileShadows: Map<string, ShadowHandle>;
   /** Collision radius measured from the hatched character's real mesh
    * footprint (measureBodyRadius); 0 until hatch.
    *
@@ -1361,9 +1370,23 @@ export interface CreatureManager {
    * every world without the game.
    */
   pileFloor(id: string): number;
+  /** …and its HIGHEST point in the same frame (`Clump.ceiling`) — what the
+   * corner's live view frames the mass by. 0 for an empty pile. */
+  pileCeiling(id: string): number;
   /** …and HOW WIDE it is, world units from the creature's axis
    * (`Clump.footprint`) — the circle the ground under it is sampled over. */
   pileFootprint(id: string): number;
+  /**
+   * THE CREATURE'S OWN DRAWN RADIUS, world units — `Character.radius`, the
+   * footprint its shadow stamp is cut at, and the one radius in this game
+   * that never grows (the rider divides the growth back out).
+   *
+   * Published because everything PRESENTED has to be this or the pile's own
+   * reach, never `ballDiameter / 2` (user ask, 2026-09-17: *"at the beginning,
+   * the character shouldn't have that big of a radius. it should scale as the
+   * objects collect around the character"*). 0 before the shell opens.
+   */
+  drawnRadius(id: string): number;
   /**
    * TURN THE MAP'S GRAVITY OFF, OR BACK ON (user ask, 2026-09-17: *"i want a
    * zero gravity mode where i can hit g on the keyboard and it turns off
@@ -1526,6 +1549,20 @@ export function createCreatureManager(
    * the same object the same question is garbage for nothing. */
   const sampleAt = (x: number, z: number): number => surface.sampleHeight(x, z);
   const slots = new Map<string, Slot>();
+  /**
+   * [D] How many of a pile's items cast a stamp of their own.
+   *
+   * The outermost thirty-two, which is what shapes the outline: the things
+   * inside them are already under it, and a stamp is one instanced matrix in
+   * the pass that draws every shadow in the world (src/world/shadows.ts), so
+   * the cost of the bound is a sort of the pile once a frame.
+   */
+  const PILE_SHADOWS_MAX = 32;
+  /** Scratch for the pile-shadow pass: one array and one set, reused, so a
+   * creature carrying a pile allocates nothing per frame. */
+  const shadowWanted: StuckItem[] = [];
+  const shadowKeep = new Set<string>();
+  const shadowSeat = new Vector3();
   /**
    * STICKS THAT ARRIVED BEFORE THE CREATURE DID (2026-09-17).
    *
@@ -1856,6 +1893,7 @@ export function createCreatureManager(
     slot.character?.dispose();
     slot.pending?.dispose();
     world.shadows.removeShadow(`char-${slot.id}`);
+    clearPileShadows(slot);
     slots.delete(slot.id);
   }
 
@@ -2399,6 +2437,9 @@ export function createCreatureManager(
        */
       world.shadows.removeShadow(`char-${rider.id}`);
       rider.characterShadow = null;
+      // Its own pile's stamps go with it: what it was carrying is inside the
+      // carrier's silhouette now.
+      clearPileShadows(rider);
       removeKinematic(rider);
       clump.add({
         key: record.item,
@@ -4156,8 +4197,94 @@ export function createCreatureManager(
           rider.quaternion.identity();
         }
       }
-      if (slot.character) slot.characterShadow?.setRadius?.(slot.character.radius * g);
+      /*
+       * THE SHADOW IS THE MASS'S OWN SILHOUETTE, not a disc the size of the
+       * ball (user ask, 2026-09-17: *"we should not show the shadow of the
+       * sphere … the actual silhouette of the mass of objects + character"*,
+       * with *"at the beginning, the character shouldn't have that big of a
+       * radius"*).
+       *
+       * The creature's own stamp is its DRAWN radius and no longer `× g`:
+       * the drawn creature does not grow — the rider divides the growth back
+       * out — so a stamp that did grow was a mark about a sphere nothing
+       * draws, and it is what made a hatchling read as a big creature the
+       * moment it picked up its first stone.
+       */
+      if (slot.character) slot.characterShadow?.setRadius?.(slot.character.radius);
+      syncPileShadows(slot, root);
     }
+  }
+
+  /**
+   * …and the rest of that silhouette: one stamp per seated item, at the
+   * item's own footprint radius, offset to where the item is DRAWN.
+   *
+   * A UNION OF STAMPS IS STILL ONE FLAT VALUE (TASTE §2.3 — hard-edged,
+   * flat-filled, single value, no penumbra): the shadow pass draws every
+   * stamp in one instanced mesh at one colour, so two overlapping stamps read
+   * as one shape and not as a darker patch. That is the whole reason the
+   * silhouette can be a union rather than a fitted outline.
+   *
+   * The offset is derived, not read off a matrix: the seat is in world units
+   * from the pile's centre (`Clump.seats`) and the pile's roll is a world
+   * quaternion, so the item's ground position is the root's plus the rotated
+   * seat — which is true before the renderer has updated a single world
+   * matrix, and costs one rotation per item.
+   *
+   * Bounded by `PILE_SHADOWS_MAX`, outermost first: the things furthest from
+   * the centre are the ones that shape the outline, and the ones inside them
+   * are already under it.
+   */
+  function syncPileShadows(slot: Slot, root: Group): void {
+    const clump = slot.clump;
+    const stamps = slot.pileShadows;
+    if (!clump || clump.items.size === 0) {
+      if (stamps.size > 0) clearPileShadows(slot);
+      return;
+    }
+    const wanted = shadowWanted;
+    wanted.length = 0;
+    for (const item of clump.items.values()) wanted.push(item);
+    wanted.sort((a, b) => {
+      const sa = clump.seatOf(a.key);
+      const sb = clump.seatOf(b.key);
+      const da = sa ? sa.x * sa.x + sa.z * sa.z : 0;
+      const db = sb ? sb.x * sb.x + sb.z * sb.z : 0;
+      // Deterministic under a tie, so the set does not flicker frame to
+      // frame the way an unstable sort would let it.
+      return db - da || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
+    });
+    if (wanted.length > PILE_SHADOWS_MAX) wanted.length = PILE_SHADOWS_MAX;
+    shadowKeep.clear();
+    for (const item of wanted) shadowKeep.add(item.key);
+    for (const [key, handle] of stamps) {
+      if (shadowKeep.has(key)) continue;
+      void handle;
+      world.shadows.removeShadow(`stuck-${slot.id}-${key}`);
+      stamps.delete(key);
+    }
+    for (const item of wanted) {
+      const seat = clump.seatOf(item.key);
+      if (!seat) continue;
+      let handle = stamps.get(item.key);
+      if (!handle) {
+        handle = world.shadows.addShadow(`stuck-${slot.id}-${item.key}`, item.r);
+        stamps.set(item.key, handle);
+      }
+      shadowSeat.set(seat.x, seat.y, seat.z).applyQuaternion(clump.worldQ);
+      handle.setRadius?.(item.r);
+      handle.setPosition(root.position.x + shadowSeat.x, root.position.z + shadowSeat.z);
+    }
+  }
+
+  /** Take the pile's stamps off the ground — a retire, a drop of the whole
+   * pile, or a creature that has itself been picked up (a passenger's mass is
+   * inside somebody else's silhouette and casts nothing of its own). */
+  function clearPileShadows(slot: Slot): void {
+    for (const key of slot.pileShadows.keys()) {
+      world.shadows.removeShadow(`stuck-${slot.id}-${key}`);
+    }
+    slot.pileShadows.clear();
   }
 
   const manager: CreatureManager = {
@@ -4247,6 +4374,7 @@ export function createCreatureManager(
         character: null,
         characterRoot: null,
         characterShadow: null,
+        pileShadows: new Map(),
         bodyR: 0,
         baseR: 0,
         clump: null,
@@ -5536,8 +5664,16 @@ export function createCreatureManager(
       return slots.get(id)?.clump?.floor() ?? 0;
     },
 
+    pileCeiling(id): number {
+      return slots.get(id)?.clump?.ceiling() ?? 0;
+    },
+
     pileFootprint(id): number {
       return slots.get(id)?.clump?.footprint() ?? 0;
+    },
+
+    drawnRadius(id): number {
+      return slots.get(id)?.character?.radius ?? 0;
     },
 
     setGravity(on): void {

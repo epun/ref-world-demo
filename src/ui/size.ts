@@ -33,15 +33,24 @@
  * and the object ball should not scale beyond the radius measurement ui div
  * in the top left"*):
  *
- * - the INSET — one wavering hairline CIRCLE, behind the row, whose diameter
- *   is the row's own width, with a live render of your creature and its ball
- *   inside it. The drawing is not this module's: `rect()` publishes where the
- *   circle is and `src/world/portrait.ts` renders the creature's own subtree
- *   into that rect after the frame has composed, scissored to it. This module
- *   owns the MARK — the ring, the size and the slide — and knows nothing
- *   about a camera; the paper the picture stands on is cleared in GL, because
- *   the DOM is in front of the canvas and a fill up here would cover the
- *   picture it is supposed to be behind.
+ * - the INSET — one wavering hairline CIRCLE whose diameter is the row's own
+ *   width, with a live render of your creature and its pile inside it. The
+ *   drawing is not this module's: `rect()` publishes where the circle is and
+ *   `src/world/portrait.ts` renders the creature's own subtree into that rect
+ *   after the frame has composed, scissored to it. This module owns the MARK
+ *   — the ring, the size and the slide — and knows nothing about a camera;
+ *   the paper the picture stands on is cleared in GL, because the DOM is in
+ *   front of the canvas and a fill up here would cover the picture.
+ *
+ *   IT IS A COLUMN, not a stack (2026-09-17, measured at 390x844 on the
+ *   hints delegate's own shot): the picture was BEHIND the row, so the number
+ *   sat on the creature and the row's hairline rule cut straight across the
+ *   circle — two marks reading as one. So the circle takes the top of the
+ *   corner and the number and its rule hang under it, clear of it by
+ *   `INSET_GAP_PX`. The offset is written in JS from `rowOffsetPx` rather
+ *   than left to flow, because the circle's size is a spring and the row has
+ *   to follow it without a step; `rect()` and that one number are what keep
+ *   the two boxes from ever overlapping again (pinned in test/ui/size.test.ts).
  *
  * It is the same ring generator as the icon beside the number and the same
  * hairline the join code, the minimap and the leaderboard stand in
@@ -73,7 +82,7 @@
 import { MOTION, WORLD } from '../taste/tokens';
 import { Spring } from '../motion/spring';
 import { sampleDrift } from '../motion/ambient';
-import { wavyBorderPath } from '../phone/minimap';
+import { mapBorderInset, mapMarkScale, wavyBorderPath, wavyBorderPoints } from '../phone/minimap';
 import { wavyRingPoints } from '../world/joystick';
 import { WORLD_SCALE } from '../world/katamari/rules';
 
@@ -160,6 +169,20 @@ export function iconScale(metres: number): number {
   return ICON_MIN_SCALE + (1 - ICON_MIN_SCALE) * t;
 }
 
+/**
+ * THE READOUT BOX'S OWN FRAME, as svg path data — the project's wavering loop
+ * at that size, drawn by the same hand as the join code, the minimap, the
+ * leaderboard and the hint labels (`mapBorderInset(mapMarkScale(min))`, the
+ * identical expression all four use, so every hairline sits the same distance
+ * inside its own edge). PURE and deterministic per size, so the same box is
+ * the same hand on every device.
+ */
+export function rowFramePath(w: number, h: number, seed = SIZE_SEED + 5): string {
+  if (!(w > 2) || !(h > 2)) return '';
+  const inset = mapBorderInset(mapMarkScale(Math.min(w, h)));
+  return wavyBorderPath(wavyBorderPoints(Math.round(w), Math.round(h), inset, seed));
+}
+
 // ── the corner ───────────────────────────────────────────────────────────────
 
 /** The icon's box on screen, css px — its capped size, not its current one. */
@@ -190,21 +213,55 @@ const INSET_BOX = 100;
 /** Ring radius in that box, leaving the waver room inside the viewBox. */
 const INSET_R = INSET_BOX / 2 - 4;
 /**
- * [D] The smallest the circle gets, css px.
+ * [D] THE CIRCLE'S DIAMETER, css px — one number, and it no longer follows
+ * the row.
  *
- * Its DIAMETER IS THE ROW'S WIDTH (the ask), and the row is narrow before
- * there is a number in it — `0` of a width would be a picture nobody can
- * see. 96 px is about the width of `15m 16cm` on a phone, which is where the
- * row ends up within the first few pickups anyway.
+ * > User direction, 2026-09-17, with two phone screenshots of a 52 m ball:
+ * > *"move the size of the ball BELOW the actual visual representation so
+ * > that it's not overlapped. Put it in a rectangular container with a black
+ * > outline and white fill, in the style of ref world. It should sit on the
+ * > left-hand side, just below the circle."*
+ *
+ * The picture and the number are two marks in a column now, so the circle has
+ * no reason to be measured off the type — and a diameter that grew with the
+ * number moved the whole corner every time a digit landed. 104 px is a
+ * quarter of the narrowest phone this world is drawn on (390) plus a little:
+ * big enough to read a creature and its pile in, small enough to leave the
+ * corner a corner.
  */
-export const INSET_MIN_PX = 96;
+export const INSET_PX = 104;
+
 /**
- * [D] …and the largest, css px. A quarter of the narrowest phone this world
- * is drawn on (390 css px) plus a little: past that the corner stops being a
- * corner. The row cannot get this wide with a real number in it; the cap is
- * for a font nobody tested and a rotated tablet.
+ * [D] Air between the circle and the box under it, css px.
+ *
+ * The one number that keeps the number and its frame off the picture. About
+ * the row's own padding — enough that the two read as two marks, and not so
+ * much that they stop being one corner.
  */
-export const INSET_MAX_PX = 132;
+export const INSET_GAP_PX = 10;
+
+/**
+ * Where the readout's box begins, css px below the corner's own top. PURE.
+ *
+ * The circle owns the top of the corner and the box hangs under it, LEFT
+ * EDGES ALIGNED (the ask): the offset is the circle's whole diameter plus the
+ * gap, so the box's frame begins below the bottom of the circle. That is the
+ * whole of the no-overlap rule and it is one expression, which is what
+ * test/ui/size.test.ts pins.
+ */
+export function rowOffsetPx(): number {
+  return INSET_PX + INSET_GAP_PX;
+}
+
+/**
+ * [D] The readout's own padding inside its frame, css px — the hint label's
+ * (`LABEL_PAD_PX`, src/ui/hints.ts), because these are the same mark: type on
+ * paper inside one wavering hairline.
+ */
+const ROW_PAD_PX = 7;
+
+/** The hairline, css px — the project's one border weight (TASTE §9a). */
+const HAIRLINE_PX = 1.25;
 
 const STYLE_ID = 'world-size-style';
 
@@ -221,9 +278,10 @@ function ensureStyle(): void {
   pointer-events: none;
 }
 /*
- * The inset's ring. An earlier SIBLING of the drift layer, so it paints
- * BEHIND the row without a second z-index — the number reads over the
- * picture, which is the layout the mock shows.
+ * The inset's ring — the top of the corner, out of the flow at its own
+ * top-left, at one fixed size, with the readout's box below it (see the
+ * header: stacked, the number sat on the creature and the row's rule cut
+ * straight across the circle).
  *
  * NO FILL. The paper inside the circle is cleared in WebGL by the render pass
  * (src/world/portrait.ts): this element is in front of the canvas, so a fill
@@ -234,6 +292,8 @@ function ensureStyle(): void {
   position: absolute;
   left: 0;
   top: 0;
+  width: ${INSET_PX}px;
+  height: ${INSET_PX}px;
   display: block;
   opacity: 0;
   transition: opacity ${MOTION.secondaryMs}ms ${MOTION.settleCurve};
@@ -248,19 +308,27 @@ function ensureStyle(): void {
 }
 /* The drift layer. Nothing fully arrests (TASTE §3), and the transform here
    is written per frame — which is why it is its own element: the slide below
-   owns a transform of its own and two of them cannot share one. */
-.world-size-drift { display: block; }
+   owns a transform of its own and two of them cannot share one.
+
+   It also carries the column: the box begins one whole circle plus the gap
+   below the corner's top (rowOffsetPx), left edge aligned with the
+   circle's, which is the layout the ask names. */
+.world-size-drift {
+  display: block;
+  margin-top: ${rowOffsetPx()}px;
+}
 /*
  * The slide. Out of the way and transparent until there is a ball, then it
  * comes down into place over t.secondary on the drift-settle curve — the
  * css-side equivalent of the ζ≥1 spring, so no bounce by construction.
  */
 .world-size-row {
-  display: flex;
-  align-items: baseline;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
   gap: 7px;
-  padding-bottom: 0.45em;
-  border-bottom: 1px solid var(--rw-ink, ${WORLD.ink});
+  box-sizing: border-box;
+  padding: ${ROW_PAD_PX}px ${ROW_PAD_PX + 4}px;
   color: var(--rw-ink, ${WORLD.ink});
   font: 400 14px/1.4 ui-sans-serif, system-ui, sans-serif;
   opacity: 0;
@@ -269,6 +337,32 @@ function ensureStyle(): void {
     opacity ${MOTION.secondaryMs}ms ${MOTION.settleCurve},
     transform ${MOTION.secondaryMs}ms ${MOTION.settleCurve};
 }
+/*
+ * THE READOUT'S PAPER BOX (user direction, 2026-09-17: *"a rectangular
+ * container with a black outline and white fill, in the style of ref world"*).
+ *
+ * The same mark the join code, the minimap, the leaderboard and the hint
+ * labels stand in — type on light paper inside ONE wavering hairline drawn
+ * by the same hand (wavyBorderPoints + wavyBorderPath, mapBorderInset,
+ * 1.25) and nothing else: no shadow, no radius, no second fill (TASTE §9a,
+ * the recorded paper-card ruling). The frame is behind the type and sized to
+ * the box, so what grows with the number is the box and not the mark's hand.
+ */
+.world-size-frame {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  overflow: visible;
+}
+.world-size-paper {
+  fill: var(--rw-light, ${WORLD.light});
+  stroke: var(--rw-ink, ${WORLD.ink});
+  stroke-width: ${HAIRLINE_PX};
+  stroke-linejoin: round;
+}
 .world-size-row.in {
   opacity: 1;
   transform: translateY(0);
@@ -276,6 +370,7 @@ function ensureStyle(): void {
 /* The ring sits on the type's own baseline block, at its capped size; what
    grows is the path inside it. */
 .world-size-icon {
+  position: relative;
   display: block;
   width: ${ICON_PX}px;
   height: ${ICON_PX}px;
@@ -287,8 +382,10 @@ function ensureStyle(): void {
   fill: none;
   stroke: var(--rw-ink, ${WORLD.ink});
 }
-/* Tabular figures, so a rolling number does not shuffle the line it is on. */
+/* Tabular figures, so a rolling number does not shuffle the line it is on.
+   position: relative so the type is over its own paper. */
 .world-size-value {
+  position: relative;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -355,6 +452,10 @@ export function installBallSize(opts: BallSizeOptions): BallSizeHandle {
   const inset = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   inset.setAttribute('class', 'world-size-inset');
   inset.setAttribute('viewBox', `0 0 ${INSET_BOX} ${INSET_BOX}`);
+  // One fixed diameter (`INSET_PX`), set once: the circle no longer follows
+  // the row's width, so nothing about the picture moves when a digit lands.
+  inset.setAttribute('width', String(INSET_PX));
+  inset.setAttribute('height', String(INSET_PX));
   inset.setAttribute('aria-hidden', 'true');
   const insetRing = document.createElementNS('http://www.w3.org/2000/svg', 'path');
   insetRing.setAttribute('class', 'world-size-inset-ring');
@@ -366,12 +467,29 @@ export function installBallSize(opts: BallSizeOptions): BallSizeHandle {
     'd',
     wavyBorderPath(wavyRingPoints(INSET_BOX / 2, INSET_BOX / 2, INSET_R, SIZE_SEED + 11)),
   );
+  // A hairline stays a hairline: the stroke is in viewBox units, so it is
+  // divided back out by the box-to-pixel scale — one write, because the box
+  // is one size now.
+  insetRing.setAttribute('stroke-width', ((HAIRLINE_PX * INSET_BOX) / INSET_PX).toFixed(3));
   inset.appendChild(insetRing);
 
   const drift = document.createElement('div');
   drift.className = 'world-size-drift';
   const row = document.createElement('div');
   row.className = 'world-size-row';
+
+  /*
+   * THE BOX'S PAPER, behind the type — the recorded paper-card mark (TASTE
+   * §9a). Redrawn only when the box's measured size changes, which is what
+   * `frameAt` below guards: a wavering path regenerated thirty times a second
+   * would be a different hand every frame.
+   */
+  const box = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  box.setAttribute('class', 'world-size-frame');
+  box.setAttribute('aria-hidden', 'true');
+  const paper = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  paper.setAttribute('class', 'world-size-paper');
+  box.appendChild(paper);
 
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   svg.setAttribute('class', 'world-size-icon');
@@ -391,7 +509,7 @@ export function installBallSize(opts: BallSizeOptions): BallSizeHandle {
   const value = document.createElement('span');
   value.className = 'world-size-value';
 
-  row.append(svg, value);
+  row.append(box, svg, value);
   drift.appendChild(row);
   el.append(inset, drift);
   opts.mount.appendChild(el);
@@ -406,19 +524,9 @@ export function installBallSize(opts: BallSizeOptions): BallSizeHandle {
    * instead of a slide with a number already in it.
    */
   const eased = new Spring(0, { settleMs: MOTION.primaryMs });
-  /*
-   * AND THE CIRCLE'S OWN SIZE, on a ζ ≥ 1 spring of its own.
-   *
-   * Its diameter is the ROW's width, and the row widens as the number does
-   * (`34cm 5mm` → `15m 16cm`). Following that width directly would step the
-   * circle on the frame a digit changed, which is a cut in the one mark a
-   * person is watching — so the measured width is a TARGET and the circle
-   * slides to it, over the secondary beat because this is a mark settling and
-   * not the number itself arriving.
-   */
-  const insetPx = new Spring(INSET_MIN_PX, { settleMs: MOTION.secondaryMs });
-  let insetSize = INSET_MIN_PX;
   let shown = false;
+  /** The box size the wavering frame was last drawn at — `WxH`. */
+  let frameAt = '';
   let text = '';
   let last = 0;
 
@@ -451,26 +559,22 @@ export function installBallSize(opts: BallSizeOptions): BallSizeHandle {
     if (!shown) return;
 
     /*
-     * THE CIRCLE'S DIAMETER IS THE ROW'S WIDTH. Read off the live row — the
-     * one element that knows what the type and the icon came out to — clamped
-     * to the corner's bounds and eased. One `offsetWidth` a paint (30 fps) on
-     * an element with no children of its own after layout, which is the
-     * cheapest honest way to know how wide a line of type turned out.
+     * THE BOX'S FRAME, at the box's real size. Measured off the live row —
+     * the one element that knows what the type and the icon came out to — and
+     * redrawn only when that size actually changes, so a number rolling
+     * through the same width keeps the same hand (the hint labels' own
+     * arrangement, src/ui/hints.ts).
      */
-    const measured = row.offsetWidth;
-    if (measured > 0) {
-      insetPx.retarget(Math.min(INSET_MAX_PX, Math.max(INSET_MIN_PX, measured)));
+    const w = Math.round(row.offsetWidth);
+    const h = Math.round(row.offsetHeight);
+    if (w > 2 && h > 2) {
+      const key = `${w}x${h}`;
+      if (key !== frameAt) {
+        frameAt = key;
+        box.setAttribute('viewBox', `0 0 ${w} ${h}`);
+        paper.setAttribute('d', rowFramePath(w, h));
+      }
     }
-    insetSize = insetPx.update(dt);
-    inset.setAttribute('width', insetSize.toFixed(2));
-    inset.setAttribute('height', insetSize.toFixed(2));
-    // A hairline stays a hairline at every size: the stroke is in viewBox
-    // units, so it is divided back out by the box-to-pixel scale exactly the
-    // way the icon's is.
-    insetRing.setAttribute(
-      'stroke-width',
-      ((ICON_STROKE_PX * INSET_BOX) / Math.max(1, insetSize)).toFixed(3),
-    );
     if (!inset.classList.contains('in')) inset.classList.add('in');
 
     const metres = metresOf(eased.value);
@@ -539,7 +643,6 @@ export function installBallSize(opts: BallSizeOptions): BallSizeHandle {
       stop();
       document.removeEventListener('visibilitychange', onVisibility);
       eased.dispose();
-      insetPx.dispose();
       el.remove();
     },
   };

@@ -9,9 +9,11 @@
  * Two promises, and the whole point of this file is that they are pinned
  * separately, because they fail separately:
  *
- *   1. THE FIT. The orthographic half-extent is a function of `bodyR`, and it
- *      is never smaller than `bodyR` — the ball's whole diameter is inside
- *      the frame at every size a session can reach, with air to spare.
+ *   1. THE FIT. The orthographic half-extent is a function of the DRAWN
+ *      pile's own reach (`CreatureManager.pileReach`, not `ballDiameter / 2`
+ *      — see `portraitHalfExtent`), and it is never smaller than that reach:
+ *      the whole lump is inside the frame at every size a session can reach,
+ *      with air to spare.
  *   2. THE BOUND. Not one pixel lands outside the readout's rect, because the
  *      pass scissors itself to it — and it hands the renderer back exactly as
  *      it found it, which is what keeps the next frame's full-screen passes
@@ -29,13 +31,14 @@ import {
   PORTRAIT_MARGIN,
   PORTRAIT_MIN_HALF,
   createPortraitPass,
-  portraitAimY,
+  portraitBoundsHalf,
+  portraitCentreY,
   portraitHalfExtent,
   type PortraitSubject,
 } from '../../src/world/portrait';
 import { MOTION } from '../../src/taste/tokens';
 
-describe('the fit is a function of the ball, and never smaller than it', () => {
+describe('the fit is a function of the drawn pile, and never smaller than it', () => {
   it('frames the creature itself when there is no ball', () => {
     expect(portraitHalfExtent(0)).toBeCloseTo(PORTRAIT_MIN_HALF * (1 + PORTRAIT_MARGIN), 10);
     // A hatchling's own footprint is about a unit — under the floor, so it is
@@ -44,23 +47,23 @@ describe('the fit is a function of the ball, and never smaller than it', () => {
     expect(portraitHalfExtent(0.98)).toBe(portraitHalfExtent(0));
   });
 
-  it('contains the whole diameter at every size a session reaches', () => {
+  it('contains the whole lump at every size a session reaches', () => {
     // The ladder docs/PLAN.md §7.6 lists, and well past it.
-    for (const bodyR of [0, 0.5, 0.98, 1.2, 1.5, 2.22, 3.06, 7.125, 12, 20, 40]) {
-      const half = portraitHalfExtent(bodyR);
-      // The frame's half-height covers the ball's radius…
-      expect(half).toBeGreaterThanOrEqual(bodyR);
+    for (const reach of [0, 0.5, 0.98, 1.2, 1.5, 2.22, 3.06, 4.6, 7.125, 12, 20, 40]) {
+      const half = portraitHalfExtent(reach);
+      // The frame's half-height covers the pile's reach…
+      expect(half).toBeGreaterThanOrEqual(reach);
       // …with the authored air around it.
-      if (bodyR > PORTRAIT_MIN_HALF) {
-        expect(half / bodyR).toBeCloseTo(1 + PORTRAIT_MARGIN, 10);
+      if (reach > PORTRAIT_MIN_HALF) {
+        expect(half / reach).toBeCloseTo(1 + PORTRAIT_MARGIN, 10);
       }
     }
   });
 
-  it('only ever grows with the ball', () => {
+  it('only ever grows with the pile', () => {
     let previous = 0;
-    for (let bodyR = 0; bodyR < 40; bodyR += 0.25) {
-      const half = portraitHalfExtent(bodyR);
+    for (let reach = 0; reach < 40; reach += 0.25) {
+      const half = portraitHalfExtent(reach);
       expect(half).toBeGreaterThanOrEqual(previous);
       previous = half;
     }
@@ -74,31 +77,63 @@ describe('the fit is a function of the ball, and never smaller than it', () => {
 });
 
 describe('where it looks', () => {
-  it('is the mass’s centre once the creature is rolling', () => {
-    // The root is the ball's underside and the rider sits at `bodyR · roll`
-    // (docs/PLAN.md §7.6) — the same height, so the creature and the mass are
-    // both in the middle of the frame.
-    expect(portraitAimY(7.125, 1)).toBeCloseTo(7.125, 10);
-    expect(portraitAimY(3, 1)).toBeCloseTo(3, 10);
+  it('is the middle of the drawn creature when it carries nothing', () => {
+    // Feet at 0, stalk at `CHARACTER_HEIGHT`: the middle of that.
+    expect(portraitCentreY(boundsFor(0))).toBeCloseTo(3.5 / 2, 10);
   });
 
-  it('is the creature’s own middle while it walks', () => {
-    expect(portraitAimY(0.98, 0)).toBeCloseTo(PORTRAIT_MIN_HALF * PORTRAIT_AIM_FRACTION, 10);
-    expect(portraitAimY(0, 0)).toBeCloseTo(PORTRAIT_MIN_HALF * PORTRAIT_AIM_FRACTION, 10);
+  it('is the middle of the MASS once there is a pile, not the creature’s', () => {
+    /*
+     * > User direction, 2026-09-17, with a crop of the live inset showing the
+     * > mass low-left in the circle: *"the 3d representation of the character
+     * > and mass should be vertically and horizontally centred in the
+     * > circle."*
+     *
+     * A pile packed to ONE SIDE and up over the creature's head: its bounds
+     * run from the feet to the top of the pile, and the middle of that is
+     * well above the creature's own middle.
+     */
+    const sideways = { height: 3.5, radius: 0.95, floor: 0, ceiling: 9, footprint: 6 };
+    expect(portraitCentreY(sideways)).toBeCloseTo(4.5, 10);
+    // …and one hanging below the feet drops the centre toward them.
+    const under = { height: 3.5, radius: 0.95, floor: -2, ceiling: 3.5, footprint: 2 };
+    expect(portraitCentreY(under)).toBeCloseTo(0.75, 10);
   });
 
-  it('stays inside the frame it is aiming in', () => {
-    for (const bodyR of [0, 1, 3, 7.125, 20]) {
-      for (const roll of [0, 0.25, 0.5, 0.75, 1]) {
-        const aim = portraitAimY(bodyR, roll);
-        expect(aim).toBeGreaterThanOrEqual(0);
-        // The subject spans `bodyR` about the aim, and the frame's half is at
-        // least `bodyR` — so nothing the aim does can push the mass out.
-        expect(aim).toBeLessThanOrEqual(portraitHalfExtent(bodyR) + 1e-9);
-      }
+  it('frames the whole of those bounds, and everything stays inside', () => {
+    for (const bounds of [
+      boundsFor(0),
+      boundsFor(1),
+      boundsFor(4.6),
+      boundsFor(7.125),
+      { height: 3.5, radius: 0.95, floor: 0, ceiling: 9, footprint: 6 },
+      { height: 3.5, radius: 0.95, floor: -2, ceiling: 14, footprint: 3 },
+    ]) {
+      const half = portraitBoundsHalf(bounds);
+      const centre = portraitCentreY(bounds);
+      const low = Math.min(0, bounds.floor);
+      const high = Math.max(bounds.height, bounds.ceiling);
+      // Vertically: both ends of the mass are inside the frustum.
+      expect(centre - low).toBeLessThanOrEqual(half + 1e-9);
+      expect(high - centre).toBeLessThanOrEqual(half + 1e-9);
+      // Horizontally: the far side of a sideways pile is inside it too.
+      expect(bounds.footprint).toBeLessThanOrEqual(half + 1e-9);
+      // And it never drops under the floor that frames a bare creature.
+      expect(half).toBeGreaterThanOrEqual(portraitHalfExtent(0) - 1e-9);
     }
   });
 });
+
+/**
+ * A subject's bounds for a pile that reaches `reach` in every direction about
+ * the creature's middle — the shape the old single-radius tests described,
+ * written out once so the pass tests read as they did.
+ */
+function boundsFor(reach: number, radius = 0.95, height = 3.5) {
+  return reach > 0
+    ? { height, radius, floor: -(reach - radius), ceiling: reach + radius, footprint: reach }
+    : { height, radius, floor: 0, ceiling: 0, footprint: 0 };
+}
 
 /** Everything the pass touches on a renderer, recorded. */
 function stubRenderer() {
@@ -177,7 +212,7 @@ describe('the pass draws one subtree into one rect', () => {
     expect(stub.calls).toEqual([]);
 
     const root = rig();
-    pass.setSource({ subject: () => ({ root, bodyR: 3, roll: 1 }), rect: () => null });
+    pass.setSource({ subject: () => ({ root, bounds: boundsFor(3) }), rect: () => null });
     pass.render(16);
     expect(stub.calls).toEqual([]);
     pass.dispose();
@@ -188,7 +223,7 @@ describe('the pass draws one subtree into one rect', () => {
     const pass = createPortraitPass({ renderer: stub.renderer as never, paper: PAPER });
     const root = rig();
     const rect = { x: 15.6, y: 15.6, w: 99, h: 99 };
-    pass.setSource({ subject: () => ({ root, bodyR: 7.125, roll: 1 }), rect: () => rect });
+    pass.setSource({ subject: () => ({ root, bounds: boundsFor(7.125) }), rect: () => rect });
     pass.render(16);
     // The rect is measured from the TOP of the page and GL counts from the
     // bottom: 844 − (15.6 + 99).
@@ -232,7 +267,7 @@ describe('the pass draws one subtree into one rect', () => {
     const pass = createPortraitPass({ renderer: stub.renderer as never, paper: PAPER });
     const root = rig();
     pass.setSource({
-      subject: () => ({ root, bodyR: 3, roll: 1 }),
+      subject: () => ({ root, bounds: boundsFor(3) }),
       rect: () => ({ x: 10, y: 10, w: 90, h: 90 }),
     });
     pass.render(16);
@@ -252,7 +287,7 @@ describe('the pass draws one subtree into one rect', () => {
     const pass = createPortraitPass({ renderer: stub.renderer as never, paper: PAPER });
     const root = rig();
     pass.setSource({
-      subject: () => ({ root, bodyR: 3, roll: 1 }),
+      subject: () => ({ root, bounds: boundsFor(3) }),
       rect: () => ({ x: 0, y: 0, w: 99, h: 99 }),
     });
     pass.render(16);
@@ -268,15 +303,15 @@ describe('the pass draws one subtree into one rect', () => {
     const stub = stubRenderer();
     const pass = createPortraitPass({ renderer: stub.renderer as never, paper: PAPER });
     const root = rig();
-    let bodyR = 0.98;
-    const subject = (): PortraitSubject => ({ root, bodyR, roll: 1 });
+    let reach = 0.98;
+    const subject = (): PortraitSubject => ({ root, bounds: boundsFor(reach) });
     pass.setSource({ subject, rect: () => ({ x: 0, y: 0, w: 99, h: 99 }) });
     for (let f = 0; f < 60; f++) pass.render(16);
     const walking = pass.fit();
     expect(walking).toBeCloseTo(portraitHalfExtent(0.98), 3);
 
     // Fifteen props at once — the growth is a step, and the view must not be.
-    bodyR = 7.125;
+    reach = 7.125;
     pass.render(16);
     expect(pass.fit()).toBeLessThan(portraitHalfExtent(7.125));
     expect(pass.fit()).toBeGreaterThan(walking);

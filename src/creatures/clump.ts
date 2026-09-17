@@ -190,6 +190,10 @@ export interface Clump {
    * creature by what is genuinely UNDER it.
    */
   floor(): number;
+  /** …and its HIGHEST point, in the same frame: world units above the
+   * creature's feet, 0 for an empty pile. What the corner's live view frames
+   * the mass by (src/world/portrait.ts). */
+  ceiling(): number;
   /**
    * …and HOW WIDE it is — the furthest `|seat.xz| + itemR`, world units from
    * the creature's axis. The footprint the ground under it is sampled over
@@ -376,6 +380,15 @@ export function createClump(baseR: number): Clump {
         if (bottom < low) low = bottom;
       }
       return low;
+    },
+
+    ceiling(): number {
+      let high = 0;
+      for (const entry of entries.values()) {
+        const top = baseR + entry.seat.y + entry.item.r;
+        if (top > high) high = top;
+      }
+      return high;
     },
 
     footprint(): number {

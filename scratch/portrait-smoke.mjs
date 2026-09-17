@@ -168,6 +168,11 @@ const insetOf = () =>
       h: r.height,
       shown: el.classList.contains('in'),
       rowW: rr ? rr.width : null,
+      // THE TWO BOXES (2026-09-17): the number and its rule must be clear of
+      // the circle, so the row's own box and the gap between them are
+      // reported beside the circle's.
+      row: rr ? { x: rr.x, y: rr.y, w: rr.width, h: rr.height } : null,
+      gap: rr ? Number((rr.y - (r.y + r.height)).toFixed(2)) : null,
     };
   });
 
@@ -358,11 +363,34 @@ check(
   ballPixels.radiusPx <= ballPixels.halfPx + 0.5,
   `the ball does not exceed the circle (${ballPixels.radiusPx} vs ${ballPixels.halfPx})`,
 );
-check(ballPixels.coverage > 0.3, `the ball FILLS the circle (${ballPixels.coverage})`);
+/*
+ * THE SHELL THIS HARNESS SEATS IS NOT A PACKED PILE (2026-09-17). The fifteen
+ * props above go on a fibonacci sphere of radius `bodyR` through `applyStick`,
+ * which is what the game drew when the items sat on the surface of a sphere;
+ * they now pack onto the character, so a real pile of fifteen is a LUMP and
+ * this is a hollow shell of fifteen objects with the sky showing between them.
+ * The fit is the drawn reach either way, so what changes is only how much of
+ * the circle this artificial subject covers — the packed number is measured in
+ * `scratch/packed-pile-shot.mjs`, which drives a real creature over real props
+ * and is the shot to look at. So the bound here only says the mass is really in
+ * the circle and is not a speck.
+ */
+check(ballPixels.coverage > 0.12, `the shell fills the circle (${ballPixels.coverage})`);
 check(
   Math.abs(ballInset.w - Math.min(132, Math.max(96, ballInset.rowW ?? 0))) < 2,
   `its diameter is the row's width (${ballInset.w} vs ${ballInset.rowW})`,
 );
+
+// THE NUMBER AND ITS RULE ARE CLEAR OF THE PICTURE (2026-09-17).
+for (const [label, probe] of [
+  ['unladen', unladenInset],
+  ['ball', ballInset],
+]) {
+  check(
+    probe.row !== null && probe.row.y >= probe.y + probe.h - 0.5,
+    `the ${label} row is below the circle (gap ${probe.gap})`,
+  );
+}
 
 console.log('shots', unladenShot, ballShot);
 if (fail.length > 0) {
