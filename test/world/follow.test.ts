@@ -16,7 +16,8 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { createFollow } from '../../src/world/follow';
+import { createFollow, createFollowAim } from '../../src/world/follow';
+import { PHONE_FOLLOW_ZOOM, followSpringLag, followZoomFor } from '../../src/world/camera';
 
 const mainSrc = (): string => readFileSync(join(process.cwd(), 'src/main.ts'), 'utf8');
 
@@ -93,7 +94,12 @@ describe('where the follow camera is wired', () => {
     expect(loop).toBeTruthy();
     expect(loop).toMatch(/if \(follow\.active\(\)\) \{/);
     expect(loop).toMatch(/const at = creatures\.positionOf\(myDrawerId\);/);
-    expect(loop).toMatch(/if \(at\) world\.cameraRig\.frameAt\(at\);/);
+    // TWO branches since 2026-09-17: the katamari handset's tight follow
+    // aims at the LED point (`followAim`, src/world/follow.ts), and every
+    // other world retargets onto the creature exactly as it shipped.
+    expect(loop).toMatch(/if \(at && followTight\) \{/);
+    expect(loop).toMatch(/world\.cameraRig\.frameAt\(followPoint\.set\(aim\.x, 0, aim\.z\)\);/);
+    expect(loop).toMatch(/\} else if \(at\) \{[\s\S]*?world\.cameraRig\.frameAt\(at\);/);
   });
 
   it('moves the look target and never the angle', () => {
@@ -120,19 +126,37 @@ describe('where the follow camera is wired', () => {
      */
     const loop = frameLoop();
     expect(loop).toMatch(/const ballR = creatures\.ballDiameter\(myDrawerId\) \/ 2;/);
-    expect(loop).toMatch(/const want = followZoomFor\(ballR\);/);
+    // The ZOOM comes off the same pure answer as the aim since 2026-09-17:
+    // the tight framing, widened by the pile AND by however far the frame is
+    // actually behind the creature (`followZoomFor`, via `createFollowAim`).
+    expect(loop).toMatch(/const want = aim\.zoom;/);
     expect(loop).toMatch(/if \(Math\.abs\(want - lastFollowZoom\) > 0\.01\) \{/);
     expect(loop).toMatch(/world\.cameraRig\.zoomTo\(want\);/);
     // Never a direct write: `zoomDirect` resets the spring, which is a cut.
     expect(loop).not.toMatch(/zoomDirect|zoomBy/);
   });
 
-  it('suspends on the minimap tap, and only there', () => {
+  it('suspends on the minimap tap and on a hand that reframes, and nowhere else', () => {
     expect(mainSrc()).toMatch(/onFocus: \(\) => follow\.suspend\(\)/);
-    // Exactly one place lets go. In particular the canvas orbit handlers do
-    // not: turning the camera around your creature is looking AT it, and a
-    // drag that dropped the follow would make the control feel broken.
-    expect(mainSrc().match(/follow\.suspend\(\)/g)).toHaveLength(1);
+    /*
+     * TWO places let go since 2026-09-17 (user ask: *"if a user wants to zoom
+     * out and pan around they still can"*): the map's tap, and the world's
+     * own report that the person framed the view themselves — a pinch, a
+     * wheel or a shift-drag pan (`setFreeLook`, src/world/scene.ts).
+     *
+     * Still not the ORBIT, which does not report at all: turning the camera
+     * around your creature is looking AT it.
+     */
+    expect(mainSrc()).toMatch(/world\.setFreeLook\(\(\) => follow\.suspend\(\)\);/);
+    expect(mainSrc().match(/follow\.suspend\(\)/g)).toHaveLength(2);
+    const scene = readFileSync(join(process.cwd(), 'src/world/scene.ts'), 'utf8');
+    // The gesture seam: the pan, the pinch and the wheel report; the orbit
+    // branch is the one that does not.
+    expect(scene).toMatch(/reframedByHand\(\);\s*\n\s*cameraRig\.panBy/);
+    expect(scene).toMatch(/reframedByHand\(\);\s*\n\s*cameraRig\.zoomDirect/);
+    expect(scene).toMatch(/reframedByHand\(\);\s*\n\s*cameraRig\.zoomBy/);
+    expect(scene).not.toMatch(/reframedByHand\(\);\s*\n\s*cameraRig\.rotateBy/);
+    expect(scene.match(/reframedByHand\(\);/g)).toHaveLength(3);
   });
 
   it('the map actually tells anyone it was tapped', () => {
@@ -149,7 +173,15 @@ describe('where the follow camera is wired', () => {
     // Wired to onChange rather than to the drive publisher: the publisher
     // only exists inside the sync block, so a phone that never reached the
     // broker could walk its creature and never get its camera back.
-    expect(mainSrc()).toMatch(/if \(v\.mag > 0\) follow\.resume\(\);/);
+    // On the EDGE and not on every frame of the hold (2026-09-17): the push
+    // past the deadzone is also the recentre, and dropping `lastFollowZoom`
+    // is what makes the next followed frame slide back to the tight framing.
+    expect(mainSrc()).toMatch(
+      /const held = v\.mag > 0;\s*\n\s*if \(held && !stickHeld\) \{\s*\n\s*follow\.resume\(\);\s*\n\s*lastFollowZoom = 0;/,
+    );
+    // …and both edges reach the follow, because a gesture made mid-drive must
+    // not be able to let go of the creature (`Follow.driving`).
+    expect(mainSrc()).toMatch(/follow\.driving\(held\);/);
     // TWO callers now (2026-09-17): the stick, and your own shell opening —
     // somebody who tapped the map before the hatch asked to look elsewhere,
     // and their own creature coming out is the one thing worth taking that
@@ -165,7 +197,9 @@ describe('where the follow camera is wired', () => {
     expect(mainSrc()).toMatch(
       /shouldCloseOnHatch\(\{ game: worldGame, hatched: id, mine: myDrawerId, canFollow \}\)/,
     );
-    expect(mainSrc()).toMatch(/world\.cameraRig\.closeOn\(at\)/);
+    // At the FOLLOW framing, which is where the frame lives on this world —
+    // the close-in is the start of the follow, not a framing of its own.
+    expect(mainSrc()).toMatch(/world\.cameraRig\.closeOn\(at, PHONE_FOLLOW_ZOOM\)/);
   });
 
   it('asks the manager for its own creature by id, egg or hatched', () => {
@@ -189,5 +223,103 @@ describe('where the follow camera is wired', () => {
       /canvas\.addEventListener\('pointerdown', \(\) => tour\.notifyUserInput\(\)/,
     );
     expect(frameLoop()).not.toMatch(/notifyUserInput/);
+  });
+});
+
+describe('the tight follow is the katamari handset\u2019s alone', () => {
+  it('hangs the whole of it on one flag, and the flag is the game\u2019s', () => {
+    // Every other world's handset keeps the camera it shipped with: no raised
+    // ceiling, no led aim, no gesture that lets go (the 2026-09-15 ruling).
+    expect(mainSrc()).toMatch(
+      /const followTight = worldGame === 'katamari' && canFollow;/,
+    );
+    expect(mainSrc()).toMatch(/if \(followTight\) world\.cameraRig\.raiseZoomCeiling\(PHONE_ZOOM_MAX\);/);
+    expect(mainSrc()).toMatch(/if \(followTight\) \{[\s\S]*?world\.setFreeLook/);
+    // …and the frame only ever opens itself on the first followed frame
+    // because nothing has been asked for yet, which is what 0 means.
+    expect(mainSrc()).toMatch(/let lastFollowZoom = followTight \? 0 : HATCH_CLOSE_ZOOM;/);
+  });
+});
+
+describe('the stick owns the frame while it is held', () => {
+  it('ignores a gesture made mid-drive, and takes the suspend back after', () => {
+    const follow = createFollow();
+    follow.driving(true);
+    follow.suspend();
+    // A drag still orbits and a pinch still zooms — they just do not let go.
+    expect(follow.active()).toBe(true);
+    expect(follow.held()).toBe(true);
+    // The thumb lifts, and the next gesture suspends as it always did.
+    follow.driving(false);
+    follow.suspend();
+    expect(follow.active()).toBe(false);
+  });
+
+  it('is a state, not a count, on this edge too', () => {
+    const follow = createFollow();
+    follow.driving(true);
+    follow.driving(true);
+    follow.driving(false);
+    follow.suspend();
+    expect(follow.active()).toBe(false);
+  });
+
+  it('cannot turn following on for a page that has none', () => {
+    const follow = createFollow({ enabled: false });
+    follow.driving(true);
+    expect(follow.active()).toBe(false);
+  });
+});
+
+describe('the follow aim', () => {
+  const PHONE = 390 / 844;
+  const aimAt = (close = PHONE_FOLLOW_ZOOM) => createFollowAim({ close });
+
+  it('aims exactly at a creature that is standing still', () => {
+    const aim = aimAt();
+    let out = aim({ x: 4, z: -7, bodyR: 1, lookX: 4, lookZ: -7, aspect: PHONE, dtMs: 16 });
+    for (let i = 0; i < 200; i++) {
+      out = aim({ x: 4, z: -7, bodyR: 1, lookX: 4, lookZ: -7, aspect: PHONE, dtMs: 16 });
+    }
+    expect(out.x).toBeCloseTo(4, 6);
+    expect(out.z).toBeCloseTo(-7, 6);
+    expect(out.zoom).toBe(PHONE_FOLLOW_ZOOM);
+  });
+
+  it('leads a moving creature by the reframe spring\u2019s own lag', () => {
+    const aim = aimAt();
+    const speed = 4.5;
+    let x = 0;
+    let out = { x: 0, z: 0, zoom: 0, behind: 0 };
+    for (let i = 0; i < 400; i++) {
+      x += (speed * 16) / 1000;
+      out = aim({ x, z: 0, bodyR: 1, lookX: x, lookZ: 0, aspect: PHONE, dtMs: 16 });
+    }
+    // Ahead of the creature, by the closed form and in the direction of
+    // travel — which is what makes the spring settle ON the creature.
+    expect(out.x - x).toBeCloseTo(followSpringLag(speed), 2);
+    expect(out.z).toBeCloseTo(0, 6);
+  });
+
+  it('never leads a creature it has only just found', () => {
+    // The first frame has no previous position to difference, and a lead
+    // invented out of a jump would be a cut.
+    const out = aimAt()({ x: 90, z: 12, bodyR: 1, lookX: 0, lookZ: 0, aspect: PHONE, dtMs: 16 });
+    expect(out.x).toBe(90);
+    expect(out.z).toBe(12);
+  });
+
+  it('widens the zoom by what the frame is actually behind by', () => {
+    const aim = aimAt();
+    const near = aim({ x: 0, z: 0, bodyR: 1, lookX: 0, lookZ: 0, aspect: PHONE, dtMs: 16 });
+    const far = aim({ x: 0, z: 0, bodyR: 1, lookX: 6, lookZ: 0, aspect: PHONE, dtMs: 16 });
+    expect(near.behind).toBeCloseTo(0, 6);
+    expect(far.behind).toBeCloseTo(6, 6);
+    expect(far.zoom).toBeLessThan(near.zoom);
+    // …and there is no feedback in it: the reading is a distance on the
+    // ground, which does not depend on how wide the frame is.
+    expect(far.zoom).toBe(
+      followZoomFor(1, { close: PHONE_FOLLOW_ZOOM, aspect: PHONE, behind: 6 }),
+    );
   });
 });

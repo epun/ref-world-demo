@@ -125,8 +125,28 @@ export function cameraFar(): number {
 const DRIFT_SEED = 41.7;
 
 /** Zoom ceiling: multiplier on the base frustum (higher = closer). The FLOOR
- * is not a literal — it comes from the island (see `zoomMinFor`). */
+ * is not a literal — it comes from the island (see `zoomMinFor`). This is the
+ * ceiling every world shipped with and the rig's default; one page raises its
+ * own (see `raiseZoomCeiling`). */
 const ZOOM_MAX = 2.6;
+
+/**
+ * [D] KATAMARI HANDSET ONLY — the ceiling a page that FOLLOWS its own
+ * creature runs at (user ask, 2026-09-17: *"on mobile the camera perspective
+ * is too zoomed out on the character … we should be focused on the user's
+ * character"*).
+ *
+ * The follow framing below (`PHONE_FOLLOW_ZOOM`) is tighter than the 2.6 this
+ * world shipped with, and a page whose default framing IS its pinch ceiling
+ * is a page whose pinch only works one way — the same argument
+ * `HATCH_CLOSE_ZOOM` makes for not opening at the ceiling. 4.5 leaves a third
+ * of the range above the resting frame, so two fingers can still go closer.
+ *
+ * Raised per-rig and never here: `ZOOM_MAX` is what every other page keeps,
+ * so the projection, meridian and the public world are untouched (the
+ * katamari ruling, CLAUDE.md).
+ */
+export const PHONE_ZOOM_MAX = 4.5;
 
 /**
  * [D] How close the spring has to get before `update` stops rewriting the
@@ -162,6 +182,36 @@ export const ZOOM_WRITE_EPSILON = 1e-4;
 export const HATCH_CLOSE_ZOOM = 2;
 
 /**
+ * [D] KATAMARI HANDSET ONLY — the framing the follow camera RESTS at, and the
+ * tight end of everything below it.
+ *
+ * > User ask, 2026-09-17: *"on mobile the camera perspective is too zoomed out
+ * > on the character. we should be focused on the user's character and always
+ * > have it in frame … at the start and when the user uses the joystick we
+ * > should smoothly focus back on the character."*
+ *
+ * 3.2, from `HATCH_CLOSE_ZOOM`'s 2 (which the hatch close-in used and which
+ * was itself the whole framing a phone ever got — a page that joined AFTER
+ * its own shell opened never closed in at all and sat at zoom 1, which is the
+ * frame the report was filed against). At 3.2 the portrait phone's frame is
+ * 5.8 world units across, a hatchling's ~2.5 u silhouette is over 40% of it,
+ * and its topper stands at three quarters of the half-frame with sky above it:
+ * the creature, the paper it stands on and room for the first few things it
+ * picks up. Tuned on the 390x844 render rather than argued — 3.4 cut the
+ * topper off the top of the glass as soon as the creature walked
+ * (scratch/follow-frame-smoke.mjs), which is what `headroomZoom` is for, and
+ * this sits just inside that bound so the RESTING framing is this number and
+ * not the accident of one.
+ *
+ * It is the FLOOR of the tight end and not the framing itself: the follow
+ * zoom still widens with the pile and with however far the frame is behind a
+ * moving creature (`followZoomFor`), so a 15 m ball and a sprint both stay in
+ * frame. Nothing on any other world reads it, and nothing on a projection
+ * does.
+ */
+export const PHONE_FOLLOW_ZOOM = 3.2;
+
+/**
  * [D] KATAMARI ONLY — the ball radius `HATCH_CLOSE_ZOOM` is the right framing
  * FOR (user ask, 2026-09-17: *"we should allow for larger mass sizes than 10
  * meters"*, and a 20 m ball at the hatch zoom is a wall).
@@ -182,16 +232,146 @@ export const BALL_ZOOM_REF_R = 2;
 /**
  * The zoom the follow camera wants for a ball of this radius.
  *
- * Never CLOSER than `HATCH_CLOSE_ZOOM` and never wider than the arithmetic
- * asks for; the FLOOR is not applied here — `zoomTo` clamps to the live
- * island floor, which depends on the viewport and is the rig's to know.
+ * Never CLOSER than `close` — `HATCH_CLOSE_ZOOM` unless the caller says
+ * otherwise, `PHONE_FOLLOW_ZOOM` on the handset that follows — and never
+ * wider than the arithmetic asks for; the FLOOR is not applied here,
+ * `zoomTo` clamps to the live island floor, which depends on the viewport and
+ * is the rig's to know.
+ *
+ * GIVEN A FRAME (`opts.aspect`) it also holds the subject inside it, which is
+ * the second half of the 2026-09-17 ask (*"always have it in frame"*): the
+ * ball and however far the frame is behind it fit across the frame's narrower
+ * ground axis (`FOLLOW_FRAME_FILL`), and the creature's own height fits up it
+ * (`headroomZoom`). Without an aspect it is exactly the arithmetic that
+ * shipped, which is what the hatch close-in and every existing caller read.
  *
  * Pure, so the ladder in the test can read the framing at 10 m, 20 m and 40 m
  * without a camera (src/world/camera.test.ts). [D]
  */
-export function followZoomFor(bodyR: number): number {
-  if (!(bodyR > 0)) return HATCH_CLOSE_ZOOM;
-  return HATCH_CLOSE_ZOOM / Math.max(1, bodyR / BALL_ZOOM_REF_R);
+export function followZoomFor(bodyR: number, opts: FollowZoomOptions = {}): number {
+  const close = opts.close ?? HATCH_CLOSE_ZOOM;
+  const want = bodyR > 0 ? close / Math.max(1, bodyR / BALL_ZOOM_REF_R) : close;
+  const aspect = opts.aspect ?? 0;
+  if (!(aspect > 0)) return want;
+  const behind = Math.max(0, opts.behind ?? 0);
+  // …and never tighter than the thing itself plus however far behind the
+  // frame is, with `FOLLOW_FRAME_FILL` of the half-extent left around it.
+  const reach = Math.max(0, bodyR) + behind;
+  const fit = reach > 0 ? (frameHalfGround(aspect, 1) * FOLLOW_FRAME_FILL) / reach : want;
+  return Math.min(want, fit, headroomZoom(bodyR, behind));
+}
+
+/**
+ * [D] How far a DRAWN CREATURE reaches above its own ground point, world
+ * units — and the reason the follow framing is not simply as tight as the
+ * ball is wide.
+ *
+ * The look-target is a point on the GROUND (it has to be: locomotion never
+ * writes Y and the rig's target rides the Surface seam), so the frame is
+ * centred on the creature's feet and everything the creature is made of is
+ * drawn UPWARDS from there. A creature is a stalk with the drawing as its
+ * topper (TASTE §8) — most of its height and none of its radius — so a frame
+ * sized off `bodyR` alone cuts its head off, which is what the first render of
+ * `PHONE_FOLLOW_ZOOM` did.
+ *
+ * MEASURED on the built valiocon world over three drawings — a fat blob, a
+ * tall thin one, a wide low one (`scratch/follow-height-probe.mjs`, which
+ * walks the drawn subtree's own bounding box): 5.66 / 5.99 / 5.77 u above the
+ * foot, against ball diameters of 1.83 / 1.49 / 4.98. It is near-constant
+ * because the stalk is, so ONE number covers every drawing and the widest
+ * measured plus a little is the honest one.
+ */
+export const FOLLOW_STAND_HEIGHT = 6;
+
+/**
+ * [D] How much of the half-frame above the middle the creature's own top may
+ * take. 0.82 leaves a fifth of that half as sky, which is what stops a topper
+ * reading as clipped at the edge of the glass.
+ *
+ * Laxer than `FOLLOW_FRAME_FILL` because it is one-sided: the ground reach is
+ * a radius around the middle of the frame and this is a reach in one
+ * direction from it.
+ */
+export const FOLLOW_HEADROOM = 0.82;
+
+/**
+ * The widest zoom the subject's own HEIGHT allows — a bound on the frame's
+ * height, so it holds at every aspect (the frame is `FRUSTUM_HEIGHT/zoom`
+ * tall whatever its width).
+ *
+ * A vertical world offset of `h` projects `h·cos(elevation)` up the screen —
+ * the ground foreshortens by `sin` and a height by `cos` — and the reach up
+ * is the creature's own stand height or, once there is a pile, the mass's
+ * diameter, because the creature rides at the pile's centre and the top of it
+ * is `2·bodyR` above the ground point. Whichever is taller decides.
+ *
+ * `behind` enters here too, foreshortened: a frame that is `d` behind on the
+ * ground has the creature standing up to `d·sin(elevation)` off the middle up
+ * the screen, and its topper goes with it. That is the term that opens the
+ * frame while a creature is being driven — and it closes again as the lead
+ * catches up. [D]
+ */
+export function headroomZoom(bodyR: number, behind: number = 0): number {
+  const up = Math.max(FOLLOW_STAND_HEIGHT, 2 * Math.max(0, bodyR));
+  const reach =
+    up * Math.cos(ELEVATION) + Math.max(0, behind) * Math.sin(ELEVATION);
+  return ((FRUSTUM_HEIGHT / 2) * FOLLOW_HEADROOM) / reach;
+}
+
+/**
+ * [D] The share of the frame's narrower GROUND half-extent the followed
+ * subject is allowed to reach — its own radius plus whatever the follow
+ * spring is still behind by.
+ *
+ * 0.62 rather than 1: a creature exactly on the edge of the frame is in it
+ * only arithmetically, and the thing being framed is a ball with props
+ * sticking out of it standing on ground that has height. Just under two
+ * thirds leaves a creature's own width of paper around it at the widest the
+ * rule ever asks for.
+ */
+export const FOLLOW_FRAME_FILL = 0.62;
+
+/** What the follow zoom is being asked to hold, past the subject's radius. */
+export interface FollowZoomOptions {
+  /** The tight end of the framing. `HATCH_CLOSE_ZOOM` unless given — the
+   * handset's follow passes `PHONE_FOLLOW_ZOOM`. */
+  close?: number;
+  /** The frame's aspect. Without it the fit is not applied at all, which is
+   * the arithmetic that shipped. */
+  aspect?: number;
+  /** How far the frame is behind the subject right now, world units. */
+  behind?: number;
+}
+
+/**
+ * Half the GROUND the frame covers on its narrower axis, world units.
+ *
+ * The frame is `FRUSTUM_HEIGHT/zoom` tall and `·aspect` wide; the ground
+ * foreshortens up the screen and only up it, so it reaches `/sin(iso)`
+ * further that way. The narrower of the two is the one that decides — the
+ * same reasoning `zoomMinFor` and `panLimitFor` are built on, and the iso
+ * elevation rather than the live one because the follow rule must not change
+ * under an orbit the person is in the middle of. [D]
+ */
+export function frameHalfGround(aspect: number, zoom: number): number {
+  const half = FRUSTUM_HEIGHT / 2 / Math.max(1e-3, zoom);
+  return Math.min(half * Math.max(0.01, aspect), half / Math.sin(ELEVATION));
+}
+
+/**
+ * How far behind a target moving at `speed` (u/s) a ζ=1 spring of this settle
+ * sits, once it has stopped catching up — world units.
+ *
+ * Closed form, not a guess: a critically damped spring tracking a RAMP has a
+ * steady-state error of `2v/ω`, and `ω` is `6.64/settleMs` (src/motion/spring.ts
+ * derives the natural frequency from the settle time the same way). At the
+ * rig's t.primary reframe that is 2.47 u for the katamari walk ceiling (4.5
+ * u/s) and 5.93 u for the rolling one (10.8 u/s) — which is why a tight frame
+ * that only retargets onto the creature leaves it trailing at the edge, and
+ * why the follow LEADS by this much instead (src/world/follow.ts).
+ */
+export function followSpringLag(speed: number, settleMs: number = MOTION.primaryMs): number {
+  return (2 * Math.max(0, speed) * Math.max(1, settleMs)) / 1000 / 6.64;
 }
 
 /** OrbitControls dampingFactor 0.05 at 60hz ≈ exp decay with this τ. */
@@ -315,6 +495,9 @@ export class CameraRig {
   /** Live zoom floor — derived from the island and the viewport aspect, so
    * rotating the phone to landscape raises it (see `zoomMinFor`). */
   private zoomMin: number;
+  /** Live zoom CEILING. `ZOOM_MAX` on every page; a katamari handset that
+   * follows its own creature raises its own (see `raiseZoomCeiling`). */
+  private zoomMax = ZOOM_MAX;
   /** Continuous azimuth drift rate (rad/s), fed by the presentation tour.
    * Applied to the orbit *target* each frame, so the damped follow smooths
    * every start and stop — no step is representable. */
@@ -362,6 +545,32 @@ export class CameraRig {
 
   get elevation(): number {
     return this.elevationValue;
+  }
+
+  /**
+   * The frame's aspect — `FRUSTUM_HEIGHT` is always its height, so this is
+   * the one number the pure framing rules need from a live rig
+   * (`frameHalfGround`, `followZoomFor`).
+   */
+  get aspect(): number {
+    return this.camera.right / this.camera.top;
+  }
+
+  /**
+   * RAISE THIS RIG'S PINCH CEILING (user ask, 2026-09-17: the phone's frame
+   * should sit on its own creature).
+   *
+   * One page calls it — the katamari handset that follows a creature of its
+   * own (src/main.ts) — and it only ever goes UP, so no caller can take the
+   * range this world shipped with away from a page. Every other rig keeps
+   * `ZOOM_MAX` exactly, which is what leaves the projection and every other
+   * world unchanged.
+   *
+   * The live target is untouched: raising a ceiling nobody is standing on
+   * moves nothing, so this cannot be a cut.
+   */
+  raiseZoomCeiling(max: number): void {
+    if (max > this.zoomMax) this.zoomMax = max;
   }
 
   /**
@@ -488,7 +697,7 @@ export class CameraRig {
 
   /** Wheel zoom: retargets the spring so steps drift in — never a snap. */
   zoomBy(factor: number): void {
-    this.zoomTarget = Math.min(ZOOM_MAX, Math.max(this.zoomMin, this.zoomTarget * factor));
+    this.zoomTarget = Math.min(this.zoomMax, Math.max(this.zoomMin, this.zoomTarget * factor));
     this.zoomSpring.retarget(this.zoomTarget);
   }
 
@@ -498,7 +707,7 @@ export class CameraRig {
    * path, so a snap is unrepresentable here (TASTE §2.1).
    */
   zoomTo(target: number): void {
-    this.zoomTarget = Math.min(ZOOM_MAX, Math.max(this.zoomMin, target));
+    this.zoomTarget = Math.min(this.zoomMax, Math.max(this.zoomMin, target));
     this.zoomSpring.retarget(this.zoomTarget);
   }
 
@@ -512,7 +721,7 @@ export class CameraRig {
 
   /** Pinch zoom: direct 1:1 while the fingers move. */
   zoomDirect(factor: number): void {
-    this.zoomTarget = Math.min(ZOOM_MAX, Math.max(this.zoomMin, this.zoomTarget * factor));
+    this.zoomTarget = Math.min(this.zoomMax, Math.max(this.zoomMin, this.zoomTarget * factor));
     this.zoomSpring.reset(this.zoomTarget);
   }
 

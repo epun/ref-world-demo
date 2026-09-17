@@ -180,6 +180,26 @@ The traps, in order of how easily they get violated:
   the page's own clock (`src/creatures/gravity.ts`) and is applied in the same ground pass as
   `groundLift`, so Y never goes on the wire and the Surface seam stands; rapier's own gravity
   and the nudge for the sleepers are the simulating page's alone, PLAN §7.6), the
+  **PHONE'S FOLLOW FRAMING** (user ask 2026-09-17: *"on mobile the camera perspective is
+  too zoomed out on the character … if a user wants to zoom out and pan around they still
+  can, but at the start and when the user uses the joystick we should smoothly focus back on
+  the character"* — one flag, `followTight` in `src/main.ts` = the game plus `canFollow`, and
+  every other world's handset keeps the camera it shipped with. It rests at
+  `PHONE_FOLLOW_ZOOM` 3.2 under a ceiling this page alone raises (`raiseZoomCeiling`,
+  `PHONE_ZOOM_MAX` 4.5 — the projection still pinches to 2.6), reached by a `lastFollowZoom`
+  of 0 meaning "nothing asked for yet", so a rejoin slides in like a hatch. The AIM LEADS by
+  the reframe spring's own lag (`followSpringLag`, 2v/ω — 2.47 u at the walk ceiling, 5.93 at
+  the roll, against a 2.9 u half-frame), or a tight frame simply trails a walking creature;
+  the ZOOM is the net, widened by the pile, by however far the frame actually is behind
+  (`followZoomFor`'s `behind`, a reading, so there is no feedback in it) and by the
+  creature's own HEIGHT — the look-target is a point on the ground, so a creature is drawn
+  upwards out of the middle of the frame and its topper leaves the glass first
+  (`headroomZoom`, `FOLLOW_STAND_HEIGHT` 6 u measured over three drawings with
+  `scratch/follow-height-probe.mjs`; 3.4 cut the topper off). A pinch, a wheel or
+  a pan lets go through ONE seam (`WorldHandles.setFreeLook`, never a second copy of the
+  rule) and the stick's push past the deadzone takes it back — and while the thumb is down
+  `follow.suspend()` is a no-op, so a drag mid-drive orbits without letting go. Evidence:
+  `scratch/follow-frame-smoke.mjs`), the
   ball-diameter readout on the phone's world view (`src/ui/size.ts`,
   `CreatureManager.ballDiameter`) **and the LIVE VIEW behind it** (user ask 2026-09-17: *"in
   the top left hand corner we should show a live view of the character and the objects it
