@@ -153,7 +153,17 @@ describe('ghibli element shaders', () => {
     // Concatenating two stages of two different materials must still not
     // collide on the SHARED chunks — which is what a future chunk rename
     // would break.
-    const toon = ['toonHash21', 'toonVnoise', 'toonFbm', 'toonRamp', 'toonShadowColor', 'toonLight'];
+    const toon = [
+      'toonHash21',
+      'toonVnoise',
+      'toonFbm',
+      'toonRamp',
+      'toonShadowColor',
+      'toonLight',
+      // The aliasing band limit every world-space noise term above rides
+      // (2026-09-17, src/world/toon.ts).
+      'toonBandLimit',
+    ];
     const wind = ['windHash21', 'windVnoise', 'windFbm', 'refWindAt'];
     const own = [
       'ggWindHash',

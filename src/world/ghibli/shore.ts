@@ -24,13 +24,33 @@
  * at its thinnest. **[D]** Both ride `mapScale` (2026-09-16, the island
  * doubled), so the texel is 0.78 on any size of map.
  *
+ * R16F, LINEAR (2026-09-17, the iOS Safari audit — it was R32F before).
+ *
+ * The filter is the reason. This field is smooth by construction (it is a
+ * distance) and every band read off it wants a smooth ramp rather than a
+ * staircase four texels wide, so it is the one bake here that asks for
+ * hardware filtering. A 32-bit float texture is NOT texture-filterable in
+ * core WebGL 2 — that is `OES_texture_float_linear`, and iOS Safari does not
+ * expose it — and a sampler with `LINEAR` on a non-filterable texture makes
+ * the texture INCOMPLETE, which samples as `(0,0,0,1)`. Zero here means "on
+ * land", which the shader reads as foam: on an iPhone the whole sea would
+ * have rendered as a sheet of surf. 16-bit float IS filterable in core
+ * WebGL 2, so `HalfFloatType` costs half the bandwidth and needs no
+ * extension at all. Its spacing at the numbers that decide the look — the
+ * first few units off the shore — is under a thousandth of a unit; out in
+ * open water it is half a unit, on a value nothing bands against.
+ *
+ * (The HEIGHT bake next door stays R32F because it is `NEAREST` and does its
+ * own bilinear tap in the shader — nearest sampling of a float texture is
+ * core, and a height has to be able to go negative and stay exact.)
+ *
  * INSIDE IS POSITIVE. A texel in water holds its distance to the nearest dry
  * texel, in world units; a texel on land holds 0, which is the value the
  * shader reads as "foam" — so the slop where a fill's edge overhangs the
  * waterline by half a texel reads as surf rather than as deep water.
  */
 
-import { DataTexture, FloatType, LinearFilter, RedFormat } from 'three';
+import { DataTexture, DataUtils, HalfFloatType, LinearFilter, RedFormat } from 'three';
 import { isPhoneTier } from '../device';
 import { FIELD_SIZE, fieldSize } from '../field';
 import { distanceTransform } from '../painted-water';
@@ -78,10 +98,16 @@ export function bakeShoreTexture(
   isWater: (x: number, z: number) => boolean,
   res: number = shoreRes(),
 ): DataTexture {
-  const texture = new DataTexture(new Float32Array(res * res), res, res, RedFormat, FloatType);
+  const texture = new DataTexture(
+    new Uint16Array(res * res),
+    res,
+    res,
+    RedFormat,
+    HalfFloatType,
+  );
   // LINEAR here, unlike the height bake: this field is smooth by construction
   // (it is a distance) and the bands read off it want a smooth ramp, not a
-  // staircase four texels wide.
+  // staircase four texels wide. See the header for why that forces 16-bit.
   texture.minFilter = LinearFilter;
   texture.magFilter = LinearFilter;
   texture.generateMipmaps = false;
@@ -101,7 +127,7 @@ export function rebakeShore(
   isWater: (x: number, z: number) => boolean,
 ): void {
   const res = texture.image.width;
-  const data = texture.image.data as Float32Array;
+  const data = texture.image.data as Uint16Array;
   const size = shoreSize();
   const step = size / res;
   const origin = -size / 2 + step * 0.5;
@@ -121,7 +147,9 @@ export function rebakeShore(
   const { dist } = distanceTransform(res, land);
   for (let i = 0; i < res * res; i++) {
     // Squared texel distance → world units, and land reads 0 (see the header).
-    data[i] = wet[i] === 1 ? Math.sqrt(dist[i]!) * step : 0;
+    // Half-float, so the value is ENCODED rather than stored: this buffer is
+    // the texture's own, and the gpu reads its sixteen bits as an f16.
+    data[i] = DataUtils.toHalfFloat(wet[i] === 1 ? Math.sqrt(dist[i]!) * step : 0);
   }
   texture.needsUpdate = true;
 }

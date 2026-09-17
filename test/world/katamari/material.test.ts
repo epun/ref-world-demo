@@ -80,7 +80,17 @@ describe('katamari material', () => {
   });
 
   it('every glsl function belongs to a known namespace', () => {
-    const toon = ['toonHash21', 'toonVnoise', 'toonFbm', 'toonRamp', 'toonShadowColor', 'toonLight'];
+    const toon = [
+      'toonHash21',
+      'toonVnoise',
+      'toonFbm',
+      'toonRamp',
+      'toonShadowColor',
+      'toonLight',
+      // The aliasing band limit every world-space noise term above rides
+      // (2026-09-17, src/world/toon.ts).
+      'toonBandLimit',
+    ];
     const shared = ['ggWindHash', 'ggWindNoise', 'ggVariation'];
     const own = ['katPosterize', 'katSrgbToLinear'];
     const material = createKatamariMaterial(texture());
