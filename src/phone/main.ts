@@ -561,9 +561,9 @@ async function boot(): Promise<void> {
    * The game is played in the world view — that is where the stick, the ball
    * readout, the minimap and the loading line are — and until now nothing
    * took a person there. The pad redirects here, and here is a case. So on a
-   * katamari world a FRESH SUBMISSION goes on to the world by itself, through
-   * the onboarding screens the first time (src/ui/onboard.ts) and straight
-   * through on every visit after that.
+   * katamari world a FRESH SUBMISSION goes on to the world by itself, where
+   * the game is — and where the teaching now happens too, as hints anchored
+   * to the stick and the readout (src/ui/hints.ts).
    *
    * Four conditions, and each one is somebody who must NOT be moved:
    *
@@ -577,10 +577,12 @@ async function boot(): Promise<void> {
    * - a FRESH SUBMISSION only. A handset reopening this page keeps the case
    *   it asked for; it still has the `view world` button and the swipe down.
    *
-   * The screens are reached through a DYNAMIC import behind the flag, the
-   * same discipline the world page's mount is under, so no other deployment
-   * carries the chunk. Any failure to load them still goes to the world: a
-   * person who cannot be taught must not be stranded.
+   * THE TEACHING IS NOT HERE ANY MORE (2026-09-17, user ask with screenshots
+   * of the three grey slides this used to open: *"For mobile I want the
+   * onboarding to be contextual within the device."*). There is nothing to
+   * read between the pad and the world: the lessons are hints IN the world
+   * view now, each one anchored to the thing it is about and dismissed by
+   * doing it (src/ui/hints.ts). So this seam is one navigation.
    */
   let goingToWorld = false;
   const intoTheWorld = (): void => {
@@ -588,27 +590,9 @@ async function boot(): Promise<void> {
     goingToWorld = true;
     leaveForWorld({ room, world: publicWorld, device: deviceEl });
   };
-  let offeredOnboarding = false;
   const onToTheWorld = (): void => {
-    if (offeredOnboarding) return;
     if (worldGame !== 'katamari' || publicWorld.length === 0 || framed()) return;
-    offeredOnboarding = true;
-    void import('../ui/onboard').then(
-      (m) => {
-        if (!m.shouldOnboard(location.search, m.deviceStore())) {
-          intoTheWorld();
-          return;
-        }
-        m.installOnboarding({
-          mount: document.body,
-          // Both ways through are ways ON: `skip` skips the reading, not the
-          // game, and a tutorial that ended by leaving somebody in a case
-          // would be the bug this exists to fix.
-          onDone: () => intoTheWorld(),
-        });
-      },
-      () => intoTheWorld(),
-    );
+    intoTheWorld();
   };
 
   /*

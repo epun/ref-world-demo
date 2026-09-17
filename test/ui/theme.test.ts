@@ -174,7 +174,7 @@ describe('the call sites', () => {
     'src/world/companionpanel.ts': ['--rw-paper'],
     'src/ui/size.ts': ['--rw-ink'],
     'src/ui/loading.ts': ['--rw-ink', '--rw-muted', '--rw-accent'],
-    'src/ui/onboard.ts': ['--rw-paper', '--rw-ink', '--rw-accent'],
+    'src/ui/hints.ts': ['--rw-ink', '--rw-muted'],
     'src/ui/empty.ts': ['--rw-ink'],
     'src/ui/leaderboard.ts': ['--rw-ink', '--rw-light'],
   };
