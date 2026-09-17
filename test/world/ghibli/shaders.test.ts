@@ -257,3 +257,25 @@ describe('ghibli sources', () => {
     }
   });
 });
+
+describe('the water pattern keeps one heading', () => {
+  /**
+   * 2026-09-17, user report from the projection: "the water is rotating in the
+   * scene." The wind's heading wanders on purpose (`windAzimuth`), and every
+   * mark on the surface lies along `dir` — so when `dir` followed the wind the
+   * whole sea turned with the weather. `dir` is the authored flow or one fixed
+   * heading now, and the wind only advects. Pinned on the source: the heading
+   * may not be derived from `uWindDir` or from the wind's drift vector.
+   */
+  it('derives `dir` from the authored flow, never from the wind', () => {
+    const material = createSeaSurfaceMaterial();
+    const src = material.fragmentShader;
+    const dirLine = src.split('\n').find((line) => /vec2 dir = /.test(line)) ?? '';
+    expect(dirLine).toContain('uFlowDir');
+    expect(dirLine).not.toContain('drift');
+    expect(dirLine).not.toContain('uWindDir');
+    expect(src).not.toContain('vec2 flowVec');
+    // The wind still moves the marks: a scalar push along the fixed heading.
+    expect(src).toContain('dot(drift, dir)');
+  });
+});

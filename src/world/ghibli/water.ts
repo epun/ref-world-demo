@@ -165,11 +165,23 @@ void main() {
   // The direction the surface is going: the authored flow, nudged by the
   // world's own wind on a still body and driven by it on the open sea. A WORLD
   // vector, so every mark below travels over the ground and not the screen.
+  // THE PATTERN'S HEADING IS FIXED IN THE WORLD (2026-09-17, user report
+  // from the projection: "the water is rotating in the scene"). The wind's
+  // heading wanders on purpose (windAzimuth, two octaves of slow noise), and
+  // every mark below — lanes, sparkle drift, foam streaks, swell — lay along
+  // `dir`; with `dir` following the wind, the whole sea turned with the
+  // weather, a few degrees a minute, which on a still camera reads as the
+  // water spinning. So `dir` is the authored flow, or one fixed heading for
+  // a body with none ([D], the iso diagonal), and the wind only ADVECTS: it
+  // nudges where the marks are, never which way they lie.
   vec2 drift = refWindAt(p, uWindTime * 0.18, uWindDir, uWindStrength, uWindGust);
-  vec2 flowVec = uFlowDir + drift * uDrift;
-  float flowLen = length(flowVec);
-  vec2 dir = flowLen > 1e-4 ? flowVec / flowLen : vec2(1.0, 0.0);
+  float flowLen = length(uFlowDir);
+  vec2 dir = flowLen > 1e-4 ? uFlowDir / flowLen : vec2(0.70710678, 0.70710678);
   vec2 perp = vec2(-dir.y, dir.x);
+  // The wind's push along the fixed heading: a scalar, so gusts speed the
+  // drift up and never turn it.
+  float windAlong = dot(drift, dir) * uDrift;
+  p += dir * (windAlong * 0.5);
 
   // The pen: two low-frequency wobbles, one still and one crawling with the
   // flow, so every hard edge below is hand-drawn rather than ruled.
