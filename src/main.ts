@@ -2157,7 +2157,7 @@ function main(): void {
    */
   const follow = createFollow({ enabled: Boolean(tray?.middle) && myDrawerId.length > 0 });
 
-  installWorldMinimap({
+  const worldMap = installWorldMinimap({
     manager: creatures,
     cameraRig: world.cameraRig,
     scatter: world.scatter,
@@ -2245,9 +2245,62 @@ function main(): void {
    * shell opens, and the corner shows nothing until it is not.
    */
   if (worldGame === 'katamari' && tray?.middle && myDrawerId.length > 0) {
-    void import('./ui/size').then((m) =>
+    void import('./ui/size').then((m) => {
       m.installBallSize({
         diameter: () => creatures.ballDiameter(myDrawerId),
+        mount: document.body,
+      });
+      /*
+       * WHICH WAY THE NEAREST OTHER CREATURE IS (user ask, 2026-09-17: *"on
+       * mobile we should show a directional arrow in relation to the closest
+       * user on the minimap."*).
+       *
+       * The same three conditions as the readout above — the katamari, a
+       * handset looking at the world, a creature of its own — so it is
+       * handed over from inside the same dynamic import, which is also where
+       * the metre conversion the label needs already is (`metresOf`). A
+       * projection never calls this and its map draws exactly as before.
+       */
+      worldMap.setNearest({
+        poses: () => creatures.poses(),
+        me: myDrawerId,
+        metres: m.metresOf,
+      });
+    });
+  }
+
+  /*
+   * THE TOP TEN, down the left edge of the projection (user ask, 2026-09-17:
+   * *"on the web view i want to see a leaderboard on the left hand side of
+   * the top 10."*).
+   *
+   * The WEB VIEW is the wall, not the phone: a projection is the one screen
+   * that is about the whole room, and the handset already has its own ball's
+   * size in that corner (src/ui/size.ts). So the two conditions are the
+   * katamari — there is nothing to rank in a world with no balls — and NOT a
+   * handset. Behind a dynamic import for the same reason the readout is:
+   * meridian and the public world never fetch the chunk.
+   *
+   * The names come from the gate, which is where this page keeps what each
+   * drawer signed (src/moderation/gate.ts); a creature nobody signed for
+   * gets a lowercase stand-in from the board itself, never its raw id.
+   *
+   * ONE ROW PER BALL. A creature stuck to somebody else's pile answers
+   * `ballDiameter` with the pile it is inside (the manager's passenger rule),
+   * so a board built off the bare roster listed the biggest ball once per
+   * passenger — ten rows of one number. `ballOwner` is the manager's own
+   * answer to which pile a creature belongs to, and only the creature at the
+   * bottom of it is rolling anything.
+   */
+  if (worldGame === 'katamari' && !handheld) {
+    void import('./ui/leaderboard').then((m) =>
+      m.installLeaderboard({
+        entries: () =>
+          creatures
+            .liveIds()
+            .filter((id) => creatures.ballOwner(id) === id)
+            .map((id) => ({ id, diameter: creatures.ballDiameter(id) })),
+        name: (id) => gate.admitted().find((entry) => entry.id === id)?.name ?? null,
         mount: document.body,
       }),
     );

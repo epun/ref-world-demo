@@ -1209,6 +1209,22 @@ export interface CreatureManager {
    * turns them into a length a person reads is `src/ui/size.ts`.
    */
   ballDiameter(id: string): number;
+  /**
+   * WHOSE BALL this creature is part of — its own id, or the id of the
+   * carrier at the bottom of the pile it is riding on.
+   *
+   * The companion question to `ballDiameter`, and it exists because that one
+   * deliberately answers with the CARRIER'S size: a passenger has no ball of
+   * its own, so `ballDiameter` reads the pile it is inside. Anything that
+   * ranks balls has to be able to tell those two apart or it lists one ball
+   * once per creature stuck to it (src/ui/leaderboard.ts — the projection's
+   * top ten, 2026-09-17).
+   *
+   * Its own id for a creature standing on its own feet, for a shell, and for
+   * the whole of any world without the game, where nothing is carried at
+   * all. The empty string for an id nobody holds.
+   */
+  ballOwner(id: string): string;
 }
 
 export function createCreatureManager(
@@ -4919,6 +4935,14 @@ export function createCreatureManager(
       const slot = slots.get(id);
       if (!slot) return 0;
       return 2 * ballOf(slot).bodyR;
+    },
+
+    ballOwner(id): string {
+      const slot = slots.get(id);
+      if (!slot) return '';
+      // The same walk `ballDiameter` measures with — one answer about which
+      // pile a creature belongs to, not two that can disagree.
+      return katamari ? ballOf(slot).id : slot.id;
     },
 
     setWanderSpeed(mult): void {
