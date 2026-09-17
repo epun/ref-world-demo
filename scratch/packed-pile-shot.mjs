@@ -136,8 +136,15 @@ if (VIEW === 'phone') {
   await context.addInitScript(
     ([room, id, s]) => {
       try {
-        localStorage.setItem(`refworld:${room}:mydrawing`, JSON.stringify({ id, strokes: s }));
+        // The SUBMISSION key is the one the page reads `myDrawerId` out of
+        // (scratch/portrait-smoke.mjs's own arrangement) — a made-up key
+        // mounts no tray and no readout, and the corner comes back null.
+        localStorage.setItem(
+          `refworld:submission:${room}`,
+          JSON.stringify({ id, name: null, strokes: s, ts: Date.now(), epoch: null }),
+        );
         localStorage.setItem('refworld:drawer', id);
+        localStorage.setItem('refworld:hinted-emote', '1');
       } catch {
         /* a private window is not what this harness runs in */
       }
@@ -164,6 +171,10 @@ await page.waitForFunction(() => Boolean(window.__refworldCreatures), null, { ti
 await page.waitForFunction(() => (window.__refworldColliders?.() ?? []).length > 50, null, {
   timeout: 600_000,
 });
+// …and then a beat, because the scatter's own JUNK lands after its trees: a
+// list of fifty colliders is a list of trees, and every spawn spot scores
+// zero pickable things next to it (measured, twice).
+await page.waitForTimeout(15_000);
 
 /*
  * ONE CREATURE, WHERE THE JUNK IS. `spawnSpot` is a pure function of the slot
@@ -176,8 +187,20 @@ await page.waitForFunction(() => (window.__refworldColliders?.() ?? []).length >
  * whole run there (measured — the first three runs of this harness).
  */
 const chosen = await page.evaluate(
-  ([id, s]) => {
+  ([id, s, phone]) => {
     const m = window.__refworldCreatures;
+    /*
+     * ON A HANDSET IT HAS TO BE THIS ID. The readout and the corner's live
+     * view are about `myDrawerId` — the id in this phone's own stored
+     * submission — so a probe creature under another id mounts the corner
+     * with nothing to say (measured: `corner null`). The spawn spot is
+     * whatever that id's is, and the drive takes it to the junk anyway.
+     */
+    if (phone) {
+      m.spawn(id, s, { hatchMs: 100, grown: true });
+      const me = m.poses().find((p) => p.id === id);
+      return { id, near: -1, d: me ? Math.hypot(me.x, me.z) : 0, x: me?.x ?? 0, z: me?.z ?? 0 };
+    }
     const probes = [];
     for (let i = 0; i < 24; i++) probes.push(`${id}-${i}`);
     for (const p of probes) m.spawn(p, s, { hatchMs: 100, grown: true });
@@ -189,19 +212,35 @@ const chosen = await page.evaluate(
       let near = 0;
       for (const c of colliders) {
         if (!(c.r <= limit)) continue;
-        if (Math.hypot(c.x - p.x, c.z - p.z) <= 10) near++;
+        if (Math.hypot(c.x - p.x, c.z - p.z) <= 24) near++;
       }
       const score = { id: p.id, near, d: Math.hypot(p.x, p.z), x: p.x, z: p.z };
-      // The junk first, the framing second: a spot with things to eat, and of
-      // those the one nearest where the camera is already looking.
-      if (!best || score.near > best.near || (score.near === best.near && score.d < best.d)) {
+      /*
+       * ENOUGH JUNK, THEN THE FRAMING. A spot with ten pickable things within
+       * reach is as good as one with ninety for a pile of a dozen, and the
+       * projection's camera is looking at the ORIGIN — a spawn 131 units out
+       * (measured) is a creature nobody can see. So the score is bucketed and
+       * the tie-break is the distance to where the frame already is.
+       */
+      // Three things to eat within reach is enough for a pile of a few, and
+      // the projection's camera does not follow anybody: a spawn past
+      // `FRAME_R` is a creature off the side of the frame (measured — a run
+      // whose crop landed at x 1668 of a 1280-wide page).
+      const FRAME_R = 22;
+      const enough = (a) => (a.near >= 3 && a.d <= FRAME_R ? 1 : 0);
+      if (
+        !best ||
+        enough(score) > enough(best) ||
+        (enough(score) === enough(best) &&
+          (score.d < best.d || (score.d === best.d && score.near > best.near)))
+      ) {
         best = score;
       }
     }
     for (const p of probes) if (p !== best.id) m.clear(p);
     return best;
   },
-  [ID, strokes],
+  [ID, strokes, VIEW === 'phone'],
 );
 console.log('creature at', chosen);
 await page.waitForTimeout(10_000);
