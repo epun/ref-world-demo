@@ -1,3 +1,7 @@
+> **This is the valiocon repo** (split from `epun/ref-world-demo` on 2026-09-17 so the
+> katamari island world never shares a branch or a deployment with meridian). Production is
+> the Vercel project `ref-world-valiocon`, built from `main`.
+
 # ref-world
 
 A shared isometric WebGL world. You draw on your phone, your drawing becomes an egg, the egg
