@@ -236,7 +236,11 @@ describe('the items pack against the creature', () => {
     const before = first
       .getWorldPosition(new Vector3())
       .distanceTo(clump.group.getWorldPosition(new Vector3()));
-    expect(before).toBeCloseTo(baseR + itemR * CLUMP_FIT, 6);
+    // A 1.4 u item on a 0.9 u creature is TALLER than its carrier, so it is
+    // raised to rest on the paper beside it (2026-09-17: nothing seats below
+    // the feet) — at least the bedding distance out, underside on the ground.
+    expect(before).toBeGreaterThanOrEqual(baseR + itemR * CLUMP_FIT - 1e-6);
+    expect(baseR + first.position.y * clump.growth() - itemR).toBeGreaterThanOrEqual(-1e-6);
 
     // Five more things elsewhere on the creature: the growth rises a long way
     // and the FIRST one must not drift outward with it, or the pile would

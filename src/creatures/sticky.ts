@@ -1005,9 +1005,32 @@ export function clumpLocalOffset(a: {
       len = 1;
     }
   }
-  const ux = dx / len;
-  const uy = dy / len;
-  const uz = dz / len;
+  /*
+   * NOTHING PACKS DOWNWARD (user ruling, 2026-09-17). A contact from above —
+   * a creature rolling onto a prop — used to point the seat under the feet,
+   * and then the ground pass had to choose between burying the item and
+   * standing the creature on it like a plinth; both read as floating. The
+   * direction is therefore flattened to horizontal-or-above before the
+   * packing runs, so the pile only ever grows beside and over the creature.
+   */
+  let fy = dy;
+  if (fy < 0) fy = 0;
+  let flen = Math.sqrt(dx * dx + fy * fy + dz * dz);
+  if (!(flen > 1e-6)) {
+    // Struck from straight below and nothing else to go on: take the heading.
+    dx = a.headingX;
+    dz = a.headingZ;
+    fy = 0;
+    flen = Math.hypot(dx, dz);
+    if (!(flen > 1e-6)) {
+      dx = 0;
+      dz = 1;
+      flen = 1;
+    }
+  }
+  const ux = dx / flen;
+  const uy = fy / flen;
+  const uz = dz / flen;
   const reach = packSeatDistance({
     dirX: ux,
     dirY: uy,
@@ -1017,8 +1040,33 @@ export function clumpLocalOffset(a: {
     seats: a.seats,
   });
   const wx = ux * reach;
-  const wy = uy * reach;
   const wz = uz * reach;
+  /*
+   * NOTHING SEATS BELOW THE CREATURE'S FEET (user ruling, 2026-09-17, said
+   * three times: *"the characters should be on the ground"*, *"their origin
+   * should match the ground plane"*).
+   *
+   * The pile's centre is `selfR` above the feet, so an item's underside sits
+   * at `selfR + wy - itemR` in the creature's frame. A downward contact — a
+   * creature rolling onto something, or a big prop struck low — used to seat
+   * the thing under the feet, and then the ground pass had a choice between
+   * burying it and standing the creature on it like a platform. Both were
+   * reported as the creature floating.
+   *
+   * So the seat's HEIGHT is clamped to where the item rests ON the ground
+   * beside the creature (`itemR - selfR`), and its horizontal place is the
+   * packing's. A big thing therefore lies on the paper next to a small
+   * creature, which is what it would do, and `Clump.floor()` can never go
+   * negative — the lift stays 0 and the feet stay on the ground.
+   */
+  /*
+   * …and an item TALLER than the creature still rests ON the paper rather
+   * than dipping through it: its underside is `selfR + wy - itemR` in the
+   * creature's frame, so this is the height at which it sits on the ground
+   * beside the creature. Raising a horizontal seat only ever increases its
+   * distance from the creature, so the clamp cannot push anything inside.
+   */
+  const wy = Math.max(uy * reach, a.itemR - a.selfR);
   const local = rotate(conjugate(a.clumpWorldQ), wx, wy, wz);
   const g = a.growth > 1e-6 ? a.growth : 1;
   return { x: local.x / g, y: local.y / g, z: local.z / g };

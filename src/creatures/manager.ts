@@ -4037,14 +4037,20 @@ export function createCreatureManager(
     const root = slot.characterRoot;
     if (!spring || !root) return 0;
     const clump = slot.clump;
-    const floor = clump?.floor() ?? 0;
     const footprint = clump?.footprint() ?? 0;
-    // Below the feet is the only thing that lifts: `floor` is 0 for a pile
-    // entirely beside the creature, and so is the sit.
-    const sit = Math.max(0, -floor);
+    /*
+     * THE CREATURE'S ORIGIN IS THE GROUND (user ruling, 2026-09-17, after
+     * three reports of creatures floating). A pile NEVER lifts a creature:
+     * no seat can go below its feet any more (`clumpLocalOffset` clamps the
+     * height), so there is nothing under it to stand on, and a pile beside it
+     * or above it is not a plinth. What is left is the terrain ring, which is
+     * a different question — not "how big is the mass" but "does the ground
+     * under the mass rise", the 2026-09-16 rule that stops a wide pile
+     * clipping through a hillside.
+     */
     const target =
       footprint > 0
-        ? sit + footprintRise(root.position.x, root.position.z, footprint, sampleAt)
+        ? footprintRise(root.position.x, root.position.z, footprint, sampleAt)
         : 0;
     spring.retarget(target);
     // Clamped at 0 on the way out: a clearance can lift a creature and must
