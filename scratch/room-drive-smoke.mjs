@@ -595,6 +595,22 @@ await step('5. drive into a prop and see whether it sticks', async (mark) => {
    * takes the nearest keyed collider off the page that is DECIDING, then
    * closes on it by trying the eight compass directions and keeping whichever
    * one actually shortens the distance (see `COMPASS`).
+   *
+   * IT STICKS. Measured 2026-09-17, phone host (`rapier: false`), the stick
+   * driven from the viewer by a real touch drag:
+   *
+   *   {"k":"stick","id":"phonea","item":"large:2:-150.78:-114.25","kind":"large",
+   *    "variant":2,"scale":0.7443589,"r":0.9081171,"ox":-1.216,…}
+   *
+   * on the wire, and the phone's ball went 2.000 → 3.174 across it. So the
+   * report is not the pickup failing. What the same run shows instead is how
+   * FINE the line is at a fresh hatchling: `PICKUP_RATIO` is 1, so the carry
+   * limit IS the body radius — 1.0 here — and the two props the sweep met
+   * were r 0.908 (stuck) and r 1.089 (did not, 9% over, `shove` rather than
+   * `block`, so the creature pushed past it and walked on). A person's first
+   * few encounters on this island are with models sitting either side of
+   * their own radius, which reads as "it doesn't stick" long before it reads
+   * as "that one is bigger than me".
    */
   const deciding = pages.find((p) => !p.closed);
   const before = await nearestProp(deciding, A);
