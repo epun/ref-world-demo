@@ -18,6 +18,14 @@ export interface FeedDrawing {
    * (createDrawFeed passes the parsed payload through untouched), validated
    * by normalizeDrawing on ingest. */
   personality?: string | null;
+  /**
+   * The run of the world this drawing was drawn into — `w-<world>-g<n>`,
+   * added by our pad and by a handset's resend (2026-09-17). Untyped on the
+   * wire like `personality`, validated by `normalizeDrawing`, and ABSENT on
+   * every drawing published before it existed, which reads as generation 0
+   * (src/phone/identity.ts `admitsDrawing`).
+   */
+  epoch?: string | null;
   strokes: FeedStroke[];
   ts?: number;
 }

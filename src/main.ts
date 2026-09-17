@@ -89,7 +89,7 @@ import { MAX_POPULATION, WANDER_SPEED_DEFAULT } from './creatures/manager';
 import { mountDrawScreen } from './draw/ui';
 import { MOTION, SURFACE, WORLD } from './taste/tokens';
 import { createPhoneLink } from './net/phoneLink';
-import { epochFor, readSubmission } from './phone/identity';
+import { admitsDrawing, epochFor, readSubmission } from './phone/identity';
 import { mountWorldTray } from './world/tray';
 import { createFollow, shouldCloseOnHatch } from './world/follow';
 import { HATCH_CLOSE_ZOOM, followZoomFor } from './world/camera';
@@ -675,6 +675,16 @@ function main(): void {
   /** The epoch to put on a wire message, or '' when there is nothing honest
    * to say yet. `announceEpochRetained` already treats '' as "do not". */
   const wireEpoch = (): string => publishedEpoch ?? '';
+  /**
+   * Say which world this is, retained — from wherever this page learns it.
+   *
+   * Wired once the feed exists (`connectWorldFeed().then`) and a no-op until
+   * then, so the two places that learn a generation — the store's pull and
+   * the `?fresh=1` reset — can both say so without knowing whether the
+   * socket has come up yet. Every caller is still gated on being the host:
+   * only one page speaks to the handsets.
+   */
+  let announceEpoch: () => void = () => {};
 
   // ── session recorder (src/session/, docs/SESSION.md) ──────────────────────
   // Ships in EVERY build, not just dev: a live event is exactly when you want
@@ -1838,6 +1848,25 @@ function main(): void {
       secret: moderatorSecret,
     });
     absorbStore = outcome.absorbStore;
+    /*
+     * TELL THE ROOM AT ONCE (user report, 2026-09-17: *"even after reset
+     * using the mod secret key the scene does not reset"*).
+     *
+     * The generation used to be learned only from the store pull that
+     * follows, and announced only if the feed happened to be up and this
+     * page happened to have won its election by then. Every phone that did
+     * not hear it kept its drawing live: the pad let it be handed back, the
+     * companion re-homed it, and the room filled with the run that had just
+     * been cleared. The reset's own answer carries the number
+     * (`api/moderate.ts`), so this page knows the new world before it has
+     * asked anybody anything — and `announceEpoch` is safe to call with no
+     * socket yet, because the feed announces `wireEpoch()` again the moment
+     * it comes up.
+     */
+    if (outcome.generation !== null) {
+      publishedEpoch = epochFor(worldName, outcome.generation);
+      announceEpoch();
+    }
     if (outcome.note !== null) {
       sceneStored = outcome.note;
       refreshScene();
@@ -2012,6 +2041,10 @@ function main(): void {
           id: event.id,
           name: event.name,
           personality: null,
+          // Out of the store's own log, so it is by definition this run of
+          // the world: the reset empties the store, so anything still in it
+          // was admitted at the generation this page has just read.
+          epoch: wireEpoch(),
           strokes: event.strokes,
           hatchMs: PUBLIC_HATCH_MS,
           source: 'phone',
@@ -2116,7 +2149,7 @@ function main(): void {
       const had = publishedEpoch;
       publishedEpoch = next;
       // Retained, so a handset that connects an hour from now is told too.
-      if (isHostNow()) announceEpochRetained(feed, next, phoneHatchMs);
+      announceEpoch();
       // Only a CHANGE is worth a line. The first read is this page learning
       // its own name, which is not news; a second one means somebody reset
       // the world while this screen was standing open, and the operator
@@ -2922,6 +2955,8 @@ function main(): void {
               id: `dev-fallback-${fallbackIndex++}`,
               name: null,
               personality: null,
+              // Made on this page, now: this run of the world by construction.
+              epoch: wireEpoch(),
               strokes,
               hatchMs: m.FALLBACK_HATCH_MS,
               source: 'dev',
@@ -2951,6 +2986,10 @@ function main(): void {
    * phones receiving two of everything, from two different simulations.
    */
   let isHostNow = (): boolean => true;
+  /** How many drawings from an older run of the world this page has turned
+   * away (see the feed's `onDrawing`). Counted so the operator's line is
+   * said once rather than once per phone. */
+  let refusedOldGeneration = 0;
   /**
    * This handset's stick, going out to whoever is simulating. Wired by
    * `startWorldSync`; a no-op until then and on a page that never gets a
@@ -3090,9 +3129,41 @@ function main(): void {
     onStatus: (state) => {
       // The loading line's first milestone: the room answered (src/ui/loading.ts).
       if (state === 'on') roomOn = true;
-      if (state === 'on' && isHostNow()) announceEpochRetained(feed, wireEpoch(), phoneHatchMs);
+      if (state === 'on') announceEpoch();
     },
     onDrawing: (d) => {
+      /*
+       * IS THIS DRAWING FROM THE WORLD THAT IS RUNNING? (user report,
+       * 2026-09-17, valiocon: *"even after reset using the mod secret key
+       * the scene does not reset"*.)
+       *
+       * The store's reset was landing — generation 1, no drawings — and the
+       * projection filled straight back up, because THIS door had no lock on
+       * it. A reset empties the store and steps the generation; it cannot
+       * reach into a handset, and a handset that had not heard about it went
+       * on offering the same drawing over the room's own link, where it was
+       * admitted without a question. Every other accept path on both sides
+       * asks the same pure question now (src/phone/identity.ts
+       * `admitsDrawing`), and this is the one that DECIDES: whatever a phone
+       * still offers, the world it is offered to is the thing that says no.
+       *
+       * Not only the host. Every page runs its own copy of the world off the
+       * same pure pipeline, so every page has to agree about who is in it —
+       * a viewer that admitted what the host refused would show a creature
+       * nothing was simulating. The answer is pure and the input is the
+       * epoch each page has read for itself, so they agree without asking.
+       *
+       * A page that has not read its own generation yet admits everybody,
+       * which is exactly today's behaviour, and an installation world's
+       * epoch carries no generation so nothing there changes at all.
+       */
+      if (!admitsDrawing(publishedEpoch, d.epoch)) {
+        refusedOldGeneration++;
+        // One line, once: an operator watching a room fill back up after a
+        // reset should be able to see that it is not filling back up.
+        if (refusedOldGeneration === 1) say('ignoring drawings from the run before the reset');
+        return;
+      }
       /*
        * THROUGH THE QUEUE, not straight to the gate — because the moment
        * this matters most is a projection that has just refreshed.
@@ -3146,12 +3217,26 @@ function main(): void {
     },
   }).then((handle) => {
     feed = handle;
-    // Say which world this is, RETAINED, the moment the feed is up. Every
-    // handset that connects from here on is told immediately — including one
-    // that wakes an hour from now — so a phone holding a drawing from a
-    // previous session re-homes it without anyone pressing anything
-    // (src/phone/main.ts, docs/SESSION.md §4a).
-    if (isHostNow()) announceEpochRetained(handle, wireEpoch(), phoneHatchMs);
+    /*
+     * ONE WAY TO SAY WHICH WORLD THIS IS, from every page that learns it.
+     *
+     * Four moments can be the first one that knows: the feed coming up, the
+     * socket reconnecting, the store's pull, and the `?fresh=1` reset's own
+     * answer — and a fifth, this page winning the election, is the one that
+     * was missing. Retained, so a handset that wakes an hour from now is
+     * told on connect; gated on the host, because only one page speaks to
+     * the handsets; and a no-op with nothing honest to say yet (`wireEpoch`
+     * returns '' until the generation is known).
+     */
+    announceEpoch = (): void => {
+      if (!isHostNow()) return;
+      announceEpochRetained(feed, wireEpoch(), phoneHatchMs);
+    };
+    // Say it now: the feed is up, and every handset that connects from here
+    // on is told immediately — so a phone holding a drawing from a previous
+    // session re-homes it without anyone pressing anything (src/phone/main.ts,
+    // docs/SESSION.md §4a).
+    announceEpoch();
     startWorldSync(handle);
   });
 
@@ -3525,6 +3610,18 @@ function main(): void {
         rosterRev = Math.floor(now / 1000);
         roster = [];
         creatures.clearFollow();
+        /*
+         * AND SAY WHICH WORLD THIS IS (2026-09-17).
+         *
+         * Only the host speaks to the handsets, so a page that BECOMES the
+         * host inherits that job — and until now nothing told it. The room's
+         * retained announcement was whatever the page that last held the
+         * role had published, which after a reset is the run that was just
+         * cleared: a handset connecting then was told the old generation,
+         * kept its drawing live, and handed it back. Retained and
+         * idempotent, so re-saying it costs one packet per election.
+         */
+        announceEpoch();
       }
     };
 
@@ -3828,6 +3925,8 @@ function main(): void {
         id: `local-${localCount++}`,
         name: null,
         personality: null,
+        // Drawn on this page, now — this run of the world by construction.
+        epoch: wireEpoch(),
         strokes,
         hatchMs: HATCH_TIMER_MS,
         source: 'local',

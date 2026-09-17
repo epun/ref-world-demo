@@ -19,7 +19,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { generationVerdict, type Submission } from '../../src/phone/identity';
+import { epochFor, generationVerdict, type Submission } from '../../src/phone/identity';
 import {
   moderateEndpoint,
   planLoad,
@@ -139,6 +139,7 @@ describe('startFresh — the reset the load performs', () => {
     expect(out).toEqual({
       requested: false,
       bumped: false,
+      generation: null,
       absorbStore: true,
       note: null,
     });
@@ -213,6 +214,52 @@ describe('startFresh — the reset the load performs', () => {
       expect(out.note).toMatch(expected);
       expect(out.note).not.toMatch(/[A-Z]/);
     }
+  });
+
+  it('reads the new generation off the answer, so the room is told at once', async () => {
+    /*
+     * THE LEAK THIS CLOSES (user report, 2026-09-17, valiocon: *"even after
+     * reset using the mod secret key the scene does not reset"*).
+     *
+     * The generation used to be learned only from the store pull that
+     * follows the reset, and announced only if the socket happened to be up
+     * and this page happened to have won its election by then. A phone that
+     * did not hear it kept offering the drawing the reset had just thrown
+     * away — and the world admitted it. The reset's own answer carries the
+     * number, so the page knows the new world before it asks anybody
+     * anything (src/main.ts, `freshen`).
+     */
+    const plan = planLoad({ fresh: true, isPublic: true, handheld: false, hasSecret: true });
+    const fetch = (async () =>
+      ({
+        ok: true,
+        status: 200,
+        json: async () => ({ world: 'valiocon', generation: 7, cleared: 12 }),
+      }) as unknown as Response) as unknown as typeof globalThis.fetch;
+    const out = await startFresh({ plan, world: 'valiocon', secret: 's', fetch });
+    expect(out.bumped).toBe(true);
+    expect(out.generation).toBe(7);
+    // And the epoch the handsets compare against is built from it — one
+    // place writes the suffix (src/phone/identity.ts).
+    expect(epochFor('valiocon', out.generation ?? 0)).toBe('w-valiocon-g7');
+  });
+
+  it('a body it cannot read is not a reset that failed', async () => {
+    const plan = planLoad({ fresh: true, isPublic: true, handheld: false, hasSecret: true });
+    const fetch = (async () =>
+      ({
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw new Error('not json');
+        },
+      }) as unknown as Response) as unknown as typeof globalThis.fetch;
+    const out = await startFresh({ plan, world: 'valiocon', secret: 's', fetch });
+    // The store IS empty. The number simply arrives on the pull instead,
+    // which is where it came from before this was read at all.
+    expect(out.bumped).toBe(true);
+    expect(out.generation).toBeNull();
+    expect(out.absorbStore).toBe(true);
   });
 
   it('a network that is not there is a failure like any other', async () => {

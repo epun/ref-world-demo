@@ -857,6 +857,26 @@
     function liveGeneration() {
       return Math.max(generationOf(WORLD_EPOCH), knownGeneration());
     }
+    /*
+     * THE EPOCH A DRAWING CARRIES ON THE WIRE (2026-09-17).
+     *
+     * The world refuses a drawing from before its last reset, and an absent
+     * epoch reads as generation 0 — so a pad that says nothing about itself
+     * would have every drawing it sends into a reset world thrown away
+     * (src/phone/identity.ts `admitsDrawing`, src/main.ts `onDrawing`).
+     *
+     * Three sources, best first: the retained announcement this pad heard,
+     * the `?w=` on a join code, and — when neither said a string — the
+     * generation this pad has LEARNED for this world, off the log
+     * `healThenGo` already reads. The last one is what covers a phone whose
+     * socket came up after the retained message went past.
+     */
+    function wireEpoch() {
+      if (liveEpoch) return liveEpoch;
+      if (WORLD_EPOCH) return WORLD_EPOCH;
+      var known = knownGeneration();
+      return WORLD && known > 0 ? 'w-' + WORLD + '-g' + known : '';
+    }
     /**
      * Has the world started over since this drawing was admitted?
      *
@@ -1184,6 +1204,19 @@
       client = mqtt.connect(BROKER, { clientId: 'draw_' + Math.random().toString(16).slice(2, 10), keepalive: 30, reconnectPeriod: 2000 });
       client.on('connect', () => {
         connected = true; setStatus('on', 'connected'); syncKeys(); client.subscribe(UP_TOPIC);
+        /*
+         * ASK WHICH WORLD THIS IS (2026-09-17).
+         *
+         * The projection announces its epoch RETAINED, which normally lands
+         * the instant the subscription above is up — but a retained message
+         * is one packet held by one broker, and the pad now NEEDS the answer:
+         * a drawing that cannot say which run it was made in is refused by a
+         * world that has been reset. So the pad also asks, the way the
+         * companion has always asked, and the world answers on the down
+         * topic (src/main.ts `onHello`). Cheap, additive, and a world that
+         * never answers leaves this pad exactly as it was.
+         */
+        try { client.publish(TOPIC, JSON.stringify({ id: MY_ID + '-hello-' + Date.now().toString(36), type: 'hello', from: MY_ID, ts: Date.now() }), { qos: 0 }); } catch {}
         // `?recover=1` — the link an operator sends round after a session was
         // lost. Fires once, as soon as there is a connection to send on.
         if (RECOVER_MODE && !recovered) { recovered = true; recoverFromLink(); }
@@ -1422,6 +1455,11 @@
       if (alreadyDrew()) { enforceSingleDrawing(); return; }
       if (refusedHere()) return;
       const msg = { id: MY_ID, name: userName, strokes, ts: Date.now() };
+      // WHICH RUN OF THE WORLD THIS IS GOING INTO. Additive on the wire: a
+      // world on an older build reads right past it, and a world that has
+      // been reset needs it to tell this drawing from the ones it cleared.
+      const wire = wireEpoch();
+      if (wire) msg.epoch = wire;
       client.publish(TOPIC, JSON.stringify(msg), { qos: 0 });
       // The durable copy. Fire and forget: the drawing has already gone out
       // over mqtt and the person is already being walked to their egg, so a
@@ -1471,12 +1509,14 @@
         sessionStorage.setItem('refworld:handoff', JSON.stringify({ id: msg.id, name: userName || null, room, strokes: msg.strokes, ts: msg.ts }));
         // Persisted too: a reload (or coming back later) must land on the
         // creature this handset already made, never on an empty pad.
-        // `liveEpoch` first: the qr for a public world carries no `?w=`
-        // (src/net/protocol.ts `joinUrl`), so the retained announcement is
-        // the only thing that knows which generation this drawing is
-        // entering. A record with no epoch reads as generation 0 and would
-        // be stepped down by a reset that happened before it was drawn.
-        localStorage.setItem(SUBMISSION_KEY, JSON.stringify({ id: msg.id, name: userName || null, strokes: msg.strokes, ts: msg.ts, epoch: liveEpoch || WORLD_EPOCH || null }));
+        // The SAME string that went on the wire (`wireEpoch` above), so the
+        // record and the drawing the world admitted can never disagree about
+        // which run they belong to. The qr for a public world carries no
+        // `?w=` (src/net/protocol.ts `joinUrl`), so the retained
+        // announcement is usually the only thing that knows; a record with
+        // no epoch reads as generation 0 and would be stepped down by a
+        // reset that happened before it was drawn.
+        localStorage.setItem(SUBMISSION_KEY, JSON.stringify({ id: msg.id, name: userName || null, strokes: msg.strokes, ts: msg.ts, epoch: wire || null }));
       } catch {}
       keySend.disabled = true;
       // The seam (PHONE-STAGE §4). Satellites leave, the core travels to the
