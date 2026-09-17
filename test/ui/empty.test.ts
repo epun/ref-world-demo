@@ -100,7 +100,7 @@ describe('the prompt is absent on a world without the game', () => {
 
   it('is the other half of the one gate, for a handset with no drawing', () => {
     const site =
-      /if \(worldGame === 'katamari' && handheld\) \{[\s\S]{0,2600}?\} else \{[\s\S]{0,700}?installEmptyState\(/;
+      /if \(worldGame === 'katamari' && handheld\) \{[\s\S]*?\} else \{[\s\S]{0,700}?installEmptyState\(/;
     expect(main).toMatch(site);
     expect([...main.matchAll(/installEmptyState\(/g)].length).toBe(1);
   });

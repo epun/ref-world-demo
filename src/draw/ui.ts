@@ -17,6 +17,7 @@ import type { StrokeList } from '../shape/types';
 import { MOTION, SURFACE, WORLD } from '../taste/tokens';
 import { DrawCapture, type DrawCaptureOptions } from './capture';
 import { renderStrokes } from './render';
+import { uiTheme } from '../ui/theme';
 
 export interface DrawScreenOptions {
   /** Invoked with a defensive copy of the final stroke list. */
@@ -95,14 +96,14 @@ function ensureStyle(): void {
   gap: 7vmin;
   width: 100%;
   height: 100%;
-  background: ${SURFACE.canvas};
+  background: var(--rw-pad, ${SURFACE.canvas});
 }
 .draw-canvas {
   width: min(76vmin, 480px);
   aspect-ratio: 1;
   display: block;
-  background: ${SURFACE.canvas};
-  border: 1px solid ${WORLD.ink};
+  background: var(--rw-pad, ${SURFACE.canvas});
+  border: 1px solid var(--rw-ink, ${WORLD.ink});
   border-radius: 3.5%;
   cursor: crosshair;
 }
@@ -119,8 +120,8 @@ function ensureStyle(): void {
   align-items: center;
   justify-content: center;
   background: transparent;
-  color: ${WORLD.ink};
-  border: 1px solid ${WORLD.ink};
+  color: var(--rw-ink, ${WORLD.ink});
+  border: 1px solid var(--rw-ink, ${WORLD.ink});
   border-radius: 50%;
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
@@ -242,24 +243,30 @@ export function mountDrawScreen(
    * (docs/DEVICE.md §3, user ruling "we shouldn't see the borders of the
    * drawing pad").
    *
-   * So the ground is brought down to the well's own value with one `darken`
-   * pass. Per channel it keeps the minimum, and SURFACE.ground is darker
-   * than SURFACE.canvas everywhere, so the field lands on exactly
-   * SURFACE.ground while the near-black ink is untouched — and the
-   * anti-aliased edge of every stroke stays a clean ramp from the ink to
-   * the screen's value instead of picking up a light fringe. No readback,
-   * no second canvas, and the shared renderer keeps its contract.
+   * So the ground is ASKED FOR: `renderStrokes` takes the paper it lays
+   * (src/draw/render.ts), defaulting to the token, and the egg's own
+   * `renderStrokesPartial` call is untouched. The anti-aliased edge of every
+   * stroke is then a clean ramp from the ink to the value behind it, with no
+   * second pass over the frame.
+   *
+   * INSIDE THE DEVICE THAT VALUE IS NOT THE THEME'S (2026-09-17). The well is
+   * drawn by `public/device/shell.svg`, a static asset shared with /draw/ and
+   * with the world's tray, and its screen is painted `SURFACE.ground` — so
+   * that is what the pad has to be, on every style, or the square of canvas
+   * inside the bezel reads as a lit rectangle on an unlit screen. Measured on
+   * the ghibli build before this line existed: the theme's paper against the
+   * artwork's grey drew exactly the enclosure DEVICE §3 says the pad must not
+   * have, and it drew it as a RECTANGLE (TASTE §2.5). The case is a physical
+   * object with its own colour; what the theme paints is the page it lies on,
+   * the keys' rings, the type and the frames.
+   *
+   * Outside the device — the world's own draw overlay, which has no bezel to
+   * belong to — the pad keeps its own sheet and that one IS the theme's
+   * (`pad`: `SURFACE.canvas` on the shipped look, the meadow paper on ghibli).
    */
   const render = (strokes: StrokeList): void => {
     if (ctx) {
-      renderStrokes(ctx, strokes, canvas.width);
-      if (hosts) {
-        ctx.save();
-        ctx.globalCompositeOperation = 'darken';
-        ctx.fillStyle = SURFACE.ground;
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-        ctx.restore();
-      }
+      renderStrokes(ctx, strokes, canvas.width, hosts ? SURFACE.ground : uiTheme().pad);
     }
     const empty = strokes.length === 0;
     undoButton.disabled = empty;

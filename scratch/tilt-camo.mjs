@@ -227,8 +227,11 @@ await context.addInitScript(
       );
       localStorage.setItem('refworld:drawer', id);
       localStorage.setItem('refworld:hinted-emote', '1');
-      // The handset's onboarding stands over the whole world view and eats
-      // every pointer (src/ui/onboard.ts) — this page has "seen" it.
+      // The handset's onboarding used to stand over the whole world view and
+      // eat every pointer, which is why this is here. Since main's 2026-09-17
+      // hints work (src/ui/hints.ts) it is three marks in the live view and
+      // this flag is inert — kept because it costs nothing and the `onboard=0`
+      // on the address below is the same belt.
       localStorage.setItem('refworld:onboarded', '1');
     } catch {
       /* a blocked store simply mounts no tray */

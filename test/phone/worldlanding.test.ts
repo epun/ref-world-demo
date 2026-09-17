@@ -10,8 +10,8 @@
  * The cause was a path, not a component: a handset opening the world link is
  * redirected to `/draw/`, the pad sends it to `/phone.html` when the drawing
  * is submitted, and nothing there went on to `?view=world` — so the stick,
- * the ball readout, the minimap, the onboarding screens and the loading line
- * were all mounted on a page the person never reached.
+ * the ball readout, the minimap, the hints and the loading line were all
+ * mounted on a page the person never reached.
  *
  * What is pinned here:
  *
@@ -21,8 +21,10 @@
  * 2. THE ONE EXIT. `leaveForWorld` navigates to the world view after the
  *    device's own slide, and inside the world's panel it closes the panel
  *    instead of navigating.
- * 3. THE WIRING, read out of src/phone/main.ts: the four conditions, the
- *    dynamic import, and that both ways through the onboarding go ON.
+ * 3. THE WIRING, read out of src/phone/main.ts: the four conditions, and that
+ *    nothing stands between the pad and the world — the teaching is in the
+ *    world view now (src/ui/hints.ts, 2026-09-17: *"For mobile I want the
+ *    onboarding to be contextual within the device."*).
  */
 
 import { readFileSync } from 'node:fs';
@@ -192,20 +194,18 @@ describe('the phone only moves somebody who should be moved', () => {
     expect(main).toMatch(/machine\.goTo\('wait'\);[\s\S]{0,300}?onToTheWorld\(\);/);
   });
 
-  it('shows the screens first, and both ways through them go ON', () => {
-    expect(main).toMatch(/void import\('\.\.\/ui\/onboard'\)/);
-    expect(main).not.toMatch(/^import .*'\.\.\/ui\/onboard'/m);
-    expect(main).toMatch(/if \(!m\.shouldOnboard\(location\.search, m\.deviceStore\(\)\)\) \{\s*\n\s*intoTheWorld\(\);/);
-    expect(main).toMatch(/onDone: \(\) => intoTheWorld\(\),/);
+  it('puts NOTHING between the pad and the world any more', () => {
+    // 2026-09-17, second ask: *"For mobile I want the onboarding to be
+    // contextual within the device."* The three grey screens are gone from
+    // this seam — the teaching happens in the world view, anchored to the
+    // stick and the readout (src/ui/hints.ts) — so this is one navigation
+    // with nothing to read first.
+    expect(main).not.toMatch(/installOnboarding|ui\/onboard/);
+    expect(main).toMatch(/const onToTheWorld = \(\): void => \{[\s\S]{0,200}?intoTheWorld\(\);\s*\n\s*\};/);
   });
 
   it('leaves through the one exit, and only once', () => {
     expect(main).toMatch(/leaveForWorld\(\{ room, world: publicWorld, device: deviceEl \}\)/);
     expect(main).toMatch(/if \(goingToWorld\) return;/);
-  });
-
-  it('still goes to the world if the screens cannot be fetched', () => {
-    // A slow link that drops one chunk must not strand somebody in a case.
-    expect(main).toMatch(/\(\) => intoTheWorld\(\),\s*\n\s*\);/);
   });
 });

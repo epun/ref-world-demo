@@ -87,6 +87,7 @@ import { MOTION, WORLD } from '../taste/tokens';
 import { Spring } from '../motion/spring';
 import { sampleDrift } from '../motion/ambient';
 import { mapBorderInset, mapMarkScale, wavyBorderPath, wavyBorderPoints } from '../phone/minimap';
+import { QR_INSET_PX } from './joinqr';
 import { formatLength, metresOf } from './size';
 
 // ── pure helpers ─────────────────────────────────────────────────────────────
@@ -274,11 +275,13 @@ function ensureStyle(): void {
   style.textContent = `
 .world-leaderboard {
   position: fixed;
-  left: calc(env(safe-area-inset-left, 0px) + 4vw);
-  top: calc(env(safe-area-inset-top, 0px) + 4vw);
+  /* The join code's own inset (user ask 2026-09-17: the board is left-aligned
+     to the qr code), so the two boxes on the left edge share one column. */
+  left: calc(env(safe-area-inset-left, 0px) + ${QR_INSET_PX}px);
+  top: calc(env(safe-area-inset-top, 0px) + ${QR_INSET_PX}px);
   z-index: 5;
   width: ${BOARD_W_PX}px;
-  color: ${WORLD.ink};
+  color: var(--rw-ink, ${WORLD.ink});
   font: 400 14px/1.4 ui-sans-serif, system-ui, sans-serif;
   pointer-events: none;
 }
@@ -320,8 +323,8 @@ function ensureStyle(): void {
   overflow: visible;
 }
 .world-leaderboard-paper {
-  fill: ${WORLD.light};
-  stroke: ${WORLD.ink};
+  fill: var(--rw-light, ${WORLD.light});
+  stroke: var(--rw-ink, ${WORLD.ink});
   stroke-width: 1.25;
   stroke-linejoin: round;
 }
@@ -329,7 +332,7 @@ function ensureStyle(): void {
 .world-leaderboard-head {
   position: relative;
   padding-bottom: 0.45em;
-  border-bottom: 1px solid ${WORLD.ink};
+  border-bottom: 1px solid var(--rw-ink, ${WORLD.ink});
 }
 /* The rows are laid out by transform inside a block whose height is written
    per frame, so a rank change slides and never reflows. */

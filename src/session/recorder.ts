@@ -179,7 +179,7 @@ export interface SessionRecorder {
    */
   stick(record: StickRecord): void;
   drop(record: DropRecord): void;
-  loose(item: string, x: number, z: number): void;
+  loose(item: string, x: number, z: number, scale?: number): void;
   settle(record: SettleRecord): void;
   /**
    * The two destruction states (src/world/wreck.ts, docs/SESSION.md §6).
@@ -370,8 +370,17 @@ export function createSessionRecorder(opts: RecorderOptions): SessionRecorder {
         qw: round6(record.qw),
       });
     },
-    loose(item: string, x: number, z: number): void {
-      push({ k: 'loose', t: stamp(), item, x: round3(x), z: round3(z) });
+    loose(item: string, x: number, z: number, scale?: number): void {
+      push({
+        k: 'loose',
+        t: stamp(),
+        item,
+        x: round3(x),
+        z: round3(z),
+        // Only when there is one to carry: an absent scale reads as it always
+        // did, which is what makes the field additive.
+        ...(scale !== undefined && scale > 0 ? { scale: round3(scale) } : {}),
+      });
     },
     settle(record: SettleRecord): void {
       push({

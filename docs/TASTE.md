@@ -449,3 +449,68 @@ the paper's size for a field of *n*, and the box's height rides a ζ≥1 spring 
 shrinks with the field instead of standing at ten rows over an empty world. Katamari worlds
 only, projection only, behind a dynamic import: `test/ui/leaderboard.test.ts` pins all of it,
 and the public build is byte-identical.
+
+### 9b. The handset's chrome takes the world's palette — user override *(2026-09-17)* **[D]**
+
+> *"can we style the device on mobile in the new style of the world so it's not just black
+> and white."*
+
+**What changed is six values, on one style.** The phone's pages — the draw pad and its
+surround, the device view, the keepsake popover — and the world view's own chrome — the
+stick, the tray, the corner readouts, the loading and onboarding screens, the join code —
+were all painted straight from `SURFACE.ground` and `WORLD.ink`. That is the taste (§1, §4)
+and it stays the taste on every world but one: on `valiocon` the world behind that chrome
+renders in the ghibli cel look (§9), and grey paper with grey ink in front of a green meadow
+read as a different application sitting on top of the world.
+
+`src/ui/theme.ts` names the six roles those surfaces use — `paper`, `ink`, `muted`, `light`,
+`pad`, `accent` — and resolves them from `WorldStyle`, exactly as `mapPalette` (§9a) already
+resolves the map's two. On `ink` every role **is** the token the surface used before the
+module existed, so the public handset and meridian's paint what they always painted. On
+`ghibli` every role is a `GHIBLI` token and nothing else:
+
+| role | `ink` | `ghibli` |
+| --- | --- | --- |
+| `paper` | `SURFACE.ground` | `GHIBLI.paper` **[D]**, new — see below |
+| `ink` | `WORLD.ink` | `GHIBLI.ink` (the style's violet-blue contour) |
+| `muted` | `WORLD.neutral` | `GHIBLI.rockCool` |
+| `light` | `WORLD.light` | `GHIBLI.foam` |
+| `pad` | `SURFACE.canvas` | `GHIBLI.paper` |
+| `accent` | `WORLD.ink` | `GHIBLI.waterTeal` |
+
+**`GHIBLI.paper` is the one new token**, and it is derived: the cel style has albedos for
+ground, water and foliage and no paper at all, because nothing in it is a sheet. It is
+`SURFACE.ground`'s own luma carried into the meadow's hue at a fraction of its chroma —
+`#e8efdc`, which the style's `ink` reads on at 11.6:1, `muted` at 4.3:1 and `accent` at 5.9:1.
+It is a **UI paper only**: nothing environmental takes it, and the environment floor (§1) is
+untouched.
+
+**The `accent` is not a new mark.** On the shipped look it is simply `ink`, because
+`CHARACTER.accent` is the character's and appears at most once on screen (tokens.ts) — a
+progress tick is not the hatch flash. On ghibli it is the sea, on three things only: the
+onboarding icons, the onboarding ticks and the earned part of the loading rule.
+
+**The mark set is not relaxed.** No role is a panel fill, a shadow or a radius. The framed
+boxes that carry a paper fill — the keepsake popover, the join code, the minimap, the
+leaderboard — are the **same override §9a records**, under the same generator, inset and 1.25
+hairline; this recolours them and adds nothing.
+
+**What the theme does NOT paint: anything inside the device's bezel.** The well is drawn by
+`public/device/shell.svg`, a static asset shared with `/draw/` and with the world's tray, and
+its screen is `SURFACE.ground`. A key face, a stage paper, a pad ground or a portrait's clear
+colour in the theme's paper made a **lit rectangle** inside the bezel — measured on the
+valiocon build — which is both the enclosure DEVICE §3 says the screen must not draw and a
+rectilinear form (§2.5). The case is a physical object with its own colour (DEVICE §1a);
+what the theme paints is the page it lies on, the keys' rings, the type and the frames. The
+one surface in that family that is NOT in the bezel is the keepsake image, which is a picture
+the person takes away, and it is laid on the world's paper.
+
+**How a page knows.** `src/phone/main.ts` reads `?style=` then
+`<meta name="refworld:style">` through the same `readWorldStyle` the world page uses, and
+installs the theme at module top, before any screen mounts. `scripts/world-build.mjs`
+(`applyStyleToPhoneHtml`) injects that tag into `phone.html` only when it is not `ink`, so
+the public world's handset document is byte-identical to the file on disk. Each surface then
+says `var(--rw-ink, ${WORLD.ink})`: the **fallback is the shipped token**, so every module is
+correct with no theme installed at all — a unit test, or `/draw/`, which is plain html in
+`public/` and cannot import from `src/`. `test/ui/theme.test.ts` and
+`test/worlds/build.test.ts` pin all of it.

@@ -20,6 +20,7 @@
  */
 
 import { MOTION, WORLD } from '../taste/tokens';
+import { uiTheme } from './theme';
 import { mapBorderInset, mapMarkScale, wavyBorderPoints, type BorderPoint } from '../phone/minimap';
 import { encodeQr } from './qr';
 
@@ -33,7 +34,7 @@ const QR_SEED = 57.3;
 export const QR_EXPANDED_VMIN = 60;
 
 /** Corner inset — the minimap's, so the two corners stay mirrored. */
-const QR_INSET_PX = 20;
+export const QR_INSET_PX = 20;
 
 const STYLE_ID = 'join-qr-style';
 
@@ -165,10 +166,10 @@ export function installJoinQr(opts: JoinQrOptions): JoinQrHandle {
     // and this corner reads as a card of paper laid on the world.
     const border = wavyBorderPoints(w, h, inset, QR_SEED);
     traceLoop(ctx, border);
-    ctx.fillStyle = WORLD.light;
+    ctx.fillStyle = uiTheme().light;
     ctx.fill();
     traceLoop(ctx, border);
-    ctx.strokeStyle = WORLD.ink;
+    ctx.strokeStyle = uiTheme().ink;
     ctx.lineWidth = 1.25;
     ctx.stroke();
 
@@ -181,7 +182,7 @@ export function installJoinQr(opts: JoinQrOptions): JoinQrHandle {
     const originY = (h - step * modules) / 2;
     const snap = (v: number): number => Math.round(v * dpr) / dpr;
 
-    ctx.fillStyle = WORLD.ink;
+    ctx.fillStyle = uiTheme().ink;
     for (let r = 0; r < modules; r++) {
       for (let c = 0; c < modules; c++) {
         if (!matrix[r]![c]) continue;
