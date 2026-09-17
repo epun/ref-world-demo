@@ -417,41 +417,36 @@ async function nearestProp(p, who) {
 }
 
 /**
- * WHERE TO PUT THE THUMB so the creature walks toward (x, z) — the inverse of
- * `stickToWorld` (src/world/joystick.ts).
+ * WHICH WAY TO PUSH — found by pushing, not by arithmetic.
  *
- * The stick is read on the ground UNDER THE CAMERA RIGHT NOW, so a direction
- * in world units has to be rotated back through the live azimuth. The rig does
- * not publish it, but the camera's forward vector is `-offset` normalised and
- * the offset is built from the azimuth, so `atan2(-fx, -fz)` recovers it.
+ * The obvious way is to invert `stickToWorld` through the live azimuth
+ * (src/world/joystick.ts). The first version of this file did, and drove the
+ * creature at right angles to the prop it was aiming at for five attempts
+ * running — a sign error somewhere between the camera's basis and the stick's
+ * screen axes that is not worth finding, because the harness can simply
+ * MEASURE instead.
  *
- * `stickToWorld` maps (away, right) through [[-sin, cos], [-cos, -sin]], whose
- * determinant is 1 — so the inverse is [[-sin, -cos], [cos, -sin]], and the
- * screen offset is (right, -away).
+ * So: eight compass directions, a short push on each, and keep whichever one
+ * actually closed the distance. That is robust against every convention in
+ * the chain — the camera's azimuth, the screen's y, the deadzone, the
+ * response curve — and it is what a person does with a new stick anyway.
  */
-async function aimAt(p, who, to) {
+const COMPASS = Array.from({ length: 8 }, (_unused, i) => {
+  const a = (i / 8) * Math.PI * 2;
+  return { dx: Math.sin(a), dy: -Math.cos(a) };
+});
+
+/** How far this creature is from that point, on the deciding page. */
+async function gapTo(p, who, to) {
   return p.page.evaluate(
     ([id, tx, tz]) => {
       const mine = window.__refworldCreatures.poses().find((q) => q.id === id);
-      const cam = window.__refworldCamera;
-      if (!mine || !cam) return null;
-      // three.js: getWorldDirection is the camera's forward, which is -offset.
-      const fwd = { x: 0, y: 0, z: 0 };
-      const m = cam.matrixWorld.elements;
-      fwd.x = -m[8];
-      fwd.y = -m[9];
-      fwd.z = -m[10];
-      const az = Math.atan2(-fwd.x, -fwd.z);
-      const wx = tx - mine.x;
-      const wz = tz - mine.z;
-      const len = Math.hypot(wx, wz);
-      if (!(len > 1e-6)) return null;
-      const sin = Math.sin(az);
-      const cos = Math.cos(az);
-      const away = -sin * (wx / len) - cos * (wz / len);
-      const right = cos * (wx / len) - sin * (wz / len);
-      const n = Math.hypot(right, away) || 1;
-      return { dx: right / n, dy: -away / n, az, dist: len };
+      if (!mine) return null;
+      return {
+        d: Math.hypot(tx - mine.x, tz - mine.z),
+        at: { x: +mine.x.toFixed(2), z: +mine.z.toFixed(2) },
+        bodyR: window.__refworldCreatures.ballDiameter(id) / 2,
+      };
     },
     [who, to.x, to.z],
   );
@@ -594,80 +589,86 @@ await step('5. drive into a prop and see whether it sticks', async (mark) => {
    * > User report, 2026-09-17: *"on mobile currently when a user walks into
    * > things it doesn't stick to them."*
    *
-   * The earlier runs never met a prop — eighteen units of island is a lot of
-   * grass — so the pickup path went unverified while every step passed. This
-   * one AIMS: it reads the nearest keyed collider off the page that is
-   * deciding, converts the direction to a thumb position through the live
-   * azimuth, and holds it there. Then it says what happened on both pages and,
-   * if nothing stuck, what the host could see at the time.
+   * The earlier runs never met a prop — the island is mostly grass and a
+   * software renderer only covers a few units a drag — so the pickup path
+   * went unverified while every other step passed. This one goes looking: it
+   * takes the nearest keyed collider off the page that is DECIDING, then
+   * closes on it by trying the eight compass directions and keeping whichever
+   * one actually shortens the distance (see `COMPASS`).
    */
   const deciding = pages.find((p) => !p.closed);
   const before = await nearestProp(deciding, A);
   if (!before?.target) return { skipped: 'no keyed collider anywhere near the creature' };
+  const target = before.target;
 
   const samples = [];
   let stuck = null;
-  for (let attempt = 0; attempt < 8 && !stuck; attempt++) {
-    const aim = await aimAt(one, A, before.target);
-    if (!aim) break;
-    await holdStick(one, 4000, { dx: aim.dx, dy: aim.dy });
-    const now = await nearestProp(deciding, A);
-    const sticks = traffic
-      .filter((m) => m.topic === SYNC_TOPIC && m.payload.includes('"k":"stick"'))
-      .map((m) => m.payload);
-    const looses = traffic
-      .filter((m) => m.topic === SYNC_TOPIC && m.payload.includes('"k":"loose"'))
-      .map((m) => m.payload);
-    samples.push({
-      attempt,
-      aim: { dx: +aim.dx.toFixed(3), dy: +aim.dy.toFixed(3), dist: +aim.dist.toFixed(2) },
-      at: now?.at ?? null,
-      // How far the creature is from the TARGET, and how far it would have to
-      // be for the pickup pass to look at it at all.
-      gap: now?.at
-        ? +(
-            Math.hypot(before.target.x - now.at.x, before.target.z - now.at.z) -
-            (now.bodyR + before.target.r)
-          ).toFixed(3)
-        : null,
-      bodyR: now ? +now.bodyR.toFixed(3) : null,
-      // Gone from the collider set = taken (picked up, or loosened).
-      targetStanding: Boolean(
-        now && now.colliders > 0 && (await hasCollider(deciding, before.target.key)),
-      ),
-      sticks: sticks.length,
-      looses: looses.length,
-    });
-    if (sticks.length > 0) stuck = sticks;
+  let best = { dx: 0, dy: -1 };
+  for (let round = 0; round < 10 && !stuck; round++) {
+    // Every few rounds, re-find the way: the creature turns, the camera
+    // drifts, and a direction that was closing can stop closing.
+    const tries = round % 3 === 0 ? COMPASS : [best];
+    let bestGain = -Infinity;
+    for (const dir of tries) {
+      const from = await gapTo(deciding, A, target);
+      await holdStick(one, tries.length === 1 ? 4000 : 1200, dir);
+      const to = await gapTo(deciding, A, target);
+      if (!from || !to) continue;
+      const gain = from.d - to.d;
+      if (gain > bestGain) {
+        bestGain = gain;
+        best = dir;
+      }
+      const sticks = traffic
+        .filter((m) => m.topic === SYNC_TOPIC && m.payload.includes('"k":"stick"'))
+        .map((m) => m.payload);
+      const looses = traffic
+        .filter((m) => m.topic === SYNC_TOPIC && m.payload.includes('"k":"loose"'))
+        .map((m) => m.payload);
+      samples.push({
+        round,
+        dir: { dx: +dir.dx.toFixed(2), dy: +dir.dy.toFixed(2) },
+        at: to.at,
+        // The distance the pickup pass actually tests against: centre to
+        // centre, minus the two radii, minus the contact pad.
+        gap: +(to.d - (to.bodyR + target.r) - 0.25).toFixed(3),
+        gain: +gain.toFixed(3),
+        sticks: sticks.length,
+        looses: looses.length,
+      });
+      if (sticks.length > 0) {
+        stuck = sticks;
+        break;
+      }
+    }
   }
 
   const size = {};
-  const carried = {};
   for (const p of pages) {
     if (p.closed) continue;
     size[p.label] = await p.page.evaluate((who) => window.__refworldCreatures.ballDiameter(who), A);
-    carried[p.label] = await p.page.evaluate(
-      (who) => window.__refworldCreatures.carrying?.(who) ?? null,
-      A,
-    );
   }
   const values = Object.values(size).filter((v) => typeof v === 'number');
   const spread = values.length > 1 ? Math.max(...values) - Math.min(...values) : 0;
   if (values.some((v) => v > 0) && spread > 0.02) {
     fail.push(`step 5: the pages disagree about the ball size (${JSON.stringify(size)})`);
   }
-  if (!stuck) fail.push('step 5: drove into a prop and nothing stuck');
+  const closest = Math.min(...samples.map((q) => q.gap));
+  if (!stuck) {
+    fail.push(
+      `step 5: nothing stuck; the creature got within ${closest.toFixed(2)}u of the prop`,
+    );
+  }
   return {
     host: deciding.label,
     rapier: before.rapier,
     colliders: before.colliders,
-    target: before.target,
+    target,
     bodyR: +before.bodyR.toFixed(3),
-    carryLimit: +before.bodyR.toFixed(3),
+    closest: +closest.toFixed(3),
     samples,
     stickSample: (stuck ?? []).slice(0, 2),
     size,
-    carried,
     mark,
   };
 });
