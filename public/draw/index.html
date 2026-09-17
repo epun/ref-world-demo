@@ -1419,10 +1419,24 @@
       try {
         client.publish(TOPIC, JSON.stringify({
           id: rec.id, name: rec.name || '', strokes: rec.strokes, ts: Date.now(),
+          /*
+           * THE EPOCH OF THE WORLD RUNNING NOW, not the one this drawing
+           * came from — and that asymmetry is the whole of `?recover=1`.
+           *
+           * Every other path sends the run the drawing was ADMITTED under
+           * and lets the world refuse an older one. This one is an operator
+           * deliberately answering *"please open this so your creature comes
+           * back"*, into whatever world is running: it ignores the age of
+           * the record and the room it was drawn into already, and a world
+           * that has since been reset would otherwise refuse the one link
+           * that exists to undo a lost session. The record adopts the same
+           * epoch below, so the handset is honestly part of this run.
+           */
+          ...(wireEpoch() ? { epoch: wireEpoch() } : {}),
         }), { qos: 0 });
       } catch { return false; }
       try {
-        localStorage.setItem(SUBMISSION_KEY, JSON.stringify({ ...rec, epoch: liveEpoch || WORLD_EPOCH || null }));
+        localStorage.setItem(SUBMISSION_KEY, JSON.stringify({ ...rec, epoch: wireEpoch() || null }));
       } catch {}
       showToast('sent your creature back');
       setTimeout(goToCompanion, 900);
@@ -1432,12 +1446,38 @@
     function answerRecall(epoch) {
       const rec = storedSubmission();
       if (!rec || !rec.strokes || !rec.strokes.length || !connected) return;
+      /*
+       * NOT INTO A WORLD THAT HAS STARTED OVER (user report, 2026-09-17:
+       * *"even after reset using the mod secret key the scene does not
+       * reset"*).
+       *
+       * A `recall` is the world asking for the population it lost, and this
+       * pad answered every one of them with whatever it was holding. After a
+       * reset that is the run that was just cleared, handed straight back —
+       * and this is the page a stepped-down handset LANDS on, so it is the
+       * copy of the drawing most likely to be offered.
+       *
+       * Mirrors `admitsDrawing` in src/phone/identity.ts: only OLDER is
+       * refused, so a re-home into a restarted projection at the same
+       * generation is untouched. The record itself is never touched
+       * (CLAUDE.md) — only the offering stops.
+       */
+      const asking = epoch || liveEpoch || WORLD_EPOCH || '';
+      if (asking && generationOf(asking) > generationOf(rec.epoch)) { sayRestarted(); return; }
       try {
         client.publish(TOPIC, JSON.stringify({
           id: rec.id, name: rec.name || '', strokes: rec.strokes, ts: Date.now(),
+          // The run it was ADMITTED under, so the world decides for itself
+          // rather than taking this pad's word for it.
+          ...(rec.epoch ? { epoch: rec.epoch } : {}),
         }), { qos: 0 });
       } catch { return; }
-      const use = epoch || liveEpoch || WORLD_EPOCH || null;
+      // Never BACKWARDS: a stale announcement is the one kind of `world`
+      // message that is wrong, and a record that adopted its generation
+      // would have talked itself back into the run before the reset.
+      const use = generationOf(asking) >= generationOf(rec.epoch) && asking
+        ? asking
+        : rec.epoch || null;
       try {
         localStorage.setItem(SUBMISSION_KEY, JSON.stringify({ ...rec, epoch: use }));
       } catch {}

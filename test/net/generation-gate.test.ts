@@ -216,3 +216,80 @@ describe('the pad says which run it is drawing into', () => {
     expect(padSrc()).toMatch(/type: 'hello'/);
   });
 });
+
+/**
+ * AND THE HANDSET SIDE, which is where the offer comes FROM.
+ *
+ * The world's accept is the decision; these are the paths that were spending
+ * a packet on a drawing the world would refuse — and one of them, the
+ * re-home, fires with nobody pressing anything. Asserted on the source for
+ * the same reason as the accept: these are two pages, not two modules.
+ */
+describe('a handset never offers a drawing from an older run', () => {
+  const companion = (): string => readFileSync(join(process.cwd(), 'src/phone/main.ts'), 'utf8');
+
+  it('guards the one function both the recall and the re-home go through', () => {
+    const src = companion();
+    const fn = src.slice(src.indexOf('const resendMine'), src.indexOf('uplink?.onRecall'));
+    expect(fn).toMatch(/admitsDrawing\(epoch, mine\.epoch\)/);
+    // And the drawing rides with its own epoch, so the world decides rather
+    // than taking the handset's word for it.
+    expect(fn).toMatch(/epoch: mine\.epoch \?\? null/);
+    // Still never deleted (CLAUDE.md, test/session/recovery.test.ts).
+    expect(fn).not.toMatch(/clearSubmission/);
+  });
+
+  it('never lets its own record adopt an OLDER generation', () => {
+    // The re-home fires on any epoch that merely DIFFERS, so a stale
+    // announcement from a projection left open on the last run used to
+    // stamp this handset back into that run — after which the next honest
+    // announcement would step it down and its own next resend be refused.
+    const src = companion();
+    expect(src).toMatch(/generationOf\(epoch\) >= generationOf\(mine\.epoch\)/);
+  });
+
+  it('steps down in the WORLD VIEW exactly as it does in the companion', () => {
+    // `?view=world` on a phone runs src/main.ts, where nothing knew about a
+    // reset at all: the tray showed a creature that no longer existed, the
+    // stick published drives for it, and the pad still counted that person
+    // as having drawn.
+    const src = mainSrc();
+    expect(src).toMatch(/stepDownOnNewGeneration = \(worldEpoch: string\)/);
+    expect(src).toMatch(/generationVerdict\(mySubmission, worldEpoch\) !== 'step-down'/);
+    // The same landing as the companion's `stepDownToPad`: the pad, with the
+    // world and the room carried along, and `restarted=1` so the note is
+    // said on the screen the person arrives at.
+    expect(src).toMatch(/restarted=1/);
+    // Both places that can learn a new generation feed it: this page's own
+    // store pull, and the retained `world` message on the emote uplink.
+    expect(src).toMatch(/stepDownOnNewGeneration\(next\)/);
+    expect(src).toMatch(
+      /uplink\?\.onWorldEpoch\(\(worldEpoch\) => stepDownOnNewGeneration\(worldEpoch\)\)/,
+    );
+    // And it does not delete anything on the way out.
+    const assigned = src.slice(src.indexOf('stepDownOnNewGeneration = ('));
+    expect(assigned.slice(0, assigned.indexOf('};'))).not.toMatch(/clearSubmission|removeItem/);
+  });
+
+  it('the pad refuses a recall from a world that has started over', () => {
+    const src = padSrc();
+    const fn = src.slice(src.indexOf('function answerRecall'), src.indexOf('function publish'));
+    expect(fn).toMatch(/generationOf\(asking\) > generationOf\(rec\.epoch\)/);
+    // The record is never touched — only the offering stops.
+    expect(fn).not.toMatch(/removeItem/);
+  });
+
+  it('leaves the ?recover=1 link deliberate — it is the operator’s escape hatch', () => {
+    // It ignores the age of the record and the room already; a world that
+    // has since been reset must not be able to refuse the one link that
+    // exists to undo a lost session, so it publishes under the run that is
+    // RUNNING and the record adopts it.
+    const src = padSrc();
+    const fn = src.slice(
+      src.indexOf('function recoverFromLink'),
+      src.indexOf('function answerRecall'),
+    );
+    expect(fn).toMatch(/wireEpoch\(\) \? \{ epoch: wireEpoch\(\) \}/);
+    expect(fn).not.toMatch(/generationOf/);
+  });
+});

@@ -390,6 +390,50 @@ A stepped-down phone keeps its drawing, its keepsake still builds from it, and a
 still ask for it. The projection's own autosaved log is kept too — `shift+R` will restore
 the previous run into a freshly emptied world, which is an operator's deliberate act.
 
+### 4c. The generation gate — the reset's other half
+
+> User report, 2026-09-17, valiocon: *"even after reset using the mod secret key the scene
+> does not reset"*. The store WAS reset — generation 1, no drawings — and the projection
+> filled straight back up.
+
+Emptying the store is only half a reset. The other half is that **a drawing from the run
+before it is refused on the way in**, because a reset cannot reach into a phone and must
+not try (the drawing there is the only copy that survives anything). One pure rule decides
+it — `admitsDrawing` in `src/phone/identity.ts`, beside the `generationOf` that parses the
+suffix — and it is asymmetric on purpose:
+
+| the drawing's generation, against the world's | answer | why |
+| --- | --- | --- |
+| older | **refused** | the run it belongs to was cleared |
+| equal | admitted | the re-home into a restarted projection — §4a, the whole recovery |
+| newer | admitted | this side heard a stale announcement and is the one that is behind |
+| absent (either side) | read as generation 0 | every drawing published before the epoch travelled, and every world that has never been reset |
+
+So the epoch now **travels with the drawing**, additively: `FeedDrawing.epoch` on the kit's
+own wire shape, stamped by the pad (`wireEpoch()` in `public/draw/`), carried by
+`PhoneLink.resend`, read by `normalizeDrawing`. Absent means generation 0, so nothing
+published by an older build changes meaning.
+
+Every path asks the same question:
+
+- the **world's accept** (`onDrawing`, src/main.ts) — the one that DECIDES, on every page
+  rather than only the host, because each page builds its own copy of the world off the
+  same pure pipeline and they have to agree about who is in it;
+- the **companion's resend**, for a recall and for the re-home (`resendMine`);
+- the **pad's recall answer** (`answerRecall`);
+- and the handset's **heal**, which has refused an older generation since 2026-09-09.
+
+`?recover=1` is the one deliberate exception: it publishes under the run that is RUNNING,
+because it is an operator pulling a lost population into whatever world is open.
+
+For any of it to work the announcement has to REACH the phone, so three moments now say
+it: the `?fresh=1` reset's own answer (`/api/moderate` returns the new generation, so the
+room is told at once rather than on the next twenty-second poll), the feed coming up, and
+**a page winning the election** — only the host speaks to the handsets, and nothing used
+to tell a new one, so the retained message in the room stayed whatever the last host had
+published. A handset in the world view (`?view=world`) steps down on it exactly as the
+companion does: back to the pad with `restarted=1`, drawing kept.
+
 `test/session/freshload.test.ts` pins the plan (a load without the flag is byte-for-byte
 the load that shipped) and the request; `scratch/fresh-load-smoke.mjs` opens the built
 valiocon projection against a mocked store three ways and counts what stands up.

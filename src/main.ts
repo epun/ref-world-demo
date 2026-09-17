@@ -89,7 +89,12 @@ import { MAX_POPULATION, WANDER_SPEED_DEFAULT } from './creatures/manager';
 import { mountDrawScreen } from './draw/ui';
 import { MOTION, SURFACE, WORLD } from './taste/tokens';
 import { createPhoneLink } from './net/phoneLink';
-import { admitsDrawing, epochFor, readSubmission } from './phone/identity';
+import {
+  admitsDrawing,
+  epochFor,
+  generationVerdict,
+  readSubmission,
+} from './phone/identity';
 import { mountWorldTray } from './world/tray';
 import { createFollow, shouldCloseOnHatch } from './world/follow';
 import { HATCH_CLOSE_ZOOM, followZoomFor } from './world/camera';
@@ -685,6 +690,15 @@ function main(): void {
    * only one page speaks to the handsets.
    */
   let announceEpoch: () => void = () => {};
+  /**
+   * What a HANDSET in the world view does when the world's generation moves.
+   *
+   * A no-op on a projection, on a desktop, and on a phone that never drew.
+   * Assigned once, beside this handset's own drawing, and called from both
+   * places that can learn a new generation — the store pull and the emote
+   * uplink's `world` message. See the assignment for the argument.
+   */
+  let stepDownOnNewGeneration: (worldEpoch: string) => void = () => {};
 
   // ── session recorder (src/session/, docs/SESSION.md) ──────────────────────
   // Ships in EVERY build, not just dev: a live event is exactly when you want
@@ -2150,6 +2164,9 @@ function main(): void {
       publishedEpoch = next;
       // Retained, so a handset that connects an hour from now is told too.
       announceEpoch();
+      // And if THIS page is a handset that drew into an older run, it is one
+      // of the phones being sent back to the pad (see the assignment).
+      stepDownOnNewGeneration(next);
       // Only a CHANGE is worth a line. The first read is this page learning
       // its own name, which is not news; a second one means somebody reset
       // the world while this screen was standing open, and the operator
@@ -2295,6 +2312,39 @@ function main(): void {
    * frame.
    */
   if (myDrawerId.length > 0) myCreature = { id: myDrawerId, manager: creatures };
+  /*
+   * ── A HANDSET IN THE WORLD VIEW STEPS DOWN TOO (2026-09-17) ──────────────
+   *
+   * `?view=world` on a phone runs THIS file, not src/phone/main.ts — so the
+   * one place that knew what to do about a reset was the companion, and the
+   * person looking at the shared world from their phone was told nothing.
+   * They kept a creature that no longer existed anywhere: the tray showed
+   * it, the stick published drives for it, the minimap tracked a slot the
+   * host had never heard of, and the pad still counted them as having drawn.
+   *
+   * Exactly the companion's answer, because there is only one
+   * (src/phone/main.ts `stepDownToPad`): the same `generationVerdict`, the
+   * same landing on the pad with `restarted=1` so the note is said on the
+   * screen they arrive at, the same world and room carried along — and the
+   * drawing KEPT. Nothing here deletes it (CLAUDE.md); the offering stops,
+   * that is all.
+   *
+   * Assigned rather than declared, because the two places that learn a
+   * generation — the store pull and the emote uplink's `world` message —
+   * both sit above this line, and a drawing read after them would be a TDZ
+   * on the recovery path (test/phone/tdz.test.ts).
+   */
+  if (handheld && isPublic && mySubmission) {
+    let steppingDown = false;
+    stepDownOnNewGeneration = (worldEpoch: string): void => {
+      if (steppingDown) return;
+      if (generationVerdict(mySubmission, worldEpoch) !== 'step-down') return;
+      steppingDown = true;
+      location.replace(
+        `/draw/?room=${room}&w=${encodeURIComponent(worldEpoch)}${worldParam}&restarted=1`,
+      );
+    };
+  }
   /**
    * Their drawing, as the shape pipeline wants it. Stored in the kit's WIRE
    * form, which is what the world and the companion both parse it from —
@@ -3040,6 +3090,17 @@ function main(): void {
   const uplink = myDrawerId
     ? createPhoneLink(room, myDrawerId, brokerOverride ? { broker: brokerOverride } : {})
     : null;
+  /*
+   * …AND IT IS ALSO HOW THIS HANDSET HEARS ABOUT A RESET (2026-09-17).
+   *
+   * The same retained `world` announcement the companion listens to, on the
+   * same link this page already opens for its emotes — so a phone looking at
+   * the world learns the generation changed within a round trip, rather than
+   * on this page's own twenty-second store poll. Both feed the one answer
+   * (`stepDownOnNewGeneration`), which is a no-op unless this page is a
+   * handset holding a drawing from an older run.
+   */
+  uplink?.onWorldEpoch((worldEpoch) => stepDownOnNewGeneration(worldEpoch));
   /**
    * Call every handset's drawing back (recovery, 2026-08-20).
    *

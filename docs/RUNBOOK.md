@@ -64,6 +64,18 @@ Two things to know before you use it:
 A phone opening `?view=world&fresh=1` does nothing of the sort — a handset is a
 viewer and always sees the live room.
 
+**What a reset does to the phones (2026-09-17).** The room is told the new
+generation immediately, retained, by whichever page is host — including one
+that has just won the election — and from then on the world REFUSES any
+drawing from the run before it, whichever path offers it: the room's own link,
+a recall, a re-home, the pad. So every phone lands back on the pad with the
+note `the world started over — draw again`, keeping its drawing, whether it was
+sitting in the companion or watching the world at `?view=world`. The one thing
+that still pulls an old population in on purpose is the `?recover=1` link,
+which is what it is for. If a phone somehow misses the announcement its drawing
+is simply not admitted, and the projection says
+`ignoring drawings from the run before the reset` once.
+
 ## during
 
 - `h` hatches every waiting egg, staggered.
