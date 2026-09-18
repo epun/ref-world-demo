@@ -2991,7 +2991,23 @@ function main(): void {
      */
     if (follow.active()) {
       const at = creatures.positionOf(myDrawerId);
-      const ballR = creatures.ballDiameter(myDrawerId) / 2;
+      /*
+       * THE MASS AS IT IS DRAWN, not the accumulated volume (user report,
+       * 2026-09-18: *"The camera is also too far zoomed out"*).
+       *
+       * `ballDiameter` is the game's SIZE — the readout, the carry limit —
+       * and it is the volume of everything collected, which runs well ahead
+       * of the packed pile (measured at fifteen props: 7.1 u against a packed
+       * 4.6, and tighter again since the objects interlock). Framing on it
+       * opened the view for a ball twice the size of anything on screen. What
+       * has to fit in the frame is what a person can see: the creature's own
+       * drawn radius or the pile's footprint, whichever is wider — the same
+       * two numbers the corner's live view frames by (src/world/portrait.ts).
+       */
+      const ballR = Math.max(
+        creatures.drawnRadius(myDrawerId),
+        creatures.pileFootprint(myDrawerId),
+      );
       if (at && followTight) {
         /*
          * THE TIGHT FOLLOW, katamari handset only (2026-09-17).

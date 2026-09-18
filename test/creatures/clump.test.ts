@@ -157,8 +157,15 @@ describe('the items pack against the creature', () => {
     const itemR = 0.6;
     const { clump } = ballOn(baseR);
     stick(clump, baseR, 'a', { x: 1, y: 0, z: 0 }, itemR);
-    // Bedded in by CLUMP_FIT — touching the creature, not perched on it.
-    expect(radii(clump)[0]).toBeCloseTo(baseR + itemR * CLUMP_FIT, 9);
+    /*
+     * TOUCHING it, not perched off it (user report, 2026-09-18: *"there
+     * shouldn't be space between the character and the objects"*): the
+     * creature is one more sphere in the pack, so the centre distance is
+     * `CLUMP_FIT` of the two radii summed, the same convention as
+     * item-vs-item. It used to be `baseR + itemR × CLUMP_FIT`, which left the
+     * item clear of a body that is itself mostly air inside its radius.
+     */
+    expect(radii(clump)[0]).toBeCloseTo((baseR + itemR) * CLUMP_FIT, 9);
   });
 
   it('tucks the next one BESIDE the first rather than stacking a spike', () => {
@@ -179,13 +186,12 @@ describe('the items pack against the creature', () => {
     stick(clump, baseR, 'a', { x: 1, y: 0, z: 0 }, itemR);
     stick(clump, baseR, 'b', { x: 1, y: 0, z: 0 }, itemR);
     const [first, second] = radii(clump);
-    const spike = first! + 2 * itemR * CLUMP_FIT;
-    // Nowhere near the old radial answer, and no further from the creature
-    // than the first item was.
-    expect(second!).toBeLessThan(spike - itemR);
+    const spike = first! + 2 * itemR * PACK_INTERLOCK;
+    // Tighter than the radial answer, which would stack it straight out.
+    expect(second!).toBeLessThan(spike);
     // Barely further from the creature than the first — it went sideways, not
-    // outward. Measured 2026-09-18: 1.390 against the first's 1.320 and the
-    // old radial answer's 2.160.
+    // outward. Measured 2026-09-18: 1.123 against the first's 1.050, where
+    // the old radial answer was 2.160.
     expect(second!).toBeLessThan(first! + itemR * 0.25);
     // …and bedded into it by `PACK_INTERLOCK` and no deeper: two items of
     // radius `itemR` sit `2 × itemR × PACK_INTERLOCK` apart at the closest.
@@ -206,7 +212,7 @@ describe('the items pack against the creature', () => {
     const seat = clump.seatOf('behind')!;
     // Four things stacked on the +x side do not push the -x side out at all:
     // this thing is on the creature, where it was struck.
-    expect(Math.hypot(seat.x, seat.y, seat.z)).toBeCloseTo(baseR + itemR * CLUMP_FIT, 9);
+    expect(Math.hypot(seat.x, seat.y, seat.z)).toBeCloseTo((baseR + itemR) * CLUMP_FIT, 9);
     expect(behind.position.length()).toBeGreaterThan(0);
   });
 
@@ -236,9 +242,10 @@ describe('the items pack against the creature', () => {
 
     for (const [i, seat] of placed.entries()) {
       const d = Math.hypot(seat.x, seat.y, seat.z);
-      // NOT INSIDE: the creature's surface is at `baseR`, and an item may be
-      // bedded into it by `CLUMP_FIT` of its own radius and no more.
-      expect(d).toBeGreaterThanOrEqual(baseR + seat.r * CLUMP_FIT - 1e-9);
+      // NOT INSIDE: an item beds into the creature by `CLUMP_FIT` of the two
+      // radii summed and no deeper, so its centre stays outside the body.
+      expect(d).toBeGreaterThanOrEqual((baseR + seat.r) * CLUMP_FIT - 1e-9);
+      expect(d).toBeGreaterThan(baseR);
       // NOT FLOATING: it touches the creature, or it touches something that
       // is already seated — within the same bedding tolerance.
       const onCreature = d <= baseR + seat.r + 1e-9;
@@ -265,7 +272,7 @@ describe('the items pack against the creature', () => {
     // A 1.4 u item on a 0.9 u creature is TALLER than its carrier, so it is
     // raised to rest on the paper beside it (2026-09-17: nothing seats below
     // the feet) — at least the bedding distance out, underside on the ground.
-    expect(before).toBeGreaterThanOrEqual(baseR + itemR * CLUMP_FIT - 1e-6);
+    expect(before).toBeGreaterThanOrEqual((baseR + itemR) * CLUMP_FIT - 1e-6);
     expect(baseR + first.position.y * clump.growth() - itemR).toBeGreaterThanOrEqual(-1e-6);
 
     // Five more things elsewhere on the creature: the growth rises a long way

@@ -518,7 +518,7 @@ describe('clumpLocalOffset', () => {
 
   it('seats an item on the side it was struck from, against the creature', () => {
     const o = clumpLocalOffset({ ...base, itemX: 5, itemY: 0, itemZ: 0 });
-    const reach = base.selfR + base.itemR * CLUMP_FIT;
+    const reach = (base.selfR + base.itemR) * CLUMP_FIT;
     expect(o.x).toBeCloseTo(reach, 12);
     expect(o.y).toBeCloseTo(0, 12);
     expect(o.z).toBeCloseTo(0, 12);
@@ -535,12 +535,17 @@ describe('clumpLocalOffset', () => {
   it('sinks the item into the creature rather than perching it tangent', () => {
     const o = clumpLocalOffset({ ...base, itemX: 5, itemY: 0, itemZ: 0 });
     expect(o.x).toBeLessThan(base.selfR + base.itemR);
-    expect(o.x).toBeGreaterThan(base.selfR);
+    // Touching the creature since 2026-09-18 (*"there shouldn't be space
+    // between the character and the objects"*): the centre distance is
+    // `CLUMP_FIT` of the two radii summed, so it overlaps the body's own
+    // bounding sphere but its centre stays outside it.
+    expect(o.x).toBeGreaterThan(0);
+    expect(o.x).toBeLessThan(base.selfR);
   });
 
   it('uses the heading when the hit is exactly at the centre', () => {
     const o = clumpLocalOffset({ ...base, itemX: 0, itemY: 0, itemZ: 0 });
-    const reach = base.selfR + base.itemR * CLUMP_FIT;
+    const reach = (base.selfR + base.itemR) * CLUMP_FIT;
     expect(o.x).toBeCloseTo(0, 12);
     expect(o.z).toBeCloseTo(reach, 12);
   });
@@ -557,7 +562,7 @@ describe('clumpLocalOffset', () => {
     const dy = item.itemY - centre.centreY;
     const dz = item.itemZ - centre.centreZ;
     const len = Math.hypot(dx, dy, dz);
-    const reach = base.selfR + base.itemR * CLUMP_FIT;
+    const reach = (base.selfR + base.itemR) * CLUMP_FIT;
     // Same direction as the hit, at exactly the seated distance.
     expect(world.x).toBeCloseTo((dx / len) * reach, 10);
     expect(world.y).toBeCloseTo((dy / len) * reach, 10);
@@ -716,7 +721,7 @@ describe('packSeatDirection — the mass fills in rather than spiking out', () =
   it('keeps the struck direction when the pile is empty — the fan only ever tightens', () => {
     const p = packSeatDirection({ dirX: 0, dirY: 0, dirZ: 1, itemR: 0.5, selfR, seats: [] });
     expect(p.dirZ).toBeCloseTo(1, 12);
-    expect(p.reach).toBeCloseTo(selfR + 0.5 * CLUMP_FIT, 12);
+    expect(p.reach).toBeCloseTo((selfR + 0.5) * CLUMP_FIT, 12);
   });
 
   it('is never looser than the radial seat it starts from', () => {

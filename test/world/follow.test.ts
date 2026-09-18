@@ -125,7 +125,17 @@ describe('where the follow camera is wired', () => {
      * RETARGETS, on the rig's own ζ≥1 spring.
      */
     const loop = frameLoop();
-    expect(loop).toMatch(/const ballR = creatures\.ballDiameter\(myDrawerId\) \/ 2;/);
+    /*
+     * The radius it frames by is the DRAWN MASS since 2026-09-18 (user
+     * report: *"The camera is also too far zoomed out"*): `ballDiameter` is
+     * the accumulated volume — the game's size — and it runs well ahead of
+     * the packed pile, so framing on it opened the view for a ball twice the
+     * size of anything on screen. Measured on a 390x844 frame, a 2.2 u mass
+     * that read 7.1 u of volume: 1.22 -> 2.60 at rest.
+     */
+    expect(loop).toMatch(/creatures\.drawnRadius\(myDrawerId\)/);
+    expect(loop).toMatch(/creatures\.pileFootprint\(myDrawerId\)/);
+    expect(loop).not.toMatch(/const ballR = creatures\.ballDiameter/);
     // The ZOOM comes off the same pure answer as the aim since 2026-09-17:
     // the tight framing, widened by the pile AND by however far the frame is
     // actually behind the creature (`followZoomFor`, via `createFollowAim`).

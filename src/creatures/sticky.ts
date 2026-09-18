@@ -454,9 +454,25 @@ export function packSeatDistance(a: {
   /** What is already on the pile: world offsets from the centre, and radii. */
   seats: readonly { x: number; y: number; z: number; r: number }[];
 }): number {
-  // Against the CREATURE, bedded by `CLUMP_FIT` — it is the body things stick
-  // to and it does not get swallowed.
-  let t = Math.max(0, a.selfR + a.itemR * CLUMP_FIT);
+  /*
+   * AGAINST THE CREATURE, with no gap (user report, 2026-09-18: *"there
+   * shouldn't be space between the character and the objects"*).
+   *
+   * It was `selfR + itemR × CLUMP_FIT`: the item's centre outside the
+   * creature's own sphere, bedded in by a fraction of its own radius. But
+   * `selfR` is a measured BOUNDING radius like `item.r` is — a drawn
+   * character with a stalk and a topper is mostly air inside it — so an item
+   * seated on that sphere stood visibly clear of the body it is stuck to.
+   *
+   * So the creature is treated as what it is, one more sphere in the pack:
+   * the centre distance is `CLUMP_FIT` of the two radii summed, the same
+   * convention the item-vs-item clearance uses. At a drawn radius of 1.2 and
+   * an item of 0.4 that is 1.12 rather than 1.48 — the item touching the
+   * character instead of hovering a third of a metre off it. `CLUMP_FIT` and
+   * not `PACK_INTERLOCK`: this is the one sphere that must not be swallowed,
+   * because it is the character.
+   */
+  let t = Math.max(0, (a.selfR + a.itemR) * CLUMP_FIT);
   // Against the OTHER ITEMS, bedded deeper: they are bounding spheres full of
   // air and the reference has them passing through each other (the note on
   // `PACK_INTERLOCK`).
