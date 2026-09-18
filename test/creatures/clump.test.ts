@@ -15,6 +15,7 @@ import { createClump } from '../../src/creatures/clump';
 import {
   CLUMP_FIT,
   clumpLocalOffset,
+  PACK_INTERLOCK,
   growth as growthOf,
 } from '../../src/creatures/sticky';
 
@@ -186,11 +187,14 @@ describe('the items pack against the creature', () => {
     // outward. Measured 2026-09-18: 1.390 against the first's 1.320 and the
     // old radial answer's 2.160.
     expect(second!).toBeLessThan(first! + itemR * 0.25);
-    // …and clear of it: two items of radius `itemR` bedded into each other by
-    // `CLUMP_FIT` are `2 × itemR × CLUMP_FIT` apart at the closest.
+    // …and bedded into it by `PACK_INTERLOCK` and no deeper: two items of
+    // radius `itemR` sit `2 × itemR × PACK_INTERLOCK` apart at the closest.
+    // They INTERLOCK — a prop's radius is its bounding sphere and the
+    // reference has the objects passing through each other.
     const [a, b] = clump.seats();
     const apart = Math.hypot(a!.x - b!.x, a!.y - b!.y, a!.z - b!.z);
-    expect(apart).toBeGreaterThanOrEqual(2 * itemR * CLUMP_FIT - 1e-9);
+    expect(apart).toBeGreaterThanOrEqual(2 * itemR * PACK_INTERLOCK - 1e-9);
+    expect(apart).toBeLessThan(2 * itemR);
   });
 
   it('leaves the other side alone — a pile is not a sphere', () => {

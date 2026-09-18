@@ -381,6 +381,32 @@ export const CLUMP_FIT = 0.7;
  * strictly increases the distance, so it converges in a handful; this is the
  * bound that keeps a pathological pile from spending a frame on one pickup.
  */
+/**
+ * [D] How deeply items bed into EACH OTHER, as a fraction of the two radii —
+ * the interlock.
+ *
+ * > User, 2026-09-18, with the Katamari Damacy reference: *"This is what it
+ * > should look like all the objects collided together."*
+ *
+ * `CLUMP_FIT` is the bedding against the CREATURE and 0.7 is right there: the
+ * character is the body things stick to and must not be swallowed. Between
+ * items it was wrong, and this is why a packed pile still read as an airy
+ * cluster with holes in it while the reference reads as one solid mass. The
+ * radius a prop carries (`item.r`) is its BOUNDING radius — a bench, a sign
+ * or a planter is mostly air inside its own sphere — so clearing two whole
+ * spheres holds the actual geometry a long way apart even though the spheres
+ * are already touching. Objects in the reference plainly pass through each
+ * other.
+ *
+ * 0.45 rather than 0.7, measured over a 48-prop wandering walk: the packed
+ * fill of the pile's own hull rises 0.226 -> 0.419 and its outer radius falls
+ * 2.73 -> 2.22 u, with the mean nearest-neighbour overlap going from 0.26 to
+ * 0.47 u. Lower still keeps densifying (0.591 at 0.35) but the props begin to
+ * read as one mangled object rather than a heap of things, which loses the
+ * legibility the whole pile is for.
+ */
+export const PACK_INTERLOCK = 0.45;
+
 export const PACK_PASSES = 8;
 
 /**
@@ -428,10 +454,13 @@ export function packSeatDistance(a: {
   /** What is already on the pile: world offsets from the centre, and radii. */
   seats: readonly { x: number; y: number; z: number; r: number }[];
 }): number {
-  const fit = CLUMP_FIT;
-  // Clear of the character itself, bedded into it by the same fraction a
-  // stone is bedded into the pile.
-  let t = Math.max(0, a.selfR + a.itemR * fit);
+  // Against the CREATURE, bedded by `CLUMP_FIT` — it is the body things stick
+  // to and it does not get swallowed.
+  let t = Math.max(0, a.selfR + a.itemR * CLUMP_FIT);
+  // Against the OTHER ITEMS, bedded deeper: they are bounding spheres full of
+  // air and the reference has them passing through each other (the note on
+  // `PACK_INTERLOCK`).
+  const fit = PACK_INTERLOCK;
   for (let pass = 0; pass < PACK_PASSES; pass++) {
     let moved = false;
     for (const seat of a.seats) {
