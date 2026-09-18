@@ -1675,6 +1675,39 @@ export function createCreatureManager(
   const massMultOf = (slot: Slot): number =>
     katamari ? (slot.clump?.growth() ?? 1) : 1;
 
+  /**
+   * THE SOLID RADIUS — how far this creature physically reaches, world units.
+   *
+   * > User report, 2026-09-18: *"objects are still being drawn towards the
+   * > creature instead of sticking to the creature after it rolls over it."*
+   *
+   * `bodyR` is `baseR × growth`: the accumulated VOLUME of everything
+   * collected, which is the game's SIZE — the readout, the leaderboard, the
+   * carry limit, the impact. It is NOT where the mass is. Since the pile was
+   * packed (2026-09-17) and interlocked (2026-09-18) the drawn lump is
+   * markedly tighter than that number — 4.6 u packed against a 7.1 u volume
+   * at fifteen props — so every circle derived from `bodyR` was metres wider
+   * than anything on screen: props were grabbed out of clear air and then
+   * slid to their seat, and a creature bounced off walls it had not reached.
+   *
+   * So "how big is this ball" and "where is its surface" are two questions
+   * now, the way `rapierOwns`/`deciding` are two questions (docs/PLAN.md
+   * §7.6). This is the second one: the creature's own drawn radius, or the
+   * pile's footprint once there is one. Outside the game there is no pile and
+   * this is exactly `bodyR`, so nothing else in this file changes by it.
+   *
+   * WHAT STILL READS `bodyR`, on purpose: `carryLimit`/`passLimit` (what a
+   * mass can pick up or shove past), `impactOf` (what it hits with),
+   * `ballDiameter` and the leaderboard (its size), `positions()`'s exclusion
+   * radius (the scatter keeps clear of the whole game object) and the
+   * mass-speed factor. Those are all about MASS. This one is about REACH.
+   */
+  const solidR = (slot: Slot): number => {
+    if (!katamari) return slot.bodyR;
+    const drawn = Math.max(slot.baseR, slot.clump?.footprint() ?? 0);
+    return drawn > 0 ? drawn : slot.bodyR;
+  };
+
   /** How fast a driven creature turns toward the push — tighter in a
    * katamari world, because it is going more than twice as fast there. */
   const turnTauMs = (): number => (katamari ? KATAMARI_TURN_TAU_MS : DRIVE_TURN_TAU_MS);
@@ -3006,11 +3039,9 @@ export function createCreatureManager(
      * be picking things up with a body several metres under the sphere on
      * screen. 0 with the world's gravity on.
      */
+    const standR = solidR(slot);
     const y =
-      surface.sampleHeight(root.position.x, root.position.z) +
-      slot.lift +
-      slot.float +
-      slot.bodyR;
+      surface.sampleHeight(root.position.x, root.position.z) + slot.lift + slot.float + standR;
     if (!slot.kinematic) {
       const body = physics.addRigidBody(
         rapier.RigidBodyDesc.kinematicPositionBased().setTranslation(
@@ -3018,7 +3049,7 @@ export function createCreatureManager(
           y,
           root.position.z,
         ),
-        rapier.ColliderDesc.ball(Math.max(0.05, slot.bodyR))
+        rapier.ColliderDesc.ball(Math.max(0.05, standR))
           .setActiveHooks(rapier.ActiveHooks.FILTER_CONTACT_PAIRS)
           .setActiveEvents(rapier.ActiveEvents.COLLISION_EVENTS)
           .setRestitution(0),
@@ -3032,7 +3063,7 @@ export function createCreatureManager(
         const side: ImpactSide = {
           key: slot.id,
           kind: 'creature',
-          r: slot.bodyR,
+          r: standR,
           x: root.position.x,
           z: root.position.z,
           rooted: false,
@@ -3050,13 +3081,13 @@ export function createCreatureManager(
     // The ball grows with the pile: a creature the size of a house that
     // still shouldered stones aside on its drawn radius would read as a
     // creature walking through the world rather than into it.
-    slot.kinematic.ball?.setRadius(Math.max(0.05, slot.bodyR));
+    slot.kinematic.ball?.setRadius(Math.max(0.05, standR));
     const ballHandle = slot.kinematic.ball?.handle;
     const ballSide = ballHandle === undefined ? undefined : slot.kinematic.sides.get(ballHandle);
     if (ballSide) {
       // The registration is by reference, so keeping it truthful is three
       // writes rather than a re-register.
-      ballSide.r = slot.bodyR;
+      ballSide.r = standR;
       ballSide.x = root.position.x;
       ballSide.z = root.position.z;
     }
@@ -3758,13 +3789,33 @@ export function createCreatureManager(
       const { slot, root } = entry;
       if (slot.carriedBy) continue;
       /*
-       * THE ROLLING BALL'S OWN RADIUS, growth and all: `growPass` writes
-       * `bodyR = baseR × clump.growth()` every frame and `clump.R()` is that
-       * same product, so the circle that picks things up is exactly the
-       * circle that is turning on the ground. A reach measured off `baseR`
-       * would leave a grown pile brushing past stones it visibly rolled over.
+       * THE MASS AS IT IS DRAWN — what a person can see touching the thing.
+       *
+       * > User report, 2026-09-18: *"objects are still being drawn towards
+       * > the creature instead of sticking to the creature after it rolls
+       * > over it."*
+       *
+       * This was `slot.bodyR`, the accumulated VOLUME (`baseR × growth`),
+       * which is the game's size and runs well ahead of the packed pile — 7.1
+       * u against a packed 4.6 at fifteen props, and further apart since the
+       * objects interlock. So a creature grabbed stones a couple of metres
+       * outside anything on screen and they then SLID IN to their seat: the
+       * pile looked like it was sucking props toward it rather than picking up
+       * what it rolled over. The slide is right (a hard cut is forbidden, TASTE
+       * §2.1) — the distance it had to cover was not.
+       *
+       * The honest reach is the silhouette: the creature's own drawn radius,
+       * or the pile's footprint once there is one, whichever is wider — the
+       * same pair the corner's live view frames by and the phone's camera
+       * follows. `carryLimit` still reads `bodyR`, because WHAT a ball can
+       * pick up is its mass (the 2026-09-17 ask) and WHERE it can reach from
+       * is its silhouette; they were one number by accident.
+       *
+       * Nothing wedges on the way in: a carriable prop is dropped from the
+       * resolve's collider set entirely (`skipIf`, the `carryLimit` branch
+       * above), so the creature rolls up to it and then over it.
        */
-      const reach = slot.bodyR;
+      const reach = solidR(slot);
       const nearIdx = itemGrid.near(root.position.x, root.position.z, reach + itemGrid.cellSize);
       for (let k = 0; k < nearIdx.length; k++) {
         const item = itemList[nearIdx[k]!];
@@ -4585,9 +4636,15 @@ export function createCreatureManager(
           out.push({
             x: p.x,
             z: p.z,
-            // The GROWN radius when there is a pile: this is what the scatter
-            // reads for its exclusion radius, so a creature that has eaten
-            // half a forest clears the rest of it out of its own way.
+            /*
+             * The GROWN radius when there is a pile — `bodyR` and NOT
+             * `solidR`, which is the one place the pair go the other way
+             * (2026-09-18). The scatter reads this for its exclusion radius,
+             * so the question is "how much room does this game object need
+             * kept clear", which is its mass; and the roll rate is measured
+             * against the same number inside the clump, so a test that drives
+             * one full turn reads it here.
+             */
             r: slot.bodyR > 0 ? slot.bodyR : (slot.character?.radius ?? slot.egg?.radius ?? 1),
             kind: slot.characterRoot ? 'character' : 'egg',
           });
@@ -4772,7 +4829,7 @@ export function createCreatureManager(
             body.z = root.position.z;
             body.vx = 0;
             body.vz = 0;
-            body.r = slot.bodyR > 0 ? slot.bodyR : slot.character.radius;
+            body.r = solidR(slot) > 0 ? solidR(slot) : slot.character.radius;
             aliveScratch.push({
               slot,
               root,
@@ -4961,7 +5018,7 @@ export function createCreatureManager(
             );
             let vx = driven ? driveVx : out.vx;
             let vz = driven ? driveVz : out.vz;
-            const bodyR = slot.bodyR > 0 ? slot.bodyR : slot.character.radius;
+            const bodyR = solidR(slot) > 0 ? solidR(slot) : slot.character.radius;
             const near = gatherNear(root.position.x, root.position.z, bodyR);
 
             // Soft bodies: pushing through a bush is slow (~55% damped), and

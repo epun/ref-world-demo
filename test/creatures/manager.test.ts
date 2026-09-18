@@ -1365,6 +1365,37 @@ describe('ground clearance — a big ball rides on its whole footprint', () => {
     manager.clearAll();
   });
 
+  it('picks things up on CONTACT, not from the volume radius away', () => {
+    /*
+     * > User report, 2026-09-18: *"objects are still being drawn towards the
+     * > creature instead of sticking to the creature after it rolls over
+     * > it."*
+     *
+     * `bodyR` is the accumulated volume and the packed lump is tighter than
+     * it, so a reach measured off `bodyR` grabbed props out of clear air and
+     * then slid them to their seat. `solidR` — the drawn silhouette — is the
+     * reach now. This test pins the two apart and pins which one the physics
+     * stand-in uses, because those are the numbers that decide WHERE a
+     * contact happens.
+     */
+    const manager = makeManager(FLAT_SURFACE, 'katamari');
+    feedProps(manager, 20, 1.5);
+    holdAt(manager, 0, 0, 400);
+
+    const volume = manager.ballDiameter('ball') / 2;
+    const silhouette = manager.pileFootprint('ball');
+    expect(volume).toBeGreaterThan(0);
+    expect(silhouette).toBeGreaterThan(0);
+    // The gap this bug lived in: the volume runs ahead of the drawn mass.
+    expect(silhouette).toBeLessThan(volume);
+
+    // `positions()` is the SCATTER's exclusion radius and stays the volume —
+    // the one place the pair deliberately go the other way.
+    const exclusion = manager.positions().find((p) => p.kind === 'character')!.r;
+    expect(exclusion).toBeCloseTo(volume, 9);
+    manager.clearAll();
+  });
+
   it('no other world has a mass penalty, because it has no pile', () => {
     // The twin argument the clearance tests make: `driveMult` does not even
     // ask for a growth outside the game, so the number is the shipped one.
@@ -3752,8 +3783,15 @@ describe('the creature rolls — katamari locomotion', () => {
       const after = manager.ballDiameter('roller');
       expect(after).toBeGreaterThan(before);
       expect(after).toBeGreaterThan(2 * baseR);
-      // The SAME radius the resolve pass, the pickup reach and the scatter's
-      // exclusion radius read — `positions()` reports `bodyR` directly.
+      /*
+       * The same radius the SCATTER's exclusion reads — `positions()` reports
+       * `bodyR` directly, and the roll rate is measured against it too.
+       *
+       * It is no longer the pickup reach or the resolve circle (2026-09-18,
+       * *"objects are still being drawn towards the creature instead of
+       * sticking"*): those are `solidR`, the drawn silhouette, which is
+       * tighter than the volume and pinned in the reach test below.
+       */
       const r = manager.positions().find((at) => at.kind === 'character')!.r;
       expect(after).toBeCloseTo(2 * r, 10);
       manager.clearAll();

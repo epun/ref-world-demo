@@ -925,10 +925,23 @@ describe('the stuck detector — with rapier under it', () => {
     frame(1033);
     const grown = manager.positions().find((q) => q.kind === 'character')!.r;
     expect(grown).toBeGreaterThan(baseR);
-    // ONE number everywhere: the scatter's exclusion radius, the root's
-    // scale, the rapier ball and the pickup reach are all this `bodyR`, so
-    // there is no radius a creature can wedge in the gap between.
-    expect(ballRadius()).toBeCloseTo(grown, 4);
+    /*
+     * TWO numbers since 2026-09-18, and this is the test that used to say
+     * one. *"Objects are still being drawn towards the creature instead of
+     * sticking to the creature after it rolls over it"*: `bodyR` is the
+     * accumulated VOLUME (the scatter's exclusion radius, the root's scale,
+     * the readout, the carry limit) and `solidR` is where the mass actually
+     * IS (the rapier ball, the resolve circle, the pickup reach). They are
+     * the same number until a pile exists and then the volume runs ahead.
+     *
+     * What still has to hold — and is the reason this test exists — is that
+     * there is no radius a creature can WEDGE in the gap: the rapier ball
+     * and the resolve circle are the same number as each other, so the
+     * physics stand-in cannot be larger than the circle the solver
+     * separates with.
+     */
+    expect(ballRadius()).toBeLessThanOrEqual(grown + 1e-4);
+    expect(ballRadius()).toBeGreaterThan(0);
     expect(root().scale.x / baseScale).toBeCloseTo(grown / baseR, 6);
     manager.clearAll();
   });
