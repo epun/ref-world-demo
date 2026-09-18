@@ -204,21 +204,37 @@ export const HATCH_CLOSE_ZOOM = 2;
  * frame. Nothing on any other world reads it, and nothing on a projection
  * does.
  */
-export const PHONE_FOLLOW_ZOOM = 2.5;
+export const PHONE_FOLLOW_ZOOM = 3;
 
 /*
- * …2.5 and no longer 3.2 since 2026-09-18 (*"Let's also zoom out a bit on the
- * character on the mobile view it's too close"*).
+ * THE TUNING, in the order the user asked for it — the number itself was never
+ * the whole framing. What a phone actually runs at comes out of
+ * `followZoomFor`, which DIVIDES this by the mass radius, and that radius was
+ * `ballDiameter` (the accumulated volume, which runs far ahead of the packed
+ * pile) until 7c1e52b.
  *
- * The number itself was never the whole framing: what the phone actually ran
- * at came out of `followZoomFor`, which DIVIDED this by the mass radius — and
- * that radius was `ballDiameter`, the accumulated volume, which runs far ahead
- * of the packed pile. Framing on the drawn mass instead (7c1e52b) took the
- * effective zoom from 0.81 to 2.60 at rest on a 390x844 frame, and at 3.2 that
- * is a creature filling the glass. 2.5 gives 2.03 there and 0.95 while driving
- * — about a fifth wider than the fix alone, and still three times tighter than
- * the frame that was reported as too far out. The portrait phone's frame is
- * 7.4 world units across at rest.
+ * MEASURED on a 390x844 frame, as `followZoomFor` actually answers it — at
+ * rest and while driving, for a hatchling (0.95 u) and for a 2.2 u mass:
+ *
+ *   3.2, volume radius:     0.81 / 0.60  —  *"too far zoomed out"*
+ *   3.2, drawn mass:        3.20 / 1.66     2.60 / 1.22  —  *"too close"*
+ *   2.5:                    2.50 / 1.66     2.27 / 1.22
+ *   3.0:                    3.00 / 1.66     2.60 / 1.22
+ *
+ * 3.0 is the 2026-09-18 ask (*"we should zoom in more on the mobile view to
+ * the actual character by 20%"*) and it is exactly a fifth tighter WHERE THIS
+ * NUMBER BINDS, which is a creature at rest: 2.50 -> 3.00. It is not the whole
+ * story elsewhere and the table is the honest record of that — while driving,
+ * the ground fill holds the frame (1.66 at either number), and once there is a
+ * pile the creature's own HEADROOM caps it (2.60 at 3.0 and at 3.2 alike). So
+ * tightening the resting frame further is this constant's to give; tightening a
+ * LADEN or moving frame is `FOLLOW_HEADROOM` and `FOLLOW_FRAME_FILL`, which are
+ * about a topper leaving the glass and are not the same question.
+ *
+ * It stays under the headroom ceiling for a hatchling (3.35, `headroomZoom`),
+ * so the resting frame is still this number rather than the accident of a
+ * bound, and 3.4 is where a walking creature's topper left the glass on the
+ * 390x844 render (scratch/follow-frame-smoke.mjs).
  */
 
 /**
