@@ -199,10 +199,17 @@ const log = await page.evaluate(
       const after = m.ballDiameter(id);
       if (after > before + 1e-6) took.push({ r: Number(best.r.toFixed(3)), size: after });
     }
-    // Back to where it hatched, then let the springs settle so the shot is of
-    // a resting creature and not of a slide.
-    root.position.x = start.x;
-    root.position.z = start.z;
+    /*
+     * TO THE MIDDLE OF THE WORLD, not back to where it hatched. The
+     * projection's default view looks at the origin and the rig is not
+     * exposed to a page script (only `__refworldCamera`, the bare camera, is
+     * — src/world/scene.ts), so the only way to put the mass in frame is to
+     * bring the mass to the camera. The seats are relative to the root, so
+     * the whole pile travels with it; the ground pass fixes Y.
+     */
+    void start;
+    root.position.x = 0;
+    root.position.z = 0;
     for (let f = 0; f < 30; f++) await frame();
     const pos = m.positionOf(id);
     return {
@@ -218,21 +225,9 @@ const log = await page.evaluate(
 );
 console.log('pickups', JSON.stringify(log, null, 2));
 
-// Frame the creature: the projection's default view looks at the origin, and
-// a creature that hatched elsewhere needs the camera brought to it.
-if (VIEW === 'projection') {
-  await page.evaluate((id) => {
-    const m = window.__refworldCreatures;
-    const rig = window.__refworldCameraRig ?? window.__refworldCamera;
-    const pos = m.positionOf(id);
-    if (!pos || !rig) return;
-    if (typeof rig.lookAtGround === 'function') rig.lookAtGround(pos.x, pos.z);
-    else if (rig.target?.set) rig.target.set(pos.x, 0, pos.z);
-    if (typeof rig.setZoom === 'function') rig.setZoom(3.2);
-    else if ('zoom' in rig) rig.zoom = 3.2;
-  }, ID);
-  await page.waitForTimeout(8000);
-}
+// The creature is standing at the origin now, which the default view looks
+// at, so no camera work is needed — just let the frame settle.
+if (VIEW === 'projection') await page.waitForTimeout(8000);
 
 const name = VIEW === 'phone' ? 'laden-phone-390x844' : 'laden-projection-1280x800';
 const shot = join(HERE, `${name}.png`);
@@ -240,35 +235,13 @@ await page.screenshot({ path: shot });
 console.log('shot', shot);
 
 if (VIEW === 'projection') {
-  const box = await page.evaluate((id) => {
-    const m = window.__refworldCreatures;
-    const camera = window.__refworldCamera;
-    const pos = m.positionOf(id);
-    if (!pos || !camera) return null;
-    const v = new (window.__refworldThree?.Vector3 ?? Object)();
-    if (!v.set) return null;
-    v.set(pos.x, pos.y, pos.z).project(camera);
-    return {
-      x: ((v.x + 1) / 2) * window.innerWidth,
-      y: ((1 - v.y) / 2) * window.innerHeight,
-    };
-  }, ID);
-  if (box) {
-    const half = 260;
-    const crop = join(HERE, 'laden-projection-crop.png');
-    await page.screenshot({
-      path: crop,
-      clip: {
-        x: Math.max(0, Math.round(box.x - half)),
-        y: Math.max(0, Math.round(box.y - half)),
-        width: half * 2,
-        height: half * 2,
-      },
-    });
-    console.log('crop', crop);
-  } else {
-    console.log('no crop — camera or creature not readable');
-  }
+  // The origin projects to the middle of the frame, so the crop is fixed.
+  const crop = join(HERE, 'laden-projection-crop.png');
+  await page.screenshot({
+    path: crop,
+    clip: { x: 1280 / 2 - 260, y: 800 / 2 - 300, width: 520, height: 520 },
+  });
+  console.log('crop', crop);
 }
 
 await browser.close();
