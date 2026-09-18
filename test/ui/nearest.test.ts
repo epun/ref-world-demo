@@ -521,9 +521,11 @@ describe('the arrow is the phone’s, and only in the game', () => {
   it('is handed over behind the katamari flag, the tray and a creature', () => {
     // The window is "inside the same block", not a byte count: the corner's
     // live view landed between the two on 2026-09-17 (src/world/portrait.ts),
-    // which is a third thing handed over under the same three conditions.
+    // which is a third thing handed over under the same three conditions, and
+    // on 2026-09-18 its bounds gained the growth (*"the 3d representation is
+    // too small in the top left corner"*) and the note that says why.
     const site =
-      /if \(worldGame === 'katamari' && tray\?\.middle && myDrawerId\.length > 0\) \{[\s\S]{0,3600}?setNearest\(/;
+      /if \(worldGame === 'katamari' && tray\?\.middle && myDrawerId\.length > 0\) \{[\s\S]{0,4400}?setNearest\(/;
     expect(main).toMatch(site);
     expect([...main.matchAll(/setNearest\(/g)].length).toBe(1);
   });

@@ -1388,6 +1388,9 @@ export interface CreatureManager {
    * objects collect around the character"*). 0 before the shell opens.
    */
   drawnRadius(id: string): number;
+  /** …and how many times its own size it is DRAWN at — the root's scale,
+   * which is the clump's growth. 1 for a creature carrying nothing. */
+  growthOf(id: string): number;
   /**
    * TURN THE MAP'S GRAVITY OFF, OR BACK ON (user ask, 2026-09-17: *"i want a
    * zero gravity mode where i can hit g on the keyboard and it turns off
@@ -5700,6 +5703,21 @@ export function createCreatureManager(
 
     drawnRadius(id): number {
       return slots.get(id)?.character?.radius ?? 0;
+    },
+
+    growthOf(id): number {
+      /*
+       * HOW BIG THIS CREATURE IS DRAWN, as a multiple of its drawn size.
+       *
+       * The creature IS the ball (restored 2026-09-18), so the root's scale
+       * is the growth and everything drawn under it — the body, its stalk and
+       * topper, and the height the corner's live view has to frame — is that
+       * many times its own size. The corner asked for a constant height and a
+       * constant radius and therefore framed a grown ball as though it were a
+       * hatchling (user report: *"the 3d representation is too small in the
+       * top left corner"*).
+       */
+      return slots.get(id)?.clump?.growth() ?? 1;
     },
 
     setGravity(on): void {

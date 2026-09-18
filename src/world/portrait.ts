@@ -85,7 +85,7 @@ import { ISO_AZIMUTH, ISO_ELEVATION } from './camera';
  * items on the far rim stay inside the circle, and not so much that a
  * fifteen-metre ball reads as a speck in a big hole.
  */
-export const PORTRAIT_MARGIN = 0.12;
+export const PORTRAIT_MARGIN = 0.04;
 
 /**
  * [D] The smallest half-extent the view will use, world units.
@@ -97,7 +97,7 @@ export const PORTRAIT_MARGIN = 0.12;
  * ball's fit — which is what makes a hatchling's portrait and a hatchling's
  * first pickup the same picture at the same scale.
  */
-export const PORTRAIT_MIN_HALF = 2;
+export const PORTRAIT_MIN_HALF = 1.9;
 
 /**
  * [D] Where the camera looks, as a fraction of `PORTRAIT_MIN_HALF` above the

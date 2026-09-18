@@ -38,6 +38,63 @@ import {
 } from '../../src/world/portrait';
 import { MOTION } from '../../src/taste/tokens';
 
+describe('the corner frames what is DRAWN, at whatever size it is drawn', () => {
+  /*
+   * > User report, 2026-09-18, of a phone whose readout said 67 m while the
+   * > circle held a speck: *"the 3d representation is too small in the top
+   * > left corner."*
+   *
+   * The page handed the view a CONSTANT height and a constant radius, so a
+   * ball grown thirty times over was framed as though it were a hatchling —
+   * and since the creature IS the ball (restored the same day), the subject
+   * really is its growth times its own size. `src/main.ts` multiplies both by
+   * `CreatureManager.growthOf`; these are the two properties that makes the
+   * picture fill the circle either way.
+   */
+  it('grows its frame with the mass, so the share of the circle holds', () => {
+    const hatchling = portraitBoundsHalf({
+      height: 3.5,
+      radius: 0.9,
+      floor: 0,
+      ceiling: 0,
+      footprint: 0,
+    });
+    // The same creature at ten times its size — what a grown ball is.
+    const grown = portraitBoundsHalf({
+      height: 35,
+      radius: 9,
+      floor: 0,
+      ceiling: 0,
+      footprint: 0,
+    });
+    // The frame tracks it rather than staying put…
+    expect(grown).toBeGreaterThan(hatchling * 5);
+    /*
+     * …and the subject's share of the frame does not FALL as it grows, which
+     * is the thing that was wrong: against a constant frame the share shrank
+     * as 1/growth until the mass was a speck. The two are not identical
+     * because `PORTRAIT_MIN_HALF` gives the smallest creature a touch more
+     * paper, which is the floor doing its job.
+     */
+    expect((35 / 2) / grown).toBeGreaterThanOrEqual((3.5 / 2) / hatchling);
+    expect((35 / 2) / grown).toBeGreaterThan(0.9);
+  });
+
+  it('leaves only a hair of paper around the mass', () => {
+    // A hatchling is 3.5 tall, so half of it is 1.75 — and the frame it gets
+    // is that plus the margin and nothing else, so it fills the circle.
+    const half = portraitBoundsHalf({
+      height: 3.5,
+      radius: 0.9,
+      floor: 0,
+      ceiling: 0,
+      footprint: 0,
+    });
+    expect(1.75 / half).toBeGreaterThan(0.85);
+    expect(PORTRAIT_MARGIN).toBeLessThanOrEqual(0.06);
+  });
+});
+
 describe('the fit is a function of the drawn pile, and never smaller than it', () => {
   it('frames the creature itself when there is no ball', () => {
     expect(portraitHalfExtent(0)).toBeCloseTo(PORTRAIT_MIN_HALF * (1 + PORTRAIT_MARGIN), 10);
