@@ -134,7 +134,22 @@ export const DRIVE_SPEED = MAX_SPEED;
  * EVERY OTHER WORLD IS UNCHANGED: outside the game the multiplier is
  * `WANDER_SPEED_DEFAULT` and the walk cycle keeps the speeds it shipped with.
  */
-export const KATAMARI_SPEED_MUL = 9;
+export const KATAMARI_SPEED_MUL = 11;
+
+/*
+ * …ELEVEN since 2026-09-18 (*"The character is also moving too slow we should
+ * make them more agile"*), from nine. `MAX_SPEED × 11` = **13.2 u/s**, so the
+ * 528 u island is forty seconds across under a full push.
+ *
+ * THE SUBSTEP GUARD STILL COVERS IT, which is the only thing that bounds this
+ * number: `stepCreatures` clamps dt at 250 ms and advances at most
+ * `MAX_STEP_TRAVEL` (0.25 u) per substep over at most `MAX_SUBSTEPS` (16), so
+ * 4 u of travel per frame. A clamped frame at this ceiling is 3.3 u — 14 of
+ * the 16 substeps, with two spare — and 0.25 u is still well under the
+ * smallest thing on the map to tunnel through (a 0.5 u stone's footprint), so
+ * no step can leap one. Above about 14 u/s `MAX_SUBSTEPS` would have to rise
+ * with it; that is the wall this constant is heading for.
+ */
 
 /**
  * [D] Ceiling on the speed a VIEWER will extrapolate the host at, u/s.
@@ -180,7 +195,15 @@ export const FOLLOW_LEAD_MAX_MS = POSE_INTERVAL_MS;
  * creature crossing the island at 7.2 u/s reads as a world running away from
  * the person watching it, and nobody asked for faster ai.
  */
-export const KATAMARI_WALK_MUL = 3.75;
+export const KATAMARI_WALK_MUL = 5;
+
+/*
+ * …FIVE since 2026-09-18, from 3.75, on the same *"too slow … more agile"*
+ * ask: `MAX_SPEED × 5` = **6 u/s** for a creature carrying nothing, against
+ * the shipped walk's 1.68. A hatchling is the case where the mass penalty is
+ * exactly 1, so this number is felt in full the moment a phone joins — which
+ * is what "agile" is about.
+ */
 
 /**
  * [D] How much of a blocked push is turned along the wall instead.

@@ -3565,7 +3565,13 @@ describe('the creature rolls — katamari locomotion', () => {
      * 7.2 u/s and the island is fourteen seconds across instead of thirty.
      */
     const { manager } = rolling('katamari');
-    expect(KATAMARI_SPEED_MUL).toBe(9);
+    // Eleven since 2026-09-18 (*"moving too slow … more agile"*), from nine,
+    // from six, from three. The substep guard is what bounds it: a clamped
+    // 250 ms frame at 13.2 u/s is 3.3 u against a 4 u budget.
+    expect(KATAMARI_SPEED_MUL).toBe(11);
+    expect((MAX_SPEED * KATAMARI_SPEED_MUL * 250) / 1000).toBeLessThan(
+      MAX_STEP_TRAVEL * MAX_SUBSTEPS,
+    );
     expect(manager.wanderSpeed()).toBe(KATAMARI_SPEED_MUL);
     // A BALL: the rolling ceiling belongs to a creature with mass on it, and
     // a hatchling drives at the walk one (the blend, docs/PLAN.md §7.6).
@@ -3586,17 +3592,19 @@ describe('the creature rolls — katamari locomotion', () => {
     const speed = drivenSpeed(manager, 'roller', { x: 0, z: 1, mag: 1 });
     expect(speed).toBeCloseTo(ceiling, 2);
     /*
-     * AND THE SUBSTEP GUARD STILL COVERS IT. `stepCreatures` clamps dt at
-     * 250ms and advances at most MAX_STEP_TRAVEL (0.25u) per substep over at
-     * most MAX_SUBSTEPS (16) — 4u of travel per frame. At this speed a
-     * clamped frame is 2.7u (10.8 u/s after the 2026-09-16 "increase it by
-     * 50%" ask), ELEVEN of the sixteen substeps, and 0.25u is
+     * AND THE SUBSTEP GUARD STILL COVERS IT — the only thing that bounds this
+     * ceiling. `stepCreatures` clamps dt at 250ms and advances at most
+     * MAX_STEP_TRAVEL (0.25u) per substep over at most MAX_SUBSTEPS (16) — 4u
+     * of travel per frame. At this speed a clamped frame is 3.3u (13.2 u/s
+     * after the 2026-09-18 *"moving too slow … more agile"* ask, from 2.7u at
+     * 10.8), FOURTEEN of the sixteen substeps with two spare, and 0.25u is
      * still well under the smallest footprint on the map (a 0.5u stone), so
-     * no substep can leap a collider. Nothing needed raising.
+     * no substep can leap a collider. Above about 14 u/s MAX_SUBSTEPS has to
+     * rise with it, which is the wall this constant is heading for.
      */
     const clampedFrameTravel = (MAX_SPEED * KATAMARI_SPEED_MUL * 250) / 1000;
-    expect(clampedFrameTravel).toBeCloseTo(2.7, 10);
-    expect(Math.ceil(clampedFrameTravel / MAX_STEP_TRAVEL)).toBe(11);
+    expect(clampedFrameTravel).toBeCloseTo(3.3, 10);
+    expect(Math.ceil(clampedFrameTravel / MAX_STEP_TRAVEL)).toBe(14);
     expect(Math.ceil(clampedFrameTravel / MAX_STEP_TRAVEL)).toBeLessThanOrEqual(MAX_SUBSTEPS);
     manager.clearAll();
   });

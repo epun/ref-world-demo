@@ -204,7 +204,7 @@ export const HATCH_CLOSE_ZOOM = 2;
  * frame. Nothing on any other world reads it, and nothing on a projection
  * does.
  */
-export const PHONE_FOLLOW_ZOOM = 3;
+export const PHONE_FOLLOW_ZOOM = 2.5;
 
 /*
  * THE TUNING, in the order the user asked for it — the number itself was never
@@ -219,17 +219,21 @@ export const PHONE_FOLLOW_ZOOM = 3;
  *   3.2, volume radius:     0.81 / 0.60  —  *"too far zoomed out"*
  *   3.2, drawn mass:        3.20 / 1.66     2.60 / 1.22  —  *"too close"*
  *   2.5:                    2.50 / 1.66     2.27 / 1.22
- *   3.0:                    3.00 / 1.66     2.60 / 1.22
+ *   3.0:                    3.00 / 1.66     2.60 / 1.22  —  *"too close"*
  *
- * 3.0 is the 2026-09-18 ask (*"we should zoom in more on the mobile view to
- * the actual character by 20%"*) and it is exactly a fifth tighter WHERE THIS
- * NUMBER BINDS, which is a creature at rest: 2.50 -> 3.00. It is not the whole
- * story elsewhere and the table is the honest record of that — while driving,
- * the ground fill holds the frame (1.66 at either number), and once there is a
- * pile the creature's own HEADROOM caps it (2.60 at 3.0 and at 3.2 alike). So
- * tightening the resting frame further is this constant's to give; tightening a
- * LADEN or moving frame is `FOLLOW_HEADROOM` and `FOLLOW_FRAME_FILL`, which are
- * about a topper leaving the glass and are not the same question.
+ * The asks came in this order: *"zoom in more … by 20%"* (2.5 -> 3.0), then
+ * *"the camera is also too close … let's zoom out but still keep it focused on
+ * the character by 20%"* (3.0 -> 2.5, since the frame's width goes as 1/zoom).
+ * So this has been round the loop once and is back where it was, which is
+ * worth knowing before it is turned again: 2.5 and 3.0 are both inside the
+ * range where the answer is not this constant.
+ *
+ * What this number can and cannot do: it binds for a creature AT REST, and
+ * there it is exactly linear (2.50 against 3.00 for a hatchling). While
+ * driving the ground fill holds the frame — 1.66 at either value — and once
+ * there is a pile the creature's own HEADROOM caps it at 2.60. So a
+ * complaint about the frame while MOVING, or with a big ball, is
+ * `FOLLOW_FRAME_FILL` and `FOLLOW_HEADROOM`, not this.
  *
  * It stays under the headroom ceiling for a hatchling (3.35, `headroomZoom`),
  * so the resting frame is still this number rather than the accident of a

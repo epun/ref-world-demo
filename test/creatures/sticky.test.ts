@@ -833,11 +833,13 @@ describe('massSpeedFactor — a big ball is slower and a small one is quick', ()
     const baseR = 1.2;
     const vols = Array.from({ length: 10 }, () => 0.45 ** 3);
     const g = growth(baseR, vols);
-    expect(massSpeedFactor(g)).toBeLessThan(0.8);
-    expect(massSpeedFactor(g)).toBeGreaterThan(0.7);
+    // Measured 0.82 with the floor at 0.5 (2026-09-18, *"more agile"*): the
+    // shape of the loss is unchanged, the whole curve was lifted.
+    expect(massSpeedFactor(g)).toBeLessThan(0.85);
+    expect(massSpeedFactor(g)).toBeGreaterThan(0.75);
     // …and a ball the size the deployed build reached (51 m on a 2.4 m
     // creature) is down near the floor.
-    expect(massSpeedFactor(51 / 2.4)).toBeLessThan(0.4);
+    expect(massSpeedFactor(51 / 2.4)).toBeLessThan(MASS_SPEED_FLOOR * 1.1);
   });
 
   it('never returns a non-finite number', () => {

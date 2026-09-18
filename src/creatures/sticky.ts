@@ -1102,11 +1102,16 @@ export function growth(baseR: number, volumes: readonly number[]): number {
  *
  * A floor and not a straight `1/growth`: a ball that has eaten half the
  * island still has to be drivable, and a speed that keeps halving reads as a
- * frozen game rather than a heavy one. 0.35 of the ceiling is 3.8 u/s at the
- * rolling ceiling — still brisker than the walk this world shipped with, so
- * even the biggest ball crosses the island in under a minute.
+ * frozen game rather than a heavy one.
+ *
+ * HALF since 2026-09-18 (*"The character is also moving too slow we should
+ * make them more agile"*), from 0.35. At the raised rolling ceiling that is
+ * 6.6 u/s for the biggest ball in the room — brisker than a fresh creature's
+ * whole walk — so the penalty still reads as weight rather than as a
+ * punishment for playing well. The KNEE is untouched: what a big ball loses
+ * against a small one is the same shape it was, lifted.
  */
-export const MASS_SPEED_FLOOR = 0.35;
+export const MASS_SPEED_FLOOR = 0.5;
 
 /**
  * [D] The growth at which the falloff has given up HALF of what it has to
