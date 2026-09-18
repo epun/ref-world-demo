@@ -29,6 +29,9 @@ import {
   DROP_MIN_GAP_MS,
   growth,
   impactOf,
+  massSpeedFactor,
+  MASS_SPEED_FLOOR,
+  MASS_SPEED_KNEE,
   passLimit,
   PICKUP_RATIO,
   rollAxis,
@@ -789,5 +792,57 @@ describe('packSeatDirection — the mass fills in rather than spiking out', () =
     const once = packSeatDirection({ dirX: 0, dirY: 0, dirZ: 1, itemR: 0.4, selfR, seats });
     const twice = packSeatDirection({ dirX: 0, dirY: 0, dirZ: 1, itemR: 0.4, selfR, seats });
     expect(twice).toEqual(once);
+  });
+});
+
+describe('massSpeedFactor — a big ball is slower and a small one is quick', () => {
+  /**
+   * > User ask, 2026-09-18: *"when a ball gets big it should move slower.
+   * > smaller balls should move faster."*
+   */
+  it('is exactly 1 for a creature carrying nothing', () => {
+    // Load-bearing: the penalty is applied unconditionally, so a hatchling —
+    // and every creature in every world without the game — has to come out of
+    // it at the speed it shipped with, to the float.
+    expect(massSpeedFactor(1)).toBe(1);
+    expect(massSpeedFactor(0)).toBe(1);
+    expect(massSpeedFactor(-3)).toBe(1);
+  });
+
+  it('falls monotonically as the pile grows, and never below the floor', () => {
+    let previous = Infinity;
+    for (const g of [1, 1.1, 1.5, 2, 3, 5, 10, 50, 1000, 1e9]) {
+      const f = massSpeedFactor(g);
+      expect(f).toBeLessThanOrEqual(previous);
+      expect(f).toBeGreaterThan(MASS_SPEED_FLOOR - 1e-12);
+      expect(f).toBeLessThanOrEqual(1);
+      previous = f;
+    }
+    // The floor is approached and never reached — a ball is always drivable.
+    expect(massSpeedFactor(1e12)).toBeCloseTo(MASS_SPEED_FLOOR, 9);
+  });
+
+  it('gives up half of what it has to give at the knee', () => {
+    const half = MASS_SPEED_FLOOR + (1 - MASS_SPEED_FLOOR) / 2;
+    expect(massSpeedFactor(1 + MASS_SPEED_KNEE)).toBeCloseTo(half, 12);
+  });
+
+  it('is felt in the first handful of props, which is where the ask was', () => {
+    // The real growth curve: a 1.2 u creature eating 0.45 u props. Ten of
+    // them cost about a quarter of the speed (measured 0.76).
+    const baseR = 1.2;
+    const vols = Array.from({ length: 10 }, () => 0.45 ** 3);
+    const g = growth(baseR, vols);
+    expect(massSpeedFactor(g)).toBeLessThan(0.8);
+    expect(massSpeedFactor(g)).toBeGreaterThan(0.7);
+    // …and a ball the size the deployed build reached (51 m on a 2.4 m
+    // creature) is down near the floor.
+    expect(massSpeedFactor(51 / 2.4)).toBeLessThan(0.4);
+  });
+
+  it('never returns a non-finite number', () => {
+    for (const g of [NaN, Infinity, -Infinity]) {
+      expect(Number.isFinite(massSpeedFactor(g))).toBe(true);
+    }
   });
 });

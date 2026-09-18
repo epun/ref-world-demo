@@ -1094,6 +1094,68 @@ export function growth(baseR: number, volumes: readonly number[]): number {
 }
 
 /**
+ * [D] The slowest a huge ball ever gets, as a fraction of the speed the same
+ * creature had with nothing on it.
+ *
+ * > User ask, 2026-09-18: *"when a ball gets big it should move slower.
+ * > smaller balls should move faster."*
+ *
+ * A floor and not a straight `1/growth`: a ball that has eaten half the
+ * island still has to be drivable, and a speed that keeps halving reads as a
+ * frozen game rather than a heavy one. 0.35 of the ceiling is 3.8 u/s at the
+ * rolling ceiling — still brisker than the walk this world shipped with, so
+ * even the biggest ball crosses the island in under a minute.
+ */
+export const MASS_SPEED_FLOOR = 0.35;
+
+/**
+ * [D] The growth at which the falloff has given up HALF of what it has to
+ * give — the knee of the curve.
+ *
+ * 0.8 puts the interesting part of the curve where the interesting part of a
+ * session is. Measured against the real growth curve, a 1.2 u creature eating
+ * 0.45 u props:
+ *
+ *   props   0     10     20     30     40     60
+ *   ball    2.4u  3.5u   4.2u   4.7u   5.1u   5.7u
+ *   factor  1.00  0.76   0.69   0.65   0.62   0.59
+ *   rolling 10.8  8.24   7.44   7.00   6.72   6.34  u/s
+ *
+ * …and past that, 0.46 at growth 5, 0.40 at 10, 0.38 at the growth 21 of the
+ * 51 m ball on the deployed build — the floor approached and never crossed.
+ * A first ten props is a quarter of the speed gone, which is felt; 1.6 put
+ * the same loss forty props later, which was not.
+ */
+export const MASS_SPEED_KNEE = 0.8;
+
+/**
+ * How much of its speed a carrier keeps at a given `growth`. PURE, and 1 for
+ * a creature carrying nothing — so it can be applied unconditionally.
+ *
+ * > *"when a ball gets big it should move slower. smaller balls should move
+ * > faster."*
+ *
+ * A HYPERBOLA and not a power law, because what this has to be is monotone,
+ * exactly 1 at the start and bounded below: `floor + (1 - floor) / (1 + x)`
+ * where `x` is how far past its own size the pile has grown, in units of the
+ * knee. Every one of those three properties is load-bearing — 1 at the start
+ * keeps a hatchling exactly as fast as it shipped (and so keeps every other
+ * world's arithmetic untouched, since nothing there ever has a pile),
+ * monotone is what the user asked for, and the floor is what keeps a huge
+ * ball drivable.
+ *
+ * It is the SPEED and not the acceleration: the drive ceiling is what this
+ * scales, and the ζ ≥ 1 speed spring inside the agent is what turns a lower
+ * ceiling into an unhurried arrival at it. A big ball therefore also takes
+ * longer to get going, which is the half of the feel nobody had to ask for.
+ */
+export function massSpeedFactor(growth: number): number {
+  const past = Math.max(0, growth - 1) / MASS_SPEED_KNEE;
+  if (!Number.isFinite(past)) return MASS_SPEED_FLOOR;
+  return MASS_SPEED_FLOOR + (1 - MASS_SPEED_FLOOR) / (1 + past);
+}
+
+/**
  * Has this item been knocked off?
  *
  * Strictly greater, so an `attachmentStrength` of 0 still sheds on any real

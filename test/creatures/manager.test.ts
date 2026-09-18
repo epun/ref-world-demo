@@ -54,6 +54,8 @@ import {
   CLEARANCE_DIRS,
   CLEARANCE_PAD,
   CLEARANCE_RING,
+  MASS_SPEED_FLOOR,
+  massSpeedFactor,
   CLUMP_FIT,
   GROWTH_K,
   passLimit,
@@ -1326,6 +1328,53 @@ describe('ground clearance — a big ball rides on its whole footprint', () => {
     // the tail.
     expect(previous).toBeCloseTo(target, 4);
     manager.clearAll();
+  });
+
+  it('a big ball drives slower than a small one, and a hatchling as it shipped', () => {
+    /*
+     * > User ask, 2026-09-18: *"when a ball gets big it should move slower.
+     * > smaller balls should move faster."*
+     *
+     * `massSpeedFactor` is the law (src/creatures/sticky.ts) and this is the
+     * wiring: the drive ceiling a creature is actually given. `driveCeiling`
+     * reads the same `driveMult` the frame loop does, so the readout and the
+     * push cannot disagree.
+     */
+    const manager = makeManager(FLAT_SURFACE, 'katamari');
+    // Carrying nothing: the walk ceiling this world shipped with, exactly.
+    const hatchling = manager.driveCeiling('ball');
+    expect(hatchling).toBeCloseTo(DRIVE_SPEED * KATAMARI_WALK_MUL, 9);
+
+    // A few small things: it is a ball now, so the blend has taken it toward
+    // the rolling ceiling — faster than the walk, and that is the 2026-09-16
+    // ask still standing.
+    feedProps(manager, 4, 0.5);
+    holdAt(manager, 0, 0, 400);
+    const small = manager.driveCeiling('ball');
+    expect(small).toBeGreaterThan(hatchling);
+
+    // Then a lot more mass on the same creature: slower than the small ball.
+    feedProps(manager, 30, 2.5);
+    holdAt(manager, 0, 0, 400);
+    const big = manager.driveCeiling('ball');
+    expect(manager.ballDiameter('ball')).toBeGreaterThan(2 * small);
+    expect(big).toBeLessThan(small);
+    // …and never stopped: the floor keeps the biggest ball drivable, and
+    // still quicker than the walk a creature with nothing on it manages.
+    expect(big).toBeGreaterThan(DRIVE_SPEED * KATAMARI_SPEED_MUL * MASS_SPEED_FLOOR - 1e-9);
+    manager.clearAll();
+  });
+
+  it('no other world has a mass penalty, because it has no pile', () => {
+    // The twin argument the clearance tests make: `driveMult` does not even
+    // ask for a growth outside the game, so the number is the shipped one.
+    const plain = makeManager(FLAT_SURFACE, 'none');
+    const before = plain.driveCeiling('ball');
+    feedProps(plain, 20, 2.5);
+    holdAt(plain, 0, 0, 200);
+    expect(plain.driveCeiling('ball')).toBe(before);
+    expect(plain.ballDiameter('ball')).toBe(0);
+    plain.clearAll();
   });
 
   it('a hatchling gets the shipped placement — no lift, and no ring sampled', () => {
@@ -3286,7 +3335,21 @@ describe('the creature rolls — katamari locomotion', () => {
     expect(peak).toBeGreaterThan(0.99);
     // The walk has gone with it, and the ceiling is the rolling one.
     expect(manager.latestCharacter()!.gaitState!().amp).toBeLessThan(0.02);
-    expect(manager.driveCeiling('roller')).toBeCloseTo(MAX_SPEED * KATAMARI_SPEED_MUL, 4);
+    /*
+     * TIMES THE MASS PENALTY since 2026-09-18 (*"when a ball gets big it
+     * should move slower. smaller balls should move faster"*): the rolling
+     * ceiling is what a ball of THIS size is allowed, not a constant. The
+     * factor is `massSpeedFactor` of the creature's own growth, which is its
+     * ball radius over its drawn one — so the test computes what the rule
+     * says rather than restating a number that now moves with the pile.
+     */
+    const grown = (id: string): number => manager.growthOf(id);
+    expect(manager.driveCeiling('roller')).toBeCloseTo(
+      MAX_SPEED * KATAMARI_SPEED_MUL * massSpeedFactor(grown('roller')),
+      4,
+    );
+    // And it really is slower than the same ceiling without a pile on it.
+    expect(manager.driveCeiling('roller')).toBeLessThan(MAX_SPEED * KATAMARI_SPEED_MUL);
     manager.clearAll();
   });
 
@@ -3476,9 +3539,21 @@ describe('the creature rolls — katamari locomotion', () => {
     // A BALL: the rolling ceiling belongs to a creature with mass on it, and
     // a hatchling drives at the walk one (the blend, docs/PLAN.md §7.6).
     feed(manager, 'roller', 3, 8000);
-    expect(manager.driveCeiling('roller')).toBeCloseTo(MAX_SPEED * KATAMARI_SPEED_MUL, 4);
+    /*
+     * TIMES THE MASS PENALTY since 2026-09-18 (*"when a ball gets big it
+     * should move slower. smaller balls should move faster"*): the rolling
+     * ceiling is what a ball of THIS size is allowed, not a constant. The
+     * factor is `massSpeedFactor` of the creature's own growth, which is its
+     * ball radius over its drawn one — so the test computes what the rule
+     * says rather than restating a number that now moves with the pile.
+     */
+    const grown = (id: string): number => manager.growthOf(id);
+    const ceiling = MAX_SPEED * KATAMARI_SPEED_MUL * massSpeedFactor(grown('roller'));
+    expect(manager.driveCeiling('roller')).toBeCloseTo(ceiling, 4);
+    // The creature really travels at what the readout says — the whole point
+    // of the readout reading the same `driveMult` the loop does.
     const speed = drivenSpeed(manager, 'roller', { x: 0, z: 1, mag: 1 });
-    expect(speed).toBeCloseTo(MAX_SPEED * KATAMARI_SPEED_MUL, 2);
+    expect(speed).toBeCloseTo(ceiling, 2);
     /*
      * AND THE SUBSTEP GUARD STILL COVERS IT. `stepCreatures` clamps dt at
      * 250ms and advances at most MAX_STEP_TRAVEL (0.25u) per substep over at

@@ -75,6 +75,7 @@ import {
   CONTACT_PAD,
   DROP_MIN_GAP_MS,
   impactOf,
+  massSpeedFactor,
   shouldDrop,
   stageFor,
   STICKY,
@@ -1651,8 +1652,28 @@ export function createCreatureManager(
    * ζ ≥ 1 spring, so the speed arrives by sliding — there is no frame where
    * the stick suddenly means something different.
    */
-  const driveMult = (blend: number): number =>
-    katamari ? walkMult() + (wanderSpeedMult - walkMult()) * blend : wanderSpeedMult;
+  const driveMult = (blend: number, growth: number = 1): number =>
+    katamari
+      ? (walkMult() + (wanderSpeedMult - walkMult()) * blend) * massSpeedFactor(growth)
+      : wanderSpeedMult;
+
+  /**
+   * THE MASS PENALTY on a slot's own speed (user ask, 2026-09-18: *"when a
+   * ball gets big it should move slower. smaller balls should move faster"*).
+   *
+   * `massSpeedFactor` is the law (src/creatures/sticky.ts, pure and tested);
+   * this is the only place that reads a slot for it. It is exactly 1 for a
+   * creature carrying nothing, so a hatchling drives and wanders at the
+   * speeds it shipped with and no other world's arithmetic moves — nothing
+   * outside the game ever has a pile, and `driveMult` does not even ask.
+   *
+   * It is not on the wire and does not need to be: every page derives it from
+   * the growth, and the growth comes from the seats, which travel on the
+   * `stick` event. A viewer's extrapolation is bounded by
+   * `FOLLOW_LEAD_MAX_SPEED` as before — a ceiling over everything, unchanged.
+   */
+  const massMultOf = (slot: Slot): number =>
+    katamari ? (slot.clump?.growth() ?? 1) : 1;
 
   /** How fast a driven creature turns toward the push — tighter in a
    * katamari world, because it is going more than twice as fast there. */
@@ -2042,8 +2063,10 @@ export function createCreatureManager(
     const seed = behaviorSeed(slot.id);
     slot.agent = new BehaviorAgent(seed, personalityFromChoice(slot.personalityChoice, seed));
     // The WALK multiplier, not the rolling one: the wander is a walk
-    // wherever it happens (see `walkMult`).
-    slot.agent.setSpeedMultiplier(walkMult());
+    // wherever it happens (see `walkMult`) — times this creature's own mass
+    // penalty, which is 1 until it picks something up and is refreshed every
+    // frame by `growPass`.
+    slot.agent.setSpeedMultiplier(walkMult() * massSpeedFactor(massMultOf(slot)));
   }
 
   function beginHatch(slot: Slot, cause: 'timer' | 'forced'): void {
@@ -4172,6 +4195,16 @@ export function createCreatureManager(
       if (!slot.carriedBy) root.scale.setScalar(g);
       slot.bodyR = slot.baseR * g;
       /*
+       * AND HOW FAST ITS OWN WANDER IS ALLOWED TO BE (user ask, 2026-09-18:
+       * *"when a ball gets big it should move slower"*). The DRIVE ceiling
+       * asks `massMultOf` on the frame it is used, but an agent holds its
+       * multiplier, so the pass that already reads the growth is the one that
+       * refreshes it. Every frame and not on pickup: the slider can move the
+       * walk ceiling under it too, and this is one multiply on a number that
+       * is already in hand.
+       */
+      if (katamari) slot.agent?.setSpeedMultiplier(walkMult() * massSpeedFactor(g));
+      /*
        * AND WHETHER IT IS A BALL YET — here, because this is the pass that
        * runs on EVERY page (docs/PLAN.md §7.6). The blend is derived from the
        * clump's own item count and growth, both of which a viewer holds off
@@ -4904,7 +4937,7 @@ export function createCreatureManager(
             if (driven) slot.drivenAtMs = nowMs;
             const held =
               slot.drivenAtMs !== null && nowMs - slot.drivenAtMs < DRIVE_IDLE_MS;
-            const ceiling = DRIVE_SPEED * driveMult(rollOf(slot));
+            const ceiling = DRIVE_SPEED * driveMult(rollOf(slot), massMultOf(slot));
             const driveVx = driven ? driven.x * ceiling : 0;
             const driveVz = driven ? driven.z * ceiling : 0;
             // What the hand is asking for, and where the creature is really
@@ -5760,7 +5793,7 @@ export function createCreatureManager(
 
     driveCeiling(id): number {
       const slot = slots.get(id);
-      return slot ? DRIVE_SPEED * driveMult(rollOf(slot)) : 0;
+      return slot ? DRIVE_SPEED * driveMult(rollOf(slot), massMultOf(slot)) : 0;
     },
 
     ballDiameter(id): number {
@@ -5786,7 +5819,7 @@ export function createCreatureManager(
       // The slider moves the whole range: a katamari world's walk is a
       // fraction of it, every other world's only ceiling IS it.
       for (const slot of slots.values()) {
-        slot.agent?.setSpeedMultiplier(walkMult());
+        slot.agent?.setSpeedMultiplier(walkMult() * massSpeedFactor(massMultOf(slot)));
       }
     },
 
