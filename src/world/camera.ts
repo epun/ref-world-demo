@@ -190,18 +190,13 @@ export const HATCH_CLOSE_ZOOM = 2;
  * > have it in frame … at the start and when the user uses the joystick we
  * > should smoothly focus back on the character."*
  *
- * 3.2, from `HATCH_CLOSE_ZOOM`'s 2 (which the hatch close-in used and which
- * was itself the whole framing a phone ever got — a page that joined AFTER
- * its own shell opened never closed in at all and sat at zoom 1, which is the
- * frame the report was filed against). At 3.2 the portrait phone's frame is
- * 5.8 world units across, a hatchling's ~2.5 u silhouette is over 40% of it,
- * and its topper stands at three quarters of the half-frame with sky above it:
- * the creature, the paper it stands on and room for the first few things it
- * picks up. Tuned on the 390x844 render rather than argued — 3.4 cut the
- * topper off the top of the glass as soon as the creature walked
- * (scratch/follow-frame-smoke.mjs), which is what `headroomZoom` is for, and
- * this sits just inside that bound so the RESTING framing is this number and
- * not the accident of one.
+ * It began at 3.2, from `HATCH_CLOSE_ZOOM`'s 2 (which the hatch close-in used
+ * and which was itself the whole framing a phone ever got — a page that joined
+ * AFTER its own shell opened never closed in at all and sat at zoom 1, which
+ * is the frame the report was filed against). Tuned on the 390x844 render
+ * rather than argued: 3.4 cut the topper off the top of the glass as soon as
+ * the creature walked (scratch/follow-frame-smoke.mjs), which is what
+ * `headroomZoom` is for, and 3.2 sat just inside that bound.
  *
  * It is the FLOOR of the tight end and not the framing itself: the follow
  * zoom still widens with the pile and with however far the frame is behind a
@@ -209,7 +204,22 @@ export const HATCH_CLOSE_ZOOM = 2;
  * frame. Nothing on any other world reads it, and nothing on a projection
  * does.
  */
-export const PHONE_FOLLOW_ZOOM = 3.2;
+export const PHONE_FOLLOW_ZOOM = 2.5;
+
+/*
+ * …2.5 and no longer 3.2 since 2026-09-18 (*"Let's also zoom out a bit on the
+ * character on the mobile view it's too close"*).
+ *
+ * The number itself was never the whole framing: what the phone actually ran
+ * at came out of `followZoomFor`, which DIVIDED this by the mass radius — and
+ * that radius was `ballDiameter`, the accumulated volume, which runs far ahead
+ * of the packed pile. Framing on the drawn mass instead (7c1e52b) took the
+ * effective zoom from 0.81 to 2.60 at rest on a 390x844 frame, and at 3.2 that
+ * is a creature filling the glass. 2.5 gives 2.03 there and 0.95 while driving
+ * — about a fifth wider than the fix alone, and still three times tighter than
+ * the frame that was reported as too far out. The portrait phone's frame is
+ * 7.4 world units across at rest.
+ */
 
 /**
  * [D] KATAMARI ONLY — the ball radius `HATCH_CLOSE_ZOOM` is the right framing

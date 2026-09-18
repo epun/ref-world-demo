@@ -30,7 +30,7 @@
 import { BufferAttribute, Mesh, type BufferGeometry, type Object3D, type Scene } from 'three';
 import type { Chunk, ChunkKind } from './chunks';
 import type { PropKind } from './props';
-import type { Scatter } from './scatter';
+import { ROCK_SQUASH_Y, ROCK_WIDEN_XZ, type Scatter } from './scatter';
 
 /**
  * Where a chunk set comes from, when there is one.
@@ -132,8 +132,33 @@ const VARIATION_NEUTRAL = 0.5;
  * plain attribute on the source geometry (the scatter bakes it per vertex),
  * so it comes along with the clone and needs nothing.
  */
-function nonInstanced(source: BufferGeometry): BufferGeometry {
+/**
+ * The kind's own non-uniform DRAW SHAPE, as the scatter's instances carry it.
+ *
+ * > User report, 2026-09-18: *"Right now the objects shrink in size when the
+ * > character rolls over an object."*
+ *
+ * A rock standing in the world is drawn `ROCK_WIDEN_XZ` wider and
+ * `ROCK_SQUASH_Y` flatter than its own uniform scale (`scl.set(...)` in
+ * src/world/scatter.ts), and the scale a stuck or loose mesh is handed —
+ * `instanceRefs`' `scale`, which is what the `stick` event carries — is the
+ * UNIFORM part alone. So the moment a creature rolled over a stone the stone
+ * lost 12% of its width: the same object, drawn two ways.
+ *
+ * Baked into the geometry clone rather than put on the mesh's transform,
+ * because the transform is not this module's to keep: the clump writes
+ * `object.scale.setScalar(...)` on whatever it is given, every frame
+ * (src/creatures/clump.ts). The clone is already per (kind, variant) and
+ * shared by every item of that shape, and this shape is a constant of the
+ * kind, so baking it is exact and costs nothing per frame.
+ */
+const drawShape = (kind: PropKind): { xz: number; y: number } =>
+  kind === 'rock' ? { xz: ROCK_WIDEN_XZ, y: ROCK_SQUASH_Y } : { xz: 1, y: 1 };
+
+function nonInstanced(source: BufferGeometry, kind: PropKind): BufferGeometry {
   const geometry = source.clone();
+  const shape = drawShape(kind);
+  if (shape.xz !== 1 || shape.y !== 1) geometry.scale(shape.xz, shape.y, shape.xz);
   const count = geometry.getAttribute('position')?.count ?? 0;
   const variation = new Float32Array(count * 4).fill(VARIATION_NEUTRAL);
   geometry.setAttribute('aVariation', new BufferAttribute(variation, 4));
@@ -204,7 +229,7 @@ export function createLooseMeshes(
     if (cached) return cached;
     const source = scatter.geometryFor(kind, variant);
     if (!source) return null;
-    const built = nonInstanced(source);
+    const built = nonInstanced(source, kind);
     geometries.set(cacheKey, built);
     return built;
   };

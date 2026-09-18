@@ -49,6 +49,7 @@ import {
   followSpringLag,
   followZoomFor,
   frameHalfGround,
+  BALL_ZOOM_REF_R,
   headroomZoom,
   panLimitFor,
   zoomMinFor,
@@ -408,10 +409,15 @@ describe('the phone follow framing', () => {
     // what a portrait phone is bound by, and this is the number the constant
     // was tuned against on the render (scratch/follow-frame-smoke.mjs).
     const half = frameHalfGround(PHONE, PHONE_FOLLOW_ZOOM);
-    expect(1.9 / (2 * half)).toBeGreaterThan(0.3);
+    // A QUARTER since 2026-09-18 (*"Let's also zoom out a bit on the
+    // character on the mobile view it's too close"*): 2.5 rather than 3.2,
+    // which reads 0.257 here. The framing that was reported as too far out
+    // was under a tenth.
+    expect(1.9 / (2 * half)).toBeGreaterThan(0.22);
     expect(1.9 / (2 * half)).toBeLessThan(0.45);
-    // …and the framing the hatch used to leave was less than half as tight.
-    expect(frameHalfGround(PHONE, HATCH_CLOSE_ZOOM)).toBeGreaterThan(half * 1.5);
+    // …and still tighter than the framing the hatch close-in leaves, by a
+    // quarter rather than by half now the base is 2.5.
+    expect(frameHalfGround(PHONE, HATCH_CLOSE_ZOOM)).toBeGreaterThan(half * 1.2);
   });
 
   it('is the FLOOR of the follow zoom — nothing asks for tighter', () => {
@@ -439,10 +445,21 @@ describe('the phone follow framing', () => {
         const reach = bodyR + behind;
         const half = frameHalfGround(PHONE, at(bodyR, behind));
         expect(half).toBeGreaterThanOrEqual(reach - 1e-9);
-        // …and it is not wider than it needs to be: either the fill is met
-        // exactly or the tight framing is what bound it.
-        const exact = Math.abs(half * FOLLOW_FRAME_FILL - reach) < 1e-6;
-        expect(exact || at(bodyR, behind) === PHONE_FOLLOW_ZOOM).toBe(true);
+        /*
+         * …and it is not wider than it needs to be: the answer is the
+         * TIGHTEST of the rule's three bounds and never looser than all of
+         * them. The three are the mass-relative framing, the ground fill and
+         * the creature's own headroom; which one binds moves with the base
+         * zoom (at 2.5 the mass-relative term reaches cases that the fill
+         * used to own), so the test names them instead of pinning one.
+         */
+        const want =
+          bodyR > 0
+            ? PHONE_FOLLOW_ZOOM / Math.max(1, bodyR / BALL_ZOOM_REF_R)
+            : PHONE_FOLLOW_ZOOM;
+        const fit = (frameHalfGround(PHONE, 1) * FOLLOW_FRAME_FILL) / reach;
+        const tightest = Math.min(want, fit, headroomZoom(bodyR, behind));
+        expect(at(bodyR, behind)).toBeCloseTo(tightest, 12);
       }
     }
     // Monotone in both inputs — a frame that stepped would be a cut.
@@ -580,9 +597,10 @@ describe('the phone follow framing', () => {
       }
     }
     // …and the RESTING framing is the constant rather than the accident of
-    // this bound: a hatchling at rest sits just inside it.
+    // this bound: a hatchling at rest sits inside it with room to spare since
+    // the zoom-out (2.5 against a headroom ceiling of 3.35).
     expect(headroomZoom(0.95)).toBeGreaterThan(PHONE_FOLLOW_ZOOM);
-    expect(headroomZoom(0.95)).toBeLessThan(PHONE_FOLLOW_ZOOM * 1.15);
+    expect(headroomZoom(0.95)).toBeLessThan(PHONE_FOLLOW_ZOOM * 1.5);
     // It tightens with the lag and with the pile, and never the other way.
     expect(headroomZoom(0.95, 3)).toBeLessThan(headroomZoom(0.95));
     expect(headroomZoom(9)).toBeLessThan(headroomZoom(0.95));
