@@ -1237,22 +1237,18 @@ describe('ground clearance — a big ball rides on its whole footprint', () => {
     feedProps(manager, 3, 3);
     holdAt(manager, 6, -4, 400);
 
-    const bodyR = manager.ballDiameter('ball') / 2;
-    // A real ball, not a hatchling with a rounding error on it.
-    expect(bodyR).toBeGreaterThan(2.5);
-
-    const highest = highestUnderFootprint(slope, root.position.x, root.position.z, bodyR);
-    const pad = bodyR * CLEARANCE_PAD;
-    // The underside of the ball IS the root (`clump.group` at (0, baseR, 0),
-    // the root's scale the growth), so this is the ball clearing the highest
-    // ground under its footprint — with the pad still to spare.
-    expect(root.position.y).toBeGreaterThanOrEqual(highest);
-    expect(root.position.y + pad).toBeGreaterThanOrEqual(highest);
-    // …and the drawn sphere is clear of the paper across the whole disc,
-    // which is what the person reported.
-    expect(sphereClears(slope, root.position.y, root.position.x, root.position.z, bodyR)).toBe(
-      true,
-    );
+    /*
+     * THERE IS NO SPHERE any more (2026-09-17): the drawn mass is the packed
+     * items and the creature stands among them, so the question is not "is a
+     * ball of radius bodyR clear of the paper" but "does the creature clear
+     * the highest ground under the PILE'S OWN FOOTPRINT" — which is the
+     * anti-clipping rule the 2026-09-16 report asked for, measured on what is
+     * drawn instead of on a radius derived from the volume.
+     */
+    const footprintR = manager.pileFootprint('ball');
+    expect(footprintR).toBeGreaterThan(0);
+    const highest = highestUnderFootprint(slope, root.position.x, root.position.z, footprintR);
+    expect(root.position.y).toBeGreaterThanOrEqual(highest - 1e-9);
     // It is a CLEARANCE and not a float: the shipped placement would have
     // been the centre height, and that is where the downhill half went under.
     const centre = slope.sampleHeight(root.position.x, root.position.z);
@@ -1269,14 +1265,13 @@ describe('ground clearance — a big ball rides on its whole footprint', () => {
     // centre does not: the exact case a ball's middle knows nothing about.
     holdAt(manager, -0.1, 0, 400);
 
-    const bodyR = manager.ballDiameter('ball') / 2;
+    const footprintR = manager.pileFootprint('ball');
     expect(terrace.sampleHeight(root.position.x, root.position.z)).toBe(0);
-    const highest = highestUnderFootprint(terrace, root.position.x, root.position.z, bodyR);
+    const highest = highestUnderFootprint(terrace, root.position.x, root.position.z, footprintR);
     expect(highest).toBe(RISER);
-    expect(root.position.y).toBeGreaterThanOrEqual(RISER);
-    expect(
-      sphereClears(terrace, root.position.y, root.position.x, root.position.z, bodyR),
-    ).toBe(true);
+    // The pile's own footprint reaches over the step, so the creature stands
+    // at the step rather than letting the uphill items cut into it.
+    expect(root.position.y).toBeGreaterThanOrEqual(RISER - 1e-9);
     manager.clearAll();
   });
 
@@ -1287,10 +1282,27 @@ describe('ground clearance — a big ball rides on its whole footprint', () => {
     // One frame to write the pose and the growth, so the target the spring is
     // chasing is the one this asserts against.
     holdAt(manager, 6, -4, 1);
-    const bodyR = manager.ballDiameter('ball') / 2;
-    const target = clearanceLift(root.position.x, root.position.z, bodyR, (x, z) =>
-      slope.sampleHeight(x, z),
-    );
+    /*
+     * The target the spring is chasing, and it is TWO measurements of the
+     * drawn pile rather than one radius (2026-09-17, the *"characters are
+     * floating"* report): the sit is what is under the creature's feet
+     * (`pileFloor`, ≤ 0) and the rise is the ground under the pile's
+     * FOOTPRINT (`pileFootprint`). Neither is `bodyR`.
+     */
+    /*
+     * The only term is the ground under the pile's FOOTPRINT. The pile never
+     * contributes a sit any more (2026-09-17: the creature's origin is the
+     * ground), and this fixture hand-seats an item AT the centre — a seat the
+     * packer cannot produce — precisely so that a low seat is on the table
+     * and still lifts nothing.
+     */
+    expect(manager.pileFloor('ball')).toBeLessThan(0);
+    const footprint = manager.pileFootprint('ball');
+    expect(footprint).toBeGreaterThan(0);
+    const target =
+      footprintRise(root.position.x, root.position.z, footprint, (x, z) =>
+        slope.sampleHeight(x, z),
+      );
     expect(target).toBeGreaterThan(1);
 
     let previous = manager.groundLift('ball');
@@ -1393,18 +1405,156 @@ describe('ground clearance — a big ball rides on its whole footprint', () => {
       manager.drive('ball', { x: 1, z: 0, mag: 1 });
       now += 33;
       manager.update(33, now);
-      const bodyR = manager.ballDiameter('ball') / 2;
-      const highest = highestUnderFootprint(slope, root.position.x, root.position.z, bodyR);
-      expect(root.position.y).toBeGreaterThanOrEqual(highest - 1e-9);
-      expect(
-        sphereClears(slope, root.position.y, root.position.x, root.position.z, bodyR),
-      ).toBe(true);
+      // Never under the paper beneath it while it MOVES: the ring rule is a
+      // resting rule and the lift eases over `MOTION.primaryMs`, so a ball
+      // driven uphill is always a hair behind its own target (the frame this
+      // caught was 2.8e-5 short of it). The resting case is pinned below.
+      expect(root.position.y).toBeGreaterThanOrEqual(
+        slope.sampleHeight(root.position.x, root.position.z) - 1e-9,
+      );
       travelled += Math.abs(root.position.x - previousX);
       previousX = root.position.x;
     }
-    // It really travelled, and it really is a ball.
+    // It really travelled, and it really is a mass.
     expect(travelled).toBeGreaterThan(10);
     expect(bodyR0).toBeGreaterThan(2.5);
+    /*
+     * AT REST, wherever it ended up: the creature stands at or above the
+     * highest ground under the pile's own FOOTPRINT — the drawn mass's
+     * measurement, not a radius off the volume — which is the 2026-09-16
+     * *"glitching through the map floor"* rule on the new geometry.
+     */
+    manager.drive('ball', { x: 0, z: 0, mag: 0 });
+    for (let f = 0; f < 200; f++) {
+      now += 33;
+      manager.update(33, now);
+    }
+    const restingFootprint = manager.pileFootprint('ball');
+    expect(restingFootprint).toBeGreaterThan(0);
+    expect(root.position.y).toBeGreaterThanOrEqual(
+      highestUnderFootprint(slope, root.position.x, root.position.z, restingFootprint) - 1e-6,
+    );
+    manager.clearAll();
+  });
+
+  it('a pile packed to ONE SIDE leaves the creature on the ground', () => {
+    /*
+     * > User report, 2026-09-17, with a projection screenshot of two blue
+     * > creatures carrying a barrel and a crate each and hovering a body
+     * > height over the meadow: *"this is incorrect, the character should be
+     * > on the ground."*
+     *
+     * This is that picture. The items pack along the direction they were
+     * struck from, so a creature that rolled into two small things has them
+     * BESIDE it and nothing underneath — and the lift used to be the radial
+     * reach less the creature's own radius, which is exactly the gap in the
+     * screenshot. The sit reads the pile's LOWEST POINT now, so the answer
+     * here is zero: feet on the paper.
+     */
+    const manager = makeManager(FLAT_SURFACE, 'katamari');
+    const root = rootOf(manager);
+    const baseR = measureBodyRadius(manager.latestCharacter()!);
+    // Small enough to sit clear of the creature's underside: seated level
+    // with its middle, an item of radius r has its bottom at `baseR - r`.
+    const r = 0.5;
+    expect(r).toBeLessThan(baseR);
+    for (let i = 0; i < 3; i++) {
+      const out = baseR + r * CLUMP_FIT + i * r * 2;
+      manager.applyStick({
+        id: 'ball',
+        item: `rock:0:${i}.00:0.00`,
+        kind: 'rock',
+        variant: 0,
+        scale: r,
+        r,
+        // Straight out along +x, level with the creature's middle: a pile
+        // entirely to one side of it.
+        ox: out,
+        oy: 0,
+        oz: 0,
+        qx: 0,
+        qy: 0,
+        qz: 0,
+        qw: 1,
+      });
+    }
+    holdAt(manager, 4, 4, 240);
+
+    // There is a real pile…
+    expect(manager.pileFootprint('ball')).toBeGreaterThan(baseR);
+    expect(manager.ballDiameter('ball') / 2).toBeGreaterThan(baseR);
+    // …and nothing under the feet, so no lift at all.
+    expect(manager.pileFloor('ball')).toBe(0);
+    expect(manager.groundLift('ball')).toBe(0);
+    expect(root.position.y).toBe(FLAT_SURFACE.sampleHeight(4, 4));
+    manager.clearAll();
+  });
+
+  it('an item seated UNDER the feet is not a plinth — the creature stays down', () => {
+    const manager = makeManager(FLAT_SURFACE, 'katamari');
+    const root = rootOf(manager);
+    const baseR = measureBodyRadius(manager.latestCharacter()!);
+    const r = 0.8;
+    // Straight DOWN from the pile's centre — which is the creature's middle,
+    // so this one really is beneath it.
+    manager.applyStick({
+      id: 'ball',
+      item: 'rock:0:9.00:0.00',
+      kind: 'rock',
+      variant: 0,
+      scale: r,
+      r,
+      ox: 0,
+      oy: -(baseR + r * CLUMP_FIT),
+      oz: 0,
+      qx: 0,
+      qy: 0,
+      qz: 0,
+      qw: 1,
+    });
+    holdAt(manager, 4, 4, 240);
+
+    /*
+     * THE CREATURE'S ORIGIN IS THE GROUND (user ruling, 2026-09-17, said three
+     * times — the last with a projection shot of a creature perched on top of
+     * the tank it had just picked up: *"make sure that the characters aren't
+     * floating in space"*). This seat is `baseR + r × CLUMP_FIT` below the
+     * creature's middle, so its bottom is `r × CLUMP_FIT + r` under the feet,
+     * and it used to lift the creature by exactly that — a plinth. It does not
+     * any more: the packer can no longer produce such a seat
+     * (`clumpLocalOffset` flattens a downward contact and clamps the height),
+     * and one arriving from anywhere else — a hand-placed fixture, a page
+     * built before this rule — is not allowed to stand a creature up on it.
+     */
+    const under = r * CLUMP_FIT + r;
+    expect(manager.pileFloor('ball')).toBeCloseTo(-under, 6);
+    expect(manager.groundLift('ball')).toBe(0);
+    expect(root.position.y).toBeCloseTo(FLAT_SURFACE.sampleHeight(4, 4), 9);
+    manager.clearAll();
+  });
+
+  it('on the flat the creature stands ON the paper, whatever it is carrying', () => {
+    /*
+     * THE FLAT NUMBER (2026-09-17, the third *"characters are floating"*
+     * report). On a slope the lift is the ground's own rise under the pile's
+     * footprint; take the hill away and NOTHING is left — the creature's
+     * origin is the ground plane, carrying six props or none.
+     */
+    const manager = makeManager(ramped, 'katamari');
+    const root = rootOf(manager);
+    feedProps(manager, 6, 2);
+    // Flat ground, well clear of the riser, and settled.
+    holdAt(manager, -20, 0, 240);
+    const ground = ramped.sampleHeight(-20, 0);
+    // This fixture hand-seats its props ON the creature's centre, so there is
+    // mass below the feet — a seat the packer cannot make, and still not a
+    // plinth.
+    expect(manager.pileFloor('ball')).toBeLessThan(0);
+    expect(manager.groundLift('ball')).toBe(0);
+    expect(root.position.y).toBeCloseTo(ground, 9);
+    // The footprint is real, so the ring term was live and simply found flat
+    // ground.
+    expect(manager.pileFootprint('ball')).toBeGreaterThan(0);
     manager.clearAll();
   });
 
@@ -1414,8 +1564,10 @@ describe('ground clearance — a big ball rides on its whole footprint', () => {
     feedProps(manager, 3, 3);
     // Settled well below the riser, where the ring reaches nothing.
     holdAt(manager, -20, 0, 200);
-    const bodyR = manager.ballDiameter('ball') / 2;
-    expect(manager.groundLift('ball')).toBeCloseTo(bodyR * CLEARANCE_PAD, 3);
+    // On the flat there is no lift at all: the creature's origin is the
+    // ground (2026-09-17). What follows is the RING term alone, climbing.
+    const flatLift = 0;
+    expect(manager.groundLift('ball')).toBe(flatLift);
 
     // Then walk it up and over, through the pose path at a walking pace.
     const heights: number[] = [];
@@ -1425,20 +1577,14 @@ describe('ground clearance — a big ball rides on its whole footprint', () => {
       now += 33;
       manager.update(33, now);
       heights.push(root.position.y);
-      /*
-       * THE DRAWN SPHERE IS CLEAR OF THE PAPER on every frame of the climb —
-       * which is the report, and it is the right assertion while the ball is
-       * MOVING. The ring rule itself (root at or above the highest ring
-       * sample) is a resting rule: the lift eases over `MOTION.primaryMs`, so
-       * a ball climbing a riser is always a little behind its own target, and
-       * a spring that arrived instantly would be the step the motion law
-       * forbids. The sphere has the slack for it — at the ring the surface is
-       * `0.4 × bodyR` above the underside — and the rest of this block pins
-       * the resting case exactly.
-       */
-      expect(
-        sphereClears(ramped, root.position.y, root.position.x, root.position.z, bodyR),
-      ).toBe(true);
+      // Never below the ground under its own centre while it climbs. The ring
+      // rule is a RESTING rule — the lift eases over `MOTION.primaryMs`, so a
+      // creature crossing a riser is always a little behind its own target,
+      // and a spring that arrived instantly would be the step the motion law
+      // forbids. The resting case is pinned after the loop.
+      expect(root.position.y).toBeGreaterThanOrEqual(
+        ramped.sampleHeight(root.position.x, root.position.z) - 1e-9,
+      );
     }
 
     /*
@@ -1454,9 +1600,9 @@ describe('ground clearance — a big ball rides on its whole footprint', () => {
     for (let i = 1; i < heights.length; i++) {
       biggest = Math.max(biggest, Math.abs(heights[i]! - heights[i - 1]!));
     }
-    // On the upper tread, clear of it, with the pad and nothing else.
+    // On the upper tread, standing on it, with no lift left over.
     expect(root.position.y).toBeGreaterThanOrEqual(RISER);
-    expect(manager.groundLift('ball')).toBeCloseTo(bodyR * CLEARANCE_PAD, 3);
+    expect(manager.groundLift('ball')).toBeCloseTo(flatLift, 3);
     // And the whole climb was a slide: no single frame moved it a twentieth
     // of the riser it climbed (TASTE §2.1 — no hard cuts, confidence 1.00).
     expect(biggest).toBeLessThan(RISER / 20);
@@ -1512,6 +1658,418 @@ describe('ground clearance — a big ball rides on its whole footprint', () => {
     expect(host.groundLift('ball')).toBeGreaterThan(1);
     host.clearAll();
     viewer.clearAll();
+  });
+
+  /*
+   * ── THE ITEMS ARE THE MASS ─────────────────────────────────────────────
+   *
+   * > User report, 2026-09-17: *"currently there is a bug where the
+   * > characters are floating in space."*
+   *
+   * The creature came out of the pile that morning (the `rider` node: it
+   * keeps its drawn size), and what it came out standing on was a sphere
+   * nothing drew — the items are seated on the surface of a ball of radius
+   * `bodyR` and the creature was a diameter above the ground, with a dozen
+   * props and nothing else in between.
+   *
+   * > And then, the same day: *"the objects that collect around the creatures
+   * > sit under the creature. I think the creature should be at the center,
+   * > and then it should just be a giant rolling mass. We still have a glitch
+   * > where the creature is sitting on the Z-index above whatever objects they
+   * > collect. They should be at the center of the sphere of the objects."*
+   *
+   * The pole seat went first (the creature moved to the middle), and then the
+   * SHELL went too:
+   *
+   * > *"the character should be the object that the items stick to."*
+   *
+   * So there is no sphere at all. The character, at its drawn size, is the
+   * body things stick to; the visible mass is the ITEMS, packed against the
+   * creature and against each other (`packSeatDistance`,
+   * src/creatures/sticky.ts, and the packing's own pins in clump.test.ts).
+   * These pin what that means through the manager: the creature is at the
+   * middle of its pile at its drawn size, every item is on it or on another
+   * item, and `bodyR` — the game's size, which the readout and the pickup
+   * reach run on — is still the volume's and is reported beside the packed
+   * pile's own outer radius.
+   */
+
+  /** The manager's own `behaviorSeed`, which is what the float reads — the
+   * hash is private, so this is the same four lines. */
+  function seedOf(id: string): number {
+    let h = 2166136261;
+    for (let i = 0; i < id.length; i++) {
+      h ^= id.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return h >>> 0;
+  }
+
+  /** A world-space scale: the object's own, through every parent. */
+  function worldRadius(object: Object3D): number {
+    object.updateWorldMatrix(true, false);
+    return object.getWorldScale(new Vector3()).x;
+  }
+
+  function worldPos(object: Object3D): Vector3 {
+    object.updateWorldMatrix(true, false);
+    return object.getWorldPosition(new Vector3());
+  }
+
+  /**
+   * Seat `count` items of radius `r` ON THE CREATURE, each from a different
+   * side, the way the packing seats them: `baseR + r × CLUMP_FIT` out along
+   * its own direction, in clump-local units (which is what the `stick` event
+   * carries — world units over the growth the pile had on arrival, and with
+   * one item per direction that growth is 1 for all of them because the
+   * MANAGER's own pass computes each offset before the item joins).
+   *
+   * `feedProps` above seats everything at the origin, which is fine for a
+   * size and says nothing about where a thing sits.
+   */
+  function seatOnBall(
+    manager: ReturnType<typeof createCreatureManager>,
+    count: number,
+    r: number,
+  ): { baseR: number; r: number } {
+    const baseR = manager.ballDiameter('ball') / 2;
+    const reach = baseR + r * CLUMP_FIT;
+    for (let i = 0; i < count; i++) {
+      // Spread around the equator, so no two share a direction and each one
+      // packs against the creature rather than against another item.
+      const th = (i / count) * Math.PI * 2;
+      /*
+       * …divided by the growth the pile has when THIS one arrives, because
+       * that is what the deciding page does: it computes the offset against
+       * the live growth and only then seats the item, and the clump converts
+       * the offset back to world with the same pre-arrival number
+       * (src/creatures/clump.ts `add`). A helper that used one growth for all
+       * of them would be placing the later ones several metres out.
+       */
+      const g = Math.cbrt(1 + (GROWTH_K * i * r * r * r) / (baseR * baseR * baseR));
+      const local = reach / g;
+      manager.applyStick({
+        id: 'ball',
+        item: `rock:0:${i}.00:0.00`,
+        kind: 'rock',
+        variant: 0,
+        scale: r,
+        r,
+        ox: Math.cos(th) * local,
+        oy: 0,
+        oz: Math.sin(th) * local,
+        qx: 0,
+        qy: 0,
+        qz: 0,
+        qw: 1,
+      });
+    }
+    return { baseR, r };
+  }
+
+  it('packs the items onto the creature, with the creature at the centre', () => {
+    const manager = makeManager(FLAT_SURFACE, 'katamari');
+    const root = rootOf(manager);
+    const seated = seatOnBall(manager, 3, 3);
+    holdAt(manager, 4, 4, 400);
+
+    const bodyR = manager.ballDiameter('ball') / 2;
+    expect(bodyR).toBeGreaterThan(2.5);
+    // The GAME's radius is the volume's and is unchanged by the packing: three
+    // items of r 3 on a ~0.9 creature is a `bodyR` over 2.5 whatever the pile
+    // looks like.
+    expect(seated.baseR).toBeLessThan(1.5);
+
+    // NOTHING DRAWS A BALL. The rig is the clump, the rider and what is
+    // seated — there is no sphere in it (2026-09-17).
+    expect(root.getObjectByName('ball')).toBeUndefined();
+    const clump = root.getObjectByName('clump');
+    expect(clump).toBeDefined();
+
+    /*
+     * THE ITEMS ARE PACKED ON THE CREATURE. Each of the three was struck from
+     * a different side, so each sits on the character itself: its distance
+     * from the pile's centre is `baseR + itemR × CLUMP_FIT`, in WORLD units,
+     * whatever the growth has done to the root.
+     */
+    expect(clump!.children.length).toBe(3);
+    const base = manager.ballDiameter('ball');
+    expect(base).toBeGreaterThan(0);
+    for (const item of clump!.children) {
+      const out = worldPos(item).distanceTo(worldPos(clump!));
+      expect(out).toBeCloseTo(seated.baseR + seated.r * CLUMP_FIT, 3);
+      // …which is well INSIDE the game's own radius: the packed pile of three
+      // is smaller than the volume's `bodyR`, and that is the drift this
+      // change accepts (the readout measures the game, not the silhouette).
+      expect(out).toBeLessThan(bodyR);
+    }
+
+    /*
+     * THE CREATURE STANDS ON THE GROUND, at its drawn size, and the pile is
+     * packed around its MIDDLE — `baseR` above its feet in world units, which
+     * is where `clump.group` sits at every pile size. It is not lifted to the
+     * centre of anything: there is no sphere any more, so a creature held a
+     * grown radius up would be the floating report all over again.
+     */
+    const rider = root.getObjectByName('rider');
+    expect(rider).toBeDefined();
+    const feet = worldPos(rider!);
+    expect(rider!.position.y).toBe(0);
+    expect(feet.y).toBeCloseTo(root.position.y, 9);
+    expect(worldPos(clump!).y - feet.y).toBeCloseTo(seated.baseR, 4);
+    // On the paper, plus only the clearance the footprint asks for.
+    expect(root.position.y).toBeGreaterThanOrEqual(FLAT_SURFACE.sampleHeight(4, 4));
+    expect(root.position.y - FLAT_SURFACE.sampleHeight(4, 4)).toBeCloseTo(
+      manager.groundLift('ball'),
+      9,
+    );
+    /*
+     * AND NOTHING IS DRAWN OVER ANYTHING (the *"z-index"* half of the earlier
+     * report). With no shell in front of it the creature needs no depth trick
+     * to be seen, and an item between it and the camera is genuinely in front
+     * of it: every material in the rig keeps the depth test and the default
+     * render order.
+     */
+    const drawn: { depthTest: boolean; depthWrite: boolean; renderOrder: number }[] = [];
+    root.traverse((o) => {
+      const mesh = o as Mesh & { material?: { depthTest?: boolean; depthWrite?: boolean } };
+      if (!mesh.material) return;
+      drawn.push({
+        depthTest: mesh.material.depthTest !== false,
+        depthWrite: mesh.material.depthWrite !== false,
+        renderOrder: o.renderOrder,
+      });
+    });
+    expect(drawn.length).toBeGreaterThan(1);
+    for (const entry of drawn) {
+      expect(entry.depthTest).toBe(true);
+      expect(entry.depthWrite).toBe(true);
+      expect(entry.renderOrder).toBe(0);
+    }
+    // The drawn creature is still its drawn size through all of it (the
+    // 2026-09-17 rider ask — this fix must not undo it).
+    expect(worldRadius(rider!)).toBeCloseTo(1, 6);
+    manager.clearAll();
+  });
+
+  it('never leaves the ground as its pile grows', () => {
+    /*
+     * The creature's height is not a function of the pile any more. It was
+     * twice — the ball's pole, then the ball's centre — and with the items
+     * packed onto the character there is no sphere to ride: it stands on the
+     * paper at its drawn size on every frame of the roll ramp, and only the
+     * footprint clearance ever lifts it.
+     */
+    const manager = makeManager(FLAT_SURFACE, 'katamari');
+    const root = rootOf(manager);
+    seatOnBall(manager, 3, 3);
+    const clump = root.getObjectByName('clump')!;
+    let frames = 0;
+    holdAt(manager, 4, 4, 200, () => {
+      const rider = root.getObjectByName('rider')!;
+      expect(rider.position.y).toBe(0);
+      expect(worldPos(rider).y - root.position.y).toBeCloseTo(0, 9);
+      // …and the pile stays around its middle while the blend runs.
+      expect(worldPos(clump).y - worldPos(rider).y).toBeCloseTo(
+        manager.ballDiameter('ball') / (2 * root.scale.x),
+        4,
+      );
+      frames++;
+    });
+    expect(frames).toBe(200);
+    expect(manager.rollBlend('ball')).toBeGreaterThan(0.99);
+    expect(root.position.y - FLAT_SURFACE.sampleHeight(4, 4)).toBeCloseTo(
+      manager.groundLift('ball'),
+      9,
+    );
+    manager.clearAll();
+  });
+
+  it('a creature carrying nothing stands on the ground with nothing on it', () => {
+    const manager = makeManager(FLAT_SURFACE, 'katamari');
+    const root = rootOf(manager);
+    holdAt(manager, 4, 4, 200);
+    // Nothing on it, so nothing rolls and nothing is seated: an empty clump
+    // and a creature standing on the paper.
+    expect(manager.rollBlend('ball')).toBe(0);
+    expect(root.getObjectByName('clump')!.children.length).toBe(0);
+    // Its FEET are on the surface — the placement that shipped, to the float.
+    const rider = root.getObjectByName('rider')!;
+    expect(worldPos(rider).y).toBeCloseTo(FLAT_SURFACE.sampleHeight(4, 4), 9);
+    expect(root.position.y).toBe(FLAT_SURFACE.sampleHeight(4, 4));
+    manager.clearAll();
+  });
+
+  it('and every other world has no pile at all', () => {
+    const plain = makeManager(FLAT_SURFACE, 'none');
+    seatOnBall(plain, 3, 3);
+    holdAt(plain, 4, 4, 200);
+    // No clump and no rider — the game's own gate, unchanged.
+    expect(rootOf(plain).getObjectByName('clump')).toBeUndefined();
+    expect(rootOf(plain).getObjectByName('rider')).toBeUndefined();
+    plain.clearAll();
+  });
+
+
+  /*
+   * ── ZERO GRAVITY, as the manager presents it ───────────────────────────
+   *
+   * > User ask, 2026-09-17: *"i want a zero gravity mode where i can hit g on
+   * > the keyboard and it turns off gravity for the map. characters should
+   * > float in space."*
+   *
+   * One bit arrives (a `gravity` scene event, through the replay driver); the
+   * height is DERIVED here, on every page, from the bit, the slot id and this
+   * page's own clock (src/creatures/gravity.ts). So these pin the same three
+   * things the ground clearance above is pinned on: it is applied in the one
+   * ground pass, it arrives and leaves by sliding, and it does not exist in a
+   * world without the game.
+   */
+  it('lifts a creature off the ground, and settles it back', () => {
+    const manager = makeManager(FLAT_SURFACE, 'katamari');
+    const root = rootOf(manager);
+    holdAt(manager, 4, 4, 60);
+    // On the ground, exactly as it shipped.
+    expect(manager.gravity()).toBe(true);
+    expect(manager.floatOffset('ball')).toBe(0);
+    expect(root.position.y).toBe(0);
+
+    manager.setGravity(false);
+    expect(manager.gravity()).toBe(false);
+    // …and it is a SLIDE: the blend only ever rises toward 1, never past it.
+    let previous = manager.floatBlend('ball');
+    holdAt(manager, 4, 4, 200, () => {
+      const blend = manager.floatBlend('ball');
+      expect(blend).toBeGreaterThanOrEqual(previous - 1e-12);
+      expect(blend).toBeLessThanOrEqual(1 + 1e-9);
+      previous = blend;
+    });
+    expect(previous).toBeGreaterThan(0.99);
+    // Up in the air, at its own altitude, and the root is where the float put
+    // it — the ground pass, not a second writer.
+    const seed = seedOf('ball');
+    const offset = manager.floatOffset('ball');
+    expect(offset).toBeGreaterThan(FLOAT_LIFT_MIN - FLOAT_BOB);
+    expect(offset).toBeLessThan(FLOAT_LIFT_MIN + FLOAT_LIFT_RANGE + FLOAT_BOB);
+    expect(offset).toBeGreaterThan(floatHeight(seed) - FLOAT_BOB - 1e-9);
+    expect(offset).toBeLessThan(floatHeight(seed) + FLOAT_BOB + 1e-9);
+    expect(root.position.y).toBeCloseTo(offset, 9);
+
+    // Then `g` again: back down, by sliding, to exactly zero.
+    manager.setGravity(true);
+    let falling = manager.floatBlend('ball');
+    holdAt(manager, 4, 4, 300, () => {
+      const blend = manager.floatBlend('ball');
+      expect(blend).toBeLessThanOrEqual(falling + 1e-12);
+      expect(blend).toBeGreaterThanOrEqual(0);
+      falling = blend;
+    });
+    // Exactly the placement that shipped, to the float — not "about" zero.
+    expect(manager.floatOffset('ball')).toBe(0);
+    expect(root.position.y).toBe(0);
+    expect(root.rotation.x).toBe(0);
+    expect(root.rotation.z).toBe(0);
+    manager.clearAll();
+  });
+
+  it('drifts and tumbles up there instead of hanging still', () => {
+    const manager = makeManager(FLAT_SURFACE, 'katamari');
+    const root = rootOf(manager);
+    manager.setGravity(false);
+    holdAt(manager, 4, 4, 200);
+    // Settled at its altitude — and still moving (TASTE §3: nothing fully
+    // arrests). Sampled over a few seconds of frames, well past the spring.
+    const heights = new Set<number>();
+    const tilts = new Set<number>();
+    holdAt(manager, 4, 4, 150, () => {
+      heights.add(Math.round(manager.floatOffset('ball') * 1e4));
+      tilts.add(Math.round(root.rotation.x * 1e4));
+    });
+    expect(heights.size).toBeGreaterThan(50);
+    expect(tilts.size).toBeGreaterThan(50);
+    // The tumble is on the axes nothing else owns: the heading is still the
+    // root's y, and the tilt is bounded.
+    expect(Math.abs(root.rotation.x)).toBeLessThanOrEqual(FLOAT_TUMBLE);
+    expect(Math.abs(root.rotation.z)).toBeLessThanOrEqual(FLOAT_TUMBLE);
+    manager.clearAll();
+  });
+
+  it('floats the BALL, clearance and all, with the creature upright inside it', () => {
+    const manager = makeManager(slope, 'katamari');
+    const root = rootOf(manager);
+    seatOnBall(manager, 3, 3);
+    holdAt(manager, 6, -4, 300);
+    const grounded = root.position.y;
+    const lift = manager.groundLift('ball');
+    expect(lift).toBeGreaterThan(1);
+
+    manager.setGravity(false);
+    holdAt(manager, 6, -4, 300);
+    const bodyR = manager.ballDiameter('ball') / 2;
+    // The float is ON TOP of the clearance — both offsets, one write.
+    expect(manager.groundLift('ball')).toBeCloseTo(lift, 6);
+    expect(root.position.y).toBeCloseTo(
+      slope.sampleHeight(root.position.x, root.position.z) +
+        manager.groundLift('ball') +
+        manager.floatOffset('ball'),
+      9,
+    );
+    expect(root.position.y).toBeGreaterThan(grounded + FLOAT_LIFT_MIN - FLOAT_BOB);
+    /*
+     * …and the rig is unchanged by any of it: the creature is still at the
+     * middle of its pile, which the tumble cannot move it off — the mass leans
+     * about the point the creature is standing at.
+     */
+    const clump = root.getObjectByName('clump')!;
+    const rider = root.getObjectByName('rider')!;
+    // The pile is still packed around the creature's middle, which is a
+    // `baseR` above its feet — the lean cannot move it off that.
+    expect(worldPos(rider).distanceTo(worldPos(clump))).toBeCloseTo(
+      bodyR / root.scale.x,
+      4,
+    );
+    expect(bodyR).toBeGreaterThan(2.5);
+    // Really tilted, or the lines below would be the grounded case again.
+    expect(Math.hypot(root.rotation.x, root.rotation.z)).toBeGreaterThan(0.01);
+    /*
+     * AND THE CREATURE IS UPRIGHT INSIDE IT. The mass leans; the thing at its
+     * middle does not, because a creature that rolled with the mass it is
+     * inside would be upside down half the time (`growPass` counters the
+     * root's orientation on the rider and puts the heading back).
+     */
+    rider.updateWorldMatrix(true, false);
+    const up = new Vector3(0, 1, 0).applyQuaternion(
+      rider.getWorldQuaternion(new Quaternion()),
+    );
+    expect(up.y).toBeCloseTo(1, 6);
+    expect(Math.hypot(up.x, up.z)).toBeLessThan
+      (1e-6);
+    manager.clearAll();
+  });
+
+  it('is katamari only — no other world can be made weightless', () => {
+    const plain = makeManager(FLAT_SURFACE, 'none');
+    const root = rootOf(plain);
+    holdAt(plain, 4, 4, 60);
+    // The same call the driver would make, on a world with no game.
+    plain.setGravity(false);
+    expect(plain.gravity()).toBe(true);
+    holdAt(plain, 4, 4, 200);
+    expect(plain.floatOffset('ball')).toBe(0);
+    expect(plain.floatBlend('ball')).toBe(0);
+    expect(root.position.y).toBe(FLAT_SURFACE.sampleHeight(4, 4));
+    expect(root.rotation.x).toBe(0);
+    plain.clearAll();
+  });
+
+  it('every float spring is ζ ≥ 1, like everything else that moves', () => {
+    // The damping-audit gate (TASTE §7) reads the same registry; this is the
+    // local statement that the new spring is in it and is not underdamped.
+    const manager = makeManager(FLAT_SURFACE, 'katamari');
+    manager.setGravity(false);
+    holdAt(manager, 4, 4, 30);
+    for (const entry of springRegistry) expect(entry.zeta).toBeGreaterThanOrEqual(1);
+    manager.clearAll();
   });
 });
 

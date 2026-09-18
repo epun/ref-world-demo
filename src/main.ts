@@ -2695,15 +2695,8 @@ function main(): void {
             return {
               root,
               bounds: {
-                /*
-                 * DRAWN, not authored: the creature is the ball, so its own
-                 * height and radius are its growth times its drawn size, and
-                 * a constant here framed a grown ball as a hatchling (user
-                 * report 2026-09-18: *"the 3d representation is too small in
-                 * the top left corner"*).
-                 */
-                height: CHARACTER_HEIGHT * creatures.growthOf(id),
-                radius: creatures.drawnRadius(id) * creatures.growthOf(id),
+                height: CHARACTER_HEIGHT,
+                radius: creatures.drawnRadius(id),
                 floor: creatures.pileFloor(id),
                 ceiling: creatures.pileCeiling(id),
                 footprint: creatures.pileFootprint(id),

@@ -3215,7 +3215,8 @@ export function createCreatureManager(
       centreZ: scratchVec.z,
       headingX: Math.sin(root.rotation.y),
       headingZ: Math.cos(root.rotation.y),
-      R: carrier.bodyR,
+      selfR: carrier.baseR,
+      seats: carrier.clump?.seats() ?? [],
       itemR: item.r,
       clumpWorldQ: clump.worldQ,
       growth: clump.growth(),
@@ -3262,7 +3263,8 @@ export function createCreatureManager(
       centreZ: scratchVec.z,
       headingX: Math.sin(root.rotation.y),
       headingZ: Math.cos(root.rotation.y),
-      R: carrier.bodyR,
+      selfR: carrier.baseR,
+      seats: carrier.clump?.seats() ?? [],
       itemR: rider.bodyR,
       clumpWorldQ: clump.worldQ,
       growth: clump.growth(),
@@ -3423,7 +3425,8 @@ export function createCreatureManager(
       centreZ: scratchVec.z,
       headingX: Math.sin(root.rotation.y),
       headingZ: Math.cos(root.rotation.y),
-      R: slot.bodyR,
+      selfR: slot.baseR,
+      seats: slot.clump?.seats() ?? [],
       itemR,
       clumpWorldQ: clump.worldQ,
       growth: clump.growth(),
@@ -4037,21 +4040,22 @@ export function createCreatureManager(
     const spring = slot.liftSpring;
     const root = slot.characterRoot;
     if (!spring || !root) return 0;
+    const clump = slot.clump;
+    const footprint = clump?.footprint() ?? 0;
     /*
-     * THE BALL'S UNDERSIDE IS THE ROOT, so a grown ball rides on its whole
-     * footprint rather than on the ground under its centre — the 2026-09-16
-     * *"the ball is glitching through the map floor"* report.
-     *
-     * Restored on 2026-09-18 with the rest of the original mechanic (user:
-     * *"it should look and function like we did when we first started the
-     * katamari project where the objects clumped to the character, not the
-     * character floating in space"*). The interim model measured the pile
-     * instead — first its radial reach, then its lowest point — and both
-     * lifted a creature that had nothing under it.
+     * THE CREATURE'S ORIGIN IS THE GROUND (user ruling, 2026-09-17, after
+     * three reports of creatures floating). A pile NEVER lifts a creature:
+     * no seat can go below its feet any more (`clumpLocalOffset` clamps the
+     * height), so there is nothing under it to stand on, and a pile beside it
+     * or above it is not a plinth. What is left is the terrain ring, which is
+     * a different question — not "how big is the mass" but "does the ground
+     * under the mass rise", the 2026-09-16 rule that stops a wide pile
+     * clipping through a hillside.
      */
-    const g = slot.clump?.growth() ?? 1;
     const target =
-      g > 1 ? clearanceLift(root.position.x, root.position.z, slot.bodyR, sampleAt) : 0;
+      footprint > 0
+        ? footprintRise(root.position.x, root.position.z, footprint, sampleAt)
+        : 0;
     spring.retarget(target);
     // Clamped at 0 on the way out: a clearance can lift a creature and must
     // never be able to push one INTO the ground, whatever a solver does.
@@ -4216,7 +4220,7 @@ export function createCreatureManager(
          * its surface — one solid mass, nothing floating, no shell needed.
          * The node stays because the zero-gravity tumble is countered on it.
          */
-        rider.scale.setScalar(1);
+        rider.scale.setScalar(1 / Math.max(1e-6, g));
         rider.position.y = 0;
         if (root.rotation.x !== 0 || root.rotation.z !== 0) {
           riderEuler.set(0, root.rotation.y, 0);
