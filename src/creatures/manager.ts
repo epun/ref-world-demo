@@ -4043,19 +4043,30 @@ export function createCreatureManager(
     const clump = slot.clump;
     const footprint = clump?.footprint() ?? 0;
     /*
-     * THE CREATURE'S ORIGIN IS THE GROUND (user ruling, 2026-09-17, after
-     * three reports of creatures floating). A pile NEVER lifts a creature:
-     * no seat can go below its feet any more (`clumpLocalOffset` clamps the
-     * height), so there is nothing under it to stand on, and a pile beside it
-     * or above it is not a plinth. What is left is the terrain ring, which is
-     * a different question — not "how big is the mass" but "does the ground
-     * under the mass rise", the 2026-09-16 rule that stops a wide pile
-     * clipping through a hillside.
+     * A CREATURE RIDES ON WHAT IS UNDER IT, and on nothing else.
+     *
+     * Two rulings meet here and both are the user's. *"The characters should
+     * be on the ground"* (2026-09-17, three times) is why this is measured
+     * and not a radius: `reach()` is how far the pile stretches in ANY
+     * direction, so a creature with three benches beside it was held metres
+     * in the air over a gap. *"All the objects should be cluster into one
+     * ball like the real katamari"* (2026-09-18) is why a lift exists at all
+     * again: the pile packs below the equator now, so there IS mass under the
+     * feet, and the honest answer is the pile's own lowest point
+     * (`Clump.floor`, read as the pile is currently rolled). A creature
+     * inside a ball stands at the middle of it with the ball's underside on
+     * the paper — which is the reference — and a creature carrying one stone
+     * beside it still has a floor of 0 and stands exactly where it did.
+     *
+     * Plus the terrain ring, which is a different question — not "how big is
+     * the mass" but "does the ground under the mass rise", the 2026-09-16
+     * rule that stops a wide pile clipping through a hillside. They add: the
+     * mass has to clear the highest ground beneath its own footprint.
      */
+    const sit = Math.max(0, -(clump?.floor() ?? 0));
     const target =
-      footprint > 0
-        ? footprintRise(root.position.x, root.position.z, footprint, sampleAt)
-        : 0;
+      sit +
+      (footprint > 0 ? footprintRise(root.position.x, root.position.z, footprint, sampleAt) : 0);
     spring.retarget(target);
     // Clamped at 0 on the way out: a clearance can lift a creature and must
     // never be able to push one INTO the ground, whatever a solver does.

@@ -533,13 +533,14 @@ export const PACK_YAWS = [0, 0.3142, -0.3142, 0.6283, -0.6283, 0.9425, -0.9425, 
 /**
  * [D] The elevation offsets, radians, tried with each yaw.
  *
- * Upward only, and up to 45°: the pile fills OVER the creature as well as
- * beside it — which is what makes the reference read as a ball rather than a
- * ring — but nothing packs downward (the ruling under `clumpLocalOffset`), so
- * a candidate whose elevation would go below the horizontal is dropped rather
- * than clamped, which would double up on 0.
+ * SYMMETRIC, up to 45° either way, since 2026-09-18 (*"All the objects should
+ * be cluster into one ball like the real katamari"*): the pile fills over AND
+ * under the creature, which is the difference between a ball and the pancake
+ * of rocks lying on the paper that the flat-seat rule produced. The creature
+ * then rides on what is under it (`Clump.floor`, `groundClearance` in
+ * src/creatures/manager.ts) exactly as it would on a ball it is inside.
  */
-export const PACK_TILTS = [0, 0.3927, 0.7854, -0.3927];
+export const PACK_TILTS = [0, 0.3927, -0.3927, 0.7854, -0.7854];
 
 /**
  * [D] The most elevation a seat may take, radians — 80°, just short of
@@ -576,18 +577,23 @@ export function packCandidateDirections(
   const hlen = Math.hypot(dirX, dirZ);
   /*
    * The base direction is CLAMPED into the band a seat may take before the
-   * fan is built — level to `PACK_ELEVATION_MAX`, never downward. Its caller
-   * has already flattened a downward contact, but this function is exported
-   * and pure, so it owns the band rather than trusting it: with the input
+   * fan is built — `PACK_ELEVATION_MAX` either way, so the pile is a ball and
+   * not a dome (the note on `PACK_TILTS`). This function is exported and
+   * pure, so it owns the band rather than trusting its caller: with the input
    * clamped, the `tilt = 0` candidate is always inside the band and the fan
    * is never empty.
    *
-   * Straight up has no azimuth to rotate around, so it takes 0 — a
-   * well-defined seat on the dome rather than a column.
+   * Straight up or down has no azimuth to rotate around, so it takes 0 — a
+   * well-defined seat on the pile rather than a column.
    */
   const azimuth = hlen > 1e-6 ? Math.atan2(dirX, dirZ) : 0;
-  const raw = hlen > 1e-6 ? Math.atan2(dirY, hlen) : dirY >= 0 ? PACK_ELEVATION_MAX : 0;
-  const elevation = Math.min(PACK_ELEVATION_MAX, Math.max(0, raw));
+  const raw =
+    hlen > 1e-6
+      ? Math.atan2(dirY, hlen)
+      : dirY >= 0
+        ? PACK_ELEVATION_MAX
+        : -PACK_ELEVATION_MAX;
+  const elevation = Math.min(PACK_ELEVATION_MAX, Math.max(-PACK_ELEVATION_MAX, raw));
   // Drift is priced against the direction a seat may actually take, which is
   // the clamped one — otherwise a level contact from below would read as a
   // right angle of drift for every candidate and the pricing would do nothing.
@@ -599,8 +605,8 @@ export function packCandidateDirections(
   for (const yaw of PACK_YAWS) {
     for (const tilt of PACK_TILTS) {
       const e = elevation + tilt;
-      // Upward-or-level only, and never a column.
-      if (e < 0 || e > PACK_ELEVATION_MAX) continue;
+      // Inside the band, either way up, and never a column.
+      if (e < -PACK_ELEVATION_MAX || e > PACK_ELEVATION_MAX) continue;
       const a = azimuth + yaw;
       const ch = Math.cos(e);
       const x = Math.sin(a) * ch;
@@ -1226,21 +1232,31 @@ export function clumpLocalOffset(a: {
     }
   }
   /*
-   * NOTHING PACKS DOWNWARD (user ruling, 2026-09-17). A contact from above —
-   * a creature rolling onto a prop — used to point the seat under the feet,
-   * and then the ground pass had to choose between burying the item and
-   * standing the creature on it like a plinth; both read as floating. The
-   * direction is therefore flattened to horizontal-or-above before the
-   * packing runs, so the pile only ever grows beside and over the creature.
+   * THE PILE IS A BALL, so it packs DOWNWARD too (user direction,
+   * 2026-09-18: *"All the objects should be cluster into one ball like the
+   * real katamari"*).
+   *
+   * It did not, between 2026-09-17 and then: a downward contact was flattened
+   * to the horizontal and every seat's height was clamped to where the item
+   * rests on the paper, because the ground pass had no honest way to lift a
+   * creature and a pile under the feet read as floating. The cost was the
+   * shape — with nothing allowed below the equator and tall things pinned to
+   * the ground, a grown pile spread into a pancake of props lying on the
+   * paper around the creature, which is the phone screenshot.
+   *
+   * Both halves are gone now that the lift is measured from what is actually
+   * underneath (`Clump.floor`, which since 2026-09-18 reads the pile as it is
+   * currently rolled): the mass closes round the creature and the creature
+   * rides at the middle of it with the lowest item resting on the ground,
+   * which is a ball the character is inside — the reference.
    */
-  let fy = dy;
-  if (fy < 0) fy = 0;
+  const fy = dy;
   let flen = Math.sqrt(dx * dx + fy * fy + dz * dz);
   if (!(flen > 1e-6)) {
-    // Struck from straight below and nothing else to go on: take the heading.
+    // No direction at all: take the heading, which is where the creature was
+    // looking when it hit the thing.
     dx = a.headingX;
     dz = a.headingZ;
-    fy = 0;
     flen = Math.hypot(dx, dz);
     if (!(flen > 1e-6)) {
       dx = 0;
@@ -1263,31 +1279,16 @@ export function clumpLocalOffset(a: {
   const wx = picked.dirX * reach;
   const wz = picked.dirZ * reach;
   /*
-   * NOTHING SEATS BELOW THE CREATURE'S FEET (user ruling, 2026-09-17, said
-   * three times: *"the characters should be on the ground"*, *"their origin
-   * should match the ground plane"*).
-   *
-   * The pile's centre is `selfR` above the feet, so an item's underside sits
-   * at `selfR + wy - itemR` in the creature's frame. A downward contact — a
-   * creature rolling onto something, or a big prop struck low — used to seat
-   * the thing under the feet, and then the ground pass had a choice between
-   * burying it and standing the creature on it like a platform. Both were
-   * reported as the creature floating.
-   *
-   * So the seat's HEIGHT is clamped to where the item rests ON the ground
-   * beside the creature (`itemR - selfR`), and its horizontal place is the
-   * packing's. A big thing therefore lies on the paper next to a small
-   * creature, which is what it would do, and `Clump.floor()` can never go
-   * negative — the lift stays 0 and the feet stay on the ground.
+   * AND THE HEIGHT IS THE PACKING'S, with no clamp (2026-09-18, the ball
+   * above). It used to be raised to `itemR - selfR` — the height at which the
+   * thing rests on the paper beside the creature — so that `Clump.floor()`
+   * could never go negative and the feet never left the ground. That is what
+   * laid every big prop flat on the grass instead of sticking it to the mass.
+   * The lift now comes from the pile's own lowest point, so a seat below the
+   * feet is not a bug to be clamped away: it is the part of the ball the
+   * creature is standing on.
    */
-  /*
-   * …and an item TALLER than the creature still rests ON the paper rather
-   * than dipping through it: its underside is `selfR + wy - itemR` in the
-   * creature's frame, so this is the height at which it sits on the ground
-   * beside the creature. Raising a horizontal seat only ever increases its
-   * distance from the creature, so the clamp cannot push anything inside.
-   */
-  const wy = Math.max(picked.dirY * reach, a.itemR - a.selfR);
+  const wy = picked.dirY * reach;
   const local = rotate(conjugate(a.clumpWorldQ), wx, wy, wz);
   const g = a.growth > 1e-6 ? a.growth : 1;
   return { x: local.x / g, y: local.y / g, z: local.z / g };

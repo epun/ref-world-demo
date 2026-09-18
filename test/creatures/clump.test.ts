@@ -269,11 +269,17 @@ describe('the items pack against the creature', () => {
     const before = first
       .getWorldPosition(new Vector3())
       .distanceTo(clump.group.getWorldPosition(new Vector3()));
-    // A 1.4 u item on a 0.9 u creature is TALLER than its carrier, so it is
-    // raised to rest on the paper beside it (2026-09-17: nothing seats below
-    // the feet) — at least the bedding distance out, underside on the ground.
+    // Seated at the bedding distance and no closer. A 1.4 u item on a 0.9 u
+    // creature reaches below the feet, and since 2026-09-18 (*"All the
+    // objects should be cluster into one ball"*) that is allowed: the ground
+    // pass lifts the creature by the pile's own floor instead of the seat
+    // being raised to lie on the paper, which is what used to flatten a
+    // grown pile into a pancake of props.
     expect(before).toBeGreaterThanOrEqual((baseR + itemR) * CLUMP_FIT - 1e-6);
-    expect(baseR + first.position.y * clump.growth() - itemR).toBeGreaterThanOrEqual(-1e-6);
+    expect(clump.floor()).toBeLessThan(0);
+    // …and what is below the feet is exactly what the lift owes it: the
+    // item's own underside, in the creature's frame.
+    expect(clump.floor()).toBeCloseTo(baseR + first.position.y * clump.growth() - itemR, 6);
 
     // Five more things elsewhere on the creature: the growth rises a long way
     // and the FIRST one must not drift outward with it, or the pile would

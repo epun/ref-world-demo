@@ -1299,7 +1299,12 @@ describe('ground clearance — a big ball rides on its whole footprint', () => {
     expect(manager.pileFloor('ball')).toBeLessThan(0);
     const footprint = manager.pileFootprint('ball');
     expect(footprint).toBeGreaterThan(0);
+    // The clearance is two terms since 2026-09-18: what is UNDER the pile
+    // (its own floor — the ball the creature is inside) plus the rise of the
+    // terrain beneath its footprint.
+    const sit = Math.max(0, -manager.pileFloor('ball'));
     const target =
+      sit +
       footprintRise(root.position.x, root.position.z, footprint, (x, z) =>
         slope.sampleHeight(x, z),
       );
@@ -1490,7 +1495,7 @@ describe('ground clearance — a big ball rides on its whole footprint', () => {
     manager.clearAll();
   });
 
-  it('an item seated UNDER the feet is not a plinth — the creature stays down', () => {
+  it('an item seated UNDER the feet IS what the creature rides on', () => {
     const manager = makeManager(FLAT_SURFACE, 'katamari');
     const root = rootOf(manager);
     const baseR = measureBodyRadius(manager.latestCharacter()!);
@@ -1515,30 +1520,40 @@ describe('ground clearance — a big ball rides on its whole footprint', () => {
     holdAt(manager, 4, 4, 240);
 
     /*
-     * THE CREATURE'S ORIGIN IS THE GROUND (user ruling, 2026-09-17, said three
-     * times — the last with a projection shot of a creature perched on top of
-     * the tank it had just picked up: *"make sure that the characters aren't
-     * floating in space"*). This seat is `baseR + r × CLUMP_FIT` below the
-     * creature's middle, so its bottom is `r × CLUMP_FIT + r` under the feet,
-     * and it used to lift the creature by exactly that — a plinth. It does not
-     * any more: the packer can no longer produce such a seat
-     * (`clumpLocalOffset` flattens a downward contact and clamps the height),
-     * and one arriving from anywhere else — a hand-placed fixture, a page
-     * built before this rule — is not allowed to stand a creature up on it.
+     * A CREATURE RIDES ON WHAT IS UNDER IT (user direction, 2026-09-18: *"All
+     * the objects should be cluster into one ball like the real katamari"*).
+     *
+     * This rule reversed, and it is worth being exact about which floating
+     * was the bug. *"The characters should be on the ground"* (2026-09-17,
+     * three times) was about mass that is NOT underneath: the lift read the
+     * pile's RADIAL reach, so a creature with three benches beside it hung
+     * metres up over a gap. That reading is still gone — the lift is
+     * `Clump.floor()`, the pile's lowest point, measured as it is currently
+     * rolled. What replaced the clamp is honest support: with the packer
+     * filling below the equator the mass closes round the creature, and a
+     * creature inside a ball stands at the middle of it with the ball's
+     * underside on the paper. Holding it down instead is what laid every
+     * prop flat on the grass.
+     *
+     * This seat is `baseR + r × CLUMP_FIT` below the creature's middle, so
+     * its bottom is `r × CLUMP_FIT + r` under the feet — and that, exactly,
+     * is the lift.
      */
     const under = r * CLUMP_FIT + r;
     expect(manager.pileFloor('ball')).toBeCloseTo(-under, 6);
-    expect(manager.groundLift('ball')).toBe(0);
-    expect(root.position.y).toBeCloseTo(FLAT_SURFACE.sampleHeight(4, 4), 9);
+    expect(manager.groundLift('ball')).toBeCloseTo(under, 4);
+    expect(root.position.y).toBeCloseTo(FLAT_SURFACE.sampleHeight(4, 4) + under, 4);
     manager.clearAll();
   });
 
-  it('on the flat the creature stands ON the paper, whatever it is carrying', () => {
+  it('on the flat the creature stands on its own mass and nothing else', () => {
     /*
-     * THE FLAT NUMBER (2026-09-17, the third *"characters are floating"*
-     * report). On a slope the lift is the ground's own rise under the pile's
-     * footprint; take the hill away and NOTHING is left — the creature's
-     * origin is the ground plane, carrying six props or none.
+     * THE FLAT NUMBER. On a slope the clearance carries the ground's own rise
+     * under the pile's footprint; take the hill away and what is left is the
+     * pile alone — the mass under the feet and not one unit more. A creature
+     * carrying NOTHING therefore stands exactly on the paper (pinned in the
+     * hatchling test above), and one inside a ball stands at the middle of
+     * it (2026-09-18).
      */
     const manager = makeManager(ramped, 'katamari');
     const root = rootOf(manager);
@@ -1546,12 +1561,12 @@ describe('ground clearance — a big ball rides on its whole footprint', () => {
     // Flat ground, well clear of the riser, and settled.
     holdAt(manager, -20, 0, 240);
     const ground = ramped.sampleHeight(-20, 0);
-    // This fixture hand-seats its props ON the creature's centre, so there is
-    // mass below the feet — a seat the packer cannot make, and still not a
-    // plinth.
-    expect(manager.pileFloor('ball')).toBeLessThan(0);
-    expect(manager.groundLift('ball')).toBe(0);
-    expect(root.position.y).toBeCloseTo(ground, 9);
+    // This fixture hand-seats its props on the creature's centre, so there is
+    // mass below the feet — and the lift is exactly that and no more.
+    const floor = manager.pileFloor('ball');
+    expect(floor).toBeLessThan(0);
+    expect(manager.groundLift('ball')).toBeCloseTo(-floor, 4);
+    expect(root.position.y).toBeCloseTo(ground - floor, 4);
     // The footprint is real, so the ring term was live and simply found flat
     // ground.
     expect(manager.pileFootprint('ball')).toBeGreaterThan(0);
@@ -1564,10 +1579,10 @@ describe('ground clearance — a big ball rides on its whole footprint', () => {
     feedProps(manager, 3, 3);
     // Settled well below the riser, where the ring reaches nothing.
     holdAt(manager, -20, 0, 200);
-    // On the flat there is no lift at all: the creature's origin is the
-    // ground (2026-09-17). What follows is the RING term alone, climbing.
-    const flatLift = 0;
-    expect(manager.groundLift('ball')).toBe(flatLift);
+    // On the flat the lift is the pile's own floor and nothing else. What
+    // follows is the RING term climbing on top of that.
+    const flatLift = manager.groundLift('ball');
+    expect(flatLift).toBeCloseTo(Math.max(0, -manager.pileFloor('ball')), 4);
 
     // Then walk it up and over, through the pose path at a walking pace.
     const heights: number[] = [];

@@ -764,14 +764,24 @@ describe('packSeatDirection — the mass fills in rather than spiking out', () =
     expect(extent(fan, 'z') / extent(fan, 'x')).toBeLessThan(1.2);
   });
 
-  it('never seats anything below the horizontal, and never straight up', () => {
+  it('packs above AND below, and never straight up or down', () => {
+    /*
+     * BELOW is allowed since 2026-09-18 (*"All the objects should be cluster
+     * into one ball like the real katamari"*) — with nothing under the
+     * equator a grown pile spread into a pancake of props lying on the grass.
+     * What the band still forbids is a column: a seat exactly on the axis has
+     * no side to it and every item taking it would stack in one line.
+     */
+    let below = 0;
     for (const dirY of [-0.9, -0.3, 0, 0.3, 0.95]) {
       const hl = Math.sqrt(Math.max(0, 1 - dirY * dirY));
       for (const c of packCandidateDirections(hl, dirY, 0)) {
-        expect(c.y).toBeGreaterThanOrEqual(-1e-9);
-        expect(Math.atan2(c.y, Math.hypot(c.x, c.z))).toBeLessThanOrEqual(PACK_ELEVATION_MAX + 1e-9);
+        const elevation = Math.atan2(c.y, Math.hypot(c.x, c.z));
+        expect(Math.abs(elevation)).toBeLessThanOrEqual(PACK_ELEVATION_MAX + 1e-9);
+        if (c.y < 0) below++;
       }
     }
+    expect(below).toBeGreaterThan(0);
   });
 
   it('is deterministic — the same pile and hit give the same seat every time', () => {

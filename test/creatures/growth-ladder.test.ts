@@ -257,17 +257,17 @@ describe('the arithmetic survives the top of the ladder', () => {
          * to seat on, and everything after the first packs against the seats
          * already taken — `packSeatDistance`, tested in sticky.test.ts).
          */
-        const want = (BASE_R + itemR * CLUMP_FIT) / g;
+        const want = ((BASE_R + itemR) * CLUMP_FIT) / g;
         /*
-         * …and an item TALLER than the creature is RAISED to rest on the
-         * paper beside it rather than dipping under the feet (user ruling,
-         * 2026-09-17: the creature's origin is the ground). Every one of
-         * these is 4–8 u against a 0.9 u creature, so every one is raised:
-         * the seat is at least the bedding distance, and its underside is on
-         * or above the ground.
+         * …and it is not raised to lie on the paper any more (2026-09-18,
+         * *"All the objects should be cluster into one ball like the real
+         * katamari"*): a seat may reach below the feet and the ground pass
+         * lifts the creature by the pile's own floor. What still has to hold
+         * is the arithmetic — a finite seat at the bedding distance, whatever
+         * the sizes.
          */
         expect(Math.hypot(offset.x, offset.y, offset.z)).toBeGreaterThanOrEqual(want - 1e-9);
-        expect(BASE_R + offset.y * g - itemR).toBeGreaterThanOrEqual(-1e-9);
+        expect(Number.isFinite(offset.x + offset.y + offset.z)).toBe(true);
       }
     }
   });
