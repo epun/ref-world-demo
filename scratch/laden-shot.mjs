@@ -149,7 +149,13 @@ await page.waitForTimeout(15_000);
 await page.evaluate(
   ([id, s]) => {
     const m = window.__refworldCreatures;
-    m.pauseAi(true);
+    /*
+     * NO `pauseAi(true)` HERE. It reads as "hold the wanderers still", but
+     * `simulating()` reads it too — it switches the GAME off, so nothing can
+     * be picked up. A run with it on teleported this creature onto ten props
+     * and collected none of them, and the frame was a hatchling with an empty
+     * pile (measured, 2026-09-18).
+     */
     m.spawn(id, s, { hatchMs: 100, grown: true });
   },
   [ID, strokes],
@@ -170,7 +176,8 @@ const log = await page.evaluate(
     const took = [];
     const start = { x: root.position.x, z: root.position.z };
     for (let n = 0; n < want; n++) {
-      const bodyR = Math.max(0.5, m.ballDiameter(id) / 2);
+      const before = m.ballDiameter(id);
+      const bodyR = Math.max(0.5, before / 2);
       const here = { x: root.position.x, z: root.position.z };
       let best = null;
       for (const c of window.__refworldColliders?.() ?? []) {
@@ -186,8 +193,11 @@ const log = await page.evaluate(
       // the only way to get one inside a swiftshader frame budget.
       root.position.x = best.x;
       root.position.z = best.z;
-      for (let f = 0; f < 4; f++) await frame();
-      took.push({ r: Number(best.r.toFixed(3)), size: m.ballDiameter(id) });
+      for (let f = 0; f < 8; f++) await frame();
+      // Count what actually STUCK, not what was approached: the ball's own
+      // size is the only honest witness.
+      const after = m.ballDiameter(id);
+      if (after > before + 1e-6) took.push({ r: Number(best.r.toFixed(3)), size: after });
     }
     // Back to where it hatched, then let the springs settle so the shot is of
     // a resting creature and not of a slide.
