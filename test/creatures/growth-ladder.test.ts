@@ -242,32 +242,20 @@ describe('the arithmetic survives the top of the ladder', () => {
           centreZ: 0,
           headingX: 0,
           headingZ: 1,
-          selfR: BASE_R,
+          R,
           itemR,
-          seats: [],
           clumpWorldQ: { x: 0, y: 0, z: 0, w: 1 },
           growth: g,
         });
         for (const v of [offset.x, offset.y, offset.z]) expect(Number.isFinite(v)).toBe(true);
         /*
-         * THE FIRST ITEM sits on the CHARACTER — its own radius plus the
-         * item's sunk in by `CLUMP_FIT`, expressed in the clump's own
-         * (unscaled) frame, so its length is `(baseR + itemR·CLUMP_FIT) /
-         * growth` exactly, whatever the sizes (2026-09-17: there is no shell
-         * to seat on, and everything after the first packs against the seats
-         * already taken — `packSeatDistance`, tested in sticky.test.ts).
+         * The seat is the ball's surface plus the item's radius sunk in by
+         * `CLUMP_FIT`, expressed in the clump's own (unscaled) frame — so its
+         * length is `(R + itemR·CLUMP_FIT) / growth`, exactly, whatever the
+         * sizes. That is the number every screen derives for itself.
          */
-        const want = ((BASE_R + itemR) * CLUMP_FIT) / g;
-        /*
-         * …and it is not raised to lie on the paper any more (2026-09-18,
-         * *"All the objects should be cluster into one ball like the real
-         * katamari"*): a seat may reach below the feet and the ground pass
-         * lifts the creature by the pile's own floor. What still has to hold
-         * is the arithmetic — a finite seat at the bedding distance, whatever
-         * the sizes.
-         */
-        expect(Math.hypot(offset.x, offset.y, offset.z)).toBeGreaterThanOrEqual(want - 1e-9);
-        expect(Number.isFinite(offset.x + offset.y + offset.z)).toBe(true);
+        const want = (R + itemR * CLUMP_FIT) / g;
+        expect(Math.hypot(offset.x, offset.y, offset.z)).toBeCloseTo(want, 8);
       }
     }
   });

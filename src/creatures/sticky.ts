@@ -372,161 +372,6 @@ export const GROWTH_K = 4;
 export const CLUMP_FIT = 0.7;
 
 /**
- * [D] How many times the seat search may be pushed outward before it gives up
- * and takes where it got to.
- *
- * The search is "slide out along the contact direction until nothing is in the
- * way" (`packSeatDistance`), and each pass can uncover a neighbour the last
- * push slid past — so it repeats. A pile is a few dozen items and each pass
- * strictly increases the distance, so it converges in a handful; this is the
- * bound that keeps a pathological pile from spending a frame on one pickup.
- */
-/**
- * [D] How deeply items bed into EACH OTHER, as a fraction of the two radii —
- * the interlock.
- *
- * > User, 2026-09-18, with the Katamari Damacy reference: *"This is what it
- * > should look like all the objects collided together."*
- *
- * `CLUMP_FIT` is the bedding against the CREATURE and 0.7 is right there: the
- * character is the body things stick to and must not be swallowed. Between
- * items it was wrong, and this is why a packed pile still read as an airy
- * cluster with holes in it while the reference reads as one solid mass. The
- * radius a prop carries (`item.r`) is its BOUNDING radius — a bench, a sign
- * or a planter is mostly air inside its own sphere — so clearing two whole
- * spheres holds the actual geometry a long way apart even though the spheres
- * are already touching. Objects in the reference plainly pass through each
- * other.
- *
- * 0.45 rather than 0.7, measured over a 48-prop wandering walk: the packed
- * fill of the pile's own hull rises 0.226 -> 0.419 and its outer radius falls
- * 2.73 -> 2.22 u, with the mean nearest-neighbour overlap going from 0.26 to
- * 0.47 u. Lower still keeps densifying (0.591 at 0.35) but the props begin to
- * read as one mangled object rather than a heap of things, which loses the
- * legibility the whole pile is for.
- */
-export const PACK_INTERLOCK = 0.45;
-
-/**
- * [D] How much of a prop's BOUNDING radius counts as its surface, for
- * deciding that a creature has actually rolled over it.
- *
- * > User report, 2026-09-18, after the reach was cut to the silhouette:
- * > *"Objects are still floating towards the creature. We should make sure
- * > that they only get added to the ball after the creature has rolled over
- * > the objects. It shouldn't be sucked in like a vacuum. It should be a
- * > contact-type physical interaction."*
- *
- * Same observation as `PACK_INTERLOCK` and the other half of it. `item.r` is
- * a BOUNDING radius — a bench, a sign, a planter is mostly air inside its own
- * sphere — so "the creature's silhouette is within `item.r` of the item's
- * centre" is true while the two are still visibly a metre apart. Cutting the
- * creature's side of the sum to the drawn mass (75c9e6c) fixed half of it;
- * this is the prop's side.
- *
- * 0.5 rather than `PACK_INTERLOCK`'s 0.45, and the difference is deliberate:
- * bedding is about how a seated thing LOOKS and can afford to interpenetrate,
- * while this decides WHEN the pickup fires, and a creature that has to bury
- * half of a prop before it takes reads as sticky ground. Half of a bounding
- * radius is about where a convex prop's own hull is along the contact
- * direction, so the pickup fires as the surfaces meet.
- */
-export const TOUCH_FIT = 0.5;
-
-export const PACK_PASSES = 8;
-
-/**
- * WHERE A NEW ITEM SITS ON THE PILE — the distance from the pile's centre
- * along the contact direction, in WORLD units. PURE.
- *
- * > User direction, 2026-09-17: *"the character should be the object that the
- * > items stick to."*
- *
- * Until then the pile was a SPHERE of radius `R` (`baseR × growth`) and every
- * item was seated on its surface: as the growth rose the shell grew and the
- * items rode outward on it, which is why the drawn mass needed a body of its
- * own to not be a cloud of props around nothing, and why the creature ended up
- * either on top of that body or inside it. There is no shell now. The
- * CHARACTER is the thing items stick to, at its own drawn radius, and each
- * item after the first packs against the ones already there:
- *
- *   start at the character's own surface (`selfR + itemR × CLUMP_FIT` — the
- *   same bedding that has always made a pile read as one lump rather than a
- *   bristle of separate objects), then, for every seat already taken, if the
- *   new item would be inside it, slide outward along the direction until it is
- *   only bedded into it by the same `CLUMP_FIT`. Repeat, because sliding past
- *   one neighbour can bring another into reach.
- *
- * So the pile grows OUTWARD from the creature, in the direction each thing was
- * actually struck from, with no gaps and no invisible sphere. It is a greedy
- * one-dimensional search and not a packing solver: every item keeps the
- * direction it arrived on, which is what makes the pile a record of where the
- * creature has been rather than an arrangement.
- *
- * PURE and order-dependent in the seats it is given — which is exactly what
- * the wire needs: the page that DECIDES runs this once and the offset travels
- * on the `stick` event (docs/PLAN.md §7.6), so no two pages can pack
- * differently.
- */
-export function packSeatDistance(a: {
-  /** Unit direction from the pile's centre toward where the item was struck. */
-  dirX: number;
-  dirY: number;
-  dirZ: number;
-  /** The new item's own radius, world units. */
-  itemR: number;
-  /** The CHARACTER's radius — the body everything sticks to. */
-  selfR: number;
-  /** What is already on the pile: world offsets from the centre, and radii. */
-  seats: readonly { x: number; y: number; z: number; r: number }[];
-}): number {
-  /*
-   * AGAINST THE CREATURE, with no gap (user report, 2026-09-18: *"there
-   * shouldn't be space between the character and the objects"*).
-   *
-   * It was `selfR + itemR × CLUMP_FIT`: the item's centre outside the
-   * creature's own sphere, bedded in by a fraction of its own radius. But
-   * `selfR` is a measured BOUNDING radius like `item.r` is — a drawn
-   * character with a stalk and a topper is mostly air inside it — so an item
-   * seated on that sphere stood visibly clear of the body it is stuck to.
-   *
-   * So the creature is treated as what it is, one more sphere in the pack:
-   * the centre distance is `CLUMP_FIT` of the two radii summed, the same
-   * convention the item-vs-item clearance uses. At a drawn radius of 1.2 and
-   * an item of 0.4 that is 1.12 rather than 1.48 — the item touching the
-   * character instead of hovering a third of a metre off it. `CLUMP_FIT` and
-   * not `PACK_INTERLOCK`: this is the one sphere that must not be swallowed,
-   * because it is the character.
-   */
-  let t = Math.max(0, (a.selfR + a.itemR) * CLUMP_FIT);
-  // Against the OTHER ITEMS, bedded deeper: they are bounding spheres full of
-  // air and the reference has them passing through each other (the note on
-  // `PACK_INTERLOCK`).
-  const fit = PACK_INTERLOCK;
-  for (let pass = 0; pass < PACK_PASSES; pass++) {
-    let moved = false;
-    for (const seat of a.seats) {
-      const want = (a.itemR + seat.r) * fit;
-      // The distance along the ray where the new item would just clear this
-      // seat: the far root of |t·d − p|² = want².
-      const along = seat.x * a.dirX + seat.y * a.dirY + seat.z * a.dirZ;
-      const lenSq = seat.x * seat.x + seat.y * seat.y + seat.z * seat.z;
-      const gap = want * want - (lenSq - along * along);
-      // The ray passes outside this seat entirely: nothing to do, whatever t
-      // is — and this is most pairs on a real pile.
-      if (gap <= 0) continue;
-      const far = along + Math.sqrt(gap);
-      if (t < far) {
-        t = far;
-        moved = true;
-      }
-    }
-    if (!moved) break;
-  }
-  return t;
-}
-
-/**
  * [D] How many of a carrier's stuck items get a physics collider.
  *
  * A stuck bench swinging into a tree has to COUNT — that is where the brief's
@@ -534,178 +379,6 @@ export function packSeatDistance(a: {
  * colliders on one kinematic body. The nearest 24 are the ones on the
  * outside, which are the ones that hit things.
  */
-/**
- * [D] The yaw offsets, radians, the seat search may try around the direction
- * an item was struck from.
- *
- * WHY THERE IS A SEARCH AT ALL (user, 2026-09-18, with the Katamari Damacy
- * reference in hand: *"We should see a mass of objects together not an
- * invisible sphere"*): a purely radial pack only ever grows along the
- * directions the creature actually struck from, so a creature that walks a
- * line grows a SPIKE down that line and the mass never fills in. The
- * reference is a dense interlocking lump, filled all round.
- *
- * So the struck direction stays the STARTING point and a fixed fan around it
- * is tried too; the tightest one wins (`packSeatDirection`). An item tucks
- * into the emptiest gap it can reach from where it was hit rather than
- * extending the spike.
- *
- * Symmetric and ordered nearest-first so a tie takes the least drift, and
- * bounded at 72° so nothing ever lands on the far side of the pile from where
- * it was touched.
- */
-export const PACK_YAWS = [0, 0.3142, -0.3142, 0.6283, -0.6283, 0.9425, -0.9425, 1.2566, -1.2566];
-
-/**
- * [D] The elevation offsets, radians, tried with each yaw.
- *
- * SYMMETRIC, up to 45° either way, since 2026-09-18 (*"All the objects should
- * be cluster into one ball like the real katamari"*): the pile fills over AND
- * under the creature, which is the difference between a ball and the pancake
- * of rocks lying on the paper that the flat-seat rule produced. The creature
- * then rides on what is under it (`Clump.floor`, `groundClearance` in
- * src/creatures/manager.ts) exactly as it would on a ball it is inside.
- */
-export const PACK_TILTS = [0, 0.3927, -0.3927, 0.7854, -0.7854];
-
-/**
- * [D] The most elevation a seat may take, radians — 80°, just short of
- * straight up.
- *
- * A seat exactly on the axis has no side to it, and every item that took it
- * would stack in one column; the cap keeps the top of the pile a dome.
- */
-export const PACK_ELEVATION_MAX = 1.3963;
-
-/**
- * [D] What drifting off the struck direction COSTS, as a multiple of the
- * item's own radius per unit of `1 - cos(angle)`.
- *
- * The pile is a record of where the creature has been (the note on
- * `clumpLocalOffset`), so the direction an item arrived on is worth keeping
- * when the gap it could tuck into is no better. 2 radii is about the width of
- * one item: a candidate has to save more than an item's own width to be worth
- * a right angle of drift.
- */
-export const PACK_DRIFT_COST = 2;
-
-/**
- * The candidate directions the seat search may take for an item struck along
- * `(dirX, dirY, dirZ)` (unit, never downward). PURE, fixed order, fixed
- * length bound — the deciding page runs this once and the seat travels on the
- * `stick` event, so every page must agree float for float.
- */
-export function packCandidateDirections(
-  dirX: number,
-  dirY: number,
-  dirZ: number,
-): { x: number; y: number; z: number; dot: number }[] {
-  const hlen = Math.hypot(dirX, dirZ);
-  /*
-   * The base direction is CLAMPED into the band a seat may take before the
-   * fan is built — `PACK_ELEVATION_MAX` either way, so the pile is a ball and
-   * not a dome (the note on `PACK_TILTS`). This function is exported and
-   * pure, so it owns the band rather than trusting its caller: with the input
-   * clamped, the `tilt = 0` candidate is always inside the band and the fan
-   * is never empty.
-   *
-   * Straight up or down has no azimuth to rotate around, so it takes 0 — a
-   * well-defined seat on the pile rather than a column.
-   */
-  const azimuth = hlen > 1e-6 ? Math.atan2(dirX, dirZ) : 0;
-  const raw =
-    hlen > 1e-6
-      ? Math.atan2(dirY, hlen)
-      : dirY >= 0
-        ? PACK_ELEVATION_MAX
-        : -PACK_ELEVATION_MAX;
-  const elevation = Math.min(PACK_ELEVATION_MAX, Math.max(-PACK_ELEVATION_MAX, raw));
-  // Drift is priced against the direction a seat may actually take, which is
-  // the clamped one — otherwise a level contact from below would read as a
-  // right angle of drift for every candidate and the pricing would do nothing.
-  const bch = Math.cos(elevation);
-  const bx = Math.sin(azimuth) * bch;
-  const by = Math.sin(elevation);
-  const bz = Math.cos(azimuth) * bch;
-  const out: { x: number; y: number; z: number; dot: number }[] = [];
-  for (const yaw of PACK_YAWS) {
-    for (const tilt of PACK_TILTS) {
-      const e = elevation + tilt;
-      // Inside the band, either way up, and never a column.
-      if (e < -PACK_ELEVATION_MAX || e > PACK_ELEVATION_MAX) continue;
-      const a = azimuth + yaw;
-      const ch = Math.cos(e);
-      const x = Math.sin(a) * ch;
-      const y = Math.sin(e);
-      const z = Math.cos(a) * ch;
-      out.push({ x, y, z, dot: x * bx + y * by + z * bz });
-    }
-  }
-  // Unreachable — `tilt = 0` on the clamped base is always in the band — and
-  // kept so a future tilt table cannot silently return nothing.
-  if (out.length === 0) out.push({ x: bx, y: by, z: bz, dot: 1 });
-  return out;
-}
-
-/**
- * WHICH WAY a new item packs: the candidate around the struck direction whose
- * seat comes out TIGHTEST against the pile, with drift off that direction
- * priced in (`PACK_DRIFT_COST`). PURE.
- *
- * This is the whole of the "dense lump, not a spike" fix. `packSeatDistance`
- * answers how far out a seat is along ONE direction; a radial pack takes the
- * struck direction and nothing else, so the mass extends where the creature
- * has been and never fills the gaps between. Trying a fan and keeping the
- * nearest seat is a greedy fill: every item lands in the emptiest hollow
- * within reach of where it was hit, so the pile rounds out and closes up.
- *
- * Still greedy, still one-dimensional per candidate, still bounded — nine
- * yaws by four tilts by `PACK_PASSES` — and still order-dependent in the
- * seats it is given, which is what the wire needs.
- */
-export function packSeatDirection(a: {
-  dirX: number;
-  dirY: number;
-  dirZ: number;
-  itemR: number;
-  selfR: number;
-  seats: readonly { x: number; y: number; z: number; r: number }[];
-}): { dirX: number; dirY: number; dirZ: number; reach: number } {
-  let best: { dirX: number; dirY: number; dirZ: number; reach: number } | null = null;
-  let bestScore = Infinity;
-  for (const c of packCandidateDirections(a.dirX, a.dirY, a.dirZ)) {
-    const reach = packSeatDistance({
-      dirX: c.x,
-      dirY: c.y,
-      dirZ: c.z,
-      itemR: a.itemR,
-      selfR: a.selfR,
-      seats: a.seats,
-    });
-    const score = reach + PACK_DRIFT_COST * a.itemR * (1 - c.dot);
-    // Strictly less, so the first candidate — the struck direction itself —
-    // wins every tie and the fan can only ever tighten the pile.
-    if (score < bestScore - 1e-9) {
-      bestScore = score;
-      best = { dirX: c.x, dirY: c.y, dirZ: c.z, reach };
-    }
-  }
-  if (best) return best;
-  return {
-    dirX: a.dirX,
-    dirY: a.dirY,
-    dirZ: a.dirZ,
-    reach: packSeatDistance({
-      dirX: a.dirX,
-      dirY: a.dirY,
-      dirZ: a.dirZ,
-      itemR: a.itemR,
-      selfR: a.selfR,
-      seats: a.seats,
-    }),
-  };
-}
-
 export const STUCK_COLLIDERS_MAX = 24;
 
 /**
@@ -902,36 +575,14 @@ export function clearanceLift(
   sampleHeight: (x: number, z: number) => number,
 ): number {
   if (!(bodyR > 0)) return 0;
-  return footprintRise(x, z, bodyR, sampleHeight) + bodyR * CLEARANCE_PAD;
-}
-
-/**
- * HOW MUCH HIGHER THE GROUND IS UNDER THE EDGE of a footprint this wide than
- * it is under the middle, world units. PURE, and never negative.
- *
- * The ring half of `clearanceLift` on its own, because the ground pass wants
- * exactly that and NOT the pad (2026-09-17, the *"characters are floating"*
- * report): the pad is a fraction of a RADIUS, and a pile is sat down by its
- * own lowest point now, so adding a fraction of anything to it is a creature
- * held off the paper by a number with nothing under it. The pad stays where
- * it was earned — inside `clearanceLift`, which the ball's own silhouette
- * still uses.
- */
-export function footprintRise(
-  x: number,
-  z: number,
-  radius: number,
-  sampleHeight: (x: number, z: number) => number,
-): number {
-  if (!(radius > 0)) return 0;
   const centre = sampleHeight(x, z);
-  const ringR = radius * CLEARANCE_RING;
+  const ringR = bodyR * CLEARANCE_RING;
   let highest = centre;
   for (const dir of CLEARANCE_DIRS) {
     const h = sampleHeight(x + dir.x * ringR, z + dir.z * ringR);
     if (h > highest) highest = h;
   }
-  return Math.max(0, highest - centre);
+  return Math.max(0, highest - centre) + bodyR * CLEARANCE_PAD;
 }
 
 /** The biggest item radius this carrier can take on. */
@@ -1120,73 +771,6 @@ export function growth(baseR: number, volumes: readonly number[]): number {
 }
 
 /**
- * [D] The slowest a huge ball ever gets, as a fraction of the speed the same
- * creature had with nothing on it.
- *
- * > User ask, 2026-09-18: *"when a ball gets big it should move slower.
- * > smaller balls should move faster."*
- *
- * A floor and not a straight `1/growth`: a ball that has eaten half the
- * island still has to be drivable, and a speed that keeps halving reads as a
- * frozen game rather than a heavy one.
- *
- * HALF since 2026-09-18 (*"The character is also moving too slow we should
- * make them more agile"*), from 0.35. At the raised rolling ceiling that is
- * 6.6 u/s for the biggest ball in the room — brisker than a fresh creature's
- * whole walk — so the penalty still reads as weight rather than as a
- * punishment for playing well. The KNEE is untouched: what a big ball loses
- * against a small one is the same shape it was, lifted.
- */
-export const MASS_SPEED_FLOOR = 0.5;
-
-/**
- * [D] The growth at which the falloff has given up HALF of what it has to
- * give — the knee of the curve.
- *
- * 0.8 puts the interesting part of the curve where the interesting part of a
- * session is. Measured against the real growth curve, a 1.2 u creature eating
- * 0.45 u props:
- *
- *   props   0     10     20     30     40     60
- *   ball    2.4u  3.5u   4.2u   4.7u   5.1u   5.7u
- *   factor  1.00  0.76   0.69   0.65   0.62   0.59
- *   rolling 10.8  8.24   7.44   7.00   6.72   6.34  u/s
- *
- * …and past that, 0.46 at growth 5, 0.40 at 10, 0.38 at the growth 21 of the
- * 51 m ball on the deployed build — the floor approached and never crossed.
- * A first ten props is a quarter of the speed gone, which is felt; 1.6 put
- * the same loss forty props later, which was not.
- */
-export const MASS_SPEED_KNEE = 0.8;
-
-/**
- * How much of its speed a carrier keeps at a given `growth`. PURE, and 1 for
- * a creature carrying nothing — so it can be applied unconditionally.
- *
- * > *"when a ball gets big it should move slower. smaller balls should move
- * > faster."*
- *
- * A HYPERBOLA and not a power law, because what this has to be is monotone,
- * exactly 1 at the start and bounded below: `floor + (1 - floor) / (1 + x)`
- * where `x` is how far past its own size the pile has grown, in units of the
- * knee. Every one of those three properties is load-bearing — 1 at the start
- * keeps a hatchling exactly as fast as it shipped (and so keeps every other
- * world's arithmetic untouched, since nothing there ever has a pile),
- * monotone is what the user asked for, and the floor is what keeps a huge
- * ball drivable.
- *
- * It is the SPEED and not the acceleration: the drive ceiling is what this
- * scales, and the ζ ≥ 1 speed spring inside the agent is what turns a lower
- * ceiling into an unhurried arrival at it. A big ball therefore also takes
- * longer to get going, which is the half of the feel nobody had to ask for.
- */
-export function massSpeedFactor(growth: number): number {
-  const past = Math.max(0, growth - 1) / MASS_SPEED_KNEE;
-  if (!Number.isFinite(past)) return MASS_SPEED_FLOOR;
-  return MASS_SPEED_FLOOR + (1 - MASS_SPEED_FLOOR) / (1 + past);
-}
-
-/**
  * Has this item been knocked off?
  *
  * Strictly greater, so an `attachmentStrength` of 0 still sheds on any real
@@ -1272,22 +856,6 @@ function rotate(q: Quat, x: number, y: number, z: number): { x: number; y: numbe
  *
  * A hit exactly at the centre has no direction to keep, so the heading is
  * used — the item lands in front of the creature, which is where it was.
- *
- * HOW FAR OUT is `packSeatDistance` (2026-09-17, *"the character should be the
- * object that the items stick to"*): the character's own surface for the first
- * thing, and on top of what is already there for everything after. It used to
- * be `R + itemR × CLUMP_FIT` — the surface of a sphere of radius
- * `baseR × growth` — which is the shell that had to be drawn for the pile to
- * make sense, and is gone.
- *
- * WHICH WAY OUT is `packSeatDirection` (2026-09-18, *"We should see a mass of
- * objects together not an invisible sphere"*, with the Katamari Damacy
- * reference): the struck direction is where the search STARTS, not where the
- * seat must be. A purely radial pack grows a spike along the line the creature
- * walked and never fills the gaps between; a bounded fan around the contact,
- * keeping the tightest seat, is a greedy fill — measured over a straight
- * 24-prop walk the outer radius falls 7.75 → 2.84 u and the pile stops being
- * 2.5x longer than it is wide.
  */
 export function clumpLocalOffset(a: {
   itemX: number;
@@ -1298,12 +866,8 @@ export function clumpLocalOffset(a: {
   centreZ: number;
   headingX: number;
   headingZ: number;
-  /** The CHARACTER's own radius — what the first item sticks to. */
-  selfR: number;
+  R: number;
   itemR: number;
-  /** What is already on the pile (world offsets from its centre, and radii),
-   * which is what everything after the first item packs against. */
-  seats: readonly { x: number; y: number; z: number; r: number }[];
   clumpWorldQ: Quat;
   growth: number;
 }): { x: number; y: number; z: number } {
@@ -1324,64 +888,10 @@ export function clumpLocalOffset(a: {
       len = 1;
     }
   }
-  /*
-   * THE PILE IS A BALL, so it packs DOWNWARD too (user direction,
-   * 2026-09-18: *"All the objects should be cluster into one ball like the
-   * real katamari"*).
-   *
-   * It did not, between 2026-09-17 and then: a downward contact was flattened
-   * to the horizontal and every seat's height was clamped to where the item
-   * rests on the paper, because the ground pass had no honest way to lift a
-   * creature and a pile under the feet read as floating. The cost was the
-   * shape — with nothing allowed below the equator and tall things pinned to
-   * the ground, a grown pile spread into a pancake of props lying on the
-   * paper around the creature, which is the phone screenshot.
-   *
-   * Both halves are gone now that the lift is measured from what is actually
-   * underneath (`Clump.floor`, which since 2026-09-18 reads the pile as it is
-   * currently rolled): the mass closes round the creature and the creature
-   * rides at the middle of it with the lowest item resting on the ground,
-   * which is a ball the character is inside — the reference.
-   */
-  const fy = dy;
-  let flen = Math.sqrt(dx * dx + fy * fy + dz * dz);
-  if (!(flen > 1e-6)) {
-    // No direction at all: take the heading, which is where the creature was
-    // looking when it hit the thing.
-    dx = a.headingX;
-    dz = a.headingZ;
-    flen = Math.hypot(dx, dz);
-    if (!(flen > 1e-6)) {
-      dx = 0;
-      dz = 1;
-      flen = 1;
-    }
-  }
-  const ux = dx / flen;
-  const uy = fy / flen;
-  const uz = dz / flen;
-  const picked = packSeatDirection({
-    dirX: ux,
-    dirY: uy,
-    dirZ: uz,
-    itemR: a.itemR,
-    selfR: a.selfR,
-    seats: a.seats,
-  });
-  const reach = picked.reach;
-  const wx = picked.dirX * reach;
-  const wz = picked.dirZ * reach;
-  /*
-   * AND THE HEIGHT IS THE PACKING'S, with no clamp (2026-09-18, the ball
-   * above). It used to be raised to `itemR - selfR` — the height at which the
-   * thing rests on the paper beside the creature — so that `Clump.floor()`
-   * could never go negative and the feet never left the ground. That is what
-   * laid every big prop flat on the grass instead of sticking it to the mass.
-   * The lift now comes from the pile's own lowest point, so a seat below the
-   * feet is not a bug to be clamped away: it is the part of the ball the
-   * creature is standing on.
-   */
-  const wy = picked.dirY * reach;
+  const reach = a.R + a.itemR * CLUMP_FIT;
+  const wx = (dx / len) * reach;
+  const wy = (dy / len) * reach;
+  const wz = (dz / len) * reach;
   const local = rotate(conjugate(a.clumpWorldQ), wx, wy, wz);
   const g = a.growth > 1e-6 ? a.growth : 1;
   return { x: local.x / g, y: local.y / g, z: local.z / g };

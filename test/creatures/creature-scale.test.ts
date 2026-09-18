@@ -242,7 +242,19 @@ describe('a creature does not grow with its pile', () => {
      * something for it to stand on. What this pins is that the topper moves
      * WITH the creature rather than being left behind by the counter-scale.
      */
-    expect(worldPos(topper!).y).toBeCloseTo(wherever.y, 6);
+    /*
+     * IT RIDES UP WITH THE BALL (user direction, 2026-09-18: *"we actually
+     * want to have the creature in the center of the mass, and then the
+     * mass's outer bounds be in contact with the floor of the landscape"*).
+     *
+     * The creature is at the sphere's centre and the sphere rests on the
+     * paper, so the whole creature is a radius higher than it stood — which
+     * is the ground pass's `sit` term and nothing to do with the
+     * counter-scale. What this pins is that the topper moves WITH the
+     * creature rather than being left behind by it: the offset from the root
+     * is unchanged to the float, at whatever height the root now sits.
+     */
+    expect(worldPos(topper!).y - worldPos(root).y).toBeCloseTo(wherever.y, 6);
     expect(worldPos(topper!).y).toBeGreaterThan(worldPos(root).y);
     manager.clearAll();
   });

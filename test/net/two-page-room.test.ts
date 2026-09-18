@@ -1092,10 +1092,22 @@ describe('sticking, as the viewer sees it', () => {
       expect(seen.bodyR, name).toBeGreaterThan(baseR * 3);
       // …and the creature inside it is EXACTLY its drawn size.
       expect(seen.charScale, name).toBeCloseTo(1, 6);
-      // Six items, each packed on the creature at the same distance.
+      /*
+       * Six items, all seated on the sphere the pile IS (user ruling,
+       * 2026-09-18: *"revert to the first version"*). Each seat is the
+       * surface the ball had WHEN THAT ITEM STUCK plus its own radius bedded
+       * in by `CLUMP_FIT` — and the ball grew with every pickup, so the six
+       * are not one number. What has to hold is the band they lie in, and
+       * that the HOST and the VIEWER agree on it, which is what this test is
+       * for: the same pile drawn twice from the same events.
+       */
       expect(seen.seats.length, name).toBe(6);
       for (const seat of seen.seats) {
-        expect(seat, name).toBeCloseTo(baseR + tree.r * 0.7, 3);
+        // Outside the creature and on the ball — the bedding term rides the
+        // growth in the first version's clump-local frame, so an early seat
+        // drifts a little further out as the sphere grows under it.
+        expect(seat, name).toBeGreaterThan(baseR);
+        expect(seat, name).toBeLessThanOrEqual(seen.bodyR + 3 * tree.r);
       }
     }
     // ONE pile, ONE size, on all three pages — derived, never sent.
@@ -1174,7 +1186,11 @@ describe('sticking, as the viewer sees it', () => {
     const seen = drawn(viewer, 'mine');
     // Four items, not five: the resent one re-seated rather than doubling.
     expect(seen.seats.length).toBe(4);
-    for (const seat of seen.seats) expect(seat).toBeCloseTo(baseR + tree.r * 0.7, 3);
+    // On the sphere the pile is, each at the surface it had when it stuck.
+    for (const seat of seen.seats) {
+      expect(seat).toBeGreaterThan(baseR);
+      expect(seat).toBeLessThanOrEqual(seen.bodyR + 3 * tree.r);
+    }
     // A grown ball, and the creature still at its drawn size inside it.
     expect(seen.bodyR).toBeGreaterThan(baseR * 2);
     expect(seen.charScale).toBeCloseTo(1, 6);

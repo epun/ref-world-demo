@@ -61,11 +61,11 @@ import { isWater, mapScale } from '../world/landscape';
 import { sanitizeGame, type WorldGame } from '../world/game';
 import { resolveName } from './naming';
 import { createClump, type Clump, type StuckItem } from './clump';
+import { createBallBody, type BallBody } from './ball';
 import { FLOAT_SETTLED, floatBob, floatHeight, floatTumble } from './gravity';
 import {
   carryLimit,
   clearanceLift,
-  footprintRise,
   passLimit,
   rollTarget,
   clumpLocalOffset,
@@ -75,8 +75,6 @@ import {
   CONTACT_PAD,
   DROP_MIN_GAP_MS,
   impactOf,
-  massSpeedFactor,
-  TOUCH_FIT,
   shouldDrop,
   stageFor,
   STICKY,
@@ -800,6 +798,23 @@ interface Slot {
    * katamari.
    */
   rider: Group | null;
+  /**
+   * THE BALL ITSELF — the sphere the pile is (src/creatures/ball.ts).
+   *
+   * Restored with the first version's mechanics (user ruling, 2026-09-18:
+   * *"the very first version of this worked so well. Let's revert to the
+   * first version"*). The items are seated on the surface of a sphere of
+   * radius `bodyR`, so a mesh has to occupy it — without one, a small
+   * character on the north pole of nothing is a creature hanging in the air
+   * (the 2026-09-17 report that first brought this mesh into being).
+   *
+   * Radius 1 in its own space, scaled to `baseR`, hung on the ROOT so the
+   * root's growth carries it to `bodyR` in the same single write as the
+   * resolve circle and the shadow stamp. `growPass` writes its height and
+   * whether it is drawn at all. Null while this is an egg, and in every world
+   * but the katamari.
+   */
+  ball: BallBody | null;
   /**
    * The id of the creature CARRYING this one, or null.
    *
@@ -1708,61 +1723,10 @@ export function createCreatureManager(
    * ζ ≥ 1 spring, so the speed arrives by sliding — there is no frame where
    * the stick suddenly means something different.
    */
-  const driveMult = (blend: number, growth: number = 1): number =>
-    katamari
-      ? (walkMult() + (wanderSpeedMult - walkMult()) * blend) * massSpeedFactor(growth)
-      : wanderSpeedMult;
+  const driveMult = (blend: number): number =>
+    katamari ? walkMult() + (wanderSpeedMult - walkMult()) * blend : wanderSpeedMult;
 
-  /**
-   * THE MASS PENALTY on a slot's own speed (user ask, 2026-09-18: *"when a
-   * ball gets big it should move slower. smaller balls should move faster"*).
-   *
-   * `massSpeedFactor` is the law (src/creatures/sticky.ts, pure and tested);
-   * this is the only place that reads a slot for it. It is exactly 1 for a
-   * creature carrying nothing, so a hatchling drives and wanders at the
-   * speeds it shipped with and no other world's arithmetic moves — nothing
-   * outside the game ever has a pile, and `driveMult` does not even ask.
-   *
-   * It is not on the wire and does not need to be: every page derives it from
-   * the growth, and the growth comes from the seats, which travel on the
-   * `stick` event. A viewer's extrapolation is bounded by
-   * `FOLLOW_LEAD_MAX_SPEED` as before — a ceiling over everything, unchanged.
-   */
-  const massMultOf = (slot: Slot): number =>
-    katamari ? (slot.clump?.growth() ?? 1) : 1;
 
-  /**
-   * THE SOLID RADIUS — how far this creature physically reaches, world units.
-   *
-   * > User report, 2026-09-18: *"objects are still being drawn towards the
-   * > creature instead of sticking to the creature after it rolls over it."*
-   *
-   * `bodyR` is `baseR × growth`: the accumulated VOLUME of everything
-   * collected, which is the game's SIZE — the readout, the leaderboard, the
-   * carry limit, the impact. It is NOT where the mass is. Since the pile was
-   * packed (2026-09-17) and interlocked (2026-09-18) the drawn lump is
-   * markedly tighter than that number — 4.6 u packed against a 7.1 u volume
-   * at fifteen props — so every circle derived from `bodyR` was metres wider
-   * than anything on screen: props were grabbed out of clear air and then
-   * slid to their seat, and a creature bounced off walls it had not reached.
-   *
-   * So "how big is this ball" and "where is its surface" are two questions
-   * now, the way `rapierOwns`/`deciding` are two questions (docs/PLAN.md
-   * §7.6). This is the second one: the creature's own drawn radius, or the
-   * pile's footprint once there is one. Outside the game there is no pile and
-   * this is exactly `bodyR`, so nothing else in this file changes by it.
-   *
-   * WHAT STILL READS `bodyR`, on purpose: `carryLimit`/`passLimit` (what a
-   * mass can pick up or shove past), `impactOf` (what it hits with),
-   * `ballDiameter` and the leaderboard (its size), `positions()`'s exclusion
-   * radius (the scatter keeps clear of the whole game object) and the
-   * mass-speed factor. Those are all about MASS. This one is about REACH.
-   */
-  const solidR = (slot: Slot): number => {
-    if (!katamari) return slot.bodyR;
-    const drawn = Math.max(slot.baseR, slot.clump?.footprint() ?? 0);
-    return drawn > 0 ? drawn : slot.bodyR;
-  };
 
   /** How fast a driven creature turns toward the push — tighter in a
    * katamari world, because it is going more than twice as fast there. */
@@ -1995,6 +1959,9 @@ export function createCreatureManager(
     slot.clump?.dispose();
     slot.clump = null;
     slot.rider = null;
+    // The sphere's geometry and material are its own (src/creatures/ball.ts).
+    slot.ball?.dispose();
+    slot.ball = null;
     slot.agent?.dispose();
     slot.agent = null;
     if (slot.hatch) slot.hatch.dispose();
@@ -2138,6 +2105,23 @@ export function createCreatureManager(
       rider.add(character.group);
       root.add(rider);
       slot.rider = rider;
+      /*
+       * …AND THE BALL THE ITEMS ARE SEATED ON (src/creatures/ball.ts),
+       * restored with the first version's mechanics.
+       *
+       * Radius 1 in its own space, scaled to `baseR`, ON THE ROOT: the root's
+       * uniform scale is the growth, so the drawn sphere is `bodyR` across
+       * without a second write and `ballDiameter` measures the thing on
+       * screen. Its hue is the creature's own — creatures are coloured and
+       * the environment is not (TASTE §8).
+       *
+       * ADDED LAST, after the rider, so the creature's own body is still the
+       * first Mesh under the root — the rig's one ordering convention
+       * (src/character/character.ts).
+       */
+      const ball = createBallBody(slot.baseR, character.palette, behaviorSeed(slot.id));
+      root.add(ball.mesh);
+      slot.ball = ball;
     }
     world.shadows.removeShadow(`egg-${slot.id}`);
     slot.eggShadow = null;
@@ -2155,7 +2139,7 @@ export function createCreatureManager(
     // wherever it happens (see `walkMult`) — times this creature's own mass
     // penalty, which is 1 until it picks something up and is refreshed every
     // frame by `growPass`.
-    slot.agent.setSpeedMultiplier(walkMult() * massSpeedFactor(massMultOf(slot)));
+    slot.agent.setSpeedMultiplier(walkMult());
   }
 
   function beginHatch(slot: Slot, cause: 'timer' | 'forced'): void {
@@ -3095,7 +3079,7 @@ export function createCreatureManager(
      * be picking things up with a body several metres under the sphere on
      * screen. 0 with the world's gravity on.
      */
-    const standR = solidR(slot);
+    const standR = slot.bodyR;
     const y =
       surface.sampleHeight(root.position.x, root.position.z) + slot.lift + slot.float + standR;
     if (!slot.kinematic) {
@@ -3237,8 +3221,11 @@ export function createCreatureManager(
        * to disagree: a stuck bench swept a circle `growth` times wider than
        * the bench anybody could see.
        */
-      const seat = clump.seatOf(item.key);
-      scratchVec.set(seat?.x ?? 0, seat?.y ?? 0, seat?.z ?? 0);
+      // The clump's own rotation, applied to the stored local offset — the
+      // first version's arithmetic, restored with its clump: an offset is
+      // clump-local there and rides the root's growth.
+      const g = clump.growth();
+      scratchVec.set(item.offset.x, item.offset.y, item.offset.z).multiplyScalar(g);
       scratchVec.applyQuaternion(clump.worldQ);
       // Plus the clump group's own lift off the creature's middle.
       collider.setTranslationWrtParent({
@@ -3325,8 +3312,7 @@ export function createCreatureManager(
       centreZ: scratchVec.z,
       headingX: Math.sin(root.rotation.y),
       headingZ: Math.cos(root.rotation.y),
-      selfR: carrier.baseR,
-      seats: carrier.clump?.seats() ?? [],
+      R: carrier.bodyR,
       itemR: item.r,
       clumpWorldQ: clump.worldQ,
       growth: clump.growth(),
@@ -3373,8 +3359,7 @@ export function createCreatureManager(
       centreZ: scratchVec.z,
       headingX: Math.sin(root.rotation.y),
       headingZ: Math.cos(root.rotation.y),
-      selfR: carrier.baseR,
-      seats: carrier.clump?.seats() ?? [],
+      R: carrier.bodyR,
       itemR: rider.bodyR,
       clumpWorldQ: clump.worldQ,
       growth: clump.growth(),
@@ -3576,8 +3561,7 @@ export function createCreatureManager(
       centreZ: scratchVec.z,
       headingX: Math.sin(root.rotation.y),
       headingZ: Math.cos(root.rotation.y),
-      selfR: slot.baseR,
-      seats: slot.clump?.seats() ?? [],
+      R: slot.bodyR,
       itemR,
       clumpWorldQ: clump.worldQ,
       growth: clump.growth(),
@@ -3886,33 +3870,18 @@ export function createCreatureManager(
       const { slot, root } = entry;
       if (slot.carriedBy) continue;
       /*
-       * THE MASS AS IT IS DRAWN — what a person can see touching the thing.
+       * THE ROLLING BALL'S OWN RADIUS, growth and all — the FIRST VERSION's
+       * rule, restored (user ruling, 2026-09-18: *"honestly the very first
+       * version of this worked so well. Let's revert to the first version"*).
        *
-       * > User report, 2026-09-18: *"objects are still being drawn towards
-       * > the creature instead of sticking to the creature after it rolls
-       * > over it."*
-       *
-       * This was `slot.bodyR`, the accumulated VOLUME (`baseR × growth`),
-       * which is the game's size and runs well ahead of the packed pile — 7.1
-       * u against a packed 4.6 at fifteen props, and further apart since the
-       * objects interlock. So a creature grabbed stones a couple of metres
-       * outside anything on screen and they then SLID IN to their seat: the
-       * pile looked like it was sucking props toward it rather than picking up
-       * what it rolled over. The slide is right (a hard cut is forbidden, TASTE
-       * §2.1) — the distance it had to cover was not.
-       *
-       * The honest reach is the silhouette: the creature's own drawn radius,
-       * or the pile's footprint once there is one, whichever is wider — the
-       * same pair the corner's live view frames by and the phone's camera
-       * follows. `carryLimit` still reads `bodyR`, because WHAT a ball can
-       * pick up is its mass (the 2026-09-17 ask) and WHERE it can reach from
-       * is its silhouette; they were one number by accident.
-       *
-       * Nothing wedges on the way in: a carriable prop is dropped from the
-       * resolve's collider set entirely (`skipIf`, the `carryLimit` branch
-       * above), so the creature rolls up to it and then over it.
+       * `growPass` writes `bodyR = baseR × clump.growth()` every frame and
+       * `clump.R()` is that same product, so the circle that picks things up
+       * is exactly the circle that is turning on the ground. Between
+       * 2026-09-17 and this revert the reach was the packed pile's silhouette
+       * and the prop's own radius was halved into it; both are gone with the
+       * packing they belonged to.
        */
-      const reach = solidR(slot);
+      const reach = slot.bodyR;
       const nearIdx = itemGrid.near(root.position.x, root.position.z, reach + itemGrid.cellSize);
       for (let k = 0; k < nearIdx.length; k++) {
         const item = itemList[nearIdx[k]!];
@@ -3920,20 +3889,9 @@ export function createCreatureManager(
         const props = stickyFor(item.kind, item.variant);
         const point = itemPoints[nearIdx[k]!]!;
         const d = Math.hypot(point.x - root.position.x, point.z - root.position.z);
-        /*
-         * CONTACT, not proximity (user report, 2026-09-18: *"they should only
-         * get added to the ball after the creature has rolled over the
-         * objects. It shouldn't be sucked in like a vacuum"*).
-         *
-         * `item.r` is the prop's BOUNDING radius and a prop is mostly air
-         * inside its own sphere, so a test against the whole of it fires
-         * while the two are still visibly apart — the creature's side of that
-         * sum was cut to the silhouette in 75c9e6c and this is the prop's
-         * side (`TOUCH_FIT`, src/creatures/sticky.ts). `CONTACT_PAD` stays,
-         * because nothing in this world is ever exactly touching: every
-         * solver here holds a skin.
-         */
-        if (d > reach + item.r * TOUCH_FIT + CONTACT_PAD) continue;
+        // `CONTACT_PAD`, because nothing in this world is ever exactly
+        // touching: every solver here holds a skin.
+        if (d > reach + item.r + CONTACT_PAD) continue;
         // Units: world units per second, raw off the body — see the note on
         // `preSpeed` in the resolve block.
         const speed = Math.hypot(entry.body.vx, entry.body.vz);
@@ -4224,35 +4182,37 @@ export function createCreatureManager(
     const spring = slot.liftSpring;
     const root = slot.characterRoot;
     if (!spring || !root) return 0;
-    const clump = slot.clump;
-    const footprint = clump?.footprint() ?? 0;
     /*
-     * THE CREATURE IS ANCHORED TO THE GROUND. A pile never lifts it.
-     *
-     * > User report, 2026-09-18: *"The character is still floating in Z
-     * > space. We should make sure that it is anchored to the surface of the
-     * > ground as the mass is rolling. It should not be floating in the
-     * > air."*
-     *
-     * That reverses 3a745f8, which lifted the root by the pile's own lowest
-     * point so a ball packed below the equator would not clip into the map.
-     * The clipping rule was right and the payer was wrong: the PILE now
-     * holds itself up (`Clump.rise`, src/creatures/clump.ts) — the mass rests
-     * its underside on the paper, the creature stands on the paper at the
-     * middle of it, and every seat keeps the relative position the packer
-     * gave it, so the lump is the same lump.
-     *
-     * What is left here is the terrain ring, which is a different question
-     * altogether — not "how big is the mass" but "does the ground under the
-     * mass rise", the 2026-09-16 rule that stops a wide pile clipping through
-     * a hillside. A radius was never the right measurement for it either:
-     * `reach()` is how far the pile stretches in ANY direction, so a creature
-     * with three benches beside it was held metres in the air over a gap
-     * (2026-09-17, three reports). It is the FOOTPRINT — a horizontal
-     * question taking a horizontal answer.
+     * THE BALL RIDES ON ITS WHOLE FOOTPRINT (2026-09-16, *"the ball is
+     * glitching through the map floor if it's big enough"*) — the first
+     * version's rule, restored with the sphere it measures. A creature is
+     * placed on the ground under its CENTRE, which is right for a hatchling
+     * and wrong for a ball several units across: `clearanceLift` samples a
+     * ring at `bodyR × CLEARANCE_RING` and keeps the underside above the
+     * highest ground under it.
      */
+    /*
+     * THE MASS RESTS ON THE FLOOR, with the creature at its middle (user
+     * direction, 2026-09-18: *"the mass's outer bounds be in contact with the
+     * floor of the landscape"*).
+     *
+     * The pile is centred on the root now (src/creatures/clump.ts), so the
+     * sphere's underside is `bodyR` below it: lifting the root by that much
+     * sets the ball down on the paper and leaves the creature inside it, at
+     * the centre. Scaled by the ROLL blend, so a creature carrying nothing is
+     * on the ground exactly as it shipped and the rise between is the roll
+     * spring's — a slide, never a pop (TASTE §2.1).
+     *
+     * Plus `clearanceLift`, the 2026-09-16 rule that stops a big ball
+     * clipping a hillside: a ring sampled at `bodyR × CLEARANCE_RING` and the
+     * highest ground under it. The two add — the ball has to clear the
+     * terrain under its own footprint as well as stand on it.
+     */
+    const g = slot.clump?.growth() ?? 1;
+    const sit = slot.bodyR * slot.roll;
     const target =
-      footprint > 0 ? footprintRise(root.position.x, root.position.z, footprint, sampleAt) : 0;
+      sit +
+      (g > 1 ? clearanceLift(root.position.x, root.position.z, slot.bodyR, sampleAt) : 0);
     spring.retarget(target);
     // Clamped at 0 on the way out: a clearance can lift a creature and must
     // never be able to push one INTO the ground, whatever a solver does.
@@ -4366,7 +4326,6 @@ export function createCreatureManager(
        * walk ceiling under it too, and this is one multiply on a number that
        * is already in hand.
        */
-      if (katamari) slot.agent?.setSpeedMultiplier(walkMult() * massSpeedFactor(g));
       /*
        * AND WHETHER IT IS A BALL YET — here, because this is the pass that
        * runs on EVERY page (docs/PLAN.md §7.6). The blend is derived from the
@@ -4450,6 +4409,32 @@ export function createCreatureManager(
        * draws, and it is what made a hatchling read as a big creature the
        * moment it picked up its first stone.
        */
+      /*
+       * THE BALL IT IS STANDING ON, which is the same statement seen from a
+       * radius lower down. The sphere's CENTRE is `baseR · (2 · roll − 1)`
+       * root-local, exactly `baseR` under the creature's feet at every value
+       * of the blend — so the two numbers are one number and the creature can
+       * never be off its own ball. At `roll` 1 that is the clump's own origin,
+       * `(0, baseR, 0)`, which is where the items are seated; at `roll` 0 it
+       * is `−baseR`, which puts the whole sphere under the root and therefore
+       * under the ground the root stands on. So a WALKING creature shows no
+       * ball without anything being switched off, and the ramp between is the
+       * roll spring's — a slide and never a pop (TASTE §2.1).
+       */
+      const ball = slot.ball;
+      if (ball) {
+        /*
+         * CENTRED ON THE CREATURE (user direction, 2026-09-18: *"we actually
+         * want to have the creature in the center of the mass"*). It used to
+         * be swung to `baseR · (2 · roll − 1)` — a sphere tangent to the
+         * paper with the creature standing on its north pole, which is the
+         * mass sitting ABOVE the creature that the screenshot showed. The
+         * lift below puts the sphere's underside on the ground instead, so
+         * the ramp is the root's and this stays at the middle.
+         */
+        ball.mesh.position.y = 0;
+        ball.mesh.visible = slot.roll > 1e-3;
+      }
       if (slot.character) slot.characterShadow?.setRadius?.(slot.character.radius);
       syncPileShadows(slot, root);
     }
@@ -4485,11 +4470,15 @@ export function createCreatureManager(
     const wanted = shadowWanted;
     wanted.length = 0;
     for (const item of clump.items.values()) wanted.push(item);
+    /*
+     * Ordered by how far out each thing is, read off its own OFFSET — which
+     * is what the first version's clump stores (a clump-local offset riding
+     * the growth), rather than the packed seats the 2026-09-17 model held in
+     * world units. Same ordering, one less concept.
+     */
     wanted.sort((a, b) => {
-      const sa = clump.seatOf(a.key);
-      const sb = clump.seatOf(b.key);
-      const da = sa ? sa.x * sa.x + sa.z * sa.z : 0;
-      const db = sb ? sb.x * sb.x + sb.z * sb.z : 0;
+      const da = a.offset.x * a.offset.x + a.offset.z * a.offset.z;
+      const db = b.offset.x * b.offset.x + b.offset.z * b.offset.z;
       // Deterministic under a tie, so the set does not flicker frame to
       // frame the way an unstable sort would let it.
       return db - da || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
@@ -4503,15 +4492,17 @@ export function createCreatureManager(
       world.shadows.removeShadow(`stuck-${slot.id}-${key}`);
       stamps.delete(key);
     }
+    const growth = clump.growth();
     for (const item of wanted) {
-      const seat = clump.seatOf(item.key);
-      if (!seat) continue;
       let handle = stamps.get(item.key);
       if (!handle) {
         handle = world.shadows.addShadow(`stuck-${slot.id}-${item.key}`, item.r);
         stamps.set(item.key, handle);
       }
-      shadowSeat.set(seat.x, seat.y, seat.z).applyQuaternion(clump.worldQ);
+      shadowSeat
+        .set(item.offset.x, item.offset.y, item.offset.z)
+        .multiplyScalar(growth)
+        .applyQuaternion(clump.worldQ);
       handle.setRadius?.(item.r);
       handle.setPosition(root.position.x + shadowSeat.x, root.position.z + shadowSeat.z);
     }
@@ -4619,6 +4610,7 @@ export function createCreatureManager(
         baseR: 0,
         clump: null,
         rider: null,
+        ball: null,
         carriedBy: null,
         roll: 0,
         rollSpring: null,
@@ -4941,7 +4933,7 @@ export function createCreatureManager(
             body.z = root.position.z;
             body.vx = 0;
             body.vz = 0;
-            body.r = solidR(slot) > 0 ? solidR(slot) : slot.character.radius;
+            body.r = slot.bodyR > 0 ? slot.bodyR : slot.character.radius;
             aliveScratch.push({
               slot,
               root,
@@ -5106,7 +5098,7 @@ export function createCreatureManager(
             if (driven) slot.drivenAtMs = nowMs;
             const held =
               slot.drivenAtMs !== null && nowMs - slot.drivenAtMs < DRIVE_IDLE_MS;
-            const ceiling = DRIVE_SPEED * driveMult(rollOf(slot), massMultOf(slot));
+            const ceiling = DRIVE_SPEED * driveMult(rollOf(slot));
             const driveVx = driven ? driven.x * ceiling : 0;
             const driveVz = driven ? driven.z * ceiling : 0;
             // What the hand is asking for, and where the creature is really
@@ -5130,7 +5122,7 @@ export function createCreatureManager(
             );
             let vx = driven ? driveVx : out.vx;
             let vz = driven ? driveVz : out.vz;
-            const bodyR = solidR(slot) > 0 ? solidR(slot) : slot.character.radius;
+            const bodyR = slot.bodyR > 0 ? slot.bodyR : slot.character.radius;
             const near = gatherNear(root.position.x, root.position.z, bodyR);
 
             // Soft bodies: pushing through a bush is slow (~55% damped), and
@@ -5911,24 +5903,39 @@ export function createCreatureManager(
       return slot ? slot.lift : 0;
     },
 
+    /*
+     * THE MASS, MEASURED — five numbers the CORNER's live view frames by
+     * (src/world/portrait.ts) and one the ground pass used to.
+     *
+     * They are the SPHERE's again (user ruling, 2026-09-18: *"revert to the
+     * first version"*, keeping *"upper left ui with 3d representation of mass
+     * and size measurements"*). The packed pile they used to walk is gone with
+     * its packer, and the first version's mass is a ball of radius `bodyR`
+     * standing on the paper: nothing reaches past it, nothing goes below the
+     * feet, its top is a diameter up and its footprint is its own radius. The
+     * corner therefore frames a sphere, which is what there is to see.
+     */
     pileReach(id): number {
-      return slots.get(id)?.clump?.reach() ?? 0;
+      return slots.get(id)?.bodyR ?? 0;
     },
 
     pileFloor(id): number {
-      return slots.get(id)?.clump?.floor() ?? 0;
+      void id;
+      return 0;
     },
 
     pileRise(id): number {
-      return slots.get(id)?.clump?.rise() ?? 0;
+      void id;
+      return 0;
     },
 
     pileCeiling(id): number {
-      return slots.get(id)?.clump?.ceiling() ?? 0;
+      const slot = slots.get(id);
+      return slot ? 2 * slot.bodyR : 0;
     },
 
     pileFootprint(id): number {
-      return slots.get(id)?.clump?.footprint() ?? 0;
+      return slots.get(id)?.bodyR ?? 0;
     },
 
     drawnRadius(id): number {
@@ -5975,7 +5982,7 @@ export function createCreatureManager(
 
     driveCeiling(id): number {
       const slot = slots.get(id);
-      return slot ? DRIVE_SPEED * driveMult(rollOf(slot), massMultOf(slot)) : 0;
+      return slot ? DRIVE_SPEED * driveMult(rollOf(slot)) : 0;
     },
 
     ballDiameter(id): number {
@@ -6001,7 +6008,7 @@ export function createCreatureManager(
       // The slider moves the whole range: a katamari world's walk is a
       // fraction of it, every other world's only ceiling IS it.
       for (const slot of slots.values()) {
-        slot.agent?.setSpeedMultiplier(walkMult() * massSpeedFactor(massMultOf(slot)));
+        slot.agent?.setSpeedMultiplier(walkMult());
       }
     },
 

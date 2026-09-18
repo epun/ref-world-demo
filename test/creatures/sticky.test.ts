@@ -19,19 +19,12 @@ import {
   clumpLocalOffset,
   BLOCK_RATIO,
   clumpLocalRotation,
-  packCandidateDirections,
-  packSeatDirection,
-  packSeatDistance,
-  PACK_ELEVATION_MAX,
   CREATURE_CARRY_RATIO,
   creatureCarryLimit,
   decideContact,
   DROP_MIN_GAP_MS,
   growth,
   impactOf,
-  massSpeedFactor,
-  MASS_SPEED_FLOOR,
-  MASS_SPEED_KNEE,
   passLimit,
   PICKUP_RATIO,
   rollAxis,
@@ -499,29 +492,21 @@ describe('rollAxis / rollDelta', () => {
 });
 
 describe('clumpLocalOffset', () => {
-  /*
-   * `selfR` is the CHARACTER's own radius since 2026-09-17 (*"the character
-   * should be the object that the items stick to"*): there is no shell, so the
-   * first item is seated on the creature and the rest pack outward against
-   * what is already there (`seats`, and `packSeatDistance` below). With an
-   * empty pile the answer is the creature's surface, which is what these ask.
-   */
   const base = {
     centreX: 0,
     centreY: 0,
     centreZ: 0,
     headingX: 0,
     headingZ: 1,
-    selfR: 2,
+    R: 2,
     itemR: 0.5,
-    seats: [] as { x: number; y: number; z: number; r: number }[],
     growth: 1,
     clumpWorldQ: { x: 0, y: 0, z: 0, w: 1 } as Quat,
   };
 
-  it('seats an item on the side it was struck from, against the creature', () => {
+  it('seats an item on the side it was struck from, at the pile surface', () => {
     const o = clumpLocalOffset({ ...base, itemX: 5, itemY: 0, itemZ: 0 });
-    const reach = (base.selfR + base.itemR) * CLUMP_FIT;
+    const reach = base.R + base.itemR * CLUMP_FIT;
     expect(o.x).toBeCloseTo(reach, 12);
     expect(o.y).toBeCloseTo(0, 12);
     expect(o.z).toBeCloseTo(0, 12);
@@ -535,20 +520,15 @@ describe('clumpLocalOffset', () => {
     expect(near.z).toBeCloseTo(far.z, 12);
   });
 
-  it('sinks the item into the creature rather than perching it tangent', () => {
+  it('sinks the item into the pile rather than perching it tangent', () => {
     const o = clumpLocalOffset({ ...base, itemX: 5, itemY: 0, itemZ: 0 });
-    expect(o.x).toBeLessThan(base.selfR + base.itemR);
-    // Touching the creature since 2026-09-18 (*"there shouldn't be space
-    // between the character and the objects"*): the centre distance is
-    // `CLUMP_FIT` of the two radii summed, so it overlaps the body's own
-    // bounding sphere but its centre stays outside it.
-    expect(o.x).toBeGreaterThan(0);
-    expect(o.x).toBeLessThan(base.selfR);
+    expect(o.x).toBeLessThan(base.R + base.itemR);
+    expect(o.x).toBeGreaterThan(base.R);
   });
 
   it('uses the heading when the hit is exactly at the centre', () => {
     const o = clumpLocalOffset({ ...base, itemX: 0, itemY: 0, itemZ: 0 });
-    const reach = (base.selfR + base.itemR) * CLUMP_FIT;
+    const reach = base.R + base.itemR * CLUMP_FIT;
     expect(o.x).toBeCloseTo(0, 12);
     expect(o.z).toBeCloseTo(reach, 12);
   });
@@ -565,7 +545,7 @@ describe('clumpLocalOffset', () => {
     const dy = item.itemY - centre.centreY;
     const dz = item.itemZ - centre.centreZ;
     const len = Math.hypot(dx, dy, dz);
-    const reach = (base.selfR + base.itemR) * CLUMP_FIT;
+    const reach = base.R + base.itemR * CLUMP_FIT;
     // Same direction as the hit, at exactly the seated distance.
     expect(world.x).toBeCloseTo((dx / len) * reach, 10);
     expect(world.y).toBeCloseTo((dy / len) * reach, 10);
@@ -675,176 +655,5 @@ describe('clearanceLift — the ball rides on its whole footprint', () => {
     const first = clearanceLift(3, 4, 2.5, terrain);
     const second = clearanceLift(3, 4, 2.5, terrain);
     expect(second).toBe(first);
-  });
-});
-
-describe('packSeatDirection — the mass fills in rather than spiking out', () => {
-  /**
-   * > User, 2026-09-18, with the Katamari Damacy reference: *"We should see a
-   * > mass of objects together not an invisible sphere."*
-   *
-   * A purely radial pack seats every item along the direction it was struck
-   * from, so a creature that walks a line grows a spike down that line. The
-   * fan tries a bounded set of directions around the contact and keeps the
-   * TIGHTEST seat, so each item tucks into the emptiest hollow it can reach.
-   */
-  const selfR = 1.2;
-
-  /** Walk a creature in one direction and hand back the pile it builds. */
-  function walkLine(fan: boolean): { x: number; y: number; z: number; r: number }[] {
-    const seats: { x: number; y: number; z: number; r: number }[] = [];
-    for (let n = 0; n < 24; n++) {
-      const itemR = 0.35 + (n % 5) * 0.05;
-      const d = { x: 0.12 * ((n % 3) - 1), y: 0.05 * (n % 2), z: 1 };
-      const l = Math.hypot(d.x, d.y, d.z);
-      const dir = { x: d.x / l, y: d.y / l, z: d.z / l };
-      const p = fan
-        ? packSeatDirection({ dirX: dir.x, dirY: dir.y, dirZ: dir.z, itemR, selfR, seats })
-        : {
-            dirX: dir.x,
-            dirY: dir.y,
-            dirZ: dir.z,
-            reach: packSeatDistance({
-              dirX: dir.x,
-              dirY: dir.y,
-              dirZ: dir.z,
-              itemR,
-              selfR,
-              seats,
-            }),
-          };
-      seats.push({ x: p.dirX * p.reach, y: p.dirY * p.reach, z: p.dirZ * p.reach, r: itemR });
-    }
-    return seats;
-  }
-
-  const outerOf = (seats: readonly { x: number; y: number; z: number; r: number }[]): number =>
-    seats.reduce((m, s) => Math.max(m, Math.hypot(s.x, s.y, s.z) + s.r), 0);
-
-  it('keeps the struck direction when the pile is empty — the fan only ever tightens', () => {
-    const p = packSeatDirection({ dirX: 0, dirY: 0, dirZ: 1, itemR: 0.5, selfR, seats: [] });
-    expect(p.dirZ).toBeCloseTo(1, 12);
-    expect(p.reach).toBeCloseTo((selfR + 0.5) * CLUMP_FIT, 12);
-  });
-
-  it('is never looser than the radial seat it starts from', () => {
-    const seats = walkLine(true);
-    for (const dir of [
-      { x: 0, y: 0, z: 1 },
-      { x: 1, y: 0, z: 0 },
-      { x: 0.6, y: 0.5, z: -0.6 },
-    ]) {
-      const l = Math.hypot(dir.x, dir.y, dir.z);
-      const d = { x: dir.x / l, y: dir.y / l, z: dir.z / l };
-      const radial = packSeatDistance({
-        dirX: d.x,
-        dirY: d.y,
-        dirZ: d.z,
-        itemR: 0.4,
-        selfR,
-        seats,
-      });
-      const fan = packSeatDirection({ dirX: d.x, dirY: d.y, dirZ: d.z, itemR: 0.4, selfR, seats });
-      // Priced by PACK_DRIFT_COST, so the WINNER's score is what is bounded;
-      // its reach is the thing that must not be worse.
-      expect(fan.reach).toBeLessThanOrEqual(radial + 1e-9);
-    }
-  });
-
-  it('turns a line-walked spike into a lump — half the outer radius, and rounder', () => {
-    const radial = walkLine(false);
-    const fan = walkLine(true);
-    // Measured 2026-09-18: outer 7.75 -> 2.84 world units over 24 props.
-    expect(outerOf(fan)).toBeLessThan(outerOf(radial) * 0.5);
-    const extent = (
-      seats: readonly { x: number; y: number; z: number; r: number }[],
-      k: 'x' | 'y' | 'z',
-    ): number =>
-      Math.max(...seats.map((s) => s[k] + s.r)) - Math.min(...seats.map((s) => s[k] - s.r));
-    // The walk was along +z. Radially the pile is 2.5x longer that way than
-    // wide; packed, it is no longer than it is wide.
-    expect(extent(radial, 'z') / extent(radial, 'x')).toBeGreaterThan(2);
-    expect(extent(fan, 'z') / extent(fan, 'x')).toBeLessThan(1.2);
-  });
-
-  it('packs above AND below, and never straight up or down', () => {
-    /*
-     * BELOW is allowed since 2026-09-18 (*"All the objects should be cluster
-     * into one ball like the real katamari"*) — with nothing under the
-     * equator a grown pile spread into a pancake of props lying on the grass.
-     * What the band still forbids is a column: a seat exactly on the axis has
-     * no side to it and every item taking it would stack in one line.
-     */
-    let below = 0;
-    for (const dirY of [-0.9, -0.3, 0, 0.3, 0.95]) {
-      const hl = Math.sqrt(Math.max(0, 1 - dirY * dirY));
-      for (const c of packCandidateDirections(hl, dirY, 0)) {
-        const elevation = Math.atan2(c.y, Math.hypot(c.x, c.z));
-        expect(Math.abs(elevation)).toBeLessThanOrEqual(PACK_ELEVATION_MAX + 1e-9);
-        if (c.y < 0) below++;
-      }
-    }
-    expect(below).toBeGreaterThan(0);
-  });
-
-  it('is deterministic — the same pile and hit give the same seat every time', () => {
-    const seats = walkLine(true);
-    const once = packSeatDirection({ dirX: 0, dirY: 0, dirZ: 1, itemR: 0.4, selfR, seats });
-    const twice = packSeatDirection({ dirX: 0, dirY: 0, dirZ: 1, itemR: 0.4, selfR, seats });
-    expect(twice).toEqual(once);
-  });
-});
-
-describe('massSpeedFactor — a big ball is slower and a small one is quick', () => {
-  /**
-   * > User ask, 2026-09-18: *"when a ball gets big it should move slower.
-   * > smaller balls should move faster."*
-   */
-  it('is exactly 1 for a creature carrying nothing', () => {
-    // Load-bearing: the penalty is applied unconditionally, so a hatchling —
-    // and every creature in every world without the game — has to come out of
-    // it at the speed it shipped with, to the float.
-    expect(massSpeedFactor(1)).toBe(1);
-    expect(massSpeedFactor(0)).toBe(1);
-    expect(massSpeedFactor(-3)).toBe(1);
-  });
-
-  it('falls monotonically as the pile grows, and never below the floor', () => {
-    let previous = Infinity;
-    for (const g of [1, 1.1, 1.5, 2, 3, 5, 10, 50, 1000, 1e9]) {
-      const f = massSpeedFactor(g);
-      expect(f).toBeLessThanOrEqual(previous);
-      expect(f).toBeGreaterThan(MASS_SPEED_FLOOR - 1e-12);
-      expect(f).toBeLessThanOrEqual(1);
-      previous = f;
-    }
-    // The floor is approached and never reached — a ball is always drivable.
-    expect(massSpeedFactor(1e12)).toBeCloseTo(MASS_SPEED_FLOOR, 9);
-  });
-
-  it('gives up half of what it has to give at the knee', () => {
-    const half = MASS_SPEED_FLOOR + (1 - MASS_SPEED_FLOOR) / 2;
-    expect(massSpeedFactor(1 + MASS_SPEED_KNEE)).toBeCloseTo(half, 12);
-  });
-
-  it('is felt in the first handful of props, which is where the ask was', () => {
-    // The real growth curve: a 1.2 u creature eating 0.45 u props. Ten of
-    // them cost about a quarter of the speed (measured 0.76).
-    const baseR = 1.2;
-    const vols = Array.from({ length: 10 }, () => 0.45 ** 3);
-    const g = growth(baseR, vols);
-    // Measured 0.82 with the floor at 0.5 (2026-09-18, *"more agile"*): the
-    // shape of the loss is unchanged, the whole curve was lifted.
-    expect(massSpeedFactor(g)).toBeLessThan(0.85);
-    expect(massSpeedFactor(g)).toBeGreaterThan(0.75);
-    // …and a ball the size the deployed build reached (51 m on a 2.4 m
-    // creature) is down near the floor.
-    expect(massSpeedFactor(51 / 2.4)).toBeLessThan(MASS_SPEED_FLOOR * 1.1);
-  });
-
-  it('never returns a non-finite number', () => {
-    for (const g of [NaN, Infinity, -Infinity]) {
-      expect(Number.isFinite(massSpeedFactor(g))).toBe(true);
-    }
   });
 });
