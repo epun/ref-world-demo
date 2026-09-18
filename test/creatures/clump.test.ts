@@ -284,3 +284,68 @@ describe('the items pack against the creature', () => {
     expect(worldScale(first)).toBeCloseTo(1, 6);
   });
 });
+
+describe('the pile measures itself as it is CURRENTLY turned', () => {
+  /**
+   * > User report, 2026-09-18, of the mass cutting into the terrain: *"it
+   * > also clips into the map."*
+   *
+   * A seat is stored in the pile's own frame and the pile rolls, so after a
+   * quarter turn the item that was beside the creature is under it.
+   * `floor`/`ceiling`/`footprint` measured the raw seats, so the ground pass
+   * lifted the creature by what USED to be underneath it and the pile sank
+   * into the ground as it rolled. They now rotate each seat by the group's
+   * live quaternion first.
+   */
+  const baseR = 1;
+  const itemR = 0.5;
+
+  /** Seat one item straight out along +x at a known distance, by hand — this
+   * is about the measurement, not about the packer. */
+  function pileWithOneItemBeside() {
+    const { clump, root, grow } = ballOn(baseR);
+    const out = baseR + itemR * CLUMP_FIT;
+    clump.add({
+      key: 'a',
+      object: new Object3D(),
+      r: itemR,
+      scale: 1,
+      offset: { x: out, y: 0, z: 0 },
+      rotation: identityQ,
+    });
+    grow();
+    return { clump, root, out };
+  }
+
+  it('reads an unrolled pile beside the creature as no mass below the feet', () => {
+    const { clump, out } = pileWithOneItemBeside();
+    expect(clump.floor()).toBeCloseTo(0, 9);
+    expect(clump.footprint()).toBeCloseTo(out + itemR, 9);
+  });
+
+  it('puts the item UNDER the creature once the pile has rolled a quarter turn', () => {
+    const { clump, out } = pileWithOneItemBeside();
+    // A roll about +z carries +x down toward -y. `rollDelta` is arc over
+    // radius, so this is a quarter turn of a pile of radius `out`.
+    clump.roll(0, 0, 1);
+    const quarter = (Math.PI / 2) * clump.R();
+    // `roll` takes a displacement; walk it there in steps so the axis and the
+    // rate are the real ones.
+    for (let i = 0; i < 90; i++) clump.roll(quarter / 90, 0, 1);
+    const low = clump.floor();
+    const wide = clump.footprint();
+    // Something is now below the creature's feet — which is the lift the
+    // ground pass owes it — and the pile is no longer as wide as its seat.
+    expect(low).toBeLessThan(0);
+    expect(wide).toBeLessThan(out + itemR);
+    // And it is bounded by the seat's own distance: an item at `out` with
+    // radius `itemR` can reach at most `baseR - out - itemR` below the feet.
+    expect(low).toBeGreaterThanOrEqual(baseR - out - itemR - 1e-9);
+  });
+
+  it('keeps the ceiling and the floor a pile-diameter apart however it turns', () => {
+    const { clump } = pileWithOneItemBeside();
+    for (let i = 0; i < 40; i++) clump.roll(0.1, 0.07, 1);
+    expect(clump.ceiling() - clump.floor()).toBeGreaterThanOrEqual(2 * itemR - 1e-9);
+  });
+});

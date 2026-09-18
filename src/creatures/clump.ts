@@ -226,6 +226,23 @@ export function createClump(baseR: number): Clump {
 
   // Scratch. This runs per carrier per frame.
   const axis = new Vector3();
+  /*
+   * THE SEAT AS IT IS CURRENTLY TURNED (user report, 2026-09-18, of the mass
+   * cutting into the terrain: *"it also clips into the map"*).
+   *
+   * A seat is stored in the pile's OWN frame and the pile ROLLS — the group
+   * carries the accumulated turn (`roll`, below), expressed under whichever
+   * way the creature is facing. So the stored `seat.y` is where a thing sat
+   * when it arrived, not where it is now: after a quarter turn the item that
+   * was beside the creature is under it. `floor`, `ceiling` and `footprint`
+   * measured the raw seats, so the ground pass lifted the creature by what
+   * USED to be underneath it and the pile sank into the ground as it rolled.
+   *
+   * The seat is in world units and the group is scaled by the growth from
+   * under it, so rotating the world-unit seat by the group's quaternion is
+   * exactly the world offset the item is drawn at.
+   */
+  const turned = new Vector3();
   const delta = new Quaternion();
   const inverseRoot = new Quaternion();
 
@@ -373,10 +390,14 @@ export function createClump(baseR: number): Clump {
     floor(): number {
       let low = 0;
       for (const entry of entries.values()) {
+        // Where the seat is NOW, not where it arrived (the note on `turned`):
+        // the pile's roll is the group's own quaternion and an item that has
+        // come round underneath the creature is what has to hold it up.
+        turned.set(entry.seat.x, entry.seat.y, entry.seat.z).applyQuaternion(group.quaternion);
         // The seat is measured from the pile's centre and the centre is
         // `baseR` above the creature's feet, so this is in the creature's
         // frame — which is the frame the ground pass writes in.
-        const bottom = baseR + entry.seat.y - entry.item.r;
+        const bottom = baseR + turned.y - entry.item.r;
         if (bottom < low) low = bottom;
       }
       return low;
@@ -385,7 +406,8 @@ export function createClump(baseR: number): Clump {
     ceiling(): number {
       let high = 0;
       for (const entry of entries.values()) {
-        const top = baseR + entry.seat.y + entry.item.r;
+        turned.set(entry.seat.x, entry.seat.y, entry.seat.z).applyQuaternion(group.quaternion);
+        const top = baseR + turned.y + entry.item.r;
         if (top > high) high = top;
       }
       return high;
@@ -394,8 +416,11 @@ export function createClump(baseR: number): Clump {
     footprint(): number {
       let wide = 0;
       for (const entry of entries.values()) {
-        const seat = entry.seat;
-        const out = Math.hypot(seat.x, seat.z) + entry.item.r;
+        // Rotated too: a horizontal question still takes the pile's live
+        // orientation, because a bench that has rolled from beside the
+        // creature to over it is no longer as far out as its seat says.
+        turned.set(entry.seat.x, entry.seat.y, entry.seat.z).applyQuaternion(group.quaternion);
+        const out = Math.hypot(turned.x, turned.z) + entry.item.r;
         if (out > wide) wide = out;
       }
       return wide;
