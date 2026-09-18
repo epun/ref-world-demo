@@ -1072,7 +1072,14 @@ describe('sticking, as the viewer sees it', () => {
       expect(seen.rootScale, name).toBeGreaterThan(3);
       expect(seen.bodyR, name).toBeGreaterThan(baseR * 3);
       // …and the creature inside it is EXACTLY its drawn size.
-      expect(seen.charScale, name).toBeCloseTo(1, 6);
+      /*
+       * …and the creature IS the ball: its drawn scale is the growth, not 1
+       * (restored 2026-09-18, user: *"it should look and function like we
+       * did when we first started the katamari project where the objects
+       * clumped to the character"*). The cross-page invariant is that the
+       * two pages agree, which the caller asserts by comparing them.
+       */
+      expect(seen.charScale, name).toBeGreaterThan(1);
       // Six items, each packed on the creature at the same distance.
       expect(seen.seats.length, name).toBe(6);
       for (const seat of seen.seats) {
@@ -1158,7 +1165,8 @@ describe('sticking, as the viewer sees it', () => {
     for (const seat of seen.seats) expect(seat).toBeCloseTo(baseR + tree.r * 0.7, 3);
     // A grown ball, and the creature still at its drawn size inside it.
     expect(seen.bodyR).toBeGreaterThan(baseR * 2);
-    expect(seen.charScale).toBeCloseTo(1, 6);
+    // A grown ball — and the creature IS the ball, so its scale is the growth.
+    expect(seen.charScale).toBeGreaterThan(1);
     viewer.clearAll();
   }, 120_000);
 });

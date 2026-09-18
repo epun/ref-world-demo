@@ -242,32 +242,20 @@ describe('the arithmetic survives the top of the ladder', () => {
           centreZ: 0,
           headingX: 0,
           headingZ: 1,
-          selfR: BASE_R,
+          R,
           itemR,
-          seats: [],
           clumpWorldQ: { x: 0, y: 0, z: 0, w: 1 },
           growth: g,
         });
         for (const v of [offset.x, offset.y, offset.z]) expect(Number.isFinite(v)).toBe(true);
         /*
-         * THE FIRST ITEM sits on the CHARACTER — its own radius plus the
-         * item's sunk in by `CLUMP_FIT`, expressed in the clump's own
-         * (unscaled) frame, so its length is `(baseR + itemR·CLUMP_FIT) /
-         * growth` exactly, whatever the sizes (2026-09-17: there is no shell
-         * to seat on, and everything after the first packs against the seats
-         * already taken — `packSeatDistance`, tested in sticky.test.ts).
+         * The seat is the ball's surface plus the item's radius sunk in by
+         * `CLUMP_FIT`, expressed in the clump's own (unscaled) frame — so its
+         * length is `(R + itemR·CLUMP_FIT) / growth`, exactly, whatever the
+         * sizes. That is the number every screen derives for itself.
          */
-        const want = (BASE_R + itemR * CLUMP_FIT) / g;
-        /*
-         * …and an item TALLER than the creature is RAISED to rest on the
-         * paper beside it rather than dipping under the feet (user ruling,
-         * 2026-09-17: the creature's origin is the ground). Every one of
-         * these is 4–8 u against a 0.9 u creature, so every one is raised:
-         * the seat is at least the bedding distance, and its underside is on
-         * or above the ground.
-         */
-        expect(Math.hypot(offset.x, offset.y, offset.z)).toBeGreaterThanOrEqual(want - 1e-9);
-        expect(BASE_R + offset.y * g - itemR).toBeGreaterThanOrEqual(-1e-9);
+        const want = (R + itemR * CLUMP_FIT) / g;
+        expect(Math.hypot(offset.x, offset.y, offset.z)).toBeCloseTo(want, 8);
       }
     }
   });
