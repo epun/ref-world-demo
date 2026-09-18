@@ -19,6 +19,10 @@ import {
   clumpLocalOffset,
   BLOCK_RATIO,
   clumpLocalRotation,
+  packCandidateDirections,
+  packSeatDirection,
+  packSeatDistance,
+  PACK_ELEVATION_MAX,
   CREATURE_CARRY_RATIO,
   creatureCarryLimit,
   decideContact,
@@ -663,5 +667,112 @@ describe('clearanceLift — the ball rides on its whole footprint', () => {
     const first = clearanceLift(3, 4, 2.5, terrain);
     const second = clearanceLift(3, 4, 2.5, terrain);
     expect(second).toBe(first);
+  });
+});
+
+describe('packSeatDirection — the mass fills in rather than spiking out', () => {
+  /**
+   * > User, 2026-09-18, with the Katamari Damacy reference: *"We should see a
+   * > mass of objects together not an invisible sphere."*
+   *
+   * A purely radial pack seats every item along the direction it was struck
+   * from, so a creature that walks a line grows a spike down that line. The
+   * fan tries a bounded set of directions around the contact and keeps the
+   * TIGHTEST seat, so each item tucks into the emptiest hollow it can reach.
+   */
+  const selfR = 1.2;
+
+  /** Walk a creature in one direction and hand back the pile it builds. */
+  function walkLine(fan: boolean): { x: number; y: number; z: number; r: number }[] {
+    const seats: { x: number; y: number; z: number; r: number }[] = [];
+    for (let n = 0; n < 24; n++) {
+      const itemR = 0.35 + (n % 5) * 0.05;
+      const d = { x: 0.12 * ((n % 3) - 1), y: 0.05 * (n % 2), z: 1 };
+      const l = Math.hypot(d.x, d.y, d.z);
+      const dir = { x: d.x / l, y: d.y / l, z: d.z / l };
+      const p = fan
+        ? packSeatDirection({ dirX: dir.x, dirY: dir.y, dirZ: dir.z, itemR, selfR, seats })
+        : {
+            dirX: dir.x,
+            dirY: dir.y,
+            dirZ: dir.z,
+            reach: packSeatDistance({
+              dirX: dir.x,
+              dirY: dir.y,
+              dirZ: dir.z,
+              itemR,
+              selfR,
+              seats,
+            }),
+          };
+      seats.push({ x: p.dirX * p.reach, y: p.dirY * p.reach, z: p.dirZ * p.reach, r: itemR });
+    }
+    return seats;
+  }
+
+  const outerOf = (seats: readonly { x: number; y: number; z: number; r: number }[]): number =>
+    seats.reduce((m, s) => Math.max(m, Math.hypot(s.x, s.y, s.z) + s.r), 0);
+
+  it('keeps the struck direction when the pile is empty — the fan only ever tightens', () => {
+    const p = packSeatDirection({ dirX: 0, dirY: 0, dirZ: 1, itemR: 0.5, selfR, seats: [] });
+    expect(p.dirZ).toBeCloseTo(1, 12);
+    expect(p.reach).toBeCloseTo(selfR + 0.5 * CLUMP_FIT, 12);
+  });
+
+  it('is never looser than the radial seat it starts from', () => {
+    const seats = walkLine(true);
+    for (const dir of [
+      { x: 0, y: 0, z: 1 },
+      { x: 1, y: 0, z: 0 },
+      { x: 0.6, y: 0.5, z: -0.6 },
+    ]) {
+      const l = Math.hypot(dir.x, dir.y, dir.z);
+      const d = { x: dir.x / l, y: dir.y / l, z: dir.z / l };
+      const radial = packSeatDistance({
+        dirX: d.x,
+        dirY: d.y,
+        dirZ: d.z,
+        itemR: 0.4,
+        selfR,
+        seats,
+      });
+      const fan = packSeatDirection({ dirX: d.x, dirY: d.y, dirZ: d.z, itemR: 0.4, selfR, seats });
+      // Priced by PACK_DRIFT_COST, so the WINNER's score is what is bounded;
+      // its reach is the thing that must not be worse.
+      expect(fan.reach).toBeLessThanOrEqual(radial + 1e-9);
+    }
+  });
+
+  it('turns a line-walked spike into a lump — half the outer radius, and rounder', () => {
+    const radial = walkLine(false);
+    const fan = walkLine(true);
+    // Measured 2026-09-18: outer 7.75 -> 2.84 world units over 24 props.
+    expect(outerOf(fan)).toBeLessThan(outerOf(radial) * 0.5);
+    const extent = (
+      seats: readonly { x: number; y: number; z: number; r: number }[],
+      k: 'x' | 'y' | 'z',
+    ): number =>
+      Math.max(...seats.map((s) => s[k] + s.r)) - Math.min(...seats.map((s) => s[k] - s.r));
+    // The walk was along +z. Radially the pile is 2.5x longer that way than
+    // wide; packed, it is no longer than it is wide.
+    expect(extent(radial, 'z') / extent(radial, 'x')).toBeGreaterThan(2);
+    expect(extent(fan, 'z') / extent(fan, 'x')).toBeLessThan(1.2);
+  });
+
+  it('never seats anything below the horizontal, and never straight up', () => {
+    for (const dirY of [-0.9, -0.3, 0, 0.3, 0.95]) {
+      const hl = Math.sqrt(Math.max(0, 1 - dirY * dirY));
+      for (const c of packCandidateDirections(hl, dirY, 0)) {
+        expect(c.y).toBeGreaterThanOrEqual(-1e-9);
+        expect(Math.atan2(c.y, Math.hypot(c.x, c.z))).toBeLessThanOrEqual(PACK_ELEVATION_MAX + 1e-9);
+      }
+    }
+  });
+
+  it('is deterministic — the same pile and hit give the same seat every time', () => {
+    const seats = walkLine(true);
+    const once = packSeatDirection({ dirX: 0, dirY: 0, dirZ: 1, itemR: 0.4, selfR, seats });
+    const twice = packSeatDirection({ dirX: 0, dirY: 0, dirZ: 1, itemR: 0.4, selfR, seats });
+    expect(twice).toEqual(once);
   });
 });

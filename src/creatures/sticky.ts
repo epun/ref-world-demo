@@ -463,6 +463,172 @@ export function packSeatDistance(a: {
  * colliders on one kinematic body. The nearest 24 are the ones on the
  * outside, which are the ones that hit things.
  */
+/**
+ * [D] The yaw offsets, radians, the seat search may try around the direction
+ * an item was struck from.
+ *
+ * WHY THERE IS A SEARCH AT ALL (user, 2026-09-18, with the Katamari Damacy
+ * reference in hand: *"We should see a mass of objects together not an
+ * invisible sphere"*): a purely radial pack only ever grows along the
+ * directions the creature actually struck from, so a creature that walks a
+ * line grows a SPIKE down that line and the mass never fills in. The
+ * reference is a dense interlocking lump, filled all round.
+ *
+ * So the struck direction stays the STARTING point and a fixed fan around it
+ * is tried too; the tightest one wins (`packSeatDirection`). An item tucks
+ * into the emptiest gap it can reach from where it was hit rather than
+ * extending the spike.
+ *
+ * Symmetric and ordered nearest-first so a tie takes the least drift, and
+ * bounded at 72° so nothing ever lands on the far side of the pile from where
+ * it was touched.
+ */
+export const PACK_YAWS = [0, 0.3142, -0.3142, 0.6283, -0.6283, 0.9425, -0.9425, 1.2566, -1.2566];
+
+/**
+ * [D] The elevation offsets, radians, tried with each yaw.
+ *
+ * Upward only, and up to 45°: the pile fills OVER the creature as well as
+ * beside it — which is what makes the reference read as a ball rather than a
+ * ring — but nothing packs downward (the ruling under `clumpLocalOffset`), so
+ * a candidate whose elevation would go below the horizontal is dropped rather
+ * than clamped, which would double up on 0.
+ */
+export const PACK_TILTS = [0, 0.3927, 0.7854, -0.3927];
+
+/**
+ * [D] The most elevation a seat may take, radians — 80°, just short of
+ * straight up.
+ *
+ * A seat exactly on the axis has no side to it, and every item that took it
+ * would stack in one column; the cap keeps the top of the pile a dome.
+ */
+export const PACK_ELEVATION_MAX = 1.3963;
+
+/**
+ * [D] What drifting off the struck direction COSTS, as a multiple of the
+ * item's own radius per unit of `1 - cos(angle)`.
+ *
+ * The pile is a record of where the creature has been (the note on
+ * `clumpLocalOffset`), so the direction an item arrived on is worth keeping
+ * when the gap it could tuck into is no better. 2 radii is about the width of
+ * one item: a candidate has to save more than an item's own width to be worth
+ * a right angle of drift.
+ */
+export const PACK_DRIFT_COST = 2;
+
+/**
+ * The candidate directions the seat search may take for an item struck along
+ * `(dirX, dirY, dirZ)` (unit, never downward). PURE, fixed order, fixed
+ * length bound — the deciding page runs this once and the seat travels on the
+ * `stick` event, so every page must agree float for float.
+ */
+export function packCandidateDirections(
+  dirX: number,
+  dirY: number,
+  dirZ: number,
+): { x: number; y: number; z: number; dot: number }[] {
+  const hlen = Math.hypot(dirX, dirZ);
+  /*
+   * The base direction is CLAMPED into the band a seat may take before the
+   * fan is built — level to `PACK_ELEVATION_MAX`, never downward. Its caller
+   * has already flattened a downward contact, but this function is exported
+   * and pure, so it owns the band rather than trusting it: with the input
+   * clamped, the `tilt = 0` candidate is always inside the band and the fan
+   * is never empty.
+   *
+   * Straight up has no azimuth to rotate around, so it takes 0 — a
+   * well-defined seat on the dome rather than a column.
+   */
+  const azimuth = hlen > 1e-6 ? Math.atan2(dirX, dirZ) : 0;
+  const raw = hlen > 1e-6 ? Math.atan2(dirY, hlen) : dirY >= 0 ? PACK_ELEVATION_MAX : 0;
+  const elevation = Math.min(PACK_ELEVATION_MAX, Math.max(0, raw));
+  // Drift is priced against the direction a seat may actually take, which is
+  // the clamped one — otherwise a level contact from below would read as a
+  // right angle of drift for every candidate and the pricing would do nothing.
+  const bch = Math.cos(elevation);
+  const bx = Math.sin(azimuth) * bch;
+  const by = Math.sin(elevation);
+  const bz = Math.cos(azimuth) * bch;
+  const out: { x: number; y: number; z: number; dot: number }[] = [];
+  for (const yaw of PACK_YAWS) {
+    for (const tilt of PACK_TILTS) {
+      const e = elevation + tilt;
+      // Upward-or-level only, and never a column.
+      if (e < 0 || e > PACK_ELEVATION_MAX) continue;
+      const a = azimuth + yaw;
+      const ch = Math.cos(e);
+      const x = Math.sin(a) * ch;
+      const y = Math.sin(e);
+      const z = Math.cos(a) * ch;
+      out.push({ x, y, z, dot: x * bx + y * by + z * bz });
+    }
+  }
+  // Unreachable — `tilt = 0` on the clamped base is always in the band — and
+  // kept so a future tilt table cannot silently return nothing.
+  if (out.length === 0) out.push({ x: bx, y: by, z: bz, dot: 1 });
+  return out;
+}
+
+/**
+ * WHICH WAY a new item packs: the candidate around the struck direction whose
+ * seat comes out TIGHTEST against the pile, with drift off that direction
+ * priced in (`PACK_DRIFT_COST`). PURE.
+ *
+ * This is the whole of the "dense lump, not a spike" fix. `packSeatDistance`
+ * answers how far out a seat is along ONE direction; a radial pack takes the
+ * struck direction and nothing else, so the mass extends where the creature
+ * has been and never fills the gaps between. Trying a fan and keeping the
+ * nearest seat is a greedy fill: every item lands in the emptiest hollow
+ * within reach of where it was hit, so the pile rounds out and closes up.
+ *
+ * Still greedy, still one-dimensional per candidate, still bounded — nine
+ * yaws by four tilts by `PACK_PASSES` — and still order-dependent in the
+ * seats it is given, which is what the wire needs.
+ */
+export function packSeatDirection(a: {
+  dirX: number;
+  dirY: number;
+  dirZ: number;
+  itemR: number;
+  selfR: number;
+  seats: readonly { x: number; y: number; z: number; r: number }[];
+}): { dirX: number; dirY: number; dirZ: number; reach: number } {
+  let best: { dirX: number; dirY: number; dirZ: number; reach: number } | null = null;
+  let bestScore = Infinity;
+  for (const c of packCandidateDirections(a.dirX, a.dirY, a.dirZ)) {
+    const reach = packSeatDistance({
+      dirX: c.x,
+      dirY: c.y,
+      dirZ: c.z,
+      itemR: a.itemR,
+      selfR: a.selfR,
+      seats: a.seats,
+    });
+    const score = reach + PACK_DRIFT_COST * a.itemR * (1 - c.dot);
+    // Strictly less, so the first candidate — the struck direction itself —
+    // wins every tie and the fan can only ever tighten the pile.
+    if (score < bestScore - 1e-9) {
+      bestScore = score;
+      best = { dirX: c.x, dirY: c.y, dirZ: c.z, reach };
+    }
+  }
+  if (best) return best;
+  return {
+    dirX: a.dirX,
+    dirY: a.dirY,
+    dirZ: a.dirZ,
+    reach: packSeatDistance({
+      dirX: a.dirX,
+      dirY: a.dirY,
+      dirZ: a.dirZ,
+      itemR: a.itemR,
+      selfR: a.selfR,
+      seats: a.seats,
+    }),
+  };
+}
+
 export const STUCK_COLLIDERS_MAX = 24;
 
 /**
@@ -969,6 +1135,15 @@ function rotate(q: Quat, x: number, y: number, z: number): { x: number; y: numbe
  * be `R + itemR × CLUMP_FIT` — the surface of a sphere of radius
  * `baseR × growth` — which is the shell that had to be drawn for the pile to
  * make sense, and is gone.
+ *
+ * WHICH WAY OUT is `packSeatDirection` (2026-09-18, *"We should see a mass of
+ * objects together not an invisible sphere"*, with the Katamari Damacy
+ * reference): the struck direction is where the search STARTS, not where the
+ * seat must be. A purely radial pack grows a spike along the line the creature
+ * walked and never fills the gaps between; a bounded fan around the contact,
+ * keeping the tightest seat, is a greedy fill — measured over a straight
+ * 24-prop walk the outer radius falls 7.75 → 2.84 u and the pile stops being
+ * 2.5x longer than it is wide.
  */
 export function clumpLocalOffset(a: {
   itemX: number;
@@ -1031,7 +1206,7 @@ export function clumpLocalOffset(a: {
   const ux = dx / flen;
   const uy = fy / flen;
   const uz = dz / flen;
-  const reach = packSeatDistance({
+  const picked = packSeatDirection({
     dirX: ux,
     dirY: uy,
     dirZ: uz,
@@ -1039,8 +1214,9 @@ export function clumpLocalOffset(a: {
     selfR: a.selfR,
     seats: a.seats,
   });
-  const wx = ux * reach;
-  const wz = uz * reach;
+  const reach = picked.reach;
+  const wx = picked.dirX * reach;
+  const wz = picked.dirZ * reach;
   /*
    * NOTHING SEATS BELOW THE CREATURE'S FEET (user ruling, 2026-09-17, said
    * three times: *"the characters should be on the ground"*, *"their origin
@@ -1066,7 +1242,7 @@ export function clumpLocalOffset(a: {
    * beside the creature. Raising a horizontal seat only ever increases its
    * distance from the creature, so the clamp cannot push anything inside.
    */
-  const wy = Math.max(uy * reach, a.itemR - a.selfR);
+  const wy = Math.max(picked.dirY * reach, a.itemR - a.selfR);
   const local = rotate(conjugate(a.clumpWorldQ), wx, wy, wz);
   const g = a.growth > 1e-6 ? a.growth : 1;
   return { x: local.x / g, y: local.y / g, z: local.z / g };

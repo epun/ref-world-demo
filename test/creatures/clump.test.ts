@@ -160,15 +160,37 @@ describe('the items pack against the creature', () => {
     expect(radii(clump)[0]).toBeCloseTo(baseR + itemR * CLUMP_FIT, 9);
   });
 
-  it('packs the next one outward when it lands on the same side', () => {
+  it('tucks the next one BESIDE the first rather than stacking a spike', () => {
+    /*
+     * > User, 2026-09-18, with the Katamari Damacy reference: *"We should see
+     * > a mass of objects together not an invisible sphere."*
+     *
+     * Until the fan (`packSeatDirection`, src/creatures/sticky.ts) a second
+     * hit on the same side was seated straight out along the same ray, two
+     * bedded radii further from the centre — so a creature walking a line
+     * grew a spike and the mass never filled in. Now the search tries a
+     * bounded fan around the contact and keeps the tightest seat: the second
+     * item lands next to the first, still touching the creature.
+     */
     const baseR = 0.9;
     const itemR = 0.6;
     const { clump } = ballOn(baseR);
     stick(clump, baseR, 'a', { x: 1, y: 0, z: 0 }, itemR);
     stick(clump, baseR, 'b', { x: 1, y: 0, z: 0 }, itemR);
     const [first, second] = radii(clump);
-    // The second is further out by two radii, less the bedding.
-    expect(second!).toBeCloseTo(first! + 2 * itemR * CLUMP_FIT, 9);
+    const spike = first! + 2 * itemR * CLUMP_FIT;
+    // Nowhere near the old radial answer, and no further from the creature
+    // than the first item was.
+    expect(second!).toBeLessThan(spike - itemR);
+    // Barely further from the creature than the first — it went sideways, not
+    // outward. Measured 2026-09-18: 1.390 against the first's 1.320 and the
+    // old radial answer's 2.160.
+    expect(second!).toBeLessThan(first! + itemR * 0.25);
+    // …and clear of it: two items of radius `itemR` bedded into each other by
+    // `CLUMP_FIT` are `2 × itemR × CLUMP_FIT` apart at the closest.
+    const [a, b] = clump.seats();
+    const apart = Math.hypot(a!.x - b!.x, a!.y - b!.y, a!.z - b!.z);
+    expect(apart).toBeGreaterThanOrEqual(2 * itemR * CLUMP_FIT - 1e-9);
   });
 
   it('leaves the other side alone — a pile is not a sphere', () => {
