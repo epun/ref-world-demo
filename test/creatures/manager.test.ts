@@ -121,6 +121,7 @@ function stubBodies(): unknown {
     sideByCollider: () => null,
     sync: () => {},
     update: () => {},
+    retryMissing: () => {},
     dispose: () => {},
   };
 }
@@ -1104,6 +1105,7 @@ describe('ground clearance — a big ball rides on its whole footprint', () => {
         meshes.delete(item);
       },
       get: (item: string) => meshes.get(item),
+      retryMissing: () => {},
       dispose: () => {},
     };
   }
@@ -2120,6 +2122,7 @@ describe('sticky — impact is in world units per SECOND', () => {
         sideByCollider: () => null,
         sync: () => {},
         update: () => {},
+        retryMissing: () => {},
         dispose: () => {},
       },
     };
@@ -3227,6 +3230,7 @@ describe('the character has priority — what it can carry cannot stop it', () =
         move: () => {},
         remove: () => {},
         get: (item: string) => objects.get(item),
+        retryMissing: () => {},
         dispose: () => {},
       },
     };
@@ -3282,6 +3286,7 @@ describe('the character has priority — what it can carry cannot stop it', () =
       sideByCollider: () => null,
       sync: () => {},
       update: () => {},
+      retryMissing: () => {},
       dispose: () => {},
     };
     const world = {

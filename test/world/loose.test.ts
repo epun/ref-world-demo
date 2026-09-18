@@ -40,6 +40,74 @@ function stubScatter(): { scatter: Scatter; material: MeshStandardMaterial; sour
   return { scatter, material, source };
 }
 
+describe('an object stuck before its model landed', () => {
+  /*
+   * > User report, 2026-09-18, of a phone showing a 67 m ball with no objects
+   * > on it and the props gone from the meadow: *"The objects should be
+   * > showing and it should be sticking to the character."*
+   *
+   * On a katamari world the prop LIBRARY is loaded after the first frame and
+   * the person's own creature, so a phone on a slow link applies `stick`
+   * events for minutes before it can draw them. `show` built a `Mesh` with no
+   * geometry and — being idempotent — kept it forever, while the placement it
+   * came from was already hidden from the scatter. The object was lost.
+   */
+  it('gets its geometry when the library lands, not never', () => {
+    const scene = new Scene();
+    const material = new MeshStandardMaterial();
+    const source = sourceGeometry();
+    // A library that has NOTHING yet, the way a phone's is at the first
+    // pickup, and then has the model.
+    let loaded = false;
+    const scatter = {
+      geometryFor: (_kind: PropKind, _variant: number) => (loaded ? source : null),
+      materialFor: () => material,
+    } as unknown as Scatter;
+    const loose = createLooseMeshes(scatter, scene);
+
+    const mesh = loose.show('rock:0:1.00:2.00', 'rock', 0, 1) as Mesh;
+    // It is in the scene and it is EMPTY — nothing to draw.
+    expect(scene.children).toContain(mesh);
+    expect(mesh.geometry?.getAttribute?.('position')).toBeUndefined();
+    // A retry before the library has it changes nothing and costs nothing.
+    loose.retryMissing();
+    expect(mesh.geometry?.getAttribute?.('position')).toBeUndefined();
+
+    loaded = true;
+    loose.retryMissing();
+    // …and now the object is drawn, in the mesh that was already seated on
+    // the pile: the same object, not a second one.
+    expect(mesh.geometry.getAttribute('position').count).toBe(3);
+    expect(scene.children.filter((c) => c === mesh).length).toBe(1);
+    expect(loose.get('rock:0:1.00:2.00')).toBe(mesh);
+
+    // Once it is in, the retry has nothing left to walk.
+    const before = mesh.geometry;
+    loose.retryMissing();
+    expect(mesh.geometry).toBe(before);
+    loose.dispose();
+  });
+
+  it('forgets an item that was removed before its model arrived', () => {
+    const scene = new Scene();
+    const material = new MeshStandardMaterial();
+    const source = sourceGeometry();
+    let loaded = false;
+    const scatter = {
+      geometryFor: () => (loaded ? source : null),
+      materialFor: () => material,
+    } as unknown as Scatter;
+    const loose = createLooseMeshes(scatter, scene);
+    loose.show('rock:0:3.00:4.00', 'rock', 0, 1);
+    loose.remove('rock:0:3.00:4.00');
+    loaded = true;
+    // Nothing to give geometry to, and nothing put back in the scene.
+    loose.retryMissing();
+    expect(scene.children.length).toBe(0);
+    loose.dispose();
+  });
+});
+
 describe('createLooseMeshes', () => {
   it('adds one mesh to the scene per item, and takes it away again', () => {
     const scene = new Scene();

@@ -57,6 +57,9 @@ function stubLoose(): {
     removed,
     at,
     api: {
+      retryMissing(): void {
+        /* the real one hands late-arriving geometry over; the stub has none */
+      },
       show(item: string): Object3D {
         const existing = at.get(item);
         if (existing) return existing;

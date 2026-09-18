@@ -4117,6 +4117,20 @@ export function createCreatureManager(
   }
 
   function growPass(dt: number): void {
+    /*
+     * FIRST, GIVE ANY OBJECT THAT ARRIVED BEFORE ITS MODEL ITS GEOMETRY.
+     *
+     * > User report, 2026-09-18, of a phone showing a 67 m ball with nothing
+     * > on it: *"The objects should be showing and it should be sticking to
+     * > the character."*
+     *
+     * The prop library loads after the first frame and the person's own
+     * creature, so a `stick` applied before it landed drew an empty mesh —
+     * and the placement was already hidden from the scatter, so the object
+     * was simply gone. `retryMissing` walks only what is waiting, which is
+     * nothing at all once the library is in (src/world/loose.ts).
+     */
+    looseMeshes?.retryMissing?.();
     for (const slot of slots.values()) {
       const clump = slot.clump;
       const root = slot.characterRoot;

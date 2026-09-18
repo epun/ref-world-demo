@@ -83,6 +83,25 @@ export interface LooseMeshes {
   move(item: string, x: number, y: number, z: number, q: LooseRotation): void;
   remove(item: string): void;
   get(item: string): Object3D | undefined;
+  /**
+   * GIVE THE ONES THAT ARRIVED TOO EARLY THEIR GEOMETRY.
+   *
+   * > User report, 2026-09-18, of a phone showing a 67 m ball with no objects
+   * > on it and the props gone from the meadow: *"The objects should be
+   * > showing and it should be sticking to the character."*
+   *
+   * `show` is called the moment a `stick` is applied, and on a katamari world
+   * the prop LIBRARY is loaded after the first frame and the person's own
+   * creature — a phone on a slow link is minutes behind the room. An item
+   * stuck before its model landed got a `Mesh` with no geometry, and because
+   * `show` is idempotent it kept that empty mesh forever: the placement was
+   * already hidden from the scatter, so the object simply vanished.
+   *
+   * So a mesh with no geometry is remembered, and this hands it the geometry
+   * as soon as the library has it. Cheap by construction: it walks nothing
+   * when nothing is waiting, which is every frame after the first pickups.
+   */
+  retryMissing(): void;
   dispose(): void;
 }
 
@@ -167,6 +186,9 @@ export function createLooseMeshes(
     return geometry;
   };
 
+  /** Items drawn with no geometry because the library had not loaded yet. */
+  const awaiting = new Map<string, { kind: PropKind; variant: number }>();
+
   const geometryFor = (
     kind: PropKind,
     variant: number,
@@ -192,6 +214,9 @@ export function createLooseMeshes(
       const existing = meshes.get(item);
       if (existing) return existing;
       const geometry = geometryFor(kind, variant, item);
+      // No geometry yet — the library is still loading. Remember it and let
+      // `retryMissing` finish the job, or the object is lost (see above).
+      if (!geometry) awaiting.set(item, { kind, variant });
       const mesh = new Mesh(geometry ?? undefined, scatter.materialFor(kind));
       // Named so the ghost-panel outliner lists it legibly, the same way the
       // scatter names its batches and the manager names each creature.
@@ -206,6 +231,21 @@ export function createLooseMeshes(
       return mesh;
     },
 
+    retryMissing(): void {
+      if (awaiting.size === 0) return;
+      for (const [item, what] of [...awaiting]) {
+        const mesh = meshes.get(item);
+        if (!mesh) {
+          awaiting.delete(item);
+          continue;
+        }
+        const geometry = geometryFor(what.kind, what.variant, item);
+        if (!geometry) continue;
+        (mesh as Mesh).geometry = geometry;
+        awaiting.delete(item);
+      }
+    },
+
     move(item, x, y, z, q): void {
       const mesh = meshes.get(item);
       if (!mesh) return;
@@ -214,6 +254,7 @@ export function createLooseMeshes(
     },
 
     remove(item): void {
+      awaiting.delete(item);
       const mesh = meshes.get(item);
       if (!mesh) return;
       meshes.delete(item);
