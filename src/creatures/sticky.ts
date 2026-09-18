@@ -407,6 +407,32 @@ export const CLUMP_FIT = 0.7;
  */
 export const PACK_INTERLOCK = 0.45;
 
+/**
+ * [D] How much of a prop's BOUNDING radius counts as its surface, for
+ * deciding that a creature has actually rolled over it.
+ *
+ * > User report, 2026-09-18, after the reach was cut to the silhouette:
+ * > *"Objects are still floating towards the creature. We should make sure
+ * > that they only get added to the ball after the creature has rolled over
+ * > the objects. It shouldn't be sucked in like a vacuum. It should be a
+ * > contact-type physical interaction."*
+ *
+ * Same observation as `PACK_INTERLOCK` and the other half of it. `item.r` is
+ * a BOUNDING radius — a bench, a sign, a planter is mostly air inside its own
+ * sphere — so "the creature's silhouette is within `item.r` of the item's
+ * centre" is true while the two are still visibly a metre apart. Cutting the
+ * creature's side of the sum to the drawn mass (75c9e6c) fixed half of it;
+ * this is the prop's side.
+ *
+ * 0.5 rather than `PACK_INTERLOCK`'s 0.45, and the difference is deliberate:
+ * bedding is about how a seated thing LOOKS and can afford to interpenetrate,
+ * while this decides WHEN the pickup fires, and a creature that has to bury
+ * half of a prop before it takes reads as sticky ground. Half of a bounding
+ * radius is about where a convex prop's own hull is along the contact
+ * direction, so the pickup fires as the surfaces meet.
+ */
+export const TOUCH_FIT = 0.5;
+
 export const PACK_PASSES = 8;
 
 /**

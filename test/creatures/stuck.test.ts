@@ -468,41 +468,45 @@ describe('the stuck report — a carried creature is not a parked one', () => {
       qw: 1,
     });
     const ceiling = MAX_SPEED * KATAMARI_SPEED_MUL;
-
-    // Both pushing the same way: a full push, not a double one.
-    manager.drive('mine', { x: 1, z: 0, mag: 1 });
-    manager.drive('theirs', { x: 1, z: 0, mag: 1 });
+    /*
+     * …AND IT IS LET GO AGAIN, on the very next frame that decides
+     * (`CREATURES_EAT_CREATURES` off, src/creatures/manager.ts).
+     *
+     * > User report, 2026-09-18: *"we need to fix the movement, some
+     * > characters can't move at all."*
+     *
+     * A carried creature's push is applied to its CARRIER (2026-09-16, and
+     * still the rule for the frames a passenger exists), which means the
+     * person whose creature was rolled up is steering a stranger's ball. So
+     * nothing stays carried: the deciding page releases it through the same
+     * `unseat` + `drop` the wire already carries. The summing and clamping
+     * this test used to measure is still in `effectiveDrive` for a log that
+     * holds a passenger, and what is pinned HERE is the thing a person feels.
+     */
     let now = 3000;
     now += FRAME_MS;
     manager.update(FRAME_MS, now);
-    const from = manager.positionOf('mine')!.clone();
-    for (let f = 0; f < 30; f++) {
-      now += FRAME_MS;
-      manager.update(FRAME_MS, now);
-    }
-    const to = manager.positionOf('mine')!;
-    const speed = (Math.hypot(to.x - from.x, to.z - from.z) / (30 * FRAME_MS)) * 1000;
-    expect(speed).toBeLessThanOrEqual(ceiling * 1.02);
+    // `ballOwner` walks to whichever pile a creature belongs to: its own.
+    expect(manager.ballOwner('theirs')).toBe('theirs');
 
-    // And pushing against each other cancels. Not into a STOP — a net zero
-    // hands the ball back to the drift-stop the motion law requires (no
-    // abrupt stops, confidence 1.00), so what it does is coast down.
+    // Both creatures answer their OWN stick, in their own direction.
+    manager.drive('mine', { x: 1, z: 0, mag: 1 });
     manager.drive('theirs', { x: -1, z: 0, mag: 1 });
-    const held = manager.positionOf('mine')!.clone();
-    let last = held.clone();
-    let tail = 0;
-    for (let f = 0; f < 60; f++) {
+    const mineFrom = manager.positionOf('mine')!.clone();
+    const theirsFrom = manager.positionOf('theirs')!.clone();
+    for (let f = 0; f < 40; f++) {
       now += FRAME_MS;
       manager.update(FRAME_MS, now);
-      const at = manager.positionOf('mine')!;
-      if (f >= 45) tail += Math.hypot(at.x - last.x, at.z - last.z);
-      last = at.clone();
     }
-    const after = manager.positionOf('mine')!;
-    // Two seconds of a full push would be 7.2u; cancelling costs it most of
-    // that, and by the last half second it is barely moving.
-    expect(Math.hypot(after.x - held.x, after.z - held.z)).toBeLessThan(ceiling * 2 * 0.45);
-    expect((tail / (15 * FRAME_MS)) * 1000).toBeLessThan(ceiling * 0.35);
+    const mineTo = manager.positionOf('mine')!;
+    const theirsTo = manager.positionOf('theirs')!;
+    expect(mineTo.x - mineFrom.x).toBeGreaterThan(0.5);
+    expect(theirsTo.x - theirsFrom.x).toBeLessThan(-0.5);
+    // Neither past the ceiling its own mass allows.
+    const speedOf = (a: { x: number; z: number }, b: { x: number; z: number }): number =>
+      (Math.hypot(b.x - a.x, b.z - a.z) / (40 * FRAME_MS)) * 1000;
+    expect(speedOf(mineFrom, mineTo)).toBeLessThanOrEqual(ceiling * 1.02);
+    expect(speedOf(theirsFrom, theirsTo)).toBeLessThanOrEqual(ceiling * 1.02);
     manager.clearAll();
   });
 });
@@ -908,14 +912,26 @@ describe('the stuck detector — with rapier under it', () => {
     const baseScale = root().scale.x;
     expect(ballRadius()).toBeCloseTo(baseR, 4);
 
-    // Eat something its own size, through the event path — so this is the
-    // state a viewer and the host both reach.
-    manager.spawn('snack', snowman, { hatchMs: 60_000, grown: true });
+    /*
+     * Eat a PROP, through the event path — so this is the state a viewer and
+     * the host both reach.
+     *
+     * It used to eat a creature. That no longer stays eaten
+     * (`CREATURES_EAT_CREATURES`, 2026-09-18: a person whose creature was
+     * rolled up found their stick steering the carrier, reported as *"some
+     * characters can't move at all"*), so the pile it measured was released
+     * on the next frame and nothing grew. A stone makes the same point about
+     * the radii and cannot be taken away from anybody.
+     */
     manager.applyStick({
       id: 'grower',
-      item: 'creature:snack',
-      ox: 0,
-      oy: 1,
+      item: 'rock:0:12.00:0.00',
+      kind: 'rock',
+      variant: 0,
+      scale: baseR,
+      r: baseR,
+      ox: baseR,
+      oy: 0,
       oz: 0,
       qx: 0,
       qy: 0,
@@ -940,8 +956,17 @@ describe('the stuck detector — with rapier under it', () => {
      * physics stand-in cannot be larger than the circle the solver
      * separates with.
      */
-    expect(ballRadius()).toBeLessThanOrEqual(grown + 1e-4);
-    expect(ballRadius()).toBeGreaterThan(0);
+    /*
+     * The rapier ball is `solidR` — the drawn silhouette — so it tracks the
+     * pile's own footprint and not the volume. With one prop as big as its
+     * carrier the silhouette is WIDER than the volume radius, which is the
+     * honest answer: the mass really does reach that far. What must never
+     * differ is the ball against the circle the resolve separates with, and
+     * both are this number.
+     */
+    const silhouette = Math.max(baseR, manager.pileFootprint('grower'));
+    expect(ballRadius()).toBeCloseTo(silhouette, 3);
+    expect(ballRadius()).toBeGreaterThan(baseR);
     expect(root().scale.x / baseScale).toBeCloseTo(grown / baseR, 6);
     manager.clearAll();
   });

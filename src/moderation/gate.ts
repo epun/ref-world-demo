@@ -133,7 +133,31 @@ const DEFAULT_LOG_LIMIT = 40;
 export function createIngestGate<T extends GateDrawing = GateDrawing>(
   opts: GateOptions<T>,
 ): IngestGate<T> {
-  const screen = opts.screen ?? ((strokes: StrokeList) => screenDrawing(strokes));
+  /*
+   * IS THE AUTOMATIC SCREEN ON AT ALL.
+   *
+   * > User ruling, 2026-09-18: *"lets also remove any censoring that we are
+   * > doing."*
+   *
+   * Off. Nothing is refused for its shape and nothing is held for one — the
+   * default screen admits every drawing. It is one boolean at the seam rather
+   * than a deletion, so the detectors stay whole, pure and tested
+   * (`screenDrawing` and test/moderation/screen.test.ts are untouched, and an
+   * injected `opts.screen` still wins), and turning it back on for a
+   * different room is one edit.
+   *
+   * WHAT THIS DOES NOT TOUCH, because none of it censors a drawing: the
+   * OPERATOR layer below — hold-all for approval, remove any creature on
+   * screen in one tap, block a drawer and take what they made with them. A
+   * moderator can still do all of it and `?mod=` still means what it meant.
+   */
+  const AUTO_SCREEN = false;
+  const screen =
+    opts.screen ??
+    ((strokes: StrokeList) =>
+      AUTO_SCREEN
+        ? screenDrawing(strokes)
+        : ({ allow: true, verdict: 'allow', reason: null, confidence: 1, detectors: [] } as const));
   const logLimit = opts.logLimit ?? DEFAULT_LOG_LIMIT;
   const observer = opts.observer;
 

@@ -1298,18 +1298,16 @@ describe('ground clearance — a big ball rides on its whole footprint', () => {
      * packer cannot produce — precisely so that a low seat is on the table
      * and still lifts nothing.
      */
-    expect(manager.pileFloor('ball')).toBeLessThan(0);
+    // The pile holds its own depth, so its DRAWN floor is at the paper
+    // (2026-09-18) — the creature never pays for it.
+    expect(manager.pileFloor('ball')).toBeCloseTo(0, 6);
     const footprint = manager.pileFootprint('ball');
     expect(footprint).toBeGreaterThan(0);
-    // The clearance is two terms since 2026-09-18: what is UNDER the pile
-    // (its own floor — the ball the creature is inside) plus the rise of the
-    // terrain beneath its footprint.
-    const sit = Math.max(0, -manager.pileFloor('ball'));
-    const target =
-      sit +
-      footprintRise(root.position.x, root.position.z, footprint, (x, z) =>
-        slope.sampleHeight(x, z),
-      );
+    // One term again: the terrain's own rise under the pile's footprint. The
+    // pile's depth is the PILE's to hold (2026-09-18).
+    const target = footprintRise(root.position.x, root.position.z, footprint, (x, z) =>
+      slope.sampleHeight(x, z),
+    );
     expect(target).toBeGreaterThan(1);
 
     let previous = manager.groundLift('ball');
@@ -1619,10 +1617,16 @@ describe('ground clearance — a big ball rides on its whole footprint', () => {
      * its bottom is `r × CLUMP_FIT + r` under the feet — and that, exactly,
      * is the lift.
      */
-    const under = r * CLUMP_FIT + r;
-    expect(manager.pileFloor('ball')).toBeCloseTo(-under, 6);
-    expect(manager.groundLift('ball')).toBeCloseTo(under, 4);
-    expect(root.position.y).toBeCloseTo(FLAT_SURFACE.sampleHeight(4, 4) + under, 4);
+    /*
+     * …AND THE CREATURE DOES NOT PAY FOR IT (user report, 2026-09-18: *"the
+     * character is still floating in Z space … it should be anchored to the
+     * surface of the ground as the mass is rolling"*). The pile raises its own
+     * origin instead, so the mass rests on the paper, `pileFloor` reads the
+     * drawn pile at the paper, and the root's Y is the terrain's alone.
+     */
+    expect(manager.pileFloor('ball')).toBeCloseTo(0, 4);
+    expect(manager.groundLift('ball')).toBe(0);
+    expect(root.position.y).toBeCloseTo(FLAT_SURFACE.sampleHeight(4, 4), 9);
     manager.clearAll();
   });
 
@@ -1643,10 +1647,11 @@ describe('ground clearance — a big ball rides on its whole footprint', () => {
     const ground = ramped.sampleHeight(-20, 0);
     // This fixture hand-seats its props on the creature's centre, so there is
     // mass below the feet — and the lift is exactly that and no more.
-    const floor = manager.pileFloor('ball');
-    expect(floor).toBeLessThan(0);
-    expect(manager.groundLift('ball')).toBeCloseTo(-floor, 4);
-    expect(root.position.y).toBeCloseTo(ground - floor, 4);
+    // The pile carries itself, so there is nothing left for the flat ground
+    // to add: the creature's origin IS the ground plane (2026-09-18).
+    expect(manager.pileFloor('ball')).toBeCloseTo(0, 4);
+    expect(manager.groundLift('ball')).toBe(0);
+    expect(root.position.y).toBeCloseTo(ground, 9);
     // The footprint is real, so the ring term was live and simply found flat
     // ground.
     expect(manager.pileFootprint('ball')).toBeGreaterThan(0);
@@ -1659,10 +1664,10 @@ describe('ground clearance — a big ball rides on its whole footprint', () => {
     feedProps(manager, 3, 3);
     // Settled well below the riser, where the ring reaches nothing.
     holdAt(manager, -20, 0, 200);
-    // On the flat the lift is the pile's own floor and nothing else. What
-    // follows is the RING term climbing on top of that.
-    const flatLift = manager.groundLift('ball');
-    expect(flatLift).toBeCloseTo(Math.max(0, -manager.pileFloor('ball')), 4);
+    // On the flat there is no lift at all: the creature's origin is the
+    // ground. What follows is the RING term alone, climbing.
+    const flatLift = 0;
+    expect(manager.groundLift('ball')).toBe(flatLift);
 
     // Then walk it up and over, through the pose path at a walking pace.
     const heights: number[] = [];
@@ -1911,7 +1916,16 @@ describe('ground clearance — a big ball rides on its whole footprint', () => {
     const feet = worldPos(rider!);
     expect(rider!.position.y).toBe(0);
     expect(feet.y).toBeCloseTo(root.position.y, 9);
-    expect(worldPos(clump!).y - feet.y).toBeCloseTo(seated.baseR, 4);
+    /*
+     * `baseR` PLUS the pile's own rise (2026-09-18, *"the character … should
+     * be anchored to the surface of the ground as the mass is rolling"*): a
+     * ball that reaches below the feet raises the PILE, never the creature,
+     * so the clump's origin is the creature's middle plus whatever it is
+     * holding itself up by — and the feet are still exactly on the root.
+     */
+    const rise = manager.pileRise('ball');
+    expect(rise).toBeGreaterThanOrEqual(0);
+    expect(worldPos(clump!).y - feet.y).toBeCloseTo(seated.baseR + rise, 4);
     // On the paper, plus only the clearance the footprint asks for.
     expect(root.position.y).toBeGreaterThanOrEqual(FLAT_SURFACE.sampleHeight(4, 4));
     expect(root.position.y - FLAT_SURFACE.sampleHeight(4, 4)).toBeCloseTo(
@@ -1964,9 +1978,11 @@ describe('ground clearance — a big ball rides on its whole footprint', () => {
       const rider = root.getObjectByName('rider')!;
       expect(rider.position.y).toBe(0);
       expect(worldPos(rider).y - root.position.y).toBeCloseTo(0, 9);
-      // …and the pile stays around its middle while the blend runs.
+      // …and the pile stays around its middle, plus whatever it is holding
+      // ITSELF up by, while the blend runs (2026-09-18: the creature is
+      // anchored to the ground and the pile carries its own depth).
       expect(worldPos(clump).y - worldPos(rider).y).toBeCloseTo(
-        manager.ballDiameter('ball') / (2 * root.scale.x),
+        manager.ballDiameter('ball') / (2 * root.scale.x) + manager.pileRise('ball'),
         4,
       );
       frames++;
@@ -2120,7 +2136,7 @@ describe('ground clearance — a big ball rides on its whole footprint', () => {
     // The pile is still packed around the creature's middle, which is a
     // `baseR` above its feet — the lean cannot move it off that.
     expect(worldPos(rider).distanceTo(worldPos(clump))).toBeCloseTo(
-      bodyR / root.scale.x,
+      bodyR / root.scale.x + manager.pileRise('ball'),
       4,
     );
     expect(bodyR).toBeGreaterThan(2.5);
@@ -2534,71 +2550,48 @@ describe('sticky — one creature carrying another', () => {
     return out;
   }
 
-  it('carries the smaller one: slot state, root parent, and one stick event', () => {
+  it('never carries another creature — each phone keeps its own', () => {
+    /*
+     * > User report, 2026-09-18: *"we need to fix the movement, some
+     * > characters can't move at all"*, and before it *"users can't move"*.
+     *
+     * This describe used to pin the opposite — a bigger creature rolling the
+     * smaller one onto its pile, the slot state, the root re-parenting, the
+     * one `stick` event, the growth it added, and the release when the
+     * carrier left. All of that machinery is still there and still reached
+     * by a `stick` event naming a `creature:` item (a log, a replay, a dev
+     * drop), which is why it was not deleted.
+     *
+     * What changed is that it never happens ON ITS OWN, because of what a
+     * person feels when it does: a carried creature has no locomotion, so its
+     * push is applied to its CARRIER (2026-09-16, itself a fix for a phone
+     * that could do nothing at all once its creature was taken) — and the
+     * person whose creature was rolled up finds their stick steering a
+     * stranger's ball around the island. `CREATURES_EAT_CREATURES` is off,
+     * and nothing stays carried either: the deciding page releases any
+     * passenger through the same `unseat` + `drop` the wire already carries.
+     */
     const { world, manager, seen } = pair({ physics: true });
     const roots = rootsOf(world, manager);
     expect(roots.size).toBe(2);
     const big = roots.get('big')!;
     const small = roots.get('small')!;
-    // Standing on each other. Nothing here writes Y — the ground pass owns it.
+    // Standing on each other, which used to be all it took.
     small.position.set(big.position.x, small.position.y, big.position.z);
     manager.update(16, 1000);
+    manager.update(16, 1033);
 
-    const sticks = seen.filter((e) => e.kind === 'stick');
-    expect(sticks).toEqual([{ kind: 'stick', id: 'big', item: 'creature:small' }]);
-    // The small one now hangs under the big one's clump, not under the scene.
-    expect(small.parent?.name).toBe('clump');
-    expect(small.parent?.parent).toBe(big);
-    expect(world.scene.children).not.toContain(small);
-
-    // And it is still its drawer's creature: the roster reports it, and its
-    // pose is where it has been carried TO rather than a clump-local offset.
-    expect(manager.liveIds()).toContain('small');
-    const pose = manager.poses().find((p) => p.id === 'small')!;
-    expect(Math.hypot(pose.x - big.position.x, pose.z - big.position.z)).toBeLessThan(12);
-
-    // Exactly once, however many frames go by.
-    manager.update(16, 1016);
-    manager.update(16, 1032);
-    expect(seen.filter((e) => e.kind === 'stick')).toHaveLength(1);
-    manager.clearAll();
-  });
-
-  it('grows the carrier, and the growth shows up in the exclusion radius', () => {
-    const { world, manager } = pair({ physics: true });
-    const roots = rootsOf(world, manager);
-    const big = roots.get('big')!;
-    const small = roots.get('small')!;
-    const before = Math.max(...manager.positions().map((p) => p.r));
-    small.position.set(big.position.x, small.position.y, big.position.z);
-    manager.update(16, 1000);
-    expect(big.scale.x).toBeGreaterThan(1);
-    // `positions()` is what the scatter reads for its exclusion radius, so a
-    // creature that has eaten something clears more world out of its way.
-    expect(Math.max(...manager.positions().map((p) => p.r))).toBeGreaterThan(before);
-    manager.clearAll();
-  });
-
-  it('sets the passenger down FREE when its carrier leaves, with a drop', () => {
-    const { world, manager, seen } = pair({ physics: true });
-    const roots = rootsOf(world, manager);
-    const big = roots.get('big')!;
-    const small = roots.get('small')!;
-    small.position.set(big.position.x, small.position.y, big.position.z);
-    manager.update(16, 1000);
-    expect(small.parent?.name).toBe('clump');
-    seen.length = 0;
-
-    manager.clear('big');
-    // Back in the world, standing on its own, and its own creature again.
+    // Not taken: still its own root in the scene, not a child of a clump.
     expect(small.parent).toBe(world.scene);
-    expect(manager.liveIds()).toEqual(['small']);
-    expect(seen.filter((e) => e.kind === 'drop')).toEqual([
-      { kind: 'drop', id: 'big', item: 'creature:small' },
-    ]);
-    // It answers to its phone again.
+    expect(seen.filter((e) => e.kind === 'stick')).toEqual([]);
+    expect(manager.ballOwner('small')).toBe('small');
+    // Nothing was added to its pile, so it is exactly the size it hatched.
+    expect(manager.growthOf("big")).toBeCloseTo(1, 9);
+
+    // …and both answer their own sticks.
     expect(manager.drive('small', { x: 1, z: 0, mag: 1 })).toBe(true);
-    expect(manager.driven()).toEqual(['small']);
+    expect(manager.drive('big', { x: -1, z: 0, mag: 1 })).toBe(true);
+    expect(manager.driven().slice().sort()).toEqual(['big', 'small']);
     manager.clearAll();
   });
 

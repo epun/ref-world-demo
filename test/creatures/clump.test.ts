@@ -276,10 +276,16 @@ describe('the items pack against the creature', () => {
     // being raised to lie on the paper, which is what used to flatten a
     // grown pile into a pancake of props.
     expect(before).toBeGreaterThanOrEqual((baseR + itemR) * CLUMP_FIT - 1e-6);
-    expect(clump.floor()).toBeLessThan(0);
-    // …and what is below the feet is exactly what the lift owes it: the
-    // item's own underside, in the creature's frame.
-    expect(clump.floor()).toBeCloseTo(baseR + first.position.y * clump.growth() - itemR, 6);
+    /*
+     * THE PILE HOLDS ITSELF UP (user report, 2026-09-18: *"the character is
+     * still floating … it should be anchored to the surface of the ground as
+     * the mass is rolling"*). A 1.4 u item on a 0.9 u creature reaches below
+     * the feet, so the clump raises its own origin by exactly that much and
+     * `floor()` — which reads the pile AS DRAWN — comes out at the paper.
+     * The creature's root never moves for it.
+     */
+    expect(clump.rise()).toBeGreaterThan(0);
+    expect(clump.floor()).toBeCloseTo(0, 6);
 
     // Five more things elsewhere on the creature: the growth rises a long way
     // and the FIRST one must not drift outward with it, or the pile would
@@ -349,15 +355,20 @@ describe('the pile measures itself as it is CURRENTLY turned', () => {
     // `roll` takes a displacement; walk it there in steps so the axis and the
     // rate are the real ones.
     for (let i = 0; i < 90; i++) clump.roll(quarter / 90, 0, 1);
-    const low = clump.floor();
     const wide = clump.footprint();
-    // Something is now below the creature's feet — which is the lift the
-    // ground pass owes it — and the pile is no longer as wide as its seat.
-    expect(low).toBeLessThan(0);
+    /*
+     * The item has come round underneath, so the pile RAISES ITSELF by
+     * exactly what is below the feet (2026-09-18 — the creature is anchored
+     * to the ground and never lifted by its own mass). `floor()` reads the
+     * pile as drawn, so it is at the paper; `rise()` is what it took.
+     */
+    expect(clump.rise()).toBeGreaterThan(0);
+    expect(clump.floor()).toBeCloseTo(0, 9);
+    // And the rise is bounded by the seat's own distance: an item at `out`
+    // with radius `itemR` can reach at most `out + itemR - baseR` below.
+    expect(clump.rise()).toBeLessThanOrEqual(out + itemR - baseR + 1e-9);
+    // The pile is no longer as wide as its seat, either.
     expect(wide).toBeLessThan(out + itemR);
-    // And it is bounded by the seat's own distance: an item at `out` with
-    // radius `itemR` can reach at most `baseR - out - itemR` below the feet.
-    expect(low).toBeGreaterThanOrEqual(baseR - out - itemR - 1e-9);
   });
 
   it('keeps the ceiling and the floor a pile-diameter apart however it turns', () => {

@@ -242,7 +242,23 @@ export function createLooseMeshes(
       // No geometry yet — the library is still loading. Remember it and let
       // `retryMissing` finish the job, or the object is lost (see above).
       if (!geometry) awaiting.set(item, { kind, variant });
-      const mesh = new Mesh(geometry ?? undefined, scatter.materialFor(kind));
+      /*
+       * THE VARIANT'S OWN MATERIAL (user report, 2026-09-18: *"the objects
+       * aren't retaining texture when they stick to a character"*).
+       *
+       * `materialFor(kind)` defaults to VARIANT 0, and on a katamari world
+       * every model in the library carries its own baked texture — the source
+       * answers per variant (`source.draw.materialFor(kind, variant, style)`,
+       * src/world/scatter.ts). So a bench, a sign and a vending machine are
+       * three variants of one kind and a stuck one was drawn with whichever
+       * texture variant 0 happens to have: the standing prop was right and
+       * the moment it joined the pile it changed clothes.
+       *
+       * The scatter's instanced batches have always passed the variant
+       * (`materialFor(kind, v)`, one batch per variant); this was the one
+       * caller that did not.
+       */
+      const mesh = new Mesh(geometry ?? undefined, scatter.materialFor(kind, variant));
       // Named so the ghost-panel outliner lists it legibly, the same way the
       // scatter names its batches and the manager names each creature.
       mesh.name = `loose ${kind}`;

@@ -645,16 +645,28 @@ describe('a host handoff leaves the creature where it was', () => {
 });
 
 describe('a passenger steers its carrier across the wire', () => {
-  it('applies a rider’s drive to the ball it is riding', () => {
+  it('a creature seated by an event is let go, and drives itself', () => {
+    /*
+     * > User report, 2026-09-18: *"we need to fix the movement, some
+     * > characters can't move at all."*
+     *
+     * This used to pin the opposite end of the 2026-09-16 stuck ruling: a
+     * passenger's stick reaching its CARRIER across the wire, because a
+     * carried creature has no locomotion of its own. Both halves were true
+     * and the result was still that the person whose creature had been rolled
+     * up was steering a stranger's ball around the island.
+     *
+     * So nothing stays carried (`CREATURES_EAT_CREATURES` off,
+     * src/creatures/manager.ts): the deciding page lets a creature passenger
+     * go through the same `unseat` + `drop` a knocked-off prop uses, and the
+     * release travels as an ordinary scene event, so every page agrees. What
+     * this pins is the thing a person feels — B's stick moves B's creature.
+     */
     const r = room();
     populate([r.host, r.a, r.b]);
     r.run(2 * HOST_HEARTBEAT_MS + 200);
 
-    /*
-     * B rides A, on EVERY page — which is how it really happens: the host
-     * decides and the `stick` event says so, and a viewer applies the same
-     * record through `applyStick` (docs/PLAN.md §7.6).
-     */
+    // Seated on every page, exactly as a log or a replay can do.
     for (const p of [r.host, r.a, r.b]) {
       p.manager.applyStick({
         id: 'phonea',
@@ -668,21 +680,28 @@ describe('a passenger steers its carrier across the wire', () => {
         qw: 1,
       });
     }
-    r.run(200);
+    r.run(1200);
 
-    const before = r.host.at('phonea')!;
-    // The PASSENGER's phone pushes. Its creature has no locomotion of its
-    // own — it is a seat on a pile — so the push has to reach the carrier
-    // (`effectiveDrive`, the 2026-09-16 stuck ruling), and it has to survive
-    // the trip over the wire to get there.
+    // Let go by the page that DECIDES, first of all — that is the page whose
+    // reading of the room is the one the others are told about.
+    expect(r.host.manager.ballOwner('phoneb')).toBe('phoneb');
+    // …and the release travels, so every page agrees.
+    for (const p of [r.a, r.b]) {
+      expect(p.manager.ballOwner('phoneb')).toBe('phoneb');
+    }
+
+    const carrierBefore = r.host.at('phonea')!;
+    const riderBefore = r.host.at('phoneb')!;
     r.b.stick = { x: 1, z: 0, mag: 1 };
     r.run(2500);
-    const after = r.host.at('phonea')!;
-    expect(after.x - before.x).toBeGreaterThan(0.5);
-    // The rider is on the pile, so it went with it.
-    const rider = r.host.at('phoneb')!;
-    expect(Math.hypot(rider.x - after.x, rider.z - after.z)).toBeLessThan(3);
-    // And the carrier's own phone never touched its stick.
+    const carrierAfter = r.host.at('phonea')!;
+    const riderAfter = r.host.at('phoneb')!;
+    // B moved, over the wire, on the host's own reading of it.
+    expect(riderAfter.x - riderBefore.x).toBeGreaterThan(0.5);
+    // …and A did not, because A's phone never touched its stick.
+    expect(Math.hypot(carrierAfter.x - carrierBefore.x, carrierAfter.z - carrierBefore.z)).toBeLessThan(
+      0.5,
+    );
     expect(r.a.stick.mag).toBe(0);
   }, 120_000);
 });
@@ -1258,6 +1277,16 @@ describe('an item keeps its own size on every page', () => {
     const stone = prop();
     const host = page([stone], true);
     const viewer = page([stone], false);
+    /*
+     * The standing row, read before ANY frame runs. Taking the prop is what
+     * loses it — and the creature below hatches on top of this stone, so the
+     * very first frame takes it. The number only exists while the thing is
+     * still standing, so it has to be said out loud at the moment of the
+     * decision or it is gone for good, which is the whole shape of the bug
+     * this test is about.
+     */
+    const standing = scatterScale(host, 'small', stone.key!);
+    expect(standing).toBeCloseTo(LIBRARY_SCALE, 6);
     for (const p of [host, viewer]) {
       p.manager.spawn('mine', snowman, { hatchMs: 10, grown: true });
       p.manager.update(FRAME_MS, 1000);
@@ -1267,13 +1296,23 @@ describe('an item keeps its own size on every page', () => {
     // Enough pile under it that the growth is nowhere near 1 — the whole
     // point is that two multiplications cancel, and at growth 1 they cancel
     // whether or not either of them is right.
+    /*
+     * PROPS, not creatures. It used to seat three creatures on the pile; a
+     * carried creature is released on the next deciding frame since
+     * 2026-09-18 (`CREATURES_EAT_CREATURES`, after *"some characters can't
+     * move at all"*), so the pile it built collapsed and the growth this test
+     * needs went with it. Three stones make the same growth and cannot be
+     * taken away from anybody.
+     */
     for (let i = 0; i < 3; i++) {
-      host.manager.spawn(`filler-${i}`, snowman, { hatchMs: 10, grown: true });
-      viewer.manager.spawn(`filler-${i}`, snowman, { hatchMs: 10, grown: true });
       for (const p of [host, viewer]) {
         p.manager.applyStick({
           id: 'mine',
-          item: `creature:filler-${i}`,
+          item: `small:0:${i + 10}.00:0.00`,
+          kind: 'small',
+          variant: 0,
+          scale: 0.9,
+          r: 0.9,
           ox: 0,
           oy: 1,
           oz: i * 0.1,
@@ -1302,8 +1341,6 @@ describe('an item keeps its own size on every page', () => {
      * only exists while the thing is still standing, so it has to be said
      * out loud at the moment of the decision or it is gone for good.
      */
-    const standing = scatterScale(host, 'small', stone.key!);
-    expect(standing).toBeCloseTo(LIBRARY_SCALE, 6);
 
     const record = {
       id: 'mine',

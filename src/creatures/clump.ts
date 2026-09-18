@@ -190,6 +190,10 @@ export interface Clump {
    * creature by what is genuinely UNDER it.
    */
   floor(): number;
+  /** How far the pile is holding ITSELF up, world units — what keeps a ball
+   * that reaches below the creature's feet out of the ground without lifting
+   * the creature (2026-09-18). 0 for a pile that sits at or above them. */
+  rise(): number;
   /** …and its HIGHEST point, in the same frame: world units above the
    * creature's feet, 0 for an empty pile. What the corner's live view frames
    * the mass by (src/world/portrait.ts). */
@@ -243,6 +247,54 @@ export function createClump(baseR: number): Clump {
    * exactly the world offset the item is drawn at.
    */
   const turned = new Vector3();
+
+  /**
+   * THE PILE'S LOWEST POINT before it carries itself, world units above the
+   * creature's FEET — negative when the mass reaches below them.
+   *
+   * Measured on the seats as they are currently ROLLED (the note on `turned`):
+   * the pile's roll is the group's own quaternion, so an item that has come
+   * round underneath the creature is what this finds.
+   */
+  const rawFloor = (): number => {
+    let low = 0;
+    for (const entry of entries.values()) {
+      turned.set(entry.seat.x, entry.seat.y, entry.seat.z).applyQuaternion(group.quaternion);
+      // The seat is measured from the pile's centre and the centre is `baseR`
+      // above the creature's feet, so this is in the creature's own frame.
+      const bottom = baseR + turned.y - entry.item.r;
+      if (bottom < low) low = bottom;
+    }
+    return low;
+  };
+
+  /**
+   * HOW FAR THE PILE HOLDS ITSELF UP, world units — and this is the thing the
+   * creature does NOT pay.
+   *
+   * > User report, 2026-09-18: *"The character is still floating in Z space.
+   * > We should make sure that it is anchored to the surface of the ground as
+   * > the mass is rolling. It should not be floating in the air."*
+   *
+   * Three rulings meet here and all three can hold at once, which took a
+   * while to see. The mass must be a BALL (2026-09-18), so items pack below
+   * the pile's centre and the lump closes round the creature. Nothing may
+   * CLIP into the map (2026-09-18), so no part of that ball may go under the
+   * paper. And the creature must be ANCHORED to the ground (three reports on
+   * 2026-09-17 and this one), so the root's Y is the terrain's and nothing
+   * else.
+   *
+   * Lifting the ROOT by the pile's depth satisfied the first two and broke
+   * the third — it is what this report is about. Lifting the PILE by its own
+   * depth satisfies all three: the ball rests its underside on the paper, the
+   * creature stands on the paper at the middle of it, and the seats keep
+   * every relative position the packer gave them, so the lump is the same
+   * lump. What changes is which of the two nodes moves.
+   *
+   * Derived, never stored and never on the wire: every page computes it from
+   * the seats and the live roll, which is the same input on every screen.
+   */
+  const riseOf = (): number => Math.max(0, -rawFloor());
   const delta = new Quaternion();
   const inverseRoot = new Quaternion();
 
@@ -388,19 +440,13 @@ export function createClump(baseR: number): Clump {
     },
 
     floor(): number {
-      let low = 0;
-      for (const entry of entries.values()) {
-        // Where the seat is NOW, not where it arrived (the note on `turned`):
-        // the pile's roll is the group's own quaternion and an item that has
-        // come round underneath the creature is what has to hold it up.
-        turned.set(entry.seat.x, entry.seat.y, entry.seat.z).applyQuaternion(group.quaternion);
-        // The seat is measured from the pile's centre and the centre is
-        // `baseR` above the creature's feet, so this is in the creature's
-        // frame — which is the frame the ground pass writes in.
-        const bottom = baseR + turned.y - entry.item.r;
-        if (bottom < low) low = bottom;
-      }
-      return low;
+      // AS DRAWN, so never below the creature's feet: the pile carries its own
+      // rise (`riseOf`) and the answer here is the raw measurement plus it.
+      return rawFloor() + riseOf();
+    },
+
+    rise(): number {
+      return riseOf();
     },
 
     ceiling(): number {
@@ -410,7 +456,7 @@ export function createClump(baseR: number): Clump {
         const top = baseR + turned.y + entry.item.r;
         if (top > high) high = top;
       }
-      return high;
+      return high + riseOf();
     },
 
     footprint(): number {
@@ -450,9 +496,13 @@ export function createClump(baseR: number): Clump {
       // One read a frame for the whole pile: the growth the root is scaled by,
       // which every seat below is divided by (see the module header).
       const now = Math.max(1e-6, growth());
-      // …and the pile's own origin with it: the CREATURE's middle, `baseR` in
-      // the world however big the pile has become.
-      group.position.y = baseR / now;
+      /*
+       * …and the pile's own origin with it: the CREATURE's middle, `baseR` in
+       * the world however big the pile has become — PLUS the pile's own rise,
+       * so a ball that reaches below the creature's feet holds ITSELF up
+       * instead of carrying the creature into the air (`riseOf`).
+       */
+      group.position.y = (baseR + riseOf()) / now;
       for (const entry of entries.values()) {
         // Nothing fully arrests (TASTE §3): the springs keep running after
         // they have settled, which is the ambient floor rather than a freeze.

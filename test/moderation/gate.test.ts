@@ -6,6 +6,7 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
+import { screenDrawing } from '../../src/moderation/screen';
 import { createIngestGate } from '../../src/moderation/gate';
 import { circleBlob } from '../fixtures/strokes';
 import { INNOCENT_SET, PHALLUS_SET } from '../fixtures/moderation';
@@ -22,6 +23,18 @@ function harness(): {
   const cleared: string[] = [];
   const live = new Set<string>();
   const gate = createIngestGate({
+    /*
+     * THE DETECTORS, INJECTED — because the gate's own default admits
+     * everything since 2026-09-18 (*"lets also remove any censoring that we
+     * are doing"*, `AUTO_SCREEN` in src/moderation/gate.ts).
+     *
+     * These tests are about the GATE's machinery — refuse never spawns, hold
+     * queues, approval spawns, a block takes back what a drawer made — and
+     * that machinery still has to work for the room that turns the screen
+     * back on, and for an operator refusing by hand. So the screen is handed
+     * in here rather than the tests being deleted with the default.
+     */
+    screen: (strokes) => screenDrawing(strokes),
     spawn: (d) => {
       spawned.push(d.id);
       live.add(d.id);

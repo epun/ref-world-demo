@@ -76,6 +76,7 @@ import {
   DROP_MIN_GAP_MS,
   impactOf,
   massSpeedFactor,
+  TOUCH_FIT,
   shouldDrop,
   stageFor,
   STICKY,
@@ -221,6 +222,34 @@ export const KATAMARI_WALK_MUL = 5;
  *
  * KATAMARI ONLY (see the use site).
  */
+/**
+ * DOES A CREATURE EVER PICK UP ANOTHER CREATURE. **[D]**
+ *
+ * > User report, 2026-09-18: *"we need to fix the movement, some characters
+ * > can't move at all"*, and before it *"users can't move"*.
+ *
+ * No. It is the cause of that report, and the mechanism is in `drive`: a
+ * carried creature has no locomotion of its own, so its push is applied to
+ * its CARRIER (2026-09-16, itself a fix for a phone that could do NOTHING
+ * once its creature was taken). Both behaviours are defensible and neither
+ * is what a person with a phone experiences: somebody whose creature was
+ * rolled up finds their stick steering a stranger's ball around the island,
+ * which reads exactly as *"my character can't move at all"*.
+ *
+ * Nobody asked for creature-eating. It arrived as a consequence of the
+ * katamari rule applying to every collider in reach, including the ones with
+ * people attached, and the size gap it needed (`CREATURE_CARRY_RATIO`) only
+ * made it rarer, not better. A room of phones is a room of people who each
+ * get to drive the thing they drew.
+ *
+ * ONE FLAG, so the pair are one decision and the whole path stays live and
+ * tested (`stickCreature`, `effectiveDrive`, the passenger's own pose and
+ * release are all still there and still exercised — a dev drop can still
+ * seat one creature on another's pile). Props are untouched: they are what
+ * the game is about.
+ */
+export const CREATURES_EAT_CREATURES = false;
+
 export const WALL_SLIDE = 0.8;
 
 /**
@@ -1395,6 +1424,10 @@ export interface CreatureManager {
    * every world without the game.
    */
   pileFloor(id: string): number;
+  /** …and how far the pile is holding ITSELF up, world units — what keeps a
+   * ball that reaches below the creature's feet out of the ground without
+   * lifting the creature (2026-09-18). */
+  pileRise(id: string): number;
   /** …and its HIGHEST point in the same frame (`Clump.ceiling`) — what the
    * corner's live view frames the mass by. 0 for an empty pile. */
   pileCeiling(id: string): number;
@@ -3414,6 +3447,47 @@ export function createCreatureManager(
     }
   }
 
+  /**
+   * LET EVERY CARRIED CREATURE GO, once, on the page that decides.
+   *
+   * `CREATURES_EAT_CREATURES` is off (see the constant), but a room that was
+   * running before the flag flipped — or a log being restored — can still
+   * hold a creature on somebody's pile, and the person whose creature it is
+   * would find their stick steering the carrier forever. So the deciding
+   * page releases them, through the SAME `unseat` + `drop` event a knocked-off
+   * prop goes through, so every screen agrees and nothing about the wire is
+   * special-cased.
+   *
+   * Cheap: a `creature:` key is the only thing it looks for, and the walk is
+   * over a carrier's own passengers, which is almost always none.
+   */
+  function releaseCarriedCreatures(): void {
+    if (CREATURES_EAT_CREATURES) return;
+    for (const slot of slots.values()) {
+      if (slot.passengers.size === 0) continue;
+      for (const rider of [...slot.passengers.keys()]) {
+        const stuck = slot.clump?.items.get(`creature:${rider}`);
+        if (!stuck) continue;
+        stuck.object.getWorldPosition(scratchVec);
+        stuck.object.getWorldQuaternion(scratchQ);
+        const x = scratchVec.x;
+        const z = scratchVec.z;
+        const q = { x: scratchQ.x, y: scratchQ.y, z: scratchQ.z, w: scratchQ.w };
+        if (!unseat(slot, stuck.key, x, z, q)) continue;
+        observer?.drop({
+          id: slot.id,
+          item: stuck.key,
+          x,
+          z,
+          qx: q.x,
+          qy: q.y,
+          qz: q.z,
+          qw: q.w,
+        });
+      }
+    }
+  }
+
   /** `bodies.onSettle` → the room, once. Wired on the first host frame,
    * because the bodies do not exist before then. */
   let settleWired = false;
@@ -3846,9 +3920,20 @@ export function createCreatureManager(
         const props = stickyFor(item.kind, item.variant);
         const point = itemPoints[nearIdx[k]!]!;
         const d = Math.hypot(point.x - root.position.x, point.z - root.position.z);
-        // `CONTACT_PAD`, because nothing in this world is ever exactly
-        // touching: every solver here holds a skin.
-        if (d > reach + item.r + CONTACT_PAD) continue;
+        /*
+         * CONTACT, not proximity (user report, 2026-09-18: *"they should only
+         * get added to the ball after the creature has rolled over the
+         * objects. It shouldn't be sucked in like a vacuum"*).
+         *
+         * `item.r` is the prop's BOUNDING radius and a prop is mostly air
+         * inside its own sphere, so a test against the whole of it fires
+         * while the two are still visibly apart — the creature's side of that
+         * sum was cut to the silhouette in 75c9e6c and this is the prop's
+         * side (`TOUCH_FIT`, src/creatures/sticky.ts). `CONTACT_PAD` stays,
+         * because nothing in this world is ever exactly touching: every
+         * solver here holds a skin.
+         */
+        if (d > reach + item.r * TOUCH_FIT + CONTACT_PAD) continue;
         // Units: world units per second, raw off the body — see the note on
         // `preSpeed` in the resolve block.
         const speed = Math.hypot(entry.body.vx, entry.body.vz);
@@ -4006,7 +4091,9 @@ export function createCreatureManager(
      * carrying which. Symmetric in the sense that matters — whichever is
      * BIGGER does the carrying, whichever order they are visited in.
      */
-    for (let i = 0; i < aliveScratch.length; i++) {
+    // Off by user ruling (`CREATURES_EAT_CREATURES`): a person's creature is
+    // not another person's prop, and a carried one's stick steers its carrier.
+    for (let i = 0; CREATURES_EAT_CREATURES && i < aliveScratch.length; i++) {
       const a = aliveScratch[i]!;
       for (let j = i + 1; j < aliveScratch.length; j++) {
         const b = aliveScratch[j]!;
@@ -4140,30 +4227,32 @@ export function createCreatureManager(
     const clump = slot.clump;
     const footprint = clump?.footprint() ?? 0;
     /*
-     * A CREATURE RIDES ON WHAT IS UNDER IT, and on nothing else.
+     * THE CREATURE IS ANCHORED TO THE GROUND. A pile never lifts it.
      *
-     * Two rulings meet here and both are the user's. *"The characters should
-     * be on the ground"* (2026-09-17, three times) is why this is measured
-     * and not a radius: `reach()` is how far the pile stretches in ANY
-     * direction, so a creature with three benches beside it was held metres
-     * in the air over a gap. *"All the objects should be cluster into one
-     * ball like the real katamari"* (2026-09-18) is why a lift exists at all
-     * again: the pile packs below the equator now, so there IS mass under the
-     * feet, and the honest answer is the pile's own lowest point
-     * (`Clump.floor`, read as the pile is currently rolled). A creature
-     * inside a ball stands at the middle of it with the ball's underside on
-     * the paper — which is the reference — and a creature carrying one stone
-     * beside it still has a floor of 0 and stands exactly where it did.
+     * > User report, 2026-09-18: *"The character is still floating in Z
+     * > space. We should make sure that it is anchored to the surface of the
+     * > ground as the mass is rolling. It should not be floating in the
+     * > air."*
      *
-     * Plus the terrain ring, which is a different question — not "how big is
-     * the mass" but "does the ground under the mass rise", the 2026-09-16
-     * rule that stops a wide pile clipping through a hillside. They add: the
-     * mass has to clear the highest ground beneath its own footprint.
+     * That reverses 3a745f8, which lifted the root by the pile's own lowest
+     * point so a ball packed below the equator would not clip into the map.
+     * The clipping rule was right and the payer was wrong: the PILE now
+     * holds itself up (`Clump.rise`, src/creatures/clump.ts) — the mass rests
+     * its underside on the paper, the creature stands on the paper at the
+     * middle of it, and every seat keeps the relative position the packer
+     * gave it, so the lump is the same lump.
+     *
+     * What is left here is the terrain ring, which is a different question
+     * altogether — not "how big is the mass" but "does the ground under the
+     * mass rise", the 2026-09-16 rule that stops a wide pile clipping through
+     * a hillside. A radius was never the right measurement for it either:
+     * `reach()` is how far the pile stretches in ANY direction, so a creature
+     * with three benches beside it was held metres in the air over a gap
+     * (2026-09-17, three reports). It is the FOOTPRINT — a horizontal
+     * question taking a horizontal answer.
      */
-    const sit = Math.max(0, -(clump?.floor() ?? 0));
     const target =
-      sit +
-      (footprint > 0 ? footprintRise(root.position.x, root.position.z, footprint, sampleAt) : 0);
+      footprint > 0 ? footprintRise(root.position.x, root.position.z, footprint, sampleAt) : 0;
     spring.retarget(target);
     // Clamped at 0 on the way out: a clearance can lift a creature and must
     // never be able to push one INTO the ground, whatever a solver does.
@@ -5539,6 +5628,15 @@ export function createCreatureManager(
        * nothing will ever read.
        */
       const simulating = manager.simulating();
+      /*
+       * NOTHING STAYS CARRIED (`releaseCarriedCreatures`, 2026-09-18 — *"some
+       * characters can't move at all"*). On `deciding` and not on
+       * `simulating`: a page can be the authority for a room whose game is
+       * off, and a creature seated by a restored log there would be stuck on
+       * somebody's pile with no pass to free it. This is the one rule that
+       * has to run wherever the decisions are made.
+       */
+      if (deciding()) releaseCarriedCreatures();
       if (simulating) simulateSticky(nowMs);
       else contacts.length = 0;
       growPass(dt);
@@ -5819,6 +5917,10 @@ export function createCreatureManager(
 
     pileFloor(id): number {
       return slots.get(id)?.clump?.floor() ?? 0;
+    },
+
+    pileRise(id): number {
+      return slots.get(id)?.clump?.rise() ?? 0;
     },
 
     pileCeiling(id): number {
